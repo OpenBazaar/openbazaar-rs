@@ -13,6 +13,7 @@ Last checked against `main` at `b1eb18b` (escrow, payments, and transport code u
 | `286e084` | PR #1: desktop packaging with a bundled node on a free loopback port |
 | `aa9db48` | PR #3 (squashed from `3d5af42`): two-party escrow, verifiable moderator shares, review fixes, node integration, three-node test harness |
 | `92b2e2e` | PR #5: content ratings and tags, client safe mode, subscribable labelers |
+| `chain-privacy` | BIP 157/158 compact block filters as the default chain backend, own-node mode, public Esplora only as an opt-in fallback |
 
 ## Mechanisms
 
@@ -67,13 +68,16 @@ Labels: **tested** = code on main with automated tests; **demo** = code runs, bu
 |---|---|---|
 | One payment per seller | tested | One recipient plus change. |
 | Fresh per-order vendor address, BIP 21 URI | tested | BDK, BIP 86. |
-| Chain watcher | tested | Esplora: mempool.space; testnet4 falls back to blockstream.info; genesis check per server. 1 confirmation on testnet4, 3 on mainnet. |
+| Chain watcher | tested | Wallet sync, order watcher, broadcast, and escrow chain checks all go through one `ChainSource`. Default: BIP 157/158 compact filters (`bip157` 0.8, Kyoto) from DNS-seeded P2P peers; filters are matched on the node and only matching blocks are fetched, each from a random peer; broadcast goes to one random peer. Filter commitments and headers are sealed in `filters/`; a peer that later serves a different filter for a checked block is refused; reorgs move transactions back to unconfirmed. 1 confirmation on testnet4, 3 on mainnet. |
+| Own node | tested | `--peer HOST:PORT` uses only that node's filters (bitcoind with `blockfilterindex=1`, `peerblockfilters=1`); `--esplora URL` uses only the named servers. Neither falls back to anything; a test proves no other host is dialed. Bitcoind RPC and Electrum are not supported. |
+| Public Esplora | tested | Never by default on mainnet. `--public-fallback` (default on testnet4 only) asks mempool.space/blockstream.info while no filter peer has answered for 2 minutes. With `--proxy`, each Esplora connection uses a fresh SOCKS username, so Tor gives it its own circuit. `GET /network` reports `chainBackend` (`backend`, `privacy`, `reveals`, `peers`, `scannedHeight`, `syncing`, `fallback`, `fallbackActive`) and `publicChainServer`. |
 | Pay from the node | tested | Mainnet needs `--network mainnet` and `"confirm": true`. |
 | Coin selection avoiding shared ancestry across one checkout | future | Own unconfirmed change is spendable, so consecutive payments can chain. |
 | BOLT 12 offer | encoding only | No Lightning node answers; issuer key is the store key. |
 | BIP 352 code | encoding only | No scanning. |
 | Payjoin v2 | library only | Checkout does not start a session. |
-| Chain queries over Tor / own node / compact filters | demo | `--proxy` sends Esplora queries through SOCKS5 (Tor); no Arti, own node, or compact filters. |
+| Chain queries over Tor | demo | `--proxy` also carries filter peer connections and broadcasts through SOCKS5 (P2P v1 only; peers see a Tor exit). No Arti, no onion peers. Without `--proxy`, filter peers see the IP address and which whole blocks it fetches, not which scripts it follows. |
+| Compact filter limits | tested | Filters cannot find a transaction by txid: the escrow moderator's funding check needs the funding script followed, or `--esplora` with an own server. No mempool view: incoming payments appear once confirmed. Fees come from recent block averages. A newly followed script is rescanned 144 blocks back. First sync starts at a checkpoint (testnet4 159000, mainnet 974000); testnet4 took 7.5 minutes to reach the tip from one peer. |
 | Exchange rates | tested | Coinbase. Over clearnet unless `--proxy socks5h://HOST:PORT` (names resolved by the proxy); `--no-rates` makes no request. `GET /network` reports `clearnet` and a `privacyWarning`. |
 
 ### Escrow
@@ -108,7 +112,7 @@ Labels: **tested** = code on main with automated tests; **demo** = code runs, bu
 - The escrow crate's signed-terms wrapper reuses the magic `OBST`. It is never parsed where a store record is, but it should get its own magic.
 - The paper's store record carries the vendor's mailbox key and onion address; `OBST` v2 has neither yet, and no derivation path for the mailbox key is assigned.
 - The crate supports per-order keys tweaked by an order secret; the node derives per-order keys from the seed instead.
-- Exchange rates come from Coinbase and chain data from public Esplora servers, both over clearnet unless `--proxy` is set. The desktop app has no proxy setting yet.
+- Exchange rates come from Coinbase over clearnet unless `--proxy` is set. Chain data comes from compact filters; public Esplora is asked only with `--esplora` or `--public-fallback`. The desktop app has no proxy, peer, or fallback setting yet.
 - Presigned escrow spends use a fixed 1,000-sat fee in the node.
 
 ## Escrow review
@@ -138,5 +142,6 @@ Remaining blockers before any mainnet escrow: durable sessions and claims, durab
 | `58e539e` (PR #2 head) | 40 (+1) | 6 | 13 | 12 | 9 (+1) | 80 passed, 2 ignored |
 | `dc7bc42` (reviewed escrow) | — | 26 + 3 doc | — | 12 | — | 41 passed |
 | `aa9db48` | 46 (+1) | 38 + 5 doc | 13 | 12 | 10 (+1) | 124 passed, 2 ignored |
+| `chain-privacy` | 112 (+3) | 38 + 5 doc | 13 | 33 | 10 (+1) | 211 passed, 4 ignored |
 
-The two ignored tests need the live network (an Arti onion dial and a real testnet4 payment).
+The ignored tests need the live network: an Arti onion dial, a real testnet4 payment and send, and a testnet4 compact filter sync.

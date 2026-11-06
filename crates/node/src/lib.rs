@@ -11,6 +11,8 @@
 mod addresses;
 mod buyer_orders;
 mod chain;
+mod chain_backend;
+mod chain_filters;
 mod egress;
 mod escrow_buyer;
 mod escrow_fixture;
@@ -87,7 +89,9 @@ use vault::Vault;
 use vendor_labels::VendorLabels;
 use wallet::NodeWallet;
 
-pub use chain::{AddressTx, ChainSource, EsploraChain, OfflineChain, WalletRequest};
+pub use chain::{AddressTx, ChainSource, ChainStatus, EsploraChain, OfflineChain, WalletRequest};
+pub use chain_backend::ChainPlan;
+pub use chain_filters::{ChainStore, FilterChain, FilterConfig};
 pub use egress::Egress;
 pub use escrow_fixture::MODERATOR_FEE_SATS;
 pub use http::{http_response, serve_on};
@@ -105,7 +109,8 @@ pub use watch::{
 pub struct NodeConfig {
     pub network: NetworkMode,
     pub confirmations: u32,
-    /// True when `chain` is a server outside this machine or LAN.
+    /// True when `chain` may ask a server outside this machine or LAN.
+    /// `GET /network` reports what `chain.status()` says right now instead.
     pub public_server: bool,
     pub chain: Box<dyn ChainSource>,
     pub escrow: EscrowConfig,
@@ -166,7 +171,6 @@ impl NodeConfig {
 
 pub(crate) struct ChainSettings {
     pub confirmations: u32,
-    pub public_server: bool,
 }
 
 #[derive(Debug)]
@@ -263,6 +267,11 @@ impl Node {
             store_wallets.insert(listing.seller.clone(), Mutex::new(wallet));
         }
         let lock = wallet_lock::WalletLock::open(&dir, vault.clone(), &local.vault)?;
+        let wallet_tip = buyer_wallet.wallet.latest_checkpoint().block_id();
+        config
+            .chain
+            .open(ChainStore { dir: dir.join("filters"), vault: vault.clone(), wallet_tip: Some(wallet_tip) })
+            .map_err(Error::Detail)?;
         let node = Self {
             catalog: RwLock::new(catalog),
             vendor_labels: Mutex::new(vendor_labels),
@@ -280,7 +289,6 @@ impl Node {
             network,
             settings: ChainSettings {
                 confirmations: config.confirmations,
-                public_server: config.public_server,
             },
             chain: config.chain,
             buyer_wallet: Mutex::new(buyer_wallet),
