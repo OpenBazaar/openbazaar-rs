@@ -9,7 +9,7 @@ use serde_json::{json, Value};
 use tormail::{open_order, SealedLetter, StoreSecret};
 
 use crate::http::{dispatch, respond, Client};
-use crate::{load_catalog, Node, ESCROW_TIMEOUT_HEIGHT};
+use crate::{load_catalog, NetworkMode, Node, ESCROW_SPEND_FEE_SATS, ESCROW_TIMEOUT_BLOCKS};
 
 struct TempDir(PathBuf);
 
@@ -34,7 +34,7 @@ impl Drop for TempDir {
 
 fn node() -> (TempDir, Node) {
     let dir = TempDir::new();
-    let catalog = load_catalog().unwrap();
+    let catalog = load_catalog(NetworkMode::Testnet4).unwrap();
     let node = Node::open(&dir.0, catalog).unwrap();
     (dir, node)
 }
@@ -159,12 +159,22 @@ fn seals_the_ship_to_into_the_mailbox_and_keeps_it_out_of_the_catalog() {
 
     let lightning = receipt["payment"]["lightning"].as_str().unwrap();
     let onchain = receipt["payment"]["onchain"].as_str().unwrap();
+    let code = receipt["payment"]["silentPaymentCode"].as_str().unwrap();
     assert!(lightning.starts_with("lno1"));
-    assert!(onchain.starts_with("sp1"));
-    assert_eq!(onchain, node.catalog.store.direct_pay.silent_payment_code);
+    assert!(onchain.starts_with("tb1p"), "{onchain}");
+    assert_eq!(receipt["payment"]["address"], onchain);
+    assert_eq!(receipt["payment"]["amountSats"], 36_000);
+    assert_eq!(
+        receipt["payment"]["bip21"],
+        format!("bitcoin:{onchain}?amount=0.00036")
+    );
+    assert_eq!(receipt["network"], "testnet4");
+    assert_eq!(receipt["status"], "Awaiting payment");
     let offer = Bolt12Offer::parse(lightning).unwrap();
     assert_eq!(offer.price().to_sat(), 36_000);
-    assert!(SilentPaymentCode::parse(onchain).is_ok());
+    assert!(offer.is_for(bitcoin::Network::Testnet4));
+    assert!(code.starts_with("tsp1"));
+    assert!(SilentPaymentCode::parse(code).unwrap().is_for(bitcoin::Network::Testnet4));
 
     let letter_id = receipt["letterId"].as_str().unwrap();
     let stored = fs::read(node.mailbox_path().join(format!("{letter_id}.letter"))).unwrap();
@@ -208,15 +218,15 @@ fn moderated_order_returns_a_local_funding_session() {
     let receipt: Value = serde_json::from_str(&body).unwrap();
     assert_eq!(receipt["sealed"], true);
     assert_eq!(receipt["settlement"], "escrow");
-    assert_eq!(receipt["escrow"]["fundingSats"], 4_000);
-    assert_eq!(receipt["escrow"]["timeoutHeight"], ESCROW_TIMEOUT_HEIGHT);
+    assert_eq!(receipt["escrow"]["fundingSats"], 4_000 + ESCROW_SPEND_FEE_SATS);
+    assert_eq!(receipt["escrow"]["timeoutBlocks"], ESCROW_TIMEOUT_BLOCKS);
     assert_eq!(receipt["escrow"]["signaturesRequired"], 2);
     let address = receipt["escrow"]["address"].as_str().unwrap();
-    assert!(address.starts_with("bc1p"), "{address}");
-    assert!(receipt["escrow"]["outpoint"]
-        .as_str()
-        .unwrap()
-        .contains(':'));
+    assert!(address.starts_with("tb1p"), "{address}");
+    assert_eq!(receipt["escrow"]["outpoint"], "");
+    assert_eq!(receipt["escrow"]["refundHeld"], false);
+    assert_eq!(receipt["escrow"]["safeToSend"], false);
+    assert_eq!(receipt["status"], "Awaiting funding");
     assert!(!body.contains(note));
     assert!(receipt.get("payment").is_none());
 
@@ -250,7 +260,7 @@ fn options_preflight_allows_the_shop_origin() {
 #[test]
 fn pairing_token_is_stable_and_orders_require_it() {
     let dir = TempDir::new();
-    let catalog = load_catalog().unwrap();
+    let catalog = load_catalog(NetworkMode::Testnet4).unwrap();
     let first = Node::open(&dir.0, catalog.clone()).unwrap();
     let token = first.pairing_token().to_string();
     assert!(first.fresh_pairing_token().is_some());

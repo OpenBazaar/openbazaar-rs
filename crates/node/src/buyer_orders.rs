@@ -31,6 +31,21 @@ pub(crate) struct BuyerOrder {
     pub escrow: Option<Value>,
     pub address_label: String,
     pub status: String,
+    /// Network the order was placed on. A record from another network is not shown.
+    pub network: String,
+    /// Sats seen at the payment address, confirmed or not.
+    pub received_sats: u64,
+    /// Confirmations of the least-confirmed payment counted, 0 while in the mempool.
+    pub confirmations: u32,
+    /// Transactions seen paying this order.
+    pub txids: Vec<String>,
+    /// Transaction this node broadcast to pay the order, if any.
+    pub pay_txid: Option<String>,
+    /// A `POST /orders/{id}/pay` is queued or running. Not read back on start,
+    /// so a payment cut off by a restart can be asked for again.
+    pub paying: bool,
+    /// Why the last payment attempt sent nothing.
+    pub pay_error: Option<String>,
 }
 
 impl BuyerOrder {
@@ -48,7 +63,18 @@ impl BuyerOrder {
             "settlement": self.settlement,
             "addressLabel": self.address_label,
             "status": self.status,
+            "network": self.network,
+            "receivedSats": self.received_sats,
+            "confirmations": self.confirmations,
+            "txids": self.txids,
+            "paying": self.paying,
         });
+        if let Some(txid) = &self.pay_txid {
+            value["payTxid"] = json!(txid);
+        }
+        if let Some(error) = &self.pay_error {
+            value["payError"] = json!(error);
+        }
         if let Some(payment) = &self.payment {
             value["payment"] = payment.clone();
         }
@@ -62,11 +88,12 @@ impl BuyerOrder {
 pub(crate) struct BuyerOrders {
     path: std::path::PathBuf,
     vault: Vault,
+    network: String,
     items: Vec<BuyerOrder>,
 }
 
 impl BuyerOrders {
-    pub(crate) fn open(dir: &Path, vault: Vault) -> Result<Self, Error> {
+    pub(crate) fn open(dir: &Path, vault: Vault, network: &str) -> Result<Self, Error> {
         let path = dir.join(FILE);
         let items = if path.exists() {
             let blob = fs::read(&path).map_err(|err| Error::Detail(err.to_string()))?;
@@ -74,17 +101,46 @@ impl BuyerOrders {
         } else {
             Vec::new()
         };
-        Ok(Self { path, vault, items })
+        Ok(Self {
+            path,
+            vault,
+            network: network.to_string(),
+            items,
+        })
     }
 
     pub(crate) fn list_value(&self) -> Value {
-        let mut items = self.items.clone();
+        let mut items: Vec<BuyerOrder> = self.on_network().cloned().collect();
         items.sort_by(|left, right| right.created.cmp(&left.created).then(right.id.cmp(&left.id)));
         json!({ "orders": items.iter().map(BuyerOrder::to_json).collect::<Vec<_>>() })
     }
 
     pub(crate) fn get_value(&self, id: &str) -> Option<Value> {
-        self.items.iter().find(|item| item.id == id).map(BuyerOrder::to_json)
+        self.get(id).map(BuyerOrder::to_json)
+    }
+
+    pub(crate) fn get(&self, id: &str) -> Option<&BuyerOrder> {
+        self.on_network().find(|item| item.id == id)
+    }
+
+    /// Orders on this node's network. Records from another network are never returned.
+    pub(crate) fn on_network(&self) -> impl Iterator<Item = &BuyerOrder> {
+        self.items.iter().filter(|item| item.network == self.network)
+    }
+
+    /// Change one order and write the file. Returns `false` when the order is not here.
+    pub(crate) fn update(&mut self, id: &str, change: impl FnOnce(&mut BuyerOrder)) -> Result<bool, String> {
+        let network = self.network.clone();
+        let Some(order) = self
+            .items
+            .iter_mut()
+            .find(|item| item.id == id && item.network == network)
+        else {
+            return Ok(false);
+        };
+        change(order);
+        self.flush()?;
+        Ok(true)
     }
 
     pub(crate) fn record(&mut self, order: BuyerOrder) -> Result<(), String> {
@@ -148,6 +204,21 @@ fn decode(bytes: &[u8]) -> Result<Vec<BuyerOrder>, Error> {
                     .and_then(Value::as_str)
                     .unwrap_or("Awaiting payment")
                     .to_string(),
+                network: item.get("network").and_then(Value::as_str).unwrap_or("").to_string(),
+                received_sats: item.get("receivedSats").and_then(Value::as_u64).unwrap_or(0),
+                confirmations: item
+                    .get("confirmations")
+                    .and_then(Value::as_u64)
+                    .and_then(|value| u32::try_from(value).ok())
+                    .unwrap_or(0),
+                txids: item
+                    .get("txids")
+                    .and_then(Value::as_array)
+                    .map(|list| list.iter().filter_map(Value::as_str).map(str::to_string).collect())
+                    .unwrap_or_default(),
+                pay_txid: item.get("payTxid").and_then(Value::as_str).map(str::to_string),
+                paying: false,
+                pay_error: item.get("payError").and_then(Value::as_str).map(str::to_string),
             })
         })
         .collect()

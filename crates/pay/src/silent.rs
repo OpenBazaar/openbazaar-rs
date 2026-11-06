@@ -72,6 +72,14 @@ impl SilentPaymentCode {
             silentpayments::Network::Regtest => Network::Regtest,
         }
     }
+
+    /// True when the code's prefix is the one `network` uses.
+    ///
+    /// Testnet, testnet4, and signet all share `tsp`; mainnet is `sp` and
+    /// regtest is `sprt`.
+    pub fn is_for(&self, network: Network) -> bool {
+        sp_network(network).is_ok_and(|expected| expected == self.inner.network())
+    }
 }
 
 impl fmt::Display for SilentPaymentCode {
@@ -92,12 +100,7 @@ fn sp_network(network: Network) -> Result<silentpayments::Network, PayError> {
     Ok(match network {
         Network::Bitcoin => silentpayments::Network::Mainnet,
         Network::Regtest => silentpayments::Network::Regtest,
-        Network::Testnet | Network::Signet => silentpayments::Network::Testnet,
-        _ => {
-            return Err(PayError::Silent(format!(
-                "silent payments have no code prefix for {network}"
-            )))
-        }
+        Network::Testnet | Network::Testnet4 | Network::Signet => silentpayments::Network::Testnet,
     })
 }
 
@@ -153,6 +156,19 @@ mod tests {
         assert!(SilentPaymentCode::parse("sp1qqqqqqqqqqqqqqqq").is_err());
         assert!(SilentPaymentCode::parse("").is_err());
         assert!(SilentPaymentCode::parse("bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4").is_err());
+    }
+
+    #[test]
+    fn testnet4_codes_use_the_test_prefix_and_reject_mainnet() {
+        let code =
+            SilentPaymentCode::from_keys(&secret(SCAN_PRIV), &secret(SPEND_PRIV), Network::Testnet4)
+                .unwrap();
+        assert!(code.to_string().starts_with("tsp1"));
+        assert!(code.is_for(Network::Testnet4));
+        assert!(!code.is_for(Network::Bitcoin));
+        let mainnet = SilentPaymentCode::parse(CODE).unwrap();
+        assert!(mainnet.is_for(Network::Bitcoin));
+        assert!(!mainnet.is_for(Network::Testnet4));
     }
 
     fn secret(hex_key: &str) -> SecretKey {

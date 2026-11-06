@@ -11,6 +11,7 @@
 use std::fmt;
 use std::str::FromStr;
 
+use bitcoin::constants::ChainHash;
 use bitcoin::secp256k1::PublicKey;
 use bitcoin::{Amount, Network};
 use lightning::offers::offer::{Amount as OfferAmount, Offer, OfferBuilder};
@@ -65,6 +66,13 @@ impl Bolt12Offer {
     /// Offer description.
     pub fn description(&self) -> Option<String> {
         self.parsed().description().map(|text| text.to_string())
+    }
+
+    /// True when the offer names `network`'s chain. An offer with no chain
+    /// list is a mainnet offer (BOLT 12).
+    pub fn is_for(&self, network: Network) -> bool {
+        self.parsed()
+            .supports_chain(ChainHash::using_genesis_block(network))
     }
 
     fn parsed(&self) -> Offer {
@@ -156,6 +164,23 @@ mod tests {
         chars[index] = if chars[index] == 'q' { 'p' } else { 'q' };
         let tampered: String = chars.into_iter().collect();
         assert!(Bolt12Offer::parse(&tampered).is_err());
+    }
+
+    #[test]
+    fn offers_name_their_chain() {
+        let mainnet = sample_offer();
+        assert!(mainnet.is_for(Network::Bitcoin));
+        assert!(!mainnet.is_for(Network::Testnet4));
+        let testnet4 = Bolt12Offer::create(
+            signing_pubkey(),
+            Amount::from_sat(21_000),
+            "Cedar chest",
+            Network::Testnet4,
+        )
+        .unwrap();
+        let parsed = Bolt12Offer::parse(&testnet4.to_string()).unwrap();
+        assert!(parsed.is_for(Network::Testnet4));
+        assert!(!parsed.is_for(Network::Bitcoin));
     }
 
     fn sample_offer() -> Bolt12Offer {

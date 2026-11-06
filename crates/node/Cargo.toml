@@ -15,12 +15,16 @@ name = "ob-node"
 path = "src/main.rs"
 
 [dependencies]
+bdk_esplora = { version = "0.22.3", default-features = false, features = ["std", "async-https-rustls", "tokio"] }
+bdk_wallet = { version = "3.2.0", features = ["keys-bip39"] }
 bitcoin = "0.32.7"
 chacha20poly1305 = "0.10"
 openbazaar-escrow = { path = "../escrow" }
 openbazaar-pay = { path = "../pay" }
 openbazaar-protocol = { path = "../protocol" }
 rand = "0.9"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 serde_json = "1"
+tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "time"] }
 tormail = { path = "../tormail" }
 ureq = "2.12"

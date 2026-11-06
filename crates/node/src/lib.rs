@@ -1,31 +1,45 @@
-//! Local shop node: signed fixture catalog, sealed orders, and checkout rails.
+//! Local shop node: signed fixture catalog, sealed orders, checkout rails,
+//! a node wallet, and a chain watcher.
 //!
-//! The HTTP server is loopback-only. It does not dial Tor and it does not
-//! broadcast Bitcoin transactions.
+//! The HTTP server is loopback-only. It does not dial Tor. It broadcasts a
+//! transaction only when `POST /orders/{id}/pay` asks it to.
 
 #![forbid(unsafe_code)]
 
 mod addresses;
 mod buyer_orders;
+mod chain;
 mod http;
+mod instructions;
+mod network;
 mod orders;
+mod pay_order;
 mod rates;
+mod seed;
 mod vault;
+mod wallet;
+mod wallet_http;
+mod watch;
 
 #[cfg(test)]
 mod checkout_tests;
+#[cfg(test)]
+mod payment_tests;
 
+use std::collections::BTreeMap;
 use std::fmt;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, MutexGuard};
+use std::time::Duration;
 
 use rand::rngs::StdRng;
 use rand::{RngCore, SeedableRng};
 
 use bitcoin::secp256k1::{PublicKey, Secp256k1};
-use bitcoin::{Amount, Network};
+use bitcoin::Amount;
 use openbazaar_pay::{Bolt12Offer, SilentPaymentCode};
 use openbazaar_protocol::{
     fixture_catalog, fixture_keys, Catalog, DirectPay, Error as ProtocolError, Listing, Store,
@@ -37,12 +51,42 @@ use addresses::AddressBook;
 use buyer_orders::BuyerOrders;
 use rates::Rates;
 use vault::Vault;
+use wallet::NodeWallet;
 
+pub use chain::{AddressTx, ChainSource, EsploraChain, OfflineChain, WalletRequest};
 pub use http::http_response;
-pub use orders::{OrderError, ESCROW_TIMEOUT_HEIGHT};
+pub use instructions::{ESCROW_SPEND_FEE_SATS, ESCROW_TIMEOUT_BLOCKS};
+pub use network::{NetworkMode, ServeOptions};
+pub use orders::OrderError;
+pub use pay_order::PayError;
+pub use watch::{
+    AWAITING_FUNDING, AWAITING_PAYMENT, FUNDED, FUNDED_WITHOUT_REFUND, FUNDING_SEEN, PAID, PAYMENT_SEEN,
+};
 
-pub fn default_mailbox_dir() -> PathBuf {
-    PathBuf::from("data/mailbox")
+/// How the node reaches the chain and when it calls a payment settled.
+pub struct NodeConfig {
+    pub network: NetworkMode,
+    pub confirmations: u32,
+    /// True when `chain` is a server outside this machine or LAN.
+    pub public_server: bool,
+    pub chain: Box<dyn ChainSource>,
+}
+
+impl NodeConfig {
+    /// No chain source. Status never moves and the pay endpoint reports the chain as unreachable.
+    pub fn offline(network: NetworkMode) -> Self {
+        Self {
+            network,
+            confirmations: network.default_confirmations(),
+            public_server: false,
+            chain: Box::new(OfflineChain),
+        }
+    }
+}
+
+pub(crate) struct ChainSettings {
+    pub confirmations: u32,
+    pub public_server: bool,
 }
 
 #[derive(Debug)]
@@ -63,10 +107,7 @@ impl fmt::Display for Error {
 impl std::error::Error for Error {}
 
 pub(crate) struct Keys {
-    store: bitcoin::secp256k1::SecretKey,
-    spend: bitcoin::secp256k1::SecretKey,
-    scan: bitcoin::secp256k1::SecretKey,
-    buyer: bitcoin::secp256k1::SecretKey,
+    /// Fixture moderator. Only its public key is used, for escrow dispute letters.
     moderator: bitcoin::secp256k1::SecretKey,
 }
 
@@ -80,32 +121,88 @@ pub struct Node {
     rates: Rates,
     pub(crate) addresses: Mutex<AddressBook>,
     pub(crate) buyer_orders: Mutex<BuyerOrders>,
+    pub(crate) network: NetworkMode,
+    pub(crate) settings: ChainSettings,
+    pub(crate) chain: Box<dyn ChainSource>,
+    /// The buyer's wallet: what `GET /wallet` shows and `POST /orders/{id}/pay` spends.
+    buyer_wallet: Mutex<NodeWallet>,
+    /// One wallet per fixture store, keyed by seller name. The node plays these vendors.
+    store_wallets: BTreeMap<String, Mutex<NodeWallet>>,
+    pub(crate) pay_jobs: pay_order::PayJobs,
 }
 
 impl Node {
+    /// Open `dir` on testnet4 with no chain source. Tests and offline tools use this.
     pub fn open(dir: impl Into<PathBuf>, catalog: Catalog) -> Result<Self, Error> {
-        let fixture = fixture_keys();
-        let mailbox = Mailbox::open(dir).map_err(|err| Error::Detail(err.to_string()))?;
-        let (pairing_token, pairing_fresh) = load_pairing(mailbox.path())?;
-        let vault = Vault::open(mailbox.path())?;
-        let addresses = AddressBook::open(mailbox.path(), vault.clone())?;
-        let buyer_orders = BuyerOrders::open(mailbox.path(), vault)?;
+        Self::open_with(dir, catalog, NodeConfig::offline(NetworkMode::Testnet4))
+    }
+
+    /// Open one network's data directory (`data/testnet4`, `data/mainnet`).
+    ///
+    /// The catalog must carry payment codes for `config.network`. The
+    /// mailbox lives in `mailbox/`, wallets in `wallets/`, and the vault key,
+    /// pairing token, address book, and orders at the top of `dir`.
+    pub fn open_with(dir: impl Into<PathBuf>, catalog: Catalog, config: NodeConfig) -> Result<Self, Error> {
+        let dir = dir.into();
+        let network = config.network;
+        check_catalog_network(&catalog, network)?;
+        fs::create_dir_all(&dir).map_err(|err| Error::Detail(err.to_string()))?;
+        let mailbox = Mailbox::open(dir.join("mailbox")).map_err(|err| Error::Detail(err.to_string()))?;
+        let (pairing_token, pairing_fresh) = load_pairing(&dir)?;
+        let vault = Vault::open(&dir)?;
+        let addresses = AddressBook::open(&dir, vault.clone())?;
+        let buyer_orders = BuyerOrders::open(&dir, vault.clone(), network.as_str())?;
+        let wallets = dir.join("wallets");
+        let buyer_wallet = NodeWallet::open(&wallets, "node", &vault, network)?;
+        let mut store_wallets = BTreeMap::new();
+        for listing in &catalog.listings {
+            if store_wallets.contains_key(&listing.seller) {
+                continue;
+            }
+            let name = format!("store-{}", slug(&listing.seller));
+            let wallet = NodeWallet::open(&wallets, &name, &vault, network)?;
+            store_wallets.insert(listing.seller.clone(), Mutex::new(wallet));
+        }
         Ok(Self {
             catalog,
             mailbox,
             keys: Keys {
-                store: fixture.store,
-                spend: fixture.spend,
-                scan: fixture.scan,
-                buyer: fixture.buyer,
-                moderator: fixture.moderator,
+                moderator: fixture_keys().moderator,
             },
             pairing_token,
             pairing_fresh,
             rates: Rates::new(),
             addresses: Mutex::new(addresses),
             buyer_orders: Mutex::new(buyer_orders),
+            network,
+            settings: ChainSettings {
+                confirmations: config.confirmations,
+                public_server: config.public_server,
+            },
+            chain: config.chain,
+            buyer_wallet: Mutex::new(buyer_wallet),
+            store_wallets,
+            pay_jobs: pay_order::PayJobs::new(),
         })
+    }
+
+    pub fn network(&self) -> NetworkMode {
+        self.network
+    }
+
+    pub(crate) fn buyer_wallet(&self) -> MutexGuard<'_, NodeWallet> {
+        self.buyer_wallet.lock().unwrap_or_else(|err| err.into_inner())
+    }
+
+    pub(crate) fn store_wallet(&self, seller: &str) -> Result<MutexGuard<'_, NodeWallet>, OrderError> {
+        self.store_wallets
+            .get(seller)
+            .map(|wallet| wallet.lock().unwrap_or_else(|err| err.into_inner()))
+            .ok_or(OrderError::Invalid("That seller has no wallet on this node."))
+    }
+
+    pub(crate) fn orders(&self) -> MutexGuard<'_, BuyerOrders> {
+        self.buyer_orders.lock().unwrap_or_else(|err| err.into_inner())
     }
 
     pub(crate) fn rates_value(&self) -> Value {
@@ -128,30 +225,55 @@ impl Node {
         self.pairing_fresh.then_some(self.pairing_token.as_str())
     }
 
-    pub fn serve(&self, port: u16) -> std::io::Result<()> {
-        http::serve(self, port)
+    /// Serve HTTP on this thread. The chain watcher (every `poll`) and the pay
+    /// worker each run on their own thread, so chain calls never block HTTP.
+    pub fn serve(&self, port: u16, poll: Duration) -> std::io::Result<()> {
+        let stop = AtomicBool::new(false);
+        std::thread::scope(|scope| {
+            scope.spawn(|| self.run_watcher(poll, &stop));
+            scope.spawn(|| self.run_pay_worker(&stop));
+            let result = http::serve(self, port);
+            stop.store(true, Ordering::Relaxed);
+            result
+        })
     }
 }
 
-pub fn load_catalog() -> Result<Catalog, Error> {
+fn slug(name: &str) -> String {
+    name.chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() { ch.to_ascii_lowercase() } else { '-' })
+        .collect()
+}
+
+/// The fixture catalog with store payment codes for `network`.
+pub fn load_catalog(network: NetworkMode) -> Result<Catalog, Error> {
     let mut catalog = fixture_catalog();
-    install_direct_pay(&mut catalog)?;
+    install_direct_pay(&mut catalog, network)?;
     catalog.verify().map_err(Error::Protocol)?;
     Ok(catalog)
 }
 
-/// Replace placeholder payment strings with a real BOLT 12 offer and BIP 352 code.
-fn install_direct_pay(catalog: &mut Catalog) -> Result<(), Error> {
+/// Refuse a catalog whose store payment codes belong to another network.
+fn check_catalog_network(catalog: &Catalog, network: NetworkMode) -> Result<(), Error> {
+    let pay = &catalog.store.direct_pay;
+    network::offer_for(&pay.bolt12_offer, network).map_err(Error::Detail)?;
+    network::code_for(&pay.silent_payment_code, network).map_err(Error::Detail)?;
+    Ok(())
+}
+
+/// Replace placeholder or other-network payment strings with a BOLT 12 offer
+/// and BIP 352 code for `network`, and re-sign the store.
+fn install_direct_pay(catalog: &mut Catalog, network: NetworkMode) -> Result<(), Error> {
     let keys = fixture_keys();
     let mut offer = catalog.store.direct_pay.bolt12_offer.clone();
     let mut code = catalog.store.direct_pay.silent_payment_code.clone();
-    let offer_real = Bolt12Offer::parse(&offer).is_ok();
-    let code_real = SilentPaymentCode::parse(&code).is_ok();
+    let offer_real = network::offer_for(&offer, network).is_ok();
+    let code_real = network::code_for(&code, network).is_ok();
     if offer_real && code_real {
         return Ok(());
     }
     if !code_real {
-        code = SilentPaymentCode::from_keys(&keys.scan, &keys.spend, Network::Bitcoin)
+        code = SilentPaymentCode::from_keys(&keys.scan, &keys.spend, network.bitcoin())
             .map_err(|err| Error::Detail(err.to_string()))?
             .to_string();
     }
@@ -162,7 +284,7 @@ fn install_direct_pay(catalog: &mut Catalog) -> Result<(), Error> {
             pubkey,
             Amount::from_sat(18_000),
             "Marlow Goods",
-            Network::Bitcoin,
+            network.bitcoin(),
         )
         .map_err(|err| Error::Detail(err.to_string()))?
         .to_string();
@@ -319,7 +441,7 @@ mod tests {
 
     #[test]
     fn fixture_catalog_verifies() {
-        let catalog = load_catalog().unwrap();
+        let catalog = load_catalog(NetworkMode::Mainnet).unwrap();
         assert_eq!(catalog.store.name, "Marlow Goods");
         assert_eq!(catalog.moderator.name, "June Pell");
         assert!(catalog
@@ -341,8 +463,23 @@ mod tests {
     }
 
     #[test]
+    fn store_payment_codes_are_regenerated_for_each_network() {
+        let test = load_catalog(NetworkMode::Testnet4).unwrap();
+        let main = load_catalog(NetworkMode::Mainnet).unwrap();
+        assert!(test.store.direct_pay.silent_payment_code.starts_with("tsp1"));
+        assert!(main.store.direct_pay.silent_payment_code.starts_with("sp1"));
+        assert!(network::offer_for(&test.store.direct_pay.bolt12_offer, NetworkMode::Testnet4).is_ok());
+        assert!(network::offer_for(&test.store.direct_pay.bolt12_offer, NetworkMode::Mainnet).is_err());
+        assert!(network::code_for(&main.store.direct_pay.silent_payment_code, NetworkMode::Testnet4).is_err());
+        assert_eq!(test.store.id, main.store.id);
+        assert_eq!(catalog_value(&test).unwrap(), catalog_value(&main).unwrap());
+        assert!(check_catalog_network(&main, NetworkMode::Testnet4).is_err());
+        assert!(check_catalog_network(&test, NetworkMode::Mainnet).is_err());
+    }
+
+    #[test]
     fn shared_ui_catalog_matches_signed_records() {
-        let catalog = load_catalog().unwrap();
+        let catalog = load_catalog(NetworkMode::Testnet4).unwrap();
         let path =
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/mobile/src/catalog.json");
         let text = std::fs::read_to_string(&path)
@@ -353,7 +490,7 @@ mod tests {
 
     #[test]
     fn catalog_response_carries_the_json_body() {
-        let json = catalog_json(&load_catalog().unwrap()).unwrap();
+        let json = catalog_json(&load_catalog(NetworkMode::Testnet4).unwrap()).unwrap();
         let response = http_response("200 OK", "application/json", json.as_bytes());
         let text = String::from_utf8(response).unwrap();
         let (header, body) = text.split_once("\r\n\r\n").unwrap();
