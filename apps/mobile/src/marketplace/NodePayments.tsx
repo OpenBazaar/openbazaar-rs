@@ -55,11 +55,16 @@ export function NodePaymentsProvider({
 }
 export function NetworkBadge() {
   const { network } = usePairedNode()
+  const state = network.error
+    ? 'is-offline'
+    : !network.data
+      ? 'is-loading'
+      : network.data.network === 'testnet4'
+        ? 'is-testnet'
+        : 'is-mainnet'
   return (
-    <div
-      className={`ob-network-badge ${network.data?.network === 'testnet4' ? 'is-testnet' : ''}`}
-      role='status'
-    >
+    <div className={`ob-network-badge ${state}`} role='status'>
+      <span className='ob-status-dot' aria-hidden='true' />
       {network.error
         ? 'Network unavailable · payments disabled'
         : !network.data
@@ -96,28 +101,33 @@ export function WalletAmount({
 }
 export function CopyPaymentValue({
   label,
-  value
+  value,
+  children
 }: {
   label: string
   value: string
+  children?: ReactNode
 }) {
   const [message, setMessage] = useState('')
   return (
     <div className='ob-copy-value'>
       <span>{label}</span>
       <code>{value}</code>
-      <button
-        className='ob-text-link'
-        type='button'
-        onClick={() => {
-          void navigator.clipboard.writeText(value).then(
-            () => setMessage('Copied'),
-            () => setMessage('Copy the text above manually')
-          )
-        }}
-      >
-        {message || `Copy ${label.toLowerCase()}`}
-      </button>
+      <div className='ob-copy-actions'>
+        <button
+          className='ob-text-link'
+          type='button'
+          onClick={() => {
+            void navigator.clipboard.writeText(value).then(
+              () => setMessage('Copied'),
+              () => setMessage('Copy the text above manually')
+            )
+          }}
+        >
+          {message || `Copy ${label.charAt(0).toLowerCase()}${label.slice(1)}`}
+        </button>
+        {children}
+      </div>
     </div>
   )
 }
@@ -200,14 +210,14 @@ export function WalletPanel({
   return (
     <section className='ob-wallet-page'>
       <div className='ob-section-heading'>
-        <h1>Node wallet</h1>
+        <h1>Your wallet</h1>
         <button className='ob-secondary' onClick={() => void wallet.refresh()}>
           Refresh wallet
         </button>
       </div>
       <p className='ob-page-intro'>
-        Fund this wallet to pay individual seller orders in the app. Balances
-        refresh every 15 seconds.
+        Your node holds this bitcoin and pays each seller order from it.
+        Balances refresh every 15 seconds.
       </p>
       {(error || wallet.error || network.error) && (
         <p className='ob-form-error' role='alert'>
@@ -220,7 +230,7 @@ export function WalletPanel({
         </p>
       )}
       {!current ? (
-        <p role='status'>
+        <p className='ob-page-intro' role='status'>
           {wallet.loading
             ? 'Loading node wallet…'
             : 'Wallet unavailable. Try refreshing.'}
@@ -236,7 +246,7 @@ export function WalletPanel({
                 currency={currency}
               />
             </article>
-            <article>
+            <article className='is-pending'>
               <h2>Pending</h2>
               <WalletAmount
                 sats={current.balance.pendingSats}
@@ -244,6 +254,22 @@ export function WalletPanel({
                 currency={currency}
               />
             </article>
+            <div
+              className={`ob-wallet-sync ${current.syncError ? 'is-failed' : ''}`}
+            >
+              <p>
+                <span
+                  className={`ob-status-dot ${current.syncError ? 'is-offline' : current.lastSync ? '' : 'is-loading'}`}
+                  aria-hidden='true'
+                />
+                {current.lastSync
+                  ? `Last synced ${new Date(current.lastSync * 1000).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}`
+                  : 'Not synced yet'}
+              </p>
+              {current.syncError && (
+                <p role='alert'>Wallet sync failed: {current.syncError}</p>
+              )}
+            </div>
           </div>
           <section className='ob-wallet-fund'>
             <h2>Receive bitcoin</h2>
@@ -255,32 +281,20 @@ export function WalletPanel({
             {address && !mismatch && (
               <div className='ob-wallet-receive'>
                 <PaymentQr value={bitcoinUri(address)} />
-                <div>
-                  <CopyPaymentValue label='Receive address' value={address} />
+                <CopyPaymentValue label='Receive address' value={address}>
                   <button
-                    className='ob-secondary'
+                    className='ob-text-link'
                     disabled={busy || !!wallet.error || !!network.error}
                     onClick={() => void nextAddress()}
                   >
                     {busy ? 'Creating address…' : 'New address'}
                   </button>
-                </div>
+                </CopyPaymentValue>
               </div>
             )}
           </section>
-          <p className='ob-page-intro'>
-            Last sync:{' '}
-            {current.lastSync
-              ? new Date(current.lastSync * 1000).toLocaleString()
-              : 'Not synced yet'}
-          </p>
-          {current.syncError && (
-            <p className='ob-form-error' role='alert'>
-              Wallet sync: {current.syncError}
-            </p>
-          )}
           {network.data?.publicChainServer && (
-            <p className='ob-page-intro'>
+            <p className='ob-wallet-note'>
               This node uses a public chain server, which can see the wallet
               addresses it queries.
             </p>
@@ -487,8 +501,7 @@ export function OrderPayment({
           ) : null}
           {due > 0 && !order.payTxid && order.status === 'Awaiting payment' && (
             <div className='ob-payment-options'>
-              <div>
-                <h3>Pay from your node wallet</h3>
+              <div className='ob-pay-wallet'>
                 <button
                   className='ob-primary'
                   disabled={blocked}
@@ -497,22 +510,26 @@ export function OrderPayment({
                   Pay from your node wallet
                 </button>
                 {lowBalance && (
-                  <p className='ob-page-intro'>
-                    Insufficient spendable balance.{' '}
+                  <p className='ob-pay-note is-blocking'>
+                    Your wallet has{' '}
+                    {(wallet.data?.balance.spendableSats ?? 0).toLocaleString(
+                      'en-US'
+                    )}{' '}
+                    spendable sats.{' '}
                     <button className='ob-text-link' onClick={onWallet}>
                       Fund your node wallet
                     </button>
                   </p>
                 )}
                 {wallet.data?.syncError && (
-                  <p className='ob-page-intro'>
+                  <p className='ob-pay-note is-blocking'>
                     Wallet sync failed.{' '}
                     <button className='ob-text-link' onClick={onWallet}>
                       Open wallet
                     </button>
                   </p>
                 )}
-                <p className='ob-page-intro'>
+                <p className='ob-pay-note'>
                   This pays only {order.seller}. Network fees are additional.
                 </p>
               </div>
