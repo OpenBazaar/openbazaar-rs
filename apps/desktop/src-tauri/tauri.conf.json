@@ -15,11 +15,11 @@
         "width": 960,
         "height": 720,
         "resizable": true,
-        "backgroundColor": "#f3efe8"
+        "backgroundColor": "#063853"
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' ipc: http://ipc.localhost"
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' ipc: http://ipc.localhost http://127.0.0.1:8787"
     }
   },
   "bundle": {

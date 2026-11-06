@@ -4,7 +4,7 @@
     "slug": "openbazaar",
     "version": "0.0.0",
     "orientation": "portrait",
-    "backgroundColor": "#f3efe8",
+    "backgroundColor": "#063853",
     "userInterfaceStyle": "light",
     "experiments": {
       "baseUrl": "."
