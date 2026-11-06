@@ -1,8 +1,12 @@
 name: ci
 
 on:
-  push:
   pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
 
 jobs:
   rust:
@@ -11,7 +15,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo test
+      - uses: Swatinem/rust-cache@v2
+      # The lockfile pins crates. Do not pass --ignored: the live Arti dial
+      # stays ignored when that test is on the branch. Crates are not vendored,
+      # so the runner fetches the locked versions instead of using --offline.
+      - run: cargo test --locked
 
   web:
     name: web typecheck and build
