@@ -123,6 +123,7 @@ export default function Marketplace() {
   useEffect(() => { const onKey = (e: KeyboardEvent) => { if ((e.metaKey || e.ctrlKey) && e.key === "k") { e.preventDefault(); searchRef.current?.focus(); } if (e.key === "Escape") { if (settingsOpen) { setSettingsOpen(false); settingsToggleRef.current?.focus(); } else setMenu(false); } }; document.addEventListener("keydown", onKey); return () => document.removeEventListener("keydown", onKey); }, [settingsOpen]);
   const allowed = useMemo(() => catalog ? visibleListings(catalog.listings, catalog.store.contentRating, safety, labels) : [], [catalog, safety, labels]);
   const categories = useMemo(() => [...new Set(allowed.map(l => l.category))], [allowed]);
+  const savedCount = useMemo(() => allowed.filter(l => saved.includes(l.hash)).length, [allowed, saved]);
   const visible = useMemo(() => {
     const subset = allowed.filter(l => (!category || l.category === category) && (!filters.seller || l.seller === filters.seller) && (!filters.kind || l.kind === filters.kind) && (!filters.shipFrom || l.shipFrom === filters.shipFrom) && (!filters.min || l.priceSats >= Number(filters.min)) && (!filters.max || l.priceSats <= Number(filters.max)) && (section !== "saved" || saved.includes(l.hash)));
     const results = filterListings(subset, query);
@@ -139,6 +140,7 @@ export default function Marketplace() {
   const detailVerdict = page.name === "detail" ? verdictOf(page.listing) : null;
 
   const money = { rates, currency };
+  const navSection: Section = page.name === "receipt" ? "orders" : section;
   return <NodePaymentsProvider activeWallet={section === "wallet" || section === "orders" || page.name === "receipt"} onWallet={() => navigate("wallet")}><div className={`ob-app ${resizing ? "is-resizing" : ""}`} style={{ "--ob-sidebar": `${!mobile && collapsed ? 72 : sidebarWidth}px` } as CSSProperties}>
     <a className="ob-skip" href="#ob-content">Skip to content</a>
     {menu && <button className="ob-menu-scrim" aria-label="Close navigation" onClick={() => setMenu(false)}/>}
@@ -148,18 +150,18 @@ export default function Marketplace() {
       <div className="ob-sidebar-brand"><button className="ob-brand-button" onClick={() => navigate("discover")} aria-label="OpenBazaar home"><Brand/></button></div>
       <div className="ob-sidebar-scroll">
         <nav className="ob-main-nav" aria-label="Shopping">
-          <NavItem icon="compass" active={section === "discover" && !category} onClick={() => navigate("discover")}>Products</NavItem>
-          <NavItem icon="heart" active={section === "saved"} onClick={() => navigate("saved")} count={saved.length || undefined}>Saved goods</NavItem>
-          <NavItem icon="bag" active={section === "bag"} onClick={() => navigate("bag")} count={cart.reduce((n, l) => n + l.quantity, 0) || undefined}>Your bag</NavItem>
+          <NavItem icon="compass" active={navSection === "discover" && !category} onClick={() => navigate("discover")}>Products</NavItem>
+          <NavItem icon="heart" active={navSection === "saved"} onClick={() => navigate("saved")} count={savedCount || undefined}>Saved goods</NavItem>
+          <NavItem icon="bag" active={navSection === "bag"} onClick={() => navigate("bag")} count={cart.reduce((n, l) => n + l.quantity, 0) || undefined}>Your bag</NavItem>
         </nav>
         <CanopyDivider/>
         <div className="ob-nav-label" id="ob-categories-label">Categories</div>
-        <nav className="ob-categories-nav" aria-label="Shopping categories">{categories.map(c => <NavItem key={c} icon={categoryIcons[c] ?? "grid"} active={section === "discover" && category === c} onClick={() => navigate("discover", c)} count={allowed.filter(l => l.category === c).length}>{c}</NavItem>)}</nav>
+        <nav className="ob-categories-nav" aria-label="Shopping categories">{categories.map(c => <NavItem key={c} icon={categoryIcons[c] ?? "grid"} active={navSection === "discover" && category === c} onClick={() => navigate("discover", c)} count={allowed.filter(l => l.category === c).length}>{c}</NavItem>)}</nav>
       </div>
       <div className="ob-sidebar-utilities">
         <nav className="ob-utility-nav" aria-label="Orders and wallet">
-          <NavItem icon="paper" active={section === "orders"} onClick={() => navigate("orders")}>Your orders</NavItem>
-          <NavItem icon="wallet" active={section === "wallet"} onClick={() => navigate("wallet")}>Wallet</NavItem>
+          <NavItem icon="paper" active={navSection === "orders"} onClick={() => navigate("orders")}>Your orders</NavItem>
+          <NavItem icon="wallet" active={navSection === "wallet"} onClick={() => navigate("wallet")}>Wallet</NavItem>
         </nav>
         <button ref={settingsToggleRef} className={`ob-nav-item ob-settings-toggle ${inSettings ? "has-active-child" : ""}`} aria-label="Settings" title="Settings" aria-expanded={settingsOpen} aria-controls="ob-settings-nav" onClick={() => setSettingsOpen(o => !o)}><Icon name="settings" size={19}/><span>Settings</span><Icon name="chevron" size={14}/></button>
         <nav ref={settingsMenuRef} id="ob-settings-nav" className="ob-settings-nav" aria-label="Settings" hidden={!settingsOpen} onBlur={e => { if (!e.currentTarget.contains(e.relatedTarget) && e.relatedTarget !== settingsToggleRef.current) setSettingsOpen(false); }}>
