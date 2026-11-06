@@ -563,7 +563,10 @@ fn live_testnet4() {
 /// `OB_SEND_TO` it only syncs and prints the wallet, so run it once that way
 /// first.
 ///
-/// `OB_LIVE_DIR=/tmp/ob-live-testnet4 OB_SEND_TO=tb1... OB_SEND_SATS=12000 cargo test -p ob-node live_testnet4_send -- --ignored --nocapture`
+/// `OB_LIVE_DIR=/tmp/ob-live-testnet4 OB_SEND_TO=tb1... OB_SEND_SATS=12000 OB_LIVE_PASSPHRASE=... cargo test -p ob-node live_testnet4_send -- --ignored --nocapture`
+///
+/// Signing unlocks the wallet with `OB_LIVE_PASSPHRASE`, and sets it as the
+/// wallet passphrase first if the dir has none yet.
 ///
 /// It broadcasts at once. The transaction has one recipient plus change and
 /// uses the node's payment fee rate (the chain estimate, floored at 1 sat/vB).
@@ -595,8 +598,18 @@ fn live_testnet4_send() {
     let sats: u64 = std::env::var("OB_SEND_SATS").unwrap().parse().unwrap();
     let address = address_for(&to, NetworkMode::Testnet4).unwrap();
     let fee_rate = node.pay_fee_rate().unwrap();
+    let passphrase = std::env::var("OB_LIVE_PASSPHRASE").expect("set OB_LIVE_PASSPHRASE to sign");
+    if node.lock.state() == crate::wallet_lock::State::Setup {
+        node.setup_wallet(&passphrase).unwrap();
+    } else {
+        node.unlock_wallet(Some(&passphrase)).unwrap();
+    }
     let mut psbt = node.build_payment(&address, sats, fee_rate, false).unwrap();
-    assert!(node.buyer_wallet().sign(&mut psbt).unwrap(), "not fully signed");
+    {
+        let wallet = node.buyer_wallet();
+        let seed = node.spend_seed(&wallet).unwrap();
+        assert!(wallet.sign(&mut psbt, &seed).unwrap(), "not fully signed");
+    }
     let tx = psbt.extract_tx().unwrap();
     let fee = node.buyer_wallet().wallet.calculate_fee(&tx).unwrap().to_sat();
     node.chain.broadcast(&tx).unwrap();
