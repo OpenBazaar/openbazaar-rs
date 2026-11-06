@@ -44,3 +44,7 @@ direct-pay item, and pay in the app. Verify `payTxid`, `Payment seen`, and then
 `Paid` after the required confirmations. Also verify wallet sync errors, the
 external-wallet address/amount QR, partial funding, and balance refresh. Phone UI
 is bundle-checked; actual device wallet/clipboard behavior needs device testing.
+
+The settings browser checks also cover separated shopping/settings navigation,
+keyboard dismissal, persistent filter choices, blocked words with safe mode off,
+hidden-listing recovery, the separate store-label page, and a 320 px mobile drawer.

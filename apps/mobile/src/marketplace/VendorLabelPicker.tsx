@@ -33,17 +33,17 @@ export function VendorLabelPicker({ catalog, onCatalog }: { catalog: ShopCatalog
     }
   }
 
-  return <section>
-    <h2>Your store's labels</h2>
+  return <section className="ob-settings-card ob-store-labels">
+    <h2>Content rating</h2>
     <p className="ob-page-intro">Rate what you sell. Buyers' devices use this to decide what to show. Relabeling a listing signs it again, which gives it a new address.</p>
-    <label className="ob-field"><span>Label</span><select value={target} onChange={e => choose(e.target.value)}>
+    <label className="ob-field"><span>Store or listing</span><select value={target} onChange={e => choose(e.target.value)}>
       <option value="store">The whole store</option>
       {catalog.listings.map(l => <option key={l.hash} value={l.hash}>{l.title}</option>)}
     </select></label>
     <label className="ob-field"><span>Rating</span><select value={rating} onChange={e => setRating(e.target.value as Rating)}>
-      {RATINGS.map(r => <option key={r} value={r}>{r}</option>)}
+      {RATINGS.map(r => <option key={r} value={r}>{r.charAt(0).toUpperCase() + r.slice(1)}</option>)}
     </select></label>
-    {current ? <fieldset><legend>Tags</legend>{CONTENT_TAGS.map(tag => <label key={tag}><input type="checkbox" checked={tags.includes(tag)} onChange={() => setTags(t => t.includes(tag) ? t.filter(x => x !== tag) : [...t, tag])}/> {tag} </label>)}</fieldset> : null}
+    {current ? <fieldset className="ob-store-tags"><legend>Content tags</legend>{CONTENT_TAGS.map(tag => <label key={tag}><input type="checkbox" checked={tags.includes(tag)} onChange={() => setTags(t => t.includes(tag) ? t.filter(x => x !== tag) : [...t, tag])}/> {tag} </label>)}</fieldset> : null}
     <button className="ob-primary" onClick={() => void save()}>Save label</button>
     {status ? <p className="ob-page-intro" role="status">{status}</p> : null}
   </section>;
