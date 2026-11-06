@@ -19,7 +19,13 @@ export type SafetySettings = {
   tags: Record<ContentTag, TagMode>;
   /** The buyer's own words. Matching listings are hidden whether or not safe mode is on. */
   blockedKeywords: string[];
+  /** Stores the buyer hid, by signing key. The label is only for the undo list. */
+  hiddenStores: Hidden[];
+  /** Listings the buyer hid, by content hash. */
+  hiddenListings: Hidden[];
 };
+
+export type Hidden = { id: string; label: string };
 
 export const DEFAULT_SAFETY: SafetySettings = {
   safeMode: true,
@@ -27,6 +33,8 @@ export const DEFAULT_SAFETY: SafetySettings = {
   adult: "hide",
   tags: { nudity: "show", violence: "show", drugs: "show", weapons: "show", gambling: "show" },
   blockedKeywords: [],
+  hiddenStores: [],
+  hiddenListings: [],
 };
 
 export type Verdict = { action: "show" } | { action: "cover" | "hide"; reason: string };
@@ -87,6 +95,8 @@ export function safetyVerdict(
   settings: SafetySettings,
   builtIn: readonly string[] = SENSITIVE_KEYWORDS,
 ): Verdict {
+  if (settings.hiddenListings.some((item) => item.id === listing.hash)) return { action: "hide", reason: "You hid this listing." };
+  if (settings.hiddenStores.some((item) => item.id === listing.storeId)) return { action: "hide", reason: "You hid this seller." };
   const blocked = matchedKeyword(listing, settings.blockedKeywords);
   if (blocked) return { action: "hide", reason: `It matches your blocked word “${blocked}”.` };
   if (!settings.safeMode) return SHOWN;
@@ -137,7 +147,28 @@ export function parseSafety(raw: string | null): SafetySettings {
     adult: pick(value.adult, ["show", "hide"], DEFAULT_SAFETY.adult),
     tags: Object.fromEntries(CONTENT_TAGS.map((tag) => [tag, pick(tags[tag], ["show", "hide"], DEFAULT_SAFETY.tags[tag])])) as Record<ContentTag, TagMode>,
     blockedKeywords: strings(value.blockedKeywords, (list) => parseKeywords(list.join("\n"))),
+    hiddenStores: hiddenList(value.hiddenStores),
+    hiddenListings: hiddenList(value.hiddenListings),
   };
+}
+
+/** Add or remove one entry, keyed by id. */
+export function toggleHidden(list: readonly Hidden[], item: Hidden): Hidden[] {
+  return list.some((entry) => entry.id === item.id) ? list.filter((entry) => entry.id !== item.id) : [...list, item];
+}
+
+function hiddenList(value: unknown): Hidden[] {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<string>();
+  const out: Hidden[] = [];
+  for (const item of value) {
+    if (!item || typeof item !== "object") continue;
+    const { id, label } = item as Record<string, unknown>;
+    if (typeof id !== "string" || !/^[0-9a-f]{64}$/.test(id) || seen.has(id)) continue;
+    seen.add(id);
+    out.push({ id, label: typeof label === "string" ? label : id.slice(0, 12) });
+  }
+  return out;
 }
 
 function strings(value: unknown, clean: (list: string[]) => string[] = (list) => [...new Set(list)]): string[] {

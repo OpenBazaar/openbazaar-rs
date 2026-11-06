@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { CONTENT_TAGS, parseKeywords, type AdultMode, type SafetySettings, type SensitiveMode, type TagMode } from "../safety/filter";
+import type { ListingHeader } from "../catalog";
+import { CONTENT_TAGS, parseKeywords, toggleHidden, type AdultMode, type SafetySettings, type SensitiveMode, type TagMode } from "../safety/filter";
 
 export function SafetySettingsPanel({ settings, onChange }: { settings: SafetySettings; onChange: (settings: SafetySettings) => void }) {
   const [text, setText] = useState(() => settings.blockedKeywords.join("\n"));
@@ -13,7 +14,21 @@ export function SafetySettingsPanel({ settings, onChange }: { settings: SafetySe
     {CONTENT_TAGS.map(tag => <label key={tag} className="ob-field">Tagged {tag}<select aria-label={`Tagged ${tag}`} value={settings.tags[tag]} disabled={!settings.safeMode} onChange={e => onChange({ ...settings, tags: { ...settings.tags, [tag]: e.target.value as TagMode } })}><option value="show">Show</option><option value="hide">Hide</option></select></label>)}
     <label className="ob-field">Blocked words<textarea aria-label="Blocked words" rows={5} value={text} placeholder="One word or phrase per line" onChange={e => { setText(e.target.value); onChange({ ...settings, blockedKeywords: parseKeywords(e.target.value) }); }}/></label>
     <p className="ob-page-intro">Listings whose title, category, description, or tags contain one of these whole words are hidden, even with safe mode off.</p>
+    <h2>Hidden</h2>
+    <p className="ob-page-intro">Sellers and listings you hid stay hidden even with safe mode off. A seller is remembered by its store key, so a new name does not bring it back.</p>
+    {settings.hiddenStores.length + settings.hiddenListings.length === 0 ? <p className="ob-page-intro">Nothing hidden.</p> : <ul>
+      {settings.hiddenStores.map(item => <li key={item.id}>Seller {item.label} <button className="ob-text-link" onClick={() => onChange({ ...settings, hiddenStores: toggleHidden(settings.hiddenStores, item) })}>Unhide</button></li>)}
+      {settings.hiddenListings.map(item => <li key={item.id}>Listing {item.label} <button className="ob-text-link" onClick={() => onChange({ ...settings, hiddenListings: toggleHidden(settings.hiddenListings, item) })}>Unhide</button></li>)}
+    </ul>}
   </section>;
+}
+
+export function HideActions({ listing, settings, onChange }: { listing: ListingHeader; settings: SafetySettings; onChange: (settings: SafetySettings) => void }) {
+  return <div className="ob-hide-actions">
+    <button className="ob-text-link" onClick={() => onChange({ ...settings, hiddenListings: toggleHidden(settings.hiddenListings, { id: listing.hash, label: listing.title }) })}>Hide this listing</button>
+    {" · "}
+    <button className="ob-text-link" onClick={() => onChange({ ...settings, hiddenStores: toggleHidden(settings.hiddenStores, { id: listing.storeId, label: listing.seller }) })}>Hide this seller</button>
+  </div>;
 }
 
 export function SafetyInterstitial({ reason, onShow, onBack }: { reason: string; onShow: () => void; onBack: () => void }) {

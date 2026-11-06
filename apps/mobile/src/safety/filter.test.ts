@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
 import type { ListingHeader } from "../catalog";
-import { DEFAULT_SAFETY, matchedKeyword, parseKeywords, parseSafety, safetyVerdict, visibleListings, type SafetySettings } from "./filter.ts";
+import { DEFAULT_SAFETY, matchedKeyword, parseKeywords, parseSafety, safetyVerdict, toggleHidden, visibleListings, type SafetySettings } from "./filter.ts";
 
 function listing(overrides: Partial<ListingHeader> = {}): ListingHeader {
   return {
@@ -138,6 +138,36 @@ test("safe mode hides nothing in the fixture shop", () => {
   const catalog = JSON.parse(readFileSync(new URL("../catalog.json", import.meta.url), "utf8")) as { store: { contentRating: "general" }; listings: ListingHeader[] };
   assert.ok(catalog.listings.length >= 30);
   assert.equal(visibleListings(catalog.listings, catalog.store.contentRating, SAFE).length, catalog.listings.length);
+});
+
+const STORE = "a".repeat(64);
+const HASH = "b".repeat(64);
+
+test("a hidden listing or seller is hidden even with safe mode off", () => {
+  const mug = listing({ hash: HASH, storeId: STORE });
+  assert.deepEqual(safetyVerdict(mug, "general", { ...OPEN, hiddenListings: [{ id: HASH, label: "Stoneware mug" }] }), { action: "hide", reason: "You hid this listing." });
+  assert.deepEqual(safetyVerdict(mug, "general", { ...OPEN, hiddenStores: [{ id: STORE, label: "Marlow Goods" }] }), { action: "hide", reason: "You hid this seller." });
+  assert.equal(action(listing({ hash: "c".repeat(64), storeId: STORE }), { ...OPEN, hiddenListings: [{ id: HASH, label: "x" }] }), "show");
+});
+
+test("a seller is hidden by signing key, not by name", () => {
+  const settings = { ...OPEN, hiddenStores: [{ id: STORE, label: "Marlow Goods" }] };
+  assert.equal(action(listing({ storeId: "d".repeat(64), seller: "Marlow Goods" }), settings), "show");
+  assert.equal(action(listing({ storeId: STORE, seller: "Someone Else" }), settings), "hide");
+});
+
+test("toggleHidden adds and removes by id, so unhiding restores the listing", () => {
+  const hidden = toggleHidden([], { id: HASH, label: "Mug" });
+  assert.equal(action(listing({ hash: HASH }), { ...OPEN, hiddenListings: hidden }), "hide");
+  const restored = toggleHidden(hidden, { id: HASH, label: "renamed" });
+  assert.deepEqual(restored, []);
+  assert.equal(action(listing({ hash: HASH }), { ...OPEN, hiddenListings: restored }), "show");
+});
+
+test("stored hidden lists keep only well-formed, unique keys", () => {
+  const parsed = parseSafety(JSON.stringify({ hiddenStores: [{ id: STORE, label: "Marlow" }, { id: STORE, label: "dup" }, { id: "Marlow Goods" }, 7], hiddenListings: [{ id: HASH }] }));
+  assert.deepEqual(parsed.hiddenStores, [{ id: STORE, label: "Marlow" }]);
+  assert.deepEqual(parsed.hiddenListings, [{ id: HASH, label: HASH.slice(0, 12) }]);
 });
 
 test("parseKeywords splits on commas and lines, trims, lowercases, and drops repeats", () => {

@@ -39,7 +39,7 @@ import {
 import { alsoSoldBy, cartPackages, type CartLine } from "./src/cart";
 import { photosFor } from "./src/goods";
 import { filterListings } from "./src/search";
-import { CONTENT_TAGS, parseKeywords, safetyVerdict, visibleListings, type SafetySettings } from "./src/safety/filter";
+import { CONTENT_TAGS, parseKeywords, safetyVerdict, toggleHidden, visibleListings, type SafetySettings } from "./src/safety/filter";
 import { readSafety, writeSafety } from "./src/safety/storage";
 
 type SortKey = "relevance" | "price-asc" | "price-desc" | "newest";
@@ -327,6 +327,14 @@ export default function App() {
         onBuy={(quantity) => {
           addToCart(listing.hash, quantity);
           setRoute({ name: "checkout" });
+        }}
+        onHide={(kind) => {
+          rememberSafety(
+            kind === "listing"
+              ? { ...safety, hiddenListings: toggleHidden(safety.hiddenListings, { id: listing.hash, label: listing.title }) }
+              : { ...safety, hiddenStores: toggleHidden(safety.hiddenStores, { id: listing.storeId, label: listing.seller }) },
+          );
+          goShop();
         }}
       />
     ) : (
@@ -707,12 +715,14 @@ function Detail({
   onToggleSave,
   onAdd,
   onBuy,
+  onHide,
 }: {
   listing: ListingHeader;
   rates: RateTable;
   currency: CurrencyCode;
   saved: boolean;
   onToggleSave: () => void;
+  onHide: (kind: "listing" | "seller") => void;
   onAdd: (quantity: number) => void;
   onBuy: (quantity: number) => void;
 }) {
@@ -747,6 +757,8 @@ function Detail({
         <Button label="Add to cart" onPress={() => valid && onAdd(quantity)} />
         <Button label="Buy now" onPress={() => valid && onBuy(quantity)} />
         <TextButton label={saved ? "Saved" : "Save"} onPress={onToggleSave} />
+        <TextButton label="Hide this listing" onPress={() => onHide("listing")} />
+        <TextButton label="Hide this seller" onPress={() => onHide("seller")} />
       </View>
     </ScrollView>
   );
@@ -1172,6 +1184,15 @@ function SafetyScreen({ settings, onChange }: { settings: SafetySettings; onChan
         }}
       />
       <Text style={styles.meta}>Listings whose title, category, description, or tags contain one of these whole words are hidden, even with safe mode off.</Text>
+      <Text style={styles.section}>Hidden</Text>
+      <Text style={styles.meta}>Sellers and listings you hid stay hidden even with safe mode off. A seller is remembered by its store key.</Text>
+      {settings.hiddenStores.length + settings.hiddenListings.length === 0 ? <Text style={styles.meta}>Nothing hidden.</Text> : null}
+      {settings.hiddenStores.map((item) => (
+        <TextButton key={item.id} label={`Unhide seller ${item.label}`} onPress={() => onChange({ ...settings, hiddenStores: toggleHidden(settings.hiddenStores, item) })} />
+      ))}
+      {settings.hiddenListings.map((item) => (
+        <TextButton key={item.id} label={`Unhide listing ${item.label}`} onPress={() => onChange({ ...settings, hiddenListings: toggleHidden(settings.hiddenListings, item) })} />
+      ))}
     </ScrollView>
   );
 }
