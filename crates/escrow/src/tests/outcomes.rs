@@ -334,32 +334,3 @@ fn protocol_dispute_envelope_carries_both_branches() {
     cheap.moderator_fee = 1;
     assert_eq!(case.check_envelope(&cheap), Err(Error::BadPayload));
 }
-
-#[cfg(feature = "legacy-single-process")]
-#[test]
-#[allow(deprecated)]
-fn legacy_shim_derives_an_address_and_one_refund() {
-    let escrow = crate::fund(crate::FundParams {
-        buyer_secret: BUYER_LONG_TERM,
-        vendor_secret: VENDOR_LONG_TERM,
-        moderator_public: record().signing_key,
-        funding_outpoint: outpoint(),
-        funding_value: FUNDING,
-        fee: Amount::from_sat(500),
-        timeout_height: REFUND,
-        buyer_payout: p2tr(1),
-        vendor_payout: p2tr(2),
-    })
-    .unwrap();
-    assert_eq!(escrow.funding_output().value, FUNDING);
-    assert_eq!(escrow.timeout_height(), REFUND);
-    assert!(crate::tx::p2tr_output_key(&escrow.funding_output().script_pubkey).is_some());
-    let refund = escrow.refund_transaction().clone();
-    escrow.verify_key_spend(&refund).unwrap();
-    assert_eq!(refund.lock_time.to_consensus_u32(), REFUND);
-    assert_eq!(refund.output[0].script_pubkey, p2tr(1));
-    assert_eq!(refund.output[0].value, FUNDING - Amount::from_sat(500));
-    let mut bumped = refund;
-    bumped.output[0].value -= Amount::from_sat(1);
-    assert_eq!(escrow.verify_key_spend(&bumped), Err(Error::BadSignature));
-}

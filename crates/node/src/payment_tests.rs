@@ -1,200 +1,21 @@
 //! Payments against a mocked chain source. Nothing here touches the internet.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
 
-use bdk_wallet::chain::{BlockId, ConfirmationBlockTime, TxUpdate};
-use bdk_wallet::Update;
-use bitcoin::absolute::LockTime;
-use bitcoin::consensus::encode::deserialize_hex;
-use bitcoin::hashes::Hash;
-use bitcoin::transaction::Version;
-use bitcoin::{Address, Amount, BlockHash, OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Txid, Witness};
+use bitcoin::Address;
 use serde_json::{json, Value};
 
-use crate::chain::{AddressTx, ChainSource, WalletRequest};
+use crate::harness::{
+    checkout, fund_node_wallet, hash_of, open_node, order, pay, request, ship_to, unreachable_escrow, MockChain, TempDir,
+};
 use crate::http::dispatch;
 use crate::network::{address_for, NetworkMode, ServeOptions};
-use crate::{load_catalog, Node, NodeConfig, ESCROW_SPEND_FEE_SATS};
-
-#[derive(Default)]
-struct Chain {
-    tip: Mutex<u32>,
-    by_script: Mutex<HashMap<ScriptBuf, Vec<AddressTx>>>,
-    /// Coins sent to the node wallet, and whether each is confirmed.
-    wallet_txs: Mutex<Vec<(Transaction, bool)>>,
-    broadcasts: Mutex<Vec<Transaction>>,
-    fee_rate: Mutex<f64>,
-    fail_broadcast: AtomicBool,
-}
-
-#[derive(Clone)]
-struct MockChain(Arc<Chain>);
-
-impl MockChain {
-    fn new() -> Self {
-        let chain = Chain::default();
-        *chain.tip.lock().unwrap() = 100;
-        *chain.fee_rate.lock().unwrap() = 2.0;
-        Self(Arc::new(chain))
-    }
-
-    /// Someone outside this node pays `sats` to `address`. Returns the fake txid.
-    fn pay_external(&self, address: &str, sats: u64) -> Txid {
-        static NEXT: AtomicU64 = AtomicU64::new(1);
-        let n = NEXT.fetch_add(1, Ordering::Relaxed);
-        let mut bytes = [0u8; 32];
-        bytes[..8].copy_from_slice(&n.to_le_bytes());
-        bytes[31] = 0xee;
-        let txid = Txid::from_byte_array(bytes);
-        let script = address_any(address).script_pubkey();
-        self.0.by_script.lock().unwrap().entry(script).or_default().push(AddressTx {
-            txid,
-            outputs: vec![(0, sats)],
-            height: None,
-        });
-        txid
-    }
-
-    /// Mine every mempool transaction into the next block.
-    fn mine(&self) {
-        let mut tip = self.0.tip.lock().unwrap();
-        *tip += 1;
-        for txs in self.0.by_script.lock().unwrap().values_mut() {
-            for tx in txs.iter_mut().filter(|tx| tx.height.is_none()) {
-                tx.height = Some(*tip);
-            }
-        }
-    }
-
-    /// Give the node wallet a confirmed coin it can spend.
-    fn fund_wallet(&self, address: &Address, sats: u64) {
-        self.send_to_wallet(address, sats, true);
-    }
-
-    fn send_to_wallet(&self, address: &Address, sats: u64, confirmed: bool) {
-        static NEXT: AtomicU64 = AtomicU64::new(1);
-        let n = NEXT.fetch_add(1, Ordering::Relaxed);
-        let tx = Transaction {
-            version: Version::TWO,
-            lock_time: LockTime::ZERO,
-            input: vec![TxIn {
-                previous_output: OutPoint {
-                    txid: Txid::from_byte_array([n as u8 ^ 0x5a; 32]),
-                    vout: n as u32,
-                },
-                script_sig: ScriptBuf::new(),
-                sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
-                witness: Witness::default(),
-            }],
-            output: vec![TxOut {
-                value: Amount::from_sat(sats),
-                script_pubkey: address.script_pubkey(),
-            }],
-        };
-        self.0.wallet_txs.lock().unwrap().push((tx, confirmed));
-    }
-
-    fn broadcasts(&self) -> Vec<Transaction> {
-        self.0.broadcasts.lock().unwrap().clone()
-    }
-}
-
-impl ChainSource for MockChain {
-    fn tip_height(&self) -> Result<u32, String> {
-        Ok(*self.0.tip.lock().unwrap())
-    }
-
-    fn address_txs(&self, address: &Address) -> Result<Vec<AddressTx>, String> {
-        Ok(self
-            .0
-            .by_script
-            .lock()
-            .unwrap()
-            .get(&address.script_pubkey())
-            .cloned()
-            .unwrap_or_default())
-    }
-
-    fn fee_rate(&self) -> Result<f64, String> {
-        Ok(*self.0.fee_rate.lock().unwrap())
-    }
-
-    fn broadcast(&self, tx: &Transaction) -> Result<(), String> {
-        if self.0.fail_broadcast.swap(false, Ordering::Relaxed) {
-            return Err("mock relay is down".to_string());
-        }
-        let txid = tx.compute_txid();
-        let mut index = self.0.by_script.lock().unwrap();
-        for (vout, out) in tx.output.iter().enumerate() {
-            let entry = index.entry(out.script_pubkey.clone()).or_default();
-            entry.push(AddressTx {
-                txid,
-                outputs: vec![(vout as u32, out.value.to_sat())],
-                height: None,
-            });
-        }
-        self.0.broadcasts.lock().unwrap().push(tx.clone());
-        Ok(())
-    }
-
-    /// Confirmed wallet coins are anchored in one fixed block on top of the wallet's own tip.
-    fn wallet_update(&self, request: WalletRequest) -> Result<Update, String> {
-        let txs = self.0.wallet_txs.lock().unwrap().clone();
-        let tip = match &request {
-            WalletRequest::Full(request) => request.chain_tip(),
-            WalletRequest::Sync(request) => request.chain_tip(),
-        };
-        let block = BlockId { height: 50, hash: BlockHash::from_byte_array([0x50; 32]) };
-        let mut tx_update = TxUpdate::default();
-        tx_update.seen_ats = txs.iter().map(|(tx, _)| (tx.compute_txid(), 1)).collect::<HashSet<_>>();
-        tx_update.anchors = txs
-            .iter()
-            .filter(|(_, confirmed)| *confirmed)
-            .map(|(tx, _)| (ConfirmationBlockTime { block_id: block, confirmation_time: 1 }, tx.compute_txid()))
-            .collect();
-        tx_update.txs = txs.into_iter().map(|(tx, _)| Arc::new(tx)).collect();
-        Ok(Update {
-            tx_update,
-            chain: tip.map(|tip| tip.insert(block)),
-            ..Default::default()
-        })
-    }
-}
-
-struct TempDir(PathBuf);
-
-impl TempDir {
-    fn new() -> Self {
-        static NEXT: AtomicU64 = AtomicU64::new(0);
-        let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
-        let n = NEXT.fetch_add(1, Ordering::Relaxed);
-        Self(std::env::temp_dir().join(format!("ob-pay-{nanos}-{}-{n}", std::process::id())))
-    }
-}
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
-}
+use crate::{load_catalog, EscrowConfig, Node, NodeConfig, ESCROW_SPEND_FEE_SATS};
 
 fn open(dir: &Path, network: NetworkMode, chain: &MockChain, confirmations: u32) -> Node {
-    Node::open_with(
-        dir,
-        load_catalog(network).unwrap(),
-        NodeConfig {
-            network,
-            confirmations,
-            public_server: false,
-            chain: Box::new(chain.clone()),
-        },
-    )
-    .unwrap()
+    open_node(dir, network, chain, confirmations, unreachable_escrow())
 }
 
 fn testnet() -> (TempDir, MockChain, Node) {
@@ -202,76 +23,6 @@ fn testnet() -> (TempDir, MockChain, Node) {
     let chain = MockChain::new();
     let node = open(&dir.0, NetworkMode::Testnet4, &chain, 1);
     (dir, chain, node)
-}
-
-fn address_any(text: &str) -> Address {
-    text.parse::<Address<_>>().unwrap().assume_checked()
-}
-
-fn hash_of(node: &Node, title: &str, seller: &str) -> String {
-    node.catalog
-        .listings
-        .iter()
-        .find(|listing| listing.title == title && listing.seller == seller)
-        .unwrap()
-        .content_hash()
-        .unwrap()
-        .to_hex()
-}
-
-fn request(node: &Node, method: &str, path: &str, body: &str) -> (String, Value) {
-    let raw = format!(
-        "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nOrigin: http://127.0.0.1:4173\r\nX-Ob-Pair: {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
-        node.pairing_token(),
-        body.len(),
-    );
-    let response = String::from_utf8(dispatch(node, raw.as_bytes())).unwrap();
-    let (head, body) = response.split_once("\r\n\r\n").unwrap();
-    let status = head.lines().next().unwrap().to_string();
-    (status, serde_json::from_str(body).unwrap_or(Value::Null))
-}
-
-fn ship_to() -> Value {
-    json!({"name": "Ada Brooks", "street": "14 Larch Lane", "city": "Portland", "region": "Oregon", "postalCode": "97202"})
-}
-
-/// One checkout with one package per `(title, seller, settlement)`. Returns the orders.
-fn checkout(node: &Node, packages: &[(&str, &str, &str)]) -> Vec<Value> {
-    let packages: Vec<Value> = packages
-        .iter()
-        .map(|(title, seller, settlement)| {
-            json!({"settlement": settlement, "lines": [{"listingHash": hash_of(node, title, seller), "quantity": 1}]})
-        })
-        .collect();
-    let body = json!({"shipTo": ship_to(), "packages": packages});
-    let (status, value) = request(node, "POST", "/checkout", &body.to_string());
-    assert!(status.contains("200"), "{status} {value}");
-    value["orders"].as_array().unwrap().clone()
-}
-
-fn order(node: &Node, id: &str) -> Value {
-    let (status, value) = request(node, "GET", &format!("/orders/{id}"), "");
-    assert!(status.contains("200"), "{status} {value}");
-    value
-}
-
-/// `POST /orders/{id}/pay`, then run the queued payment the way the pay
-/// worker would. Returns the HTTP status and the order afterwards.
-fn pay(node: &Node, id: &str, body: &str) -> (String, Value) {
-    let (status, value) = request(node, "POST", &format!("/orders/{id}/pay"), body);
-    if !status.contains("202") {
-        return (status, value);
-    }
-    assert_eq!(value["paying"], true, "{value}");
-    assert_eq!(node.run_pay_jobs(), 1);
-    let after = order(node, id);
-    assert_eq!(after["paying"], false);
-    (status, after)
-}
-
-fn fund_node_wallet(node: &Node, chain: &MockChain, sats: u64) {
-    let address = node.buyer_wallet().fresh_address().unwrap();
-    chain.fund_wallet(&address, sats);
 }
 
 #[test]
@@ -351,13 +102,11 @@ fn no_receive_address_is_reused_across_orders_or_restarts() {
             let address = placed[0]["payment"]["address"].as_str().unwrap().to_string();
             assert!(seen.insert(address.clone()), "{address} was handed out twice");
             let escrow = checkout(&node, &[("Paperback novel", "Marlow Goods", "escrow")]);
-            for key in ["address", "buyerPayout", "vendorPayout"] {
-                let value = escrow[0]["escrow"][key].as_str().unwrap().to_string();
-                assert!(seen.insert(value.clone()), "{key} {value} was handed out twice");
-            }
+            let value = escrow[0]["escrow"]["buyerPayout"].as_str().unwrap().to_string();
+            assert!(seen.insert(value.clone()), "buyerPayout {value} was handed out twice");
         }
     }
-    assert_eq!(seen.len(), 2 * 3 * 4);
+    assert_eq!(seen.len(), 2 * 3 * 2);
 }
 
 #[test]
@@ -551,6 +300,10 @@ fn mainnet_refuses_escrow_and_testnet4_labels_it_an_unsafe_demo() {
     let single = json!({"listingHash": hash_of(&main, "Paperback novel", "Marlow Goods"), "quantity": 1, "settlement": "escrow", "shipTo": ship_to()});
     let (status, _) = request(&main, "POST", "/orders", &single.to_string());
     assert!(status.contains("400"));
+    let (status, value) = request(&main, "POST", "/escrow/mail", "sealed");
+    assert!(status.contains("400"), "{status}");
+    assert!(value["error"].as_str().unwrap().contains("not available on mainnet"));
+    assert!(main.escrow.inbox.list().unwrap().is_empty());
 
     let (_dir, _chain, test) = testnet();
     let placed = checkout(&test, &[("Paperback novel", "Marlow Goods", "escrow")]);
@@ -558,6 +311,34 @@ fn mainnet_refuses_escrow_and_testnet4_labels_it_an_unsafe_demo() {
     assert_eq!(terms["demo"], true);
     assert_eq!(terms["unsafe"], true);
     assert!(terms["warning"].as_str().unwrap().contains("testnet4 coins only"));
+    assert_eq!(terms["fundingSats"], placed[0]["totalSats"].as_u64().unwrap() + ESCROW_SPEND_FEE_SATS);
+    assert!(terms["error"].as_str().unwrap().contains("127.0.0.1:9"), "the unreachable vendor is reported: {terms}");
+    assert_eq!(placed[0]["status"], crate::AWAITING_TERMS);
+    let (status, value) = request(&test, "POST", &format!("/orders/{}/pay", placed[0]["orderId"].as_str().unwrap()), "{}");
+    assert!(status.contains("409"), "no terms, nothing to fund: {status} {value}");
+}
+
+#[test]
+fn escrow_needs_a_vendor_on_another_node() {
+    let chain = MockChain::new();
+    let alone = TempDir::new();
+    let node = open_node(&alone.0, NetworkMode::Testnet4, &chain, 1, EscrowConfig::default());
+    let body = json!({"shipTo": ship_to(), "packages": [
+        {"settlement": "escrow", "lines": [{"listingHash": hash_of(&node, "Paperback novel", "Marlow Goods"), "quantity": 1}]}
+    ]});
+    let (status, value) = request(&node, "POST", "/checkout", &body.to_string());
+    assert!(status.contains("400"), "{status} {value}");
+    assert!(node.mailbox.list().unwrap().is_empty(), "nothing is sealed for a refused escrow");
+
+    let selfish = TempDir::new();
+    let own = "http://127.0.0.1:4242".to_string();
+    let node = open_node(&selfish.0, NetworkMode::Testnet4, &chain, 1, EscrowConfig {
+        mailbox_url: Some(own.clone()),
+        vendors: [("Marlow Goods".to_string(), own)].into_iter().collect(),
+        ..EscrowConfig::default()
+    });
+    let (status, value) = request(&node, "POST", "/checkout", &body.to_string());
+    assert!(status.contains("400"), "a node is never its own vendor: {status} {value}");
 }
 
 /// Every string in a testnet4 response that parses as an address is a testnet4 address.
@@ -584,8 +365,7 @@ fn testnet4_never_shows_a_mainnet_address() {
         &node,
         &[("Paperback novel", "Marlow Goods", "escrow"), ("Letterpress cards", "Hale Paper", "direct")],
     );
-    let escrow_id = placed[0]["orderId"].as_str().unwrap();
-    pay(&node, escrow_id, "{}");
+    pay(&node, placed[1]["orderId"].as_str().unwrap(), "{}");
     let mut found = Vec::new();
     for value in [
         json!(placed),
@@ -712,83 +492,6 @@ fn network_and_wallet_endpoints() {
     assert_ne!(funded["receiveAddress"], first["receiveAddress"], "a used address is not shown again");
 }
 
-#[test]
-fn escrow_funding_holds_the_refund_before_it_broadcasts() {
-    let (_dir, chain, node) = testnet();
-    fund_node_wallet(&node, &chain, 100_000);
-    let placed = checkout(&node, &[("Paperback novel", "Marlow Goods", "escrow")]);
-    let id = placed[0]["orderId"].as_str().unwrap();
-    let terms = &placed[0]["escrow"];
-    let funding = terms["fundingSats"].as_u64().unwrap();
-    assert_eq!(funding, placed[0]["totalSats"].as_u64().unwrap() + ESCROW_SPEND_FEE_SATS);
-    let address = address_for(terms["address"].as_str().unwrap(), NetworkMode::Testnet4).unwrap();
-
-    chain.0.fail_broadcast.store(true, Ordering::Relaxed);
-    let (_, held) = pay(&node, id, "{}");
-    assert!(held["payError"].as_str().unwrap().contains("relay is down"), "{held}");
-    assert_eq!(held["escrow"]["refundHeld"], true, "the refund is saved before the broadcast");
-    assert_eq!(held["status"], "Awaiting funding");
-    let stored_funding = held["escrow"]["fundingTx"].as_str().unwrap().to_string();
-
-    let (_, paid) = pay(&node, id, "{}");
-    assert!(paid["payTxid"].is_string(), "{paid}");
-    assert!(paid.get("payError").is_none());
-    assert_eq!(paid["escrow"]["refundHeld"], true);
-    let sent = chain.broadcasts();
-    assert_eq!(sent.len(), 1);
-    let funding_tx = &sent[0];
-    let stored: Transaction = deserialize_hex(&stored_funding).unwrap();
-    assert_eq!(funding_tx.compute_txid(), stored.compute_txid(), "the retry sends the transaction the refund spends");
-
-    let after = order(&node, id);
-    let outpoint: OutPoint = after["escrow"]["outpoint"].as_str().unwrap().parse().unwrap();
-    assert_eq!(outpoint.txid, funding_tx.compute_txid());
-    let output = &funding_tx.output[outpoint.vout as usize];
-    assert_eq!(output.script_pubkey, address.script_pubkey());
-    assert_eq!(output.value.to_sat(), funding);
-    let refund: Transaction = deserialize_hex(after["escrow"]["refundTx"].as_str().unwrap()).unwrap();
-    assert_eq!(refund.input.len(), 1);
-    assert_eq!(refund.input[0].previous_output, outpoint);
-    assert_eq!(refund.input[0].witness.len(), 1, "a single key-path signature");
-    let buyer_payout = address_for(after["escrow"]["buyerPayout"].as_str().unwrap(), NetworkMode::Testnet4).unwrap();
-    assert_eq!(refund.output[0].script_pubkey, buyer_payout.script_pubkey());
-    assert_eq!(refund.output[0].value.to_sat(), funding - ESCROW_SPEND_FEE_SATS);
-    assert!(node.buyer_wallet().wallet.is_mine(buyer_payout.script_pubkey()));
-    let timeout = after["escrow"]["timeoutHeight"].as_u64().unwrap() as u32;
-    assert_eq!(timeout, 100 + crate::ESCROW_TIMEOUT_BLOCKS);
-    assert_eq!(refund.lock_time, LockTime::from_height(timeout).unwrap());
-
-    node.watch_once().unwrap();
-    assert_eq!(order(&node, id)["status"], "Funding seen");
-    chain.mine();
-    node.watch_once().unwrap();
-    assert_eq!(order(&node, id)["status"], "Funded");
-}
-
-#[test]
-fn escrow_funded_from_elsewhere_is_flagged_without_a_refund() {
-    let (_dir, chain, node) = testnet();
-    let placed = checkout(&node, &[("Paperback novel", "Marlow Goods", "escrow")]);
-    let id = placed[0]["orderId"].as_str().unwrap();
-    let terms = &placed[0]["escrow"];
-    let address = terms["address"].as_str().unwrap();
-    let funding = terms["fundingSats"].as_u64().unwrap();
-
-    chain.pay_external(address, funding - 10);
-    chain.mine();
-    node.watch_once().unwrap();
-    let short = order(&node, id);
-    assert_eq!(short["status"], "Awaiting funding");
-    assert_eq!(short["receivedSats"], funding - 10);
-
-    chain.pay_external(address, funding);
-    chain.mine();
-    node.watch_once().unwrap();
-    let flagged = order(&node, id);
-    assert_eq!(flagged["status"], "Funded without a refund");
-    assert_eq!(flagged["escrow"]["refundHeld"], false);
-}
-
 /// Live testnet4 run. Opt in with:
 ///
 /// `OB_LIVE_DIR=/tmp/ob-live cargo test -p ob-node --offline live_testnet4 -- --ignored --nocapture`
@@ -814,6 +517,7 @@ fn live_testnet4() {
             confirmations: 1,
             public_server: true,
             chain: Box::new(chain),
+            escrow: EscrowConfig::default(),
         },
     )
     .unwrap();

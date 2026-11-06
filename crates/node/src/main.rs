@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use ob_node::{EsploraChain, NetworkMode, NodeConfig, ServeOptions};
 
-const USAGE: &str = "ob-node [print | serve [port] [--network testnet4|mainnet] [--data-dir DIR] [--esplora URL[,URL...]] [--confirmations N] [--poll-secs S]]";
+const USAGE: &str = "ob-node [print | serve [port] [--network testnet4|mainnet] [--data-dir DIR] [--esplora URL[,URL...]] [--confirmations N] [--poll-secs S] [--escrow-vendor SELLER=URL] [--moderator URL] [--moderate]]";
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
@@ -81,6 +81,7 @@ fn serve(args: &[String]) -> ExitCode {
         confirmations: options.confirmations,
         public_server: options.uses_public_server(),
         chain: Box::new(chain),
+        escrow: options.escrow_config(),
     };
     let node = match ob_node::Node::open_with(options.data_dir(), catalog, config) {
         Ok(node) => node,

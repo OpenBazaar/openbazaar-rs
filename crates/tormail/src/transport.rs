@@ -203,6 +203,22 @@ mod tests {
     }
 
     #[test]
+    fn messages_are_separate_from_orders_and_fill_one_frame() {
+        use crate::seal::{open_message, seal_message, MAX_MESSAGE_LEN};
+        let (vendor, _, _, order_letter) = sample();
+        let body = vec![0x5a; MAX_MESSAGE_LEN];
+        let sealed = seal_message(&body, vendor.public()).unwrap();
+        assert!(sealed.to_bytes().len() <= MAX_SEALED_LEN);
+        let decoded = SealedLetter::from_bytes(&sealed.to_bytes()).unwrap();
+        assert_eq!(open_message(&decoded, vendor.secret()).unwrap(), body);
+        assert!(open_order(&sealed, vendor.secret()).is_err());
+        assert!(open_message(&order_letter, vendor.secret()).is_err());
+        assert!(open_message(&sealed, StoreKeypair::generate().secret()).is_err());
+        assert!(seal_message(&vec![0; MAX_MESSAGE_LEN + 1], vendor.public()).is_err());
+        assert!(seal_message(&[], vendor.public()).is_err());
+    }
+
+    #[test]
     fn roundtrip_seal_and_reply() {
         let (vendor, reply, order, sealed) = sample();
         let opened = open_order(&sealed, vendor.secret()).unwrap();

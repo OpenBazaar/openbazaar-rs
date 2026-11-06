@@ -14,11 +14,13 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 
+use crate::escrow_http::{self, Action};
 use crate::{catalog_json, find_listing, listing_value, wallet_http, Node, OrderError};
 
 const SHOP_ORIGIN: &str = "http://127.0.0.1:4173";
 const PAIR_HEADER: &str = "X-Ob-Pair";
-const MAX_REQUEST: usize = 64 * 1024;
+/// Room for one sealed escrow letter (up to 64 KiB) plus the request head.
+const MAX_REQUEST: usize = 72 * 1024;
 
 /// Who is calling, from the node's point of view.
 pub(crate) struct Client {
@@ -50,7 +52,12 @@ fn http_response_cors(
 }
 
 pub fn serve(node: &Node, port: u16) -> std::io::Result<()> {
-    let listener = TcpListener::bind(("127.0.0.1", port))?;
+    serve_on(node, TcpListener::bind(("127.0.0.1", port))?)
+}
+
+/// Serve on a listener the caller bound (to 127.0.0.1).
+pub fn serve_on(node: &Node, listener: TcpListener) -> std::io::Result<()> {
+    let port = listener.local_addr()?.port();
     eprintln!("ob-node catalog at http://127.0.0.1:{port}/catalog");
     eprintln!("ob-node orders at http://127.0.0.1:{port}/orders");
     eprintln!("ob-node addresses at http://127.0.0.1:{port}/addresses");
@@ -158,6 +165,35 @@ pub(crate) fn respond(node: &Node, raw: &[u8], client: Client) -> Vec<u8> {
             body_of(head, rest),
             origin.as_deref(),
         ),
+        ("POST", path) if path.starts_with("/orders/") && path.ends_with("/release") => escrow_http::action_response(
+            node,
+            &client,
+            head,
+            Action::Release(&path["/orders/".len()..path.len() - "/release".len()]),
+            body_of(head, rest),
+            origin.as_deref(),
+        ),
+        ("POST", path) if path.starts_with("/orders/") && path.ends_with("/dispute") => escrow_http::action_response(
+            node,
+            &client,
+            head,
+            Action::Dispute(&path["/orders/".len()..path.len() - "/dispute".len()]),
+            body_of(head, rest),
+            origin.as_deref(),
+        ),
+        ("POST", "/escrow/mail") => escrow_http::mail_response(node, &client, body_of(head, rest), origin.as_deref()),
+        ("GET", "/escrow/sales") => escrow_http::sales_response(node, &client, head, origin.as_deref()),
+        ("GET", "/moderator/disputes") => escrow_http::disputes_response(node, &client, head, origin.as_deref()),
+        ("POST", path) if path.starts_with("/moderator/disputes/") && path.ends_with("/rule") => {
+            escrow_http::action_response(
+                node,
+                &client,
+                head,
+                Action::Rule(&path["/moderator/disputes/".len()..path.len() - "/rule".len()]),
+                body_of(head, rest),
+                origin.as_deref(),
+            )
+        }
         ("GET", "/orders") => orders_list(node, &client, head, origin.as_deref()),
         ("GET", path) if path.starts_with("/orders/") => {
             orders_get(node, &client, head, &path["/orders/".len()..], origin.as_deref())

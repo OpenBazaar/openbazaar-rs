@@ -6,11 +6,6 @@ edition = "2021"
 license = "MIT"
 publish = false
 
-[features]
-# Single-process `fund` shim that holds both keys. Only the node demo enables
-# it; remove it when the node moves to the two-party API.
-legacy-single-process = []
-
 [dependencies]
 bitcoin = "0.32.7"
 musig2 = { version = "0.4.1", features = ["rand"] }

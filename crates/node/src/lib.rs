@@ -9,6 +9,12 @@
 mod addresses;
 mod buyer_orders;
 mod chain;
+mod escrow_buyer;
+mod escrow_fixture;
+mod escrow_http;
+mod escrow_mail;
+mod escrow_moderator;
+mod escrow_vendor;
 mod http;
 mod instructions;
 mod network;
@@ -23,6 +29,10 @@ mod watch;
 
 #[cfg(test)]
 mod checkout_tests;
+#[cfg(test)]
+mod harness;
+#[cfg(test)]
+mod multinode_tests;
 #[cfg(test)]
 mod payment_tests;
 
@@ -54,13 +64,15 @@ use vault::Vault;
 use wallet::NodeWallet;
 
 pub use chain::{AddressTx, ChainSource, EsploraChain, OfflineChain, WalletRequest};
-pub use http::http_response;
-pub use instructions::{ESCROW_SPEND_FEE_SATS, ESCROW_TIMEOUT_BLOCKS};
+pub use escrow_fixture::MODERATOR_FEE_SATS;
+pub use http::{http_response, serve_on};
+pub use instructions::ESCROW_SPEND_FEE_SATS;
 pub use network::{NetworkMode, ServeOptions};
 pub use orders::OrderError;
 pub use pay_order::PayError;
 pub use watch::{
-    AWAITING_FUNDING, AWAITING_PAYMENT, FUNDED, FUNDED_WITHOUT_REFUND, FUNDING_SEEN, PAID, PAYMENT_SEEN,
+    AWAITING_FUNDING, AWAITING_PAYMENT, AWAITING_TERMS, DISPUTED, FUNDED, FUNDED_WITHOUT_REFUND, FUNDING_SEEN, PAID,
+    PAYMENT_SEEN, RELEASED, SETTLED,
 };
 
 /// How the node reaches the chain and when it calls a payment settled.
@@ -70,6 +82,23 @@ pub struct NodeConfig {
     /// True when `chain` is a server outside this machine or LAN.
     pub public_server: bool,
     pub chain: Box<dyn ChainSource>,
+    pub escrow: EscrowConfig,
+}
+
+/// Where this node's escrow peers are (testnet4 only). Loopback HTTP for now.
+///
+/// Without a `mailbox_url` and a vendor for the seller, escrow checkout is
+/// refused: this node never plays both parties of one escrow.
+#[derive(Clone, Debug, Default)]
+pub struct EscrowConfig {
+    /// Base URL of this node's own HTTP server (`http://127.0.0.1:PORT`). Peers reply here.
+    pub mailbox_url: Option<String>,
+    /// Seller name to the base URL of the node that holds that seller's escrow keys.
+    pub vendors: BTreeMap<String, String>,
+    /// Base URL of the node that runs the testnet4 fixture moderator.
+    pub moderator_url: Option<String>,
+    /// This node answers dispute letters as the testnet4 fixture moderator.
+    pub moderates: bool,
 }
 
 impl NodeConfig {
@@ -80,6 +109,7 @@ impl NodeConfig {
             confirmations: network.default_confirmations(),
             public_server: false,
             chain: Box::new(OfflineChain),
+            escrow: EscrowConfig::default(),
         }
     }
 }
@@ -106,15 +136,10 @@ impl fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
-pub(crate) struct Keys {
-    /// Fixture moderator. Only its public key is used, for escrow dispute letters.
-    moderator: bitcoin::secp256k1::SecretKey,
-}
-
 pub struct Node {
     pub(crate) catalog: Catalog,
     pub(crate) mailbox: Mailbox,
-    pub(crate) keys: Keys,
+    pub(crate) escrow: escrow_mail::Escrow,
     pairing_token: String,
     /// True only in the process that created `pairing.token`.
     pairing_fresh: bool,
@@ -127,7 +152,7 @@ pub struct Node {
     /// The buyer's wallet: what `GET /wallet` shows and `POST /orders/{id}/pay` spends.
     buyer_wallet: Mutex<NodeWallet>,
     /// One wallet per fixture store, keyed by seller name. The node plays these vendors.
-    store_wallets: BTreeMap<String, Mutex<NodeWallet>>,
+    pub(crate) store_wallets: BTreeMap<String, Mutex<NodeWallet>>,
     pub(crate) pay_jobs: pay_order::PayJobs,
 }
 
@@ -148,6 +173,7 @@ impl Node {
         check_catalog_network(&catalog, network)?;
         fs::create_dir_all(&dir).map_err(|err| Error::Detail(err.to_string()))?;
         let mailbox = Mailbox::open(dir.join("mailbox")).map_err(|err| Error::Detail(err.to_string()))?;
+        let escrow_inbox = Mailbox::open(dir.join("escrow-mail")).map_err(|err| Error::Detail(err.to_string()))?;
         let (pairing_token, pairing_fresh) = load_pairing(&dir)?;
         let vault = Vault::open(&dir)?;
         let addresses = AddressBook::open(&dir, vault.clone())?;
@@ -166,9 +192,7 @@ impl Node {
         Ok(Self {
             catalog,
             mailbox,
-            keys: Keys {
-                moderator: fixture_keys().moderator,
-            },
+            escrow: escrow_mail::Escrow::new(config.escrow, escrow_inbox),
             pairing_token,
             pairing_fresh,
             rates: Rates::new(),
@@ -225,13 +249,15 @@ impl Node {
         self.pairing_fresh.then_some(self.pairing_token.as_str())
     }
 
-    /// Serve HTTP on this thread. The chain watcher (every `poll`) and the pay
-    /// worker each run on their own thread, so chain calls never block HTTP.
+    /// Serve HTTP on this thread. The chain watcher (every `poll`), the pay
+    /// worker, and the escrow mail loop each run on their own thread, so
+    /// chain and peer calls never block HTTP.
     pub fn serve(&self, port: u16, poll: Duration) -> std::io::Result<()> {
         let stop = AtomicBool::new(false);
         std::thread::scope(|scope| {
             scope.spawn(|| self.run_watcher(poll, &stop));
             scope.spawn(|| self.run_pay_worker(&stop));
+            scope.spawn(|| self.run_escrow_mail(&stop));
             let result = http::serve(self, port);
             stop.store(true, Ordering::Relaxed);
             result

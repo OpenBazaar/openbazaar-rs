@@ -153,8 +153,6 @@ mod contract;
 mod crypto;
 mod error;
 mod funding;
-#[cfg(feature = "legacy-single-process")]
-mod legacy;
 mod letter;
 mod messages;
 mod moderator;
@@ -173,9 +171,6 @@ pub use error::Error;
 pub use funding::{
     BuyerAwaitingReply, BuyerSession, FundingPlan, VendorAwaitingSignatures, VendorSession,
 };
-#[cfg(feature = "legacy-single-process")]
-#[allow(deprecated)]
-pub use legacy::{fund, FundParams, LegacyEscrowAddress};
 pub use letter::{is_equivocation, DisputeCase, ModeratorRuling};
 pub use messages::{BuyerOpen, BuyerSignatures, FundingNonces, ReleaseSignature, VendorReply};
 pub use moderator::{

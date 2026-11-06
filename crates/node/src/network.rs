@@ -89,6 +89,12 @@ pub struct ServeOptions {
     pub esplora_urls: Vec<String>,
     pub confirmations: u32,
     pub poll_secs: u64,
+    /// `--escrow-vendor SELLER=URL`: the node that holds that seller's escrow keys.
+    pub escrow_vendors: Vec<(String, String)>,
+    /// `--moderator URL`: the node that runs the testnet4 fixture moderator.
+    pub moderator_url: Option<String>,
+    /// `--moderate`: answer dispute letters as the testnet4 fixture moderator.
+    pub moderate: bool,
 }
 
 impl ServeOptions {
@@ -102,6 +108,9 @@ impl ServeOptions {
         let mut esplora: Vec<String> = Vec::new();
         let mut confirmations = None;
         let mut poll_secs = 30u64;
+        let mut escrow_vendors = Vec::new();
+        let mut moderator_url = None;
+        let mut moderate = false;
         let mut iter = args.iter();
         while let Some(arg) = iter.next() {
             let mut value = |name: &str| {
@@ -138,6 +147,20 @@ impl ServeOptions {
                         .filter(|secs| *secs > 0)
                         .ok_or_else(|| "--poll-secs must be a positive number".to_string())?;
                 }
+                "--escrow-vendor" => {
+                    let text = value("--escrow-vendor")?;
+                    let (seller, url) = text
+                        .split_once('=')
+                        .ok_or_else(|| "--escrow-vendor needs SELLER=URL".to_string())?;
+                    crate::escrow_mail::check_loopback(url)?;
+                    escrow_vendors.push((seller.trim().to_string(), url.trim().to_string()));
+                }
+                "--moderator" => {
+                    let url = value("--moderator")?;
+                    crate::escrow_mail::check_loopback(&url)?;
+                    moderator_url = Some(url);
+                }
+                "--moderate" => moderate = true,
                 other if !other.starts_with('-') => {
                     port = other
                         .parse()
@@ -158,11 +181,24 @@ impl ServeOptions {
             },
             confirmations: confirmations.unwrap_or_else(|| network.default_confirmations()),
             poll_secs,
+            escrow_vendors,
+            moderator_url,
+            moderate,
         })
     }
 
     pub fn data_dir(&self) -> PathBuf {
         self.network.data_dir(&self.data_root)
+    }
+
+    /// Escrow peers for this node. It advertises its own loopback port.
+    pub fn escrow_config(&self) -> crate::EscrowConfig {
+        crate::EscrowConfig {
+            mailbox_url: Some(format!("http://127.0.0.1:{}", self.port)),
+            vendors: self.escrow_vendors.iter().cloned().collect(),
+            moderator_url: self.moderator_url.clone(),
+            moderates: self.moderate,
+        }
     }
 
     /// True when chain queries may go to a server that is not on this machine or LAN.

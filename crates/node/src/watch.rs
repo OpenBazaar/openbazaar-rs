@@ -8,7 +8,8 @@
 //! confirmations) -> Paid (N confirmations). Less than the amount due stays
 //! Awaiting payment, with `receivedSats` showing what arrived.
 //!
-//! Escrow: Awaiting funding -> Funding seen -> Funded. Funded needs one output
+//! Escrow: Awaiting vendor terms (set by checkout, left alone here) ->
+//! Awaiting funding -> Funding seen -> Funded. Funded needs one output
 //! of exactly `fundingSats` at the outpoint the presigned refund spends. A
 //! funding the node holds no refund for is reported as "Funded without a refund".
 
@@ -30,6 +31,11 @@ pub const AWAITING_FUNDING: &str = "Awaiting funding";
 pub const FUNDING_SEEN: &str = "Funding seen";
 pub const FUNDED: &str = "Funded";
 pub const FUNDED_WITHOUT_REFUND: &str = "Funded without a refund";
+/// Escrow statuses set by the escrow rounds. The watcher leaves these alone.
+pub const AWAITING_TERMS: &str = "Awaiting vendor terms";
+pub const RELEASED: &str = "Released";
+pub const DISPUTED: &str = "Disputed";
+pub const SETTLED: &str = "Settled by the moderator";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Observation {
@@ -172,7 +178,7 @@ impl Node {
         let orders = self.orders();
         orders
             .on_network()
-            .filter(|order| order.status != PAID && order.status != FUNDED)
+            .filter(|order| ![PAID, FUNDED, AWAITING_TERMS, RELEASED, DISPUTED, SETTLED].contains(&order.status.as_str()))
             .filter_map(|order| {
                 if order.settlement == "escrow" {
                     let escrow = order.escrow.as_ref()?;
