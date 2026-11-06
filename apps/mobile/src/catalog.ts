@@ -278,6 +278,20 @@ export async function placeOrder(order: CheckoutRequest): Promise<OrderReceipt> 
   return parseReceipt(await readJson(response));
 }
 
+/// Sign the store or one of its listings again with a new self-label.
+/// A listing gets a new hash; the returned catalog already carries it.
+export async function setContentLabel(label: {
+  target: "store" | string;
+  rating: Exclude<ContentRating, "unrated">;
+  tags: string[];
+}): Promise<{ hash: string | null; catalog: ShopCatalog }> {
+  const body = recordOf(
+    await paired("/content-labels", { method: "POST", body: JSON.stringify(label), headers: { "Content-Type": "application/json" } }),
+    "The label could not be saved.",
+  );
+  return { hash: typeof body.hash === "string" ? body.hash : null, catalog: parseCatalog(body.catalog) };
+}
+
 async function pairingToken(): Promise<string> {
   const response = await request("/pair");
   const body = recordOf(await readJson(response), OFFLINE_MESSAGE);

@@ -282,7 +282,7 @@ pub(crate) fn address_any(text: &str) -> Address {
 }
 
 pub(crate) fn hash_of(node: &Node, title: &str, seller: &str) -> String {
-    node.catalog
+    node.catalog()
         .listings
         .iter()
         .find(|listing| listing.title == title && listing.seller == seller)

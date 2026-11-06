@@ -40,7 +40,7 @@ fn node() -> (TempDir, Node) {
 }
 
 fn hash_of(node: &Node, title: &str) -> String {
-    node.catalog
+    node.catalog()
         .listings
         .iter()
         .find(|listing| listing.title == title)

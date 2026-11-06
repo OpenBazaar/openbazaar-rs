@@ -26,6 +26,12 @@ impl ContentRating {
         }
     }
 
+    pub fn from_name(name: &str) -> Option<Self> {
+        [ContentRating::General, ContentRating::Sensitive, ContentRating::Adult]
+            .into_iter()
+            .find(|rating| rating.as_str() == name)
+    }
+
     pub(crate) fn tag(self) -> u8 {
         match self {
             ContentRating::General => 0,
@@ -86,6 +92,11 @@ impl ContentTags {
         self.0 & other.0 == other.0
     }
 
+    /// One tag this version knows, by name.
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::NAMED.iter().find(|(_, known)| *known == name).map(|(tag, _)| *tag)
+    }
+
     /// Names of the tags this version knows, in bit order.
     pub fn names(self) -> Vec<&'static str> {
         Self::NAMED
@@ -126,7 +137,11 @@ mod tests {
             ContentRating::Adult,
         ] {
             assert_eq!(ContentRating::from_tag(rating.tag()), Ok(rating));
+            assert_eq!(ContentRating::from_name(rating.as_str()), Some(rating));
         }
+        assert_eq!(ContentRating::from_name("unrated"), None);
+        assert_eq!(ContentTags::from_name("weapons"), Some(ContentTags::WEAPONS));
+        assert_eq!(ContentTags::from_name("Weapons"), None);
         assert_eq!(ContentRating::from_tag(3), Err(Error::UnknownRating));
         assert!(ContentRating::General < ContentRating::Sensitive);
         assert!(ContentRating::Sensitive < ContentRating::Adult);

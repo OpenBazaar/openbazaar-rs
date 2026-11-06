@@ -23,6 +23,7 @@ mod pay_order;
 mod rates;
 mod seed;
 mod vault;
+mod vendor_labels;
 mod wallet;
 mod wallet_http;
 mod watch;
@@ -42,7 +43,7 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::Duration;
 
 use rand::rngs::StdRng;
@@ -62,6 +63,7 @@ use addresses::AddressBook;
 use buyer_orders::BuyerOrders;
 use rates::Rates;
 use vault::Vault;
+use vendor_labels::VendorLabels;
 use wallet::NodeWallet;
 
 pub use chain::{AddressTx, ChainSource, EsploraChain, OfflineChain, WalletRequest};
@@ -138,7 +140,9 @@ impl fmt::Display for Error {
 impl std::error::Error for Error {}
 
 pub struct Node {
-    pub(crate) catalog: Catalog,
+    /// Written only by `POST /content-labels`.
+    catalog: RwLock<Catalog>,
+    pub(crate) vendor_labels: Mutex<VendorLabels>,
     pub(crate) mailbox: Mailbox,
     pub(crate) escrow: escrow_mail::Escrow,
     pairing_token: String,
@@ -168,11 +172,12 @@ impl Node {
     /// The catalog must carry payment codes for `config.network`. The
     /// mailbox lives in `mailbox/`, wallets in `wallets/`, and the vault key,
     /// pairing token, address book, and orders at the top of `dir`.
-    pub fn open_with(dir: impl Into<PathBuf>, catalog: Catalog, config: NodeConfig) -> Result<Self, Error> {
+    pub fn open_with(dir: impl Into<PathBuf>, mut catalog: Catalog, config: NodeConfig) -> Result<Self, Error> {
         let dir = dir.into();
         let network = config.network;
         check_catalog_network(&catalog, network)?;
         fs::create_dir_all(&dir).map_err(|err| Error::Detail(err.to_string()))?;
+        let vendor_labels = VendorLabels::open(&dir, &mut catalog, &fixture_keys().store)?;
         let mailbox = Mailbox::open(dir.join("mailbox")).map_err(|err| Error::Detail(err.to_string()))?;
         let escrow_inbox = Mailbox::open(dir.join("escrow-mail")).map_err(|err| Error::Detail(err.to_string()))?;
         let (pairing_token, pairing_fresh) = load_pairing(&dir)?;
@@ -191,7 +196,8 @@ impl Node {
             store_wallets.insert(listing.seller.clone(), Mutex::new(wallet));
         }
         Ok(Self {
-            catalog,
+            catalog: RwLock::new(catalog),
+            vendor_labels: Mutex::new(vendor_labels),
             mailbox,
             escrow: escrow_mail::Escrow::new(config.escrow, escrow_inbox),
             pairing_token,
@@ -213,6 +219,14 @@ impl Node {
 
     pub fn network(&self) -> NetworkMode {
         self.network
+    }
+
+    pub(crate) fn catalog(&self) -> RwLockReadGuard<'_, Catalog> {
+        self.catalog.read().unwrap_or_else(|err| err.into_inner())
+    }
+
+    pub(crate) fn catalog_mut(&self) -> RwLockWriteGuard<'_, Catalog> {
+        self.catalog.write().unwrap_or_else(|err| err.into_inner())
     }
 
     pub(crate) fn buyer_wallet(&self) -> MutexGuard<'_, NodeWallet> {

@@ -134,6 +134,21 @@ impl Listing {
         })
     }
 
+    /// The same listing with a new content label, signed again by its store.
+    ///
+    /// The body changes, so the result has a different content hash.
+    pub fn relabel(&self, content: ContentLabel, secret: &SecretKey) -> Result<Self, Error> {
+        if sign::xonly(secret) != *self.store_id.as_bytes() {
+            return Err(Error::StoreMismatch);
+        }
+        let listing = Self {
+            content: Some(content),
+            ..self.clone()
+        };
+        let signature = sign::sign(TAG, &listing.encode_body()?, secret);
+        Ok(Self { signature, ..listing })
+    }
+
     pub fn content_hash(&self) -> Result<ListingHash, Error> {
         Ok(ListingHash::from_bytes(sign::content_hash(
             &self.encode_body()?,
@@ -311,6 +326,20 @@ mod tests {
         assert_ne!(
             decoded.content_hash().unwrap(),
             sample().content_hash().unwrap()
+        );
+    }
+
+    #[test]
+    fn relabel_moves_the_address_and_needs_the_store_key() {
+        let listing = sample();
+        let relabeled = listing.relabel(adult(), &sign::secret_from_label("listing-test")).unwrap();
+        relabeled.verify().unwrap();
+        assert_eq!(relabeled.content, Some(adult()));
+        assert_eq!(relabeled.title, listing.title);
+        assert_ne!(relabeled.content_hash().unwrap(), listing.content_hash().unwrap());
+        assert_eq!(
+            listing.relabel(adult(), &sign::secret_from_label("someone-else")),
+            Err(Error::StoreMismatch)
         );
     }
 

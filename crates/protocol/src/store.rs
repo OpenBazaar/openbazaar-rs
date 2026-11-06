@@ -63,6 +63,14 @@ impl Store {
         Ok(Self { signature, ..store })
     }
 
+    /// The same store with a new rating, signed again with its key.
+    pub fn rerate(&self, rating: ContentRating, secret: &SecretKey) -> Result<Self, Error> {
+        if sign::xonly(secret) != *self.id.as_bytes() {
+            return Err(Error::StoreMismatch);
+        }
+        Self::sign(self.name.clone(), self.region.clone(), self.direct_pay.clone(), rating, secret)
+    }
+
     pub fn encode(&self) -> Result<Vec<u8>, Error> {
         let mut body = self.encode_body()?;
         body.extend_from_slice(&self.signature);
@@ -189,6 +197,19 @@ mod tests {
         let mut stripped = store;
         stripped.rating = None;
         assert_eq!(stripped.verify(), Err(Error::BadSignature));
+    }
+
+    #[test]
+    fn rerate_signs_again_with_the_store_key_only() {
+        let store = sample();
+        let adult = store.rerate(ContentRating::Adult, &sign::secret_from_label("store-test")).unwrap();
+        assert_eq!(adult.rating, Some(ContentRating::Adult));
+        assert_eq!((adult.id, &adult.name), (store.id, &store.name));
+        adult.verify().unwrap();
+        assert_eq!(
+            store.rerate(ContentRating::Adult, &sign::secret_from_label("someone-else")),
+            Err(Error::StoreMismatch)
+        );
     }
 
     #[test]
