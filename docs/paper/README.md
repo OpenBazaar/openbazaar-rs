@@ -14,6 +14,10 @@ cp main.pdf openbazaar.pdf
 
 `latexmk -pdf main.tex` also works with a TeX Live install that has `natbib`, `booktabs`, `tabularx`, `longtable`, `tikz`, and `hyperref`.
 
+## Public copy
+
+The paper is published at https://openbazaar.github.io/openbazaar-rs/paper/ (PDF: https://openbazaar.github.io/openbazaar-rs/paper/openbazaar.pdf) from the `gh-pages` branch. To republish after committing a new `openbazaar.pdf`, run `docs/paper/publish-pages.sh` on macOS. It rebuilds the page, abstract, and preview image from the current commit and pushes to `gh-pages`. The URLs stay the same.
+
 ## Submission (not yet submitted)
 
 arXiv:
