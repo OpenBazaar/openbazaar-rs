@@ -204,6 +204,8 @@ fn network_warns_while_requests_go_over_clearnet() {
     assert_eq!(value["clearnet"], true);
     assert!(value["privacyWarning"].as_str().unwrap().contains("--proxy"));
     assert!(value["proxy"].is_null());
+    assert_eq!(value["publicChainServer"], false);
+    assert!(value["chainBackend"]["backend"].is_string() && value["chainBackend"]["reveals"].is_string());
 }
 
 const PATHS: [&str; 16] = [

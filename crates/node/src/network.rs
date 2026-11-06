@@ -56,8 +56,9 @@ impl NetworkMode {
         root.join(self.as_str())
     }
 
-    /// Esplora servers for this network, tried in order. Every one serves only
-    /// this network; the chain client also checks its genesis block.
+    /// Public Esplora servers for this network, used only with
+    /// `--public-fallback`. Every one serves only this network; the chain
+    /// client also checks its genesis block.
     pub fn default_esplora(self) -> &'static [&'static str] {
         match self {
             NetworkMode::Testnet4 => &["https://mempool.space/testnet4/api", "https://blockstream.info/testnet4/api"],
@@ -93,8 +94,14 @@ pub struct ServeOptions {
     pub port: u16,
     pub network: NetworkMode,
     pub data_root: PathBuf,
-    /// Tried in order. `--esplora` may be repeated or comma-separated.
+    /// `--esplora`: use exactly these servers, tried in order, instead of
+    /// compact filters. May be repeated or comma-separated. Empty by default.
     pub esplora_urls: Vec<String>,
+    /// `--peer HOST:PORT`: the user's own node, the only filter peer.
+    pub peers: Vec<(String, u16)>,
+    /// `--public-fallback` / `--no-public-fallback`: ask the public Esplora
+    /// servers while no filter peer answers. On by default on testnet4 only.
+    pub public_fallback: bool,
     pub confirmations: u32,
     pub poll_secs: u64,
     /// `--escrow-vendor SELLER=URL`: the node that holds that seller's escrow keys.
@@ -124,6 +131,8 @@ impl ServeOptions {
         let mut network = None;
         let mut data_root = PathBuf::from("data");
         let mut esplora: Vec<String> = Vec::new();
+        let mut peers: Vec<String> = Vec::new();
+        let mut public_fallback = None;
         let mut confirmations = None;
         let mut poll_secs = 30u64;
         let mut escrow_vendors = Vec::new();
@@ -152,6 +161,12 @@ impl ServeOptions {
                         return Err("--esplora needs a URL".to_string());
                     }
                 }
+                "--peer" => {
+                    let text = value("--peer")?;
+                    peers.extend(text.split(',').map(str::trim).filter(|peer| !peer.is_empty()).map(String::from));
+                }
+                "--public-fallback" => public_fallback = Some(true),
+                "--no-public-fallback" => public_fallback = Some(false),
                 "--confirmations" => {
                     let text = value("--confirmations")?;
                     let parsed: u32 = text
@@ -205,15 +220,22 @@ impl ServeOptions {
             }
         }
         let network = network.unwrap_or(NetworkMode::Testnet4);
+        let peers = peers
+            .iter()
+            .map(|peer| crate::chain_backend::parse_peer(peer, network))
+            .collect::<Result<Vec<_>, _>>()?;
+        let public_fallback = match public_fallback {
+            Some(choice) => choice,
+            None => network == NetworkMode::Testnet4 && peers.is_empty(),
+        };
+        crate::chain_backend::ChainPlan::choose(network, &peers, &esplora, public_fallback)?;
         Ok(Self {
             port,
             network,
             data_root,
-            esplora_urls: if esplora.is_empty() {
-                network.default_esplora().iter().map(|url| url.to_string()).collect()
-            } else {
-                esplora
-            },
+            esplora_urls: esplora,
+            peers,
+            public_fallback,
             confirmations: confirmations.unwrap_or_else(|| network.default_confirmations()),
             poll_secs,
             escrow_vendors,
@@ -248,13 +270,19 @@ impl ServeOptions {
         }
     }
 
+    /// The chain backend these flags select.
+    pub fn chain_plan(&self) -> crate::ChainPlan {
+        crate::ChainPlan::choose(self.network, &self.peers, &self.esplora_urls, self.public_fallback)
+            .expect("parse already checked the chain flags")
+    }
+
     /// True when chain queries may go to a server that is not on this machine or LAN.
     pub fn uses_public_server(&self) -> bool {
-        self.esplora_urls.iter().any(|url| !is_private_url(url))
+        self.chain_plan().esplora_servers().iter().any(|url| !is_private_url(url))
     }
 }
 
-fn is_private_url(url: &str) -> bool {
+pub(crate) fn is_private_url(url: &str) -> bool {
     let rest = url.split("://").nth(1).unwrap_or(url);
     let authority = rest.split('/').next().unwrap_or("");
     let host = authority
@@ -328,16 +356,18 @@ mod tests {
         assert_eq!(options.port, 8787);
         assert_eq!(options.confirmations, 1);
         assert_eq!(options.data_dir(), PathBuf::from("data/testnet4"));
+        assert!(options.esplora_urls.is_empty());
         assert_eq!(
-            options.esplora_urls,
-            ["https://mempool.space/testnet4/api", "https://blockstream.info/testnet4/api"]
+            options.chain_plan().esplora_servers(),
+            ["https://mempool.space/testnet4/api", "https://blockstream.info/testnet4/api"],
+            "testnet4 falls back to public Esplora only while no filter peer answers"
         );
 
         let main = ServeOptions::parse(&args(&["9100", "--network", "mainnet"])).unwrap();
         assert_eq!(main.network, NetworkMode::Mainnet);
         assert_eq!(main.port, 9100);
         assert_eq!(main.data_dir(), PathBuf::from("data/mainnet"));
-        assert!(main.uses_public_server());
+        assert!(!main.uses_public_server(), "mainnet uses compact filters and no public server by default");
 
         for bad in [
             &["--network"][..],
@@ -412,6 +442,41 @@ mod tests {
         assert!(ServeOptions::parse(&args(&["--esplora", " , "])).is_err());
         let main = ServeOptions::parse(&args(&["--network", "mainnet"])).unwrap();
         assert!(main.esplora_urls.iter().all(|url| !url.contains("testnet")));
+    }
+
+    #[test]
+    fn chain_backend_flags() {
+        use crate::ChainPlan;
+        let main = ServeOptions::parse(&args(&["--network", "mainnet"])).unwrap();
+        let ChainPlan::Filters { config, fallback } = main.chain_plan() else { panic!("filters are the default") };
+        assert!(!config.only_these_peers && fallback.is_empty());
+
+        let opted = ServeOptions::parse(&args(&["--network", "mainnet", "--public-fallback"])).unwrap();
+        assert_eq!(opted.chain_plan().esplora_servers(), ["https://mempool.space/api"]);
+        assert!(opted.uses_public_server());
+        let quiet = ServeOptions::parse(&args(&["--no-public-fallback"])).unwrap();
+        assert!(quiet.chain_plan().esplora_servers().is_empty() && !quiet.uses_public_server());
+
+        let own = ServeOptions::parse(&args(&["--peer", "192.168.1.5:48333,node.local", "--peer", "[::1]:18444"])).unwrap();
+        assert_eq!(
+            own.peers,
+            [("192.168.1.5".to_string(), 48333), ("node.local".to_string(), 48333), ("::1".to_string(), 18444)]
+        );
+        let ChainPlan::Filters { config, fallback } = own.chain_plan() else { panic!("--peer uses filters") };
+        assert!(config.only_these_peers && fallback.is_empty(), "own node: no seeds, no fallback");
+        assert!(!own.uses_public_server());
+        let main_peer = ServeOptions::parse(&args(&["--network", "mainnet", "--peer", "10.0.0.2"])).unwrap();
+        assert_eq!(main_peer.peers, [("10.0.0.2".to_string(), 8333)]);
+
+        for bad in [
+            &["--peer", "10.0.0.2", "--esplora", "http://127.0.0.1:3002"][..],
+            &["--peer", "10.0.0.2", "--public-fallback"],
+            &["--peer", "10.0.0.2:0"],
+            &["--peer", "a:b:c"],
+            &["--peer", "user@host:1"],
+        ] {
+            assert!(ServeOptions::parse(&args(bad)).is_err(), "{bad:?}");
+        }
     }
 
     #[test]

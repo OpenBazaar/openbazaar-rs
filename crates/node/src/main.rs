@@ -4,10 +4,15 @@ use std::env;
 use std::process::ExitCode;
 use std::time::Duration;
 
-use ob_node::{EsploraChain, LocalConfig, NetworkMode, NodeConfig, ServeOptions, VaultChoice, VaultMode};
+use ob_node::{LocalConfig, NetworkMode, NodeConfig, ServeOptions, VaultChoice, VaultMode};
 
-const USAGE: &str = "ob-node [print | serve [port] [--network testnet4|mainnet] [--data-dir DIR] [--esplora URL[,URL...]] [--confirmations N] [--poll-secs S] [--escrow-vendor SELLER=URL] [--moderator URL] [--moderate] [--vault keystore|passphrase|file] [--shop-origin URL] [--no-pair-codes] [--proxy socks5h://HOST:PORT] [--no-rates]]
+const USAGE: &str = "ob-node [print | serve [port] [--network testnet4|mainnet] [--data-dir DIR] [--peer HOST:PORT[,...] | --esplora URL[,URL...]] [--public-fallback | --no-public-fallback] [--confirmations N] [--poll-secs S] [--escrow-vendor SELLER=URL] [--moderator URL] [--moderate] [--vault keystore|passphrase|file] [--shop-origin URL] [--no-pair-codes] [--proxy socks5h://HOST:PORT] [--no-rates]]
 
+Chain data comes from BIP 157/158 compact block filters by default.
+--peer uses only your own node (bitcoind with blockfilterindex=1 and peerblockfilters=1).
+--esplora uses exactly the Esplora servers you name.
+--public-fallback asks public Esplora servers while no filter peer answers (default on testnet4 only).
+--proxy also carries filter peer connections and broadcasts, and gives each Esplora query its own Tor circuit.
 --vault passphrase reads OB_VAULT_PASSPHRASE, or asks on the terminal.
 --vault file keeps the key in the data dir; use it only on headless machines and in tests.";
 const PASSPHRASE_ENV: &str = "OB_VAULT_PASSPHRASE";
@@ -61,10 +66,11 @@ fn serve(args: &[String]) -> ExitCode {
     };
     eprintln!("ob-node: ==== network {banner} ====");
     eprintln!("ob-node: data dir {}", options.data_dir().display());
-    eprintln!("ob-node: chain servers {}", options.esplora_urls.join(", "));
+    let plan = options.chain_plan();
+    eprintln!("ob-node: chain data from {}", plan.describe());
     eprintln!("ob-node: paid after {} confirmation(s)", options.confirmations);
-    if network == NetworkMode::Mainnet && options.uses_public_server() {
-        eprintln!("ob-node: WARNING: this public server sees every address the node watches; pass --esplora with your own server to keep them private.");
+    if options.uses_public_server() {
+        eprintln!("ob-node: WARNING: a public Esplora server sees every address it is asked about; drop --esplora/--public-fallback, or pass --peer with your own node, to keep them private.");
     }
     match &options.proxy {
         Some(proxy) => eprintln!("ob-node: rates and chain queries go through {proxy}"),
@@ -88,7 +94,7 @@ fn serve(args: &[String]) -> ExitCode {
             return ExitCode::from(1);
         }
     };
-    let chain = match EsploraChain::with_egress(&options.esplora_urls, network.bitcoin(), &options.egress()) {
+    let chain = match plan.build(network, &options.egress()) {
         Ok(chain) => chain,
         Err(err) => {
             eprintln!("ob-node: chain client: {err}");
@@ -99,7 +105,7 @@ fn serve(args: &[String]) -> ExitCode {
         network,
         confirmations: options.confirmations,
         public_server: options.uses_public_server(),
-        chain: Box::new(chain),
+        chain,
         escrow: options.escrow_config(),
     };
     let local = LocalConfig {

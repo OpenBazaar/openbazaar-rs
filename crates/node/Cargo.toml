@@ -16,6 +16,7 @@ path = "src/main.rs"
 
 [dependencies]
 argon2 = "0.5"
+bip157 = "0.8.1"
 bdk_esplora = { version = "0.22.3", default-features = false, features = ["std", "async-https-rustls", "tokio"] }
 bdk_wallet = { version = "3.2.0", features = ["keys-bip39"] }
 bitcoin = "0.32.7"

@@ -8,14 +8,16 @@ use crate::pay_order::PayError;
 use crate::Node;
 
 pub(crate) fn network_response(node: &Node, origin: Option<&str>) -> Vec<u8> {
+    let chain = node.chain.status();
     let mut value = json!({
         "network": node.network.as_str(),
         "confirmations": node.settings.confirmations,
-        "publicChainServer": node.settings.public_server,
+        "publicChainServer": chain.public_server(),
+        "chainBackend": chain.to_json(),
         "lightning": "offer-only",
         "silentPayments": "code-only",
     });
-    if let (Some(map), Value::Object(egress)) = (value.as_object_mut(), node.local.egress.value(node.settings.public_server)) {
+    if let (Some(map), Value::Object(egress)) = (value.as_object_mut(), node.local.egress.value(chain.public_server())) {
         map.extend(egress);
     }
     json_body("200 OK", &value, origin)

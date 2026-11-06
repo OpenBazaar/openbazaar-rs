@@ -1,13 +1,14 @@
 //! How the node's own outside requests leave the machine.
 //!
-//! Exchange rates (Coinbase) and chain data (public Esplora) are the only
-//! requests the node makes to servers it does not run. Without a proxy they
-//! go over clearnet and show the user's IP address to those servers. With
-//! `--proxy socks5h://127.0.0.1:9050` (Tor; 9150 for Tor Browser) both go
-//! through SOCKS5, and host names are resolved by the proxy, not locally.
+//! Exchange rates (Coinbase) and chain data (filter peers, or Esplora) are
+//! the only requests the node makes to machines it does not run. Without a
+//! proxy they go over clearnet and show the user's IP address. With
+//! `--proxy socks5h://127.0.0.1:9050` (Tor; 9150 for Tor Browser) all of them
+//! go through SOCKS5, and host names are resolved by the proxy, not locally.
 //! `--no-rates` stops the rates request altogether. Escrow mail to loopback
 //! peers never uses the proxy.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use serde_json::{json, Value};
@@ -55,11 +56,20 @@ impl Egress {
         Ok(builder.build())
     }
 
+    /// A proxy that sends a different SOCKS username on every connection.
+    /// Tor puts streams with different credentials on different circuits, so
+    /// no exit or server sees two chain queries arrive from the same address.
+    /// The client must not keep connections alive, or reused ones share a circuit.
     pub(crate) fn reqwest_proxy(&self) -> Result<Option<reqwest::Proxy>, String> {
-        self.proxy
-            .as_deref()
-            .map(|proxy| reqwest::Proxy::all(proxy).map_err(|err| err.to_string()))
-            .transpose()
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let Some(proxy) = &self.proxy else { return Ok(None) };
+        let authority = proxy.trim_start_matches("socks5h://").to_string();
+        reqwest::Url::parse(proxy).map_err(|err| err.to_string())?;
+        let session = std::process::id();
+        Ok(Some(reqwest::Proxy::custom(move |_| {
+            let stream = NEXT.fetch_add(1, Ordering::Relaxed);
+            Some(format!("socks5h://ob-{session}-{stream}:x@{authority}"))
+        })))
     }
 
     /// The `/network` fields about outside requests.
@@ -112,7 +122,19 @@ pub(crate) mod fake_socks {
                 }
                 let mut methods = vec![0u8; greeting[1] as usize];
                 let _ = stream.read_exact(&mut methods);
-                let _ = stream.write_all(&[5, 0]);
+                if methods.contains(&2) {
+                    // Username and password, as Tor accepts for circuit isolation.
+                    let _ = stream.write_all(&[5, 2]);
+                    let mut version = [0u8; 2];
+                    let _ = stream.read_exact(&mut version);
+                    let _ = stream.read_exact(&mut vec![0u8; version[1] as usize]);
+                    let mut len = [0u8; 1];
+                    let _ = stream.read_exact(&mut len);
+                    let _ = stream.read_exact(&mut vec![0u8; len[0] as usize]);
+                    let _ = stream.write_all(&[1, 0]);
+                } else {
+                    let _ = stream.write_all(&[5, 0]);
+                }
                 let mut request = [0u8; 4];
                 if stream.read_exact(&mut request).is_err() {
                     continue;
