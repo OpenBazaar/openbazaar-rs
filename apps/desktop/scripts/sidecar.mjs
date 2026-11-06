@@ -36,8 +36,12 @@ const destination = join(binaries, `ob-node-${triple}${exe}`);
 mkdirSync(binaries, { recursive: true });
 
 if (triple === "universal-apple-darwin") {
+  // Tauri compiles each architecture on its own first, and each of those
+  // builds checks for its own sidecar before the universal bundle is made.
   const arm = build("aarch64-apple-darwin");
   const intel = build("x86_64-apple-darwin");
+  copyFileSync(arm, join(binaries, "ob-node-aarch64-apple-darwin"));
+  copyFileSync(intel, join(binaries, "ob-node-x86_64-apple-darwin"));
   execFileSync("lipo", ["-create", "-output", destination, arm, intel], { stdio: "inherit" });
 } else {
   copyFileSync(build(triple), destination);
