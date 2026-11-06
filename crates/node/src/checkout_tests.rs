@@ -277,9 +277,16 @@ fn pairing_token_is_stable_and_orders_require_it() {
     assert!(second.fresh_pairing_token().is_none());
     assert_eq!(second.pairing_token(), token);
 
+    let mut code = String::new();
+    first.pairing_codes.attempt(None, std::time::Instant::now(), |printed| code = printed.to_string());
+    let request = format!(r#"{{"code":"{code}"}}"#);
     let paired = respond(
         &first,
-        b"GET /pair HTTP/1.1\r\nHost: 127.0.0.1:8787\r\nOrigin: http://127.0.0.1:4173\r\n\r\n",
+        format!(
+            "POST /pair HTTP/1.1\r\nHost: 127.0.0.1:8787\r\nOrigin: http://127.0.0.1:4173\r\nContent-Length: {}\r\n\r\n{request}",
+            request.len()
+        )
+        .as_bytes(),
         Client {
             loopback: true,
             port: 8787,
@@ -291,14 +298,14 @@ fn pairing_token_is_stable_and_orders_require_it() {
 
     let remote = respond(
         &first,
-        b"GET /pair HTTP/1.1\r\nHost: 203.0.113.9:8787\r\n\r\n",
+        b"POST /pair HTTP/1.1\r\nHost: 203.0.113.9:8787\r\nContent-Length: 2\r\n\r\n{}",
         Client {
             loopback: false,
             port: 8787,
         },
     );
     let text = String::from_utf8(remote).unwrap();
-    assert!(text.contains("403"));
+    assert!(text.contains("421"));
     assert!(!text.contains(&token));
 
     let book = hash_of(&first, "Paperback novel");
@@ -327,7 +334,7 @@ fn pairing_token_is_stable_and_orders_require_it() {
 }
 
 #[test]
-fn cors_allows_the_node_origin_only() {
+fn cors_allows_the_shop_and_desktop_origins_only() {
     let (_dir, node) = node();
     let own = respond(
         &node,
@@ -338,8 +345,8 @@ fn cors_allows_the_node_origin_only() {
         },
     );
     let text = String::from_utf8(own).unwrap();
-    assert!(text.contains("Access-Control-Allow-Origin: http://127.0.0.1:8787"));
-    assert!(!text.contains("Access-Control-Allow-Origin: https://evil.example"));
+    assert!(text.starts_with("HTTP/1.1 403"), "the node serves no page of its own");
+    assert!(!text.contains("Access-Control-Allow-Origin"));
 
     let foreign = respond(
         &node,
@@ -356,21 +363,25 @@ fn cors_allows_the_node_origin_only() {
 }
 
 #[test]
-fn desktop_webview_origins_can_pair() {
+fn desktop_webview_origins_are_allowed_but_get_no_token() {
     let (_dir, node) = node();
     for origin in ["tauri://localhost", "http://tauri.localhost", "https://tauri.localhost"] {
-        let request = format!("GET /pair HTTP/1.1\r\nHost: 127.0.0.1:49152\r\nOrigin: {origin}\r\n\r\n");
-        let response = respond(
-            &node,
-            request.as_bytes(),
-            Client {
-                loopback: true,
-                port: 49152,
-            },
-        );
-        let text = String::from_utf8(response).unwrap();
-        assert!(text.contains(&format!("Access-Control-Allow-Origin: {origin}\r\n")));
-        assert!(text.contains(node.pairing_token()));
+        for request in [
+            format!("GET /catalog HTTP/1.1\r\nHost: 127.0.0.1:49152\r\nOrigin: {origin}\r\n\r\n"),
+            format!("GET /pair HTTP/1.1\r\nHost: 127.0.0.1:49152\r\nOrigin: {origin}\r\n\r\n"),
+        ] {
+            let response = respond(
+                &node,
+                request.as_bytes(),
+                Client {
+                    loopback: true,
+                    port: 49152,
+                },
+            );
+            let text = String::from_utf8(response).unwrap();
+            assert!(text.contains(&format!("Access-Control-Allow-Origin: {origin}\r\n")));
+            assert!(!text.contains(node.pairing_token()));
+        }
     }
     let lookalike = respond(
         &node,

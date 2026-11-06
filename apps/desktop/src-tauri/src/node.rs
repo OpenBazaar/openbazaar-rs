@@ -20,6 +20,8 @@ const READY_TIMEOUT: Duration = Duration::from_secs(20);
 pub struct Sidecar {
     child: Child,
     pub origin: String,
+    /// Read from `pairing.token` after the node starts; handed only to the app's own webview.
+    pub token: String,
 }
 
 impl Sidecar {
@@ -43,6 +45,7 @@ impl Sidecar {
             .arg(NETWORK)
             .arg("--data-dir")
             .arg(app_data_dir)
+            .arg("--no-pair-codes")
             .current_dir(&data_dir)
             .env("OB_EXIT_ON_STDIN_EOF", "1")
             .stdin(Stdio::piped())
@@ -56,8 +59,13 @@ impl Sidecar {
         let mut sidecar = Self {
             child,
             origin: format!("http://127.0.0.1:{port}"),
+            token: String::new(),
         };
         sidecar.wait_until_listening(port, &log_path)?;
+        sidecar.token = read_token(&data_dir.join("pairing.token")).map_err(|err| {
+            sidecar.stop();
+            format!("Could not read the node's pairing token: {err}")
+        })?;
         Ok(sidecar)
     }
 
@@ -109,6 +117,16 @@ fn sidecar_path() -> io::Result<PathBuf> {
         Ok(path)
     } else {
         Err(io::Error::new(io::ErrorKind::NotFound, path.display().to_string()))
+    }
+}
+
+/// The node writes the token before it listens, so it exists once the port answers.
+fn read_token(path: &Path) -> io::Result<String> {
+    let token = fs::read_to_string(path)?.trim().to_string();
+    if token.len() == 64 && token.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        Ok(token)
+    } else {
+        Err(io::Error::new(io::ErrorKind::InvalidData, "not a pairing token"))
     }
 }
 

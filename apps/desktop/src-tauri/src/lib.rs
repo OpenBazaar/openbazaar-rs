@@ -1,7 +1,10 @@
 /// Desktop shell. The shop screens live in the Expo web export, not here.
 ///
 /// Opening the app starts its own `ob-node` on a free loopback port, then opens
-/// the shop window with that origin injected before the page runs. Quitting
+/// the shop window with that origin and the node's pairing token injected
+/// before the page runs. The token is set only on the app's own origin, so a
+/// page the webview might navigate to never sees it, and the node itself
+/// gives the token to no request. Quitting
 /// the app stops the node. A second launch focuses the first window.
 mod node;
 
@@ -48,19 +51,24 @@ fn start(app: AppHandle) {
         Err(message) => return fail(&app, message),
     };
     let origin = sidecar.origin.clone();
+    let token = sidecar.token.clone();
     *app.state::<NodeState>().0.lock().unwrap() = Some(sidecar);
-    if let Err(err) = open_main_window(&app, &origin) {
+    if let Err(err) = open_main_window(&app, &origin, &token) {
         fail(&app, format!("Could not open the shop window: {err}"));
     }
 }
 
-fn open_main_window(app: &AppHandle, origin: &str) -> tauri::Result<()> {
+const APP_ORIGINS: &str = r#"["tauri://localhost","http://tauri.localhost","https://tauri.localhost"]"#;
+
+fn open_main_window(app: &AppHandle, origin: &str, token: &str) -> tauri::Result<()> {
     WebviewWindowBuilder::new(app, MAIN_WINDOW, WebviewUrl::default())
         .title("OpenBazaar")
         .inner_size(960.0, 720.0)
         .resizable(true)
         .background_color(tauri::window::Color(0x06, 0x38, 0x53, 0xff))
-        .initialization_script(format!("window.__OB_NODE_ORIGIN__ = {origin:?};"))
+        .initialization_script(format!(
+            "window.__OB_NODE_ORIGIN__ = {origin:?}; if ({APP_ORIGINS}.includes(window.location.origin)) {{ window.__OB_PAIR_TOKEN__ = {token:?}; }}"
+        ))
         .build()?;
     Ok(())
 }

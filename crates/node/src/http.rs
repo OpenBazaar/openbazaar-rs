@@ -1,34 +1,30 @@
 //! Loopback HTTP for the shop page. One request per connection.
 //!
-//! The shop origin (`http://127.0.0.1:4173`), the desktop webview origins, and
-//! this node's own origin are the only CORS callers. `GET /pair` returns the
-//! pairing token to a loopback peer so the local shop can send it on
-//! `POST /orders`. A non-loopback
-//! caller does not get the token. The listener is bound to 127.0.0.1; the
-//! peer check refuses a connection that was forwarded from somewhere else.
-//! The token itself is created in the node data dir on first boot and printed
-//! once. There is no other way to name a peer from this server.
+//! Every request is parsed with hard limits ([`crate::http_parse`]), must
+//! name this listener by a loopback Host, and, if a browser sent it, must
+//! come from the desktop webview or the configured shop origin
+//! ([`crate::http_guard`]). No route hands out the pairing token: the desktop
+//! app reads it from the data dir, and a browser shop trades a one-time code
+//! from the node's terminal for it at `POST /pair` ([`crate::pairing`]).
+//! The listener is bound to 127.0.0.1; the peer check refuses a connection
+//! that was forwarded from somewhere else. There is no other way to name a
+//! peer from this server.
 
-use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
-use std::time::Duration;
+use std::io::Write;
+use std::net::TcpListener;
+use std::panic::{catch_unwind, AssertUnwindSafe};
 
 use serde_json::{json, Value};
 
 use crate::escrow_http::{self, Action};
-use crate::{catalog_json, find_listing, labelers, listing_value, vendor_labels, wallet_http, Node, OrderError};
+use crate::http_guard::{check_origin, host_allowed, secret_eq, OriginCheck, DEFAULT_SHOP_ORIGIN};
+use crate::http_parse::{self, header, Request};
+use crate::{catalog_json, find_listing, labelers, listing_value, mail_drop, pairing, vendor_labels, wallet_http, Node, OrderError};
 
-const SHOP_ORIGIN: &str = "http://127.0.0.1:4173";
-/// The Tauri desktop webview: macOS and Linux use the custom scheme, and
-/// Windows WebView2 serves the same page from an http or https host.
-const DESKTOP_ORIGINS: [&str; 3] = [
-    "tauri://localhost",
-    "http://tauri.localhost",
-    "https://tauri.localhost",
-];
 const PAIR_HEADER: &str = "X-Ob-Pair";
-/// Room for one sealed escrow letter (up to 64 KiB) plus the request head.
-const MAX_REQUEST: usize = 72 * 1024;
+/// Every response: never cached, never sniffed or framed, no referrer, and
+/// no content may load from it (the node serves no HTML).
+const SECURITY_HEADERS: &str = "Cache-Control: no-store\r\nPragma: no-cache\r\nX-Content-Type-Options: nosniff\r\nContent-Security-Policy: default-src 'none'; frame-ancestors 'none'\r\nX-Frame-Options: DENY\r\nReferrer-Policy: no-referrer\r\n";
 
 /// Who is calling, from the node's point of view.
 pub(crate) struct Client {
@@ -37,7 +33,7 @@ pub(crate) struct Client {
 }
 
 pub fn http_response(status: &str, content_type: &str, body: &[u8]) -> Vec<u8> {
-    http_response_cors(status, content_type, body, Some(SHOP_ORIGIN))
+    http_response_cors(status, content_type, body, Some(DEFAULT_SHOP_ORIGIN))
 }
 
 fn http_response_cors(
@@ -51,7 +47,7 @@ fn http_response_cors(
         None => String::new(),
     };
     let header = format!(
-        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n{allow}Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, {PAIR_HEADER}\r\nAccess-Control-Max-Age: 600\r\nVary: Origin\r\n\r\n",
+        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n{SECURITY_HEADERS}{allow}Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, {PAIR_HEADER}\r\nAccess-Control-Max-Age: 600\r\nVary: Origin\r\n\r\n",
         body.len()
     );
     let mut response = header.into_bytes();
@@ -88,14 +84,18 @@ pub fn serve_on(node: &Node, listener: TcpListener) -> std::io::Result<()> {
             .peer_addr()
             .map(|addr| addr.ip().is_loopback())
             .unwrap_or(false);
-        let raw = match read_http(&mut stream) {
+        let raw = match http_parse::read(&mut stream) {
             Ok(raw) => raw,
             Err(err) => {
                 eprintln!("ob-node: {err}");
                 continue;
             }
         };
-        let response = respond(node, &raw, Client { loopback, port });
+        let response = catch_unwind(AssertUnwindSafe(|| respond(node, &raw, Client { loopback, port })))
+            .unwrap_or_else(|_| {
+                eprintln!("ob-node: a request handler panicked");
+                http_response_cors("500 Internal Server Error", "text/plain", b"internal error", None)
+            });
         if let Err(err) = stream.write_all(&response) {
             eprintln!("ob-node: {err}");
         }
@@ -116,130 +116,95 @@ pub(crate) fn dispatch(node: &Node, raw: &[u8]) -> Vec<u8> {
 }
 
 pub(crate) fn respond(node: &Node, raw: &[u8], client: Client) -> Vec<u8> {
-    let Some((head, rest)) = split_head(raw) else {
-        return http_response("400 Bad Request", "text/plain", b"bad request");
+    let request = match http_parse::parse(raw) {
+        Ok(request) => request,
+        Err(refusal) => return http_response_cors(refusal.status, "text/plain", refusal.message.as_bytes(), None),
     };
-    let Some(line) = head.lines().next() else {
-        return http_response("400 Bad Request", "text/plain", b"bad request");
-    };
-    let mut parts = line.split_whitespace();
-    let method = parts.next().unwrap_or("");
-    let target = parts.next().unwrap_or("/");
-    let path = target.split('?').next().unwrap_or(target);
-    let origin = cors_origin(header(head, "origin"), client.port);
-    if method == "OPTIONS" {
-        return http_response_cors("204 No Content", "text/plain", b"", origin.as_deref());
-    }
-    match (method, path) {
-        ("GET", "/catalog") | ("GET", "/") => match catalog_json(&node.catalog()) {
-            Ok(json) => http_response_cors(
-                "200 OK",
-                "application/json",
-                json.as_bytes(),
-                origin.as_deref(),
-            ),
-            Err(err) => {
-                eprintln!("ob-node: {err}");
-                json_error(
-                    "500 Internal Server Error",
-                    "The catalog could not be read.",
-                    origin.as_deref(),
-                )
-            }
-        },
-        ("GET", "/pair") => pair_response(node, &client, origin.as_deref()),
-        ("GET", "/rates") => json_body("200 OK", &node.rates_value(), origin.as_deref()),
-        ("GET", "/addresses") => addresses_list(node, &client, head, origin.as_deref()),
-        ("POST", "/addresses") => addresses_create(node, &client, head, body_of(head, rest), origin.as_deref()),
-        ("PUT", path) if path.starts_with("/addresses/") => addresses_update(
-            node,
-            &client,
-            head,
-            &path["/addresses/".len()..],
-            body_of(head, rest),
-            origin.as_deref(),
-        ),
-        ("DELETE", path) if path.starts_with("/addresses/") => {
-            addresses_delete(node, &client, head, &path["/addresses/".len()..], origin.as_deref())
-        }
-        ("GET", "/network") => wallet_http::network_response(node, origin.as_deref()),
-        ("GET", "/wallet") => wallet_http::wallet_response(node, &client, head, origin.as_deref()),
-        ("POST", "/wallet/address") => {
-            wallet_http::wallet_address_response(node, &client, head, origin.as_deref())
-        }
-        ("POST", path) if path.starts_with("/orders/") && path.ends_with("/pay") => wallet_http::pay_response(
-            node,
-            &client,
-            head,
-            &path["/orders/".len()..path.len() - "/pay".len()],
-            body_of(head, rest),
-            origin.as_deref(),
-        ),
-        ("POST", path) if path.starts_with("/orders/") && path.ends_with("/release") => escrow_http::action_response(
-            node,
-            &client,
-            head,
-            Action::Release(&path["/orders/".len()..path.len() - "/release".len()]),
-            body_of(head, rest),
-            origin.as_deref(),
-        ),
-        ("POST", path) if path.starts_with("/orders/") && path.ends_with("/dispute") => escrow_http::action_response(
-            node,
-            &client,
-            head,
-            Action::Dispute(&path["/orders/".len()..path.len() - "/dispute".len()]),
-            body_of(head, rest),
-            origin.as_deref(),
-        ),
-        ("POST", "/escrow/mail") => escrow_http::mail_response(node, &client, body_of(head, rest), origin.as_deref()),
-        ("GET", "/escrow/sales") => escrow_http::sales_response(node, &client, head, origin.as_deref()),
-        ("GET", "/moderator/disputes") => escrow_http::disputes_response(node, &client, head, origin.as_deref()),
-        ("POST", path) if path.starts_with("/moderator/disputes/") && path.ends_with("/rule") => {
-            escrow_http::action_response(
-                node,
-                &client,
-                head,
-                Action::Rule(&path["/moderator/disputes/".len()..path.len() - "/rule".len()]),
-                body_of(head, rest),
-                origin.as_deref(),
-            )
-        }
-        ("GET", "/orders") => orders_list(node, &client, head, origin.as_deref()),
-        ("GET", path) if path.starts_with("/orders/") => {
-            orders_get(node, &client, head, &path["/orders/".len()..], origin.as_deref())
-        }
-        ("GET", path) if path.starts_with("/listings/") => {
-            listing_response(node, &path["/listings/".len()..], origin.as_deref())
-        }
-        ("POST", "/orders") => order_response(node, head, body_of(head, rest), origin.as_deref()),
-        ("POST", "/checkout") => checkout_response(node, &client, head, body_of(head, rest), origin.as_deref()),
-        ("GET", "/labelers") | ("PUT", "/labelers") => {
-            labelers::response(node, &client, head, method, body_of(head, rest), origin.as_deref())
-        }
-        ("POST", "/content-labels") => {
-            vendor_labels::response(node, &client, head, body_of(head, rest), origin.as_deref())
-        }
-        _ => http_response_cors(
-            "404 Not Found",
+    if !host_allowed(request.head, client.port) {
+        return http_response_cors(
+            "421 Misdirected Request",
             "text/plain",
-            b"not found",
-            origin.as_deref(),
-        ),
-    }
-}
-
-fn pair_response(node: &Node, client: &Client, origin: Option<&str>) -> Vec<u8> {
-    // Loopback only. The shop on this machine fetches the token here and
-    // sends it back as X-Ob-Pair. Anyone who is not on the loopback interface
-    // gets a refusal that does not contain the token.
-    if !client.loopback {
-        return json_error(
-            "403 Forbidden",
-            "The pairing token stays on this machine.",
-            origin,
+            b"This node answers only to 127.0.0.1, localhost, and [::1].",
+            None,
         );
     }
-    json_body("200 OK", &json!({ "token": node.pairing_token() }), origin)
+    let origin = match check_origin(request.head, &node.local.shop_origin) {
+        OriginCheck::Absent => Some(node.local.shop_origin.clone()),
+        OriginCheck::Allowed(origin) => Some(origin),
+        OriginCheck::Refused => {
+            return http_response_cors("403 Forbidden", "text/plain", b"That page may not call this node.", None)
+        }
+    };
+    if request.method == "OPTIONS" {
+        return http_response_cors("204 No Content", "text/plain", b"", origin.as_deref());
+    }
+    route(node, &request, client, origin.as_deref())
+}
+
+/// `path` without `prefix` and `suffix`, or `None` when it lacks either.
+fn between<'a>(path: &'a str, prefix: &str, suffix: &str) -> Option<&'a str> {
+    path.strip_prefix(prefix)?.strip_suffix(suffix)
+}
+
+fn route(node: &Node, request: &Request<'_>, client: Client, origin: Option<&str>) -> Vec<u8> {
+    let (method, path, head, body) = (request.method, request.path, request.head, request.body);
+    let client = &client;
+    match (method, path) {
+        ("GET", "/catalog") | ("GET", "/") => match catalog_json(&node.catalog()) {
+            Ok(json) => http_response_cors("200 OK", "application/json", json.as_bytes(), origin),
+            Err(err) => {
+                eprintln!("ob-node: {err}");
+                json_error("500 Internal Server Error", "The catalog could not be read.", origin)
+            }
+        },
+        ("POST", "/pair") => pairing::response(node, body, origin),
+        ("GET", "/rates") => json_body("200 OK", &node.rates_value(), origin),
+        ("GET", "/addresses") => addresses_list(node, client, head, origin),
+        ("POST", "/addresses") => addresses_create(node, client, head, body, origin),
+        ("PUT", path) if path.starts_with("/addresses/") => {
+            addresses_update(node, client, head, &path["/addresses/".len()..], body, origin)
+        }
+        ("DELETE", path) if path.starts_with("/addresses/") => {
+            addresses_delete(node, client, head, &path["/addresses/".len()..], origin)
+        }
+        ("GET", "/network") => wallet_http::network_response(node, origin),
+        ("GET", "/wallet") => wallet_http::wallet_response(node, client, head, origin),
+        ("POST", "/wallet/address") => wallet_http::wallet_address_response(node, client, head, origin),
+        ("POST", path) if between(path, "/orders/", "/pay").is_some() => {
+            let id = between(path, "/orders/", "/pay").unwrap_or_default();
+            wallet_http::pay_response(node, client, head, id, body, origin)
+        }
+        ("POST", path) if between(path, "/orders/", "/release").is_some() => {
+            let id = between(path, "/orders/", "/release").unwrap_or_default();
+            escrow_http::action_response(node, client, head, Action::Release(id), body, origin)
+        }
+        ("POST", path) if between(path, "/orders/", "/dispute").is_some() => {
+            let id = between(path, "/orders/", "/dispute").unwrap_or_default();
+            escrow_http::action_response(node, client, head, Action::Dispute(id), body, origin)
+        }
+        ("POST", "/escrow/mail") => match mail_drop::admit(node, head, body) {
+            Ok(()) => escrow_http::mail_response(node, client, body, origin),
+            Err(response) => response,
+        },
+        ("GET", "/escrow/sales") => escrow_http::sales_response(node, client, head, origin),
+        ("GET", "/moderator/disputes") => escrow_http::disputes_response(node, client, head, origin),
+        ("POST", path) if between(path, "/moderator/disputes/", "/rule").is_some() => {
+            let id = between(path, "/moderator/disputes/", "/rule").unwrap_or_default();
+            escrow_http::action_response(node, client, head, Action::Rule(id), body, origin)
+        }
+        ("GET", "/orders") => orders_list(node, client, head, origin),
+        ("GET", path) if path.starts_with("/orders/") => {
+            orders_get(node, client, head, &path["/orders/".len()..], origin)
+        }
+        ("GET", path) if path.starts_with("/listings/") => {
+            listing_response(node, &path["/listings/".len()..], origin)
+        }
+        ("POST", "/orders") => order_response(node, head, body, origin),
+        ("POST", "/checkout") => checkout_response(node, client, head, body, origin),
+        ("GET", "/labelers") | ("PUT", "/labelers") => labelers::response(node, client, head, method, body, origin),
+        ("POST", "/content-labels") => vendor_labels::response(node, client, head, body, origin),
+        _ => http_response_cors("404 Not Found", "text/plain", b"not found", origin),
+    }
 }
 
 fn listing_response(node: &Node, hash: &str, origin: Option<&str>) -> Vec<u8> {
@@ -261,7 +226,7 @@ fn listing_response(node: &Node, hash: &str, origin: Option<&str>) -> Vec<u8> {
 }
 
 fn order_response(node: &Node, head: &str, body: &[u8], origin: Option<&str>) -> Vec<u8> {
-    if header(head, PAIR_HEADER) != Some(node.pairing_token()) {
+    if !secret_eq(header(head, PAIR_HEADER), node.pairing_token()) {
         return json_error(
             "401 Unauthorized",
             "The shop is not paired with this node.",
@@ -320,19 +285,6 @@ fn checkout_response(node: &Node, client: &Client, head: &str, body: &[u8], orig
     }
 }
 
-fn cors_origin(request_origin: Option<&str>, port: u16) -> Option<String> {
-    let own = format!("http://127.0.0.1:{port}");
-    match request_origin {
-        Some(origin)
-            if origin == SHOP_ORIGIN || origin == own || DESKTOP_ORIGINS.contains(&origin) =>
-        {
-            Some(origin.to_string())
-        }
-        Some(_) => None,
-        None => Some(SHOP_ORIGIN.to_string()),
-    }
-}
-
 pub(crate) fn local_guard(node: &Node, client: &Client, head: &str, origin: Option<&str>) -> Result<(), Vec<u8>> {
     if !client.loopback {
         return Err(json_error(
@@ -341,7 +293,7 @@ pub(crate) fn local_guard(node: &Node, client: &Client, head: &str, origin: Opti
             origin,
         ));
     }
-    if header(head, PAIR_HEADER) != Some(node.pairing_token()) {
+    if !secret_eq(header(head, PAIR_HEADER), node.pairing_token()) {
         return Err(json_error(
             "403 Forbidden",
             "The shop is not paired with this node.",
@@ -444,72 +396,4 @@ pub(crate) fn json_body(status: &str, value: &Value, origin: Option<&str>) -> Ve
 
 pub(crate) fn json_error(status: &str, message: &str, origin: Option<&str>) -> Vec<u8> {
     json_body(status, &json!({ "error": message }), origin)
-}
-
-fn split_head(raw: &[u8]) -> Option<(&str, &[u8])> {
-    let split = raw.windows(4).position(|window| window == b"\r\n\r\n")?;
-    let head = std::str::from_utf8(&raw[..split]).ok()?;
-    Some((head, &raw[split + 4..]))
-}
-
-fn header<'a>(head: &'a str, name: &str) -> Option<&'a str> {
-    for line in head.lines().skip(1) {
-        let Some((key, value)) = line.split_once(':') else {
-            continue;
-        };
-        if key.eq_ignore_ascii_case(name) {
-            return Some(value.trim());
-        }
-    }
-    None
-}
-
-fn body_of<'a>(head: &str, rest: &'a [u8]) -> &'a [u8] {
-    match content_length(head) {
-        Some(len) if len < rest.len() => &rest[..len],
-        _ => rest,
-    }
-}
-
-fn content_length(head: &str) -> Option<usize> {
-    header(head, "content-length").and_then(|value| value.parse().ok())
-}
-
-fn read_http(stream: &mut TcpStream) -> std::io::Result<Vec<u8>> {
-    stream.set_read_timeout(Some(Duration::from_secs(10)))?;
-    let mut buf = Vec::new();
-    let mut chunk = [0u8; 2048];
-    loop {
-        if buf.len() > MAX_REQUEST {
-            break;
-        }
-        if request_complete(&buf) {
-            break;
-        }
-        match stream.read(&mut chunk) {
-            Ok(0) => break,
-            Ok(read) => buf.extend_from_slice(&chunk[..read]),
-            Err(err)
-                if err.kind() == std::io::ErrorKind::WouldBlock
-                    || err.kind() == std::io::ErrorKind::TimedOut =>
-            {
-                if buf.is_empty() {
-                    return Err(err);
-                }
-                break;
-            }
-            Err(err) => return Err(err),
-        }
-    }
-    Ok(buf)
-}
-
-fn request_complete(buf: &[u8]) -> bool {
-    let Some((head, rest)) = split_head(buf) else {
-        return false;
-    };
-    match content_length(head) {
-        Some(len) => rest.len() >= len,
-        None => true,
-    }
 }

@@ -79,6 +79,14 @@ impl fmt::Display for NetworkMode {
     }
 }
 
+/// Where `--vault` keeps the vault key. The passphrase itself is read at start, not from argv.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VaultChoice {
+    Keystore,
+    Passphrase,
+    File,
+}
+
 /// Everything `serve` needs to know before it opens the data directory.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ServeOptions {
@@ -95,6 +103,16 @@ pub struct ServeOptions {
     pub moderator_url: Option<String>,
     /// `--moderate`: answer dispute letters as the testnet4 fixture moderator.
     pub moderate: bool,
+    /// `--vault keystore|passphrase|file`. Keystore unless named.
+    pub vault: VaultChoice,
+    /// `--shop-origin URL`: the browser shop allowed to call the node.
+    pub shop_origin: String,
+    /// False with `--no-pair-codes` (the desktop app pairs its own window).
+    pub pair_codes: bool,
+    /// `--proxy socks5h://HOST:PORT` for rates and chain queries.
+    pub proxy: Option<String>,
+    /// False with `--no-rates`.
+    pub live_rates: bool,
 }
 
 impl ServeOptions {
@@ -111,6 +129,11 @@ impl ServeOptions {
         let mut escrow_vendors = Vec::new();
         let mut moderator_url = None;
         let mut moderate = false;
+        let mut vault = VaultChoice::Keystore;
+        let mut shop_origin = crate::http_guard::DEFAULT_SHOP_ORIGIN.to_string();
+        let mut pair_codes = true;
+        let mut proxy = None;
+        let mut live_rates = true;
         let mut iter = args.iter();
         while let Some(arg) = iter.next() {
             let mut value = |name: &str| {
@@ -161,6 +184,18 @@ impl ServeOptions {
                     moderator_url = Some(url);
                 }
                 "--moderate" => moderate = true,
+                "--vault" => {
+                    vault = match value("--vault")?.as_str() {
+                        "keystore" => VaultChoice::Keystore,
+                        "passphrase" => VaultChoice::Passphrase,
+                        "file" => VaultChoice::File,
+                        other => return Err(format!("--vault must be keystore, passphrase, or file, not {other:?}")),
+                    }
+                }
+                "--shop-origin" => shop_origin = crate::http_guard::parse_shop_origin(&value("--shop-origin")?)?,
+                "--no-pair-codes" => pair_codes = false,
+                "--proxy" => proxy = Some(crate::egress::Egress::parse_proxy(&value("--proxy")?)?),
+                "--no-rates" => live_rates = false,
                 other if !other.starts_with('-') => {
                     port = other
                         .parse()
@@ -184,6 +219,11 @@ impl ServeOptions {
             escrow_vendors,
             moderator_url,
             moderate,
+            vault,
+            shop_origin,
+            pair_codes,
+            proxy,
+            live_rates,
         })
     }
 
@@ -198,6 +238,13 @@ impl ServeOptions {
             vendors: self.escrow_vendors.iter().cloned().collect(),
             moderator_url: self.moderator_url.clone(),
             moderates: self.moderate,
+        }
+    }
+
+    pub fn egress(&self) -> crate::Egress {
+        crate::Egress {
+            proxy: self.proxy.clone(),
+            live_rates: self.live_rates,
         }
     }
 
@@ -300,6 +347,32 @@ mod tests {
             &["--network", "testnet"][..],
             &["--mainnet"][..],
         ] {
+            assert!(ServeOptions::parse(&args(bad)).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn local_surface_flags_parse() {
+        let options = ServeOptions::parse(&[]).unwrap();
+        assert_eq!(options.vault, VaultChoice::Keystore, "the key goes to the OS keystore unless told otherwise");
+        assert_eq!(options.shop_origin, "http://127.0.0.1:4173");
+        assert!(options.pair_codes && options.live_rates && options.proxy.is_none());
+        let options = ServeOptions::parse(&args(&[
+            "--vault",
+            "passphrase",
+            "--shop-origin",
+            "http://localhost:19006",
+            "--no-pair-codes",
+            "--proxy",
+            "socks5://127.0.0.1:9050",
+            "--no-rates",
+        ]))
+        .unwrap();
+        assert_eq!(options.vault, VaultChoice::Passphrase);
+        assert_eq!(options.shop_origin, "http://localhost:19006");
+        assert!(!options.pair_codes && !options.live_rates);
+        assert_eq!(options.proxy.as_deref(), Some("socks5h://127.0.0.1:9050"));
+        for bad in [&["--vault", "plain"][..], &["--shop-origin", "https://evil.example"], &["--proxy", "http://127.0.0.1:8080"]] {
             assert!(ServeOptions::parse(&args(bad)).is_err(), "{bad:?}");
         }
     }

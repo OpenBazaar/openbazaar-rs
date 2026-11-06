@@ -37,11 +37,12 @@ Labels: **tested** = code on main with automated tests; **demo** = code runs, bu
 
 | Mechanism | Status | Notes |
 |---|---|---|
-| Client talks only to its own node on loopback, with a pairing token | tested | `GET /pair` hands the token to any loopback caller. |
+| Client talks only to its own node on loopback, with a pairing token | tested | Host must be `127.0.0.1`, `localhost`, or `[::1]` on the node's port (DNS rebinding); any `Origin` other than the desktop webview and `--shop-origin` is refused before routing. No route returns the token: the desktop app reads `pairing.token` and injects it into its own webview (`--no-pair-codes`); a browser shop trades a one-time code printed on the node's terminal at `POST /pair` (39 bits, 5 tries, 5 minutes, one code per 10 s). Another process of the same user can still read the file (A6). |
+| Loopback HTTP limits | tested | 8 KiB head, 64 headers, 72 KiB body, exact `Content-Length`, no chunked bodies, 5 s per request; handler panics answer 500; `no-store`, `nosniff`, and `default-src 'none'` CSP on every response; 500 bodies carry no detail. Proptest over the parser and the router. Requests are served one at a time, so a stalled local connection delays others by up to 5 s. |
 | Node rejects client-named destinations | tested | URL, onion, or peer keys in a request are refused. |
 | Desktop app starts its own node | demo | Testnet4. |
 | Phone pairs with a desktop or Android node | specified | The client dials only 127.0.0.1. |
-| Addresses, orders, seed, wallet, labeler follows encrypted at rest | tested | ChaCha20-Poly1305; `vault.key` (mode 0600) in the same directory. |
+| Addresses, orders, seed, wallet, labeler follows encrypted at rest | tested | ChaCha20-Poly1305. Key in the OS keystore by default (macOS Keychain, Windows Credential Manager, Linux Secret Service); `--vault passphrase` wraps it with Argon2id (64 MiB, 3 passes) in `vault.lock`; `--vault file` keeps `vault.key` for headless runs and tests. An old `vault.key` is moved and deleted on first start in another mode. Startup refuses a group- or world-readable key, lock, or token, and tightens `.obv` files (earlier nodes wrote `addresses.obv` and `orders.obv` with the umask). |
 | BIP 39 seed with role paths | tested | Spend, store, escrow (`m/1984'/c'/1'/i'`), escrow mail (`m/1984'/c'/2'/0'`), scan. |
 | Catalog signed with the seed's store key | not yet | Catalog, BOLT 12 offer, and BIP 352 code use fixture keys. |
 | Vendor mailbox key bound to the signed store record | specified | Mailbox keys come from a fixture table; one fixture seller reuses the store scalar. |
@@ -71,8 +72,8 @@ Labels: **tested** = code on main with automated tests; **demo** = code runs, bu
 | BOLT 12 offer | encoding only | No Lightning node answers; issuer key is the store key. |
 | BIP 352 code | encoding only | No scanning. |
 | Payjoin v2 | library only | Checkout does not start a session. |
-| Chain queries over Tor / own node / compact filters | specified | |
-| Exchange rates | tested | Coinbase over clearnet. |
+| Chain queries over Tor / own node / compact filters | demo | `--proxy` sends Esplora queries through SOCKS5 (Tor); no Arti, own node, or compact filters. |
+| Exchange rates | tested | Coinbase. Over clearnet unless `--proxy socks5h://HOST:PORT` (names resolved by the proxy); `--no-rates` makes no request. `GET /network` reports `clearnet` and a `privacyWarning`. |
 
 ### Escrow
 
@@ -80,7 +81,7 @@ Labels: **tested** = code on main with automated tests; **demo** = code runs, bu
 |---|---|---|
 | Two-party protocol (rounds, verifiable shares, refund before funding, claim, moderator record and policy checks, anchors, per-order keys, letters, rulings, ruling store) | tested | 38 unit tests and 5 doctests. |
 | Node runs escrow as buyer, vendor, or moderator | demo | Testnet4 only; mainnet refused. Three-node harness tests release, buyer-won dispute, failed broadcast, external funding. |
-| Escrow messages between nodes | demo | Sealed letters POSTed to operator-configured loopback URLs (`--escrow-vendor`, `--moderator`); `POST /escrow/mail` takes no token; no Tor, no retry. |
+| Escrow messages between nodes | demo | Sealed letters POSTed to operator-configured loopback URLs (`--escrow-vendor`, `--moderator`); `POST /escrow/mail` takes no token but refuses any `Origin`, bodies over 64 KiB, more than 64 letters at once or 4/s sustained, and new letters while 256 wait; it only queues. Sender authentication is not in place; no Tor, no retry. |
 | Durable escrow sessions | not yet | Only the buyer's refund is written to disk; the vendor's claim is in memory. |
 | Durable ruling store | not yet | `InMemoryRulingStore` only. |
 | Coin locking between funding rounds | not yet | |
@@ -106,7 +107,7 @@ Labels: **tested** = code on main with automated tests; **demo** = code runs, bu
 - The escrow crate's signed-terms wrapper reuses the magic `OBST`. It is never parsed where a store record is, but it should get its own magic.
 - The paper's store record carries the vendor's mailbox key and onion address; `OBST` v2 has neither yet, and no derivation path for the mailbox key is assigned.
 - The crate supports per-order keys tweaked by an order secret; the node derives per-order keys from the seed instead.
-- Exchange rates come from Coinbase and chain data from public Esplora servers, both over clearnet.
+- Exchange rates come from Coinbase and chain data from public Esplora servers, both over clearnet unless `--proxy` is set. The desktop app has no proxy setting yet.
 - Presigned escrow spends use a fixed 1,000-sat fee in the node.
 
 ## Escrow review

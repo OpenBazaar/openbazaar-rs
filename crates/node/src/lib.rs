@@ -9,6 +9,7 @@
 mod addresses;
 mod buyer_orders;
 mod chain;
+mod egress;
 mod escrow_buyer;
 mod escrow_fixture;
 mod escrow_http;
@@ -16,14 +17,19 @@ mod escrow_mail;
 mod escrow_moderator;
 mod escrow_vendor;
 mod http;
+mod http_guard;
+mod http_parse;
 mod instructions;
 mod labelers;
+mod mail_drop;
 mod network;
 mod orders;
+mod pairing;
 mod pay_order;
 mod rates;
 mod seed;
 mod vault;
+mod vault_key;
 mod vendor_labels;
 mod wallet;
 mod wallet_http;
@@ -37,6 +43,8 @@ mod harness;
 mod multinode_tests;
 #[cfg(test)]
 mod payment_tests;
+#[cfg(test)]
+mod surface_tests;
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -69,12 +77,14 @@ use vendor_labels::VendorLabels;
 use wallet::NodeWallet;
 
 pub use chain::{AddressTx, ChainSource, EsploraChain, OfflineChain, WalletRequest};
+pub use egress::Egress;
 pub use escrow_fixture::MODERATOR_FEE_SATS;
 pub use http::{http_response, serve_on};
 pub use instructions::ESCROW_SPEND_FEE_SATS;
-pub use network::{NetworkMode, ServeOptions};
+pub use network::{NetworkMode, ServeOptions, VaultChoice};
 pub use orders::OrderError;
 pub use pay_order::PayError;
+pub use vault_key::VaultMode;
 pub use watch::{
     AWAITING_FUNDING, AWAITING_PAYMENT, AWAITING_TERMS, DISPUTED, FUNDED, FUNDED_WITHOUT_REFUND, FUNDING_SEEN, PAID,
     PAYMENT_SEEN, RELEASED, SETTLED,
@@ -104,6 +114,30 @@ pub struct EscrowConfig {
     pub moderator_url: Option<String>,
     /// This node answers dispute letters as the testnet4 fixture moderator.
     pub moderates: bool,
+}
+
+/// The node's local attack surface and at-rest secrets.
+#[derive(Clone, Debug)]
+pub struct LocalConfig {
+    pub vault: VaultMode,
+    /// The one browser origin besides the desktop webview that may call the node.
+    pub shop_origin: String,
+    /// `POST /pair` prints one-time codes. The desktop app turns this off.
+    pub pair_codes: bool,
+    pub egress: Egress,
+}
+
+impl LocalConfig {
+    /// `vault.key` in the data dir, the default shop origin, no proxy.
+    /// Tests and headless tools; `ob-node serve` picks each field from flags.
+    pub fn headless() -> Self {
+        Self {
+            vault: VaultMode::File,
+            shop_origin: http_guard::DEFAULT_SHOP_ORIGIN.to_string(),
+            pair_codes: true,
+            egress: Egress::default(),
+        }
+    }
 }
 
 impl NodeConfig {
@@ -150,6 +184,9 @@ pub struct Node {
     pairing_token: String,
     /// True only in the process that created `pairing.token`.
     pairing_fresh: bool,
+    pub(crate) pairing_codes: pairing::PairingCodes,
+    pub(crate) mail_drop: mail_drop::MailDrop,
+    pub(crate) local: LocalConfig,
     rates: Rates,
     pub(crate) addresses: Mutex<AddressBook>,
     pub(crate) buyer_orders: Mutex<BuyerOrders>,
@@ -175,16 +212,29 @@ impl Node {
     /// The catalog must carry payment codes for `config.network`. The
     /// mailbox lives in `mailbox/`, wallets in `wallets/`, and the vault key,
     /// pairing token, address book, and orders at the top of `dir`.
-    pub fn open_with(dir: impl Into<PathBuf>, mut catalog: Catalog, config: NodeConfig) -> Result<Self, Error> {
+    pub fn open_with(dir: impl Into<PathBuf>, catalog: Catalog, config: NodeConfig) -> Result<Self, Error> {
+        Self::open_local(dir, catalog, config, LocalConfig::headless())
+    }
+
+    /// [`Node::open_with`] with the vault mode, allowed shop origin, pairing
+    /// codes, and proxy chosen by the caller. Refuses a data dir whose secret
+    /// files other users can read.
+    pub fn open_local(
+        dir: impl Into<PathBuf>,
+        mut catalog: Catalog,
+        config: NodeConfig,
+        local: LocalConfig,
+    ) -> Result<Self, Error> {
         let dir = dir.into();
         let network = config.network;
         check_catalog_network(&catalog, network)?;
         fs::create_dir_all(&dir).map_err(|err| Error::Detail(err.to_string()))?;
+        vault_key::check_private(&dir)?;
         let vendor_labels = VendorLabels::open(&dir, &mut catalog, &fixture_keys().store)?;
         let mailbox = Mailbox::open(dir.join("mailbox")).map_err(|err| Error::Detail(err.to_string()))?;
         let escrow_inbox = Mailbox::open(dir.join("escrow-mail")).map_err(|err| Error::Detail(err.to_string()))?;
         let (pairing_token, pairing_fresh) = load_pairing(&dir)?;
-        let vault = Vault::open(&dir)?;
+        let vault = Vault::open(&dir, &local.vault)?;
         let addresses = AddressBook::open(&dir, vault.clone())?;
         let buyer_orders = BuyerOrders::open(&dir, vault.clone(), network.as_str())?;
         let labelers = Labelers::open(&dir, vault.clone())?;
@@ -206,7 +256,10 @@ impl Node {
             escrow: escrow_mail::Escrow::new(config.escrow, escrow_inbox),
             pairing_token,
             pairing_fresh,
-            rates: Rates::new(),
+            pairing_codes: pairing::PairingCodes::new(local.pair_codes),
+            mail_drop: mail_drop::MailDrop::new(),
+            rates: Rates::new(local.egress.clone()),
+            local,
             addresses: Mutex::new(addresses),
             buyer_orders: Mutex::new(buyer_orders),
             labelers: Mutex::new(labelers),
@@ -428,8 +481,9 @@ pub fn catalog_value(catalog: &Catalog) -> Result<Value, ProtocolError> {
 /// Shared secret for `POST /orders`, stored as `pairing.token` in the node data dir.
 ///
 /// The first boot creates it. [`Node::fresh_pairing_token`] is how the process
-/// learns that it should print the token once. `GET /pair` on the loopback
-/// listener is how the local shop reads it after that.
+/// learns that it should print the token once. The desktop app reads the file
+/// and hands the token to its webview; a browser shop trades a one-time code
+/// from the terminal for it at `POST /pair`.
 fn load_pairing(dir: &Path) -> Result<(String, bool), Error> {
     let path = dir.join("pairing.token");
     if let Some(token) = read_pairing(&path)? {

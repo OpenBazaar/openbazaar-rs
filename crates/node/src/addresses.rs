@@ -149,11 +149,7 @@ impl AddressBook {
     fn flush(&self) -> Result<(), String> {
         let plain = serde_json::to_vec(&self.items.iter().map(Address::to_json).collect::<Vec<_>>())
             .map_err(|err| err.to_string())?;
-        let sealed = self.vault.seal(&plain).map_err(|err| err.to_string())?;
-        let tmp = self.path.with_extension("tmp");
-        fs::write(&tmp, &sealed).map_err(|err| err.to_string())?;
-        fs::rename(&tmp, &self.path).map_err(|err| err.to_string())?;
-        Ok(())
+        self.vault.write_sealed(&self.path, &plain).map_err(|err| err.to_string())
     }
 }
 

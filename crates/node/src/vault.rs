@@ -1,8 +1,9 @@
 //! Encryption for records that stay on this machine.
 //!
-//! The key file is created on first boot, mode 0600, and never leaves the
-//! data directory. Addresses and the buyer's order list are sealed with
-//! ChaCha20-Poly1305. The public catalog is a different file.
+//! The key comes from [`crate::vault_key`]: the OS keystore, a passphrase, or
+//! (headless and tests only) `vault.key` in the data directory. Addresses,
+//! orders, seeds, and wallet state are sealed with ChaCha20-Poly1305. The
+//! public catalog is a different file.
 
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -13,6 +14,7 @@ use chacha20poly1305::{ChaCha20Poly1305, Key, Nonce};
 use rand::rngs::StdRng;
 use rand::{RngCore, SeedableRng};
 
+use crate::vault_key::{self, VaultMode};
 use crate::Error;
 
 const MAGIC: &[u8] = b"OBV1";
@@ -23,22 +25,11 @@ pub(crate) struct Vault {
 }
 
 impl Vault {
-    pub(crate) fn open(dir: &Path) -> Result<Self, Error> {
-        let path = dir.join("vault.key");
-        let bytes = if path.exists() {
-            fs::read(&path).map_err(|err| Error::Detail(err.to_string()))?
-        } else {
-            let mut bytes = vec![0u8; 32];
-            StdRng::from_os_rng().fill_bytes(&mut bytes);
-            write_secret(&path, &bytes)?;
-            bytes
-        };
-        if bytes.len() != 32 {
-            return Err(Error::Detail("the vault key is the wrong length".to_string()));
-        }
-        let mut key = Key::default();
-        key.copy_from_slice(&bytes);
-        Ok(Self { key })
+    pub(crate) fn open(dir: &Path, mode: &VaultMode) -> Result<Self, Error> {
+        let bytes = vault_key::load_key(dir, mode)?;
+        Ok(Self {
+            key: Key::clone_from_slice(&bytes),
+        })
     }
 
     pub(crate) fn seal(&self, plaintext: &[u8]) -> Result<Vec<u8>, Error> {
@@ -88,7 +79,7 @@ impl Vault {
     }
 }
 
-fn write_secret(path: &Path, bytes: &[u8]) -> Result<(), Error> {
+pub(crate) fn write_secret(path: &Path, bytes: &[u8]) -> Result<(), Error> {
     let mut options = OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]

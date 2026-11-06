@@ -100,7 +100,7 @@ pub(crate) fn action_response(
         Err(PayError::Chain(message)) => json_error("502 Bad Gateway", &message, origin),
         Err(PayError::Failed(detail)) => {
             eprintln!("ob-node: escrow: {detail}");
-            json_error("500 Internal Server Error", &detail, origin)
+            json_error("500 Internal Server Error", "The escrow step failed. Details are in the node log.", origin)
         }
     }
 }
