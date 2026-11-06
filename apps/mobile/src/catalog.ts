@@ -120,7 +120,18 @@ export type BuyerLine = {
   priceSats: number;
 };
 
-export type BuyerOrder = {
+export type NetworkName = "testnet4" | "mainnet";
+export type OrderTracking = {
+  network: NetworkName | null;
+  receivedSats: number;
+  confirmations: number;
+  txids: string[];
+  payTxid: string | null;
+  paying: boolean;
+  payError: string | null;
+};
+
+export type BuyerOrder = OrderTracking & {
   id: string;
   checkoutId: string;
   created: number;
@@ -138,6 +149,10 @@ export type BuyerOrder = {
 };
 
 export type DirectPayment = {
+  address: string;
+  amountSats: number | null;
+  network: NetworkName | null;
+  silentPaymentCode: string;
   lightning: string;
   onchain: string;
 };
@@ -150,7 +165,7 @@ export type EscrowReceipt = {
   signaturesRequired: number;
 };
 
-export type SellerOrder = {
+export type SellerOrder = OrderTracking & {
   orderId: string;
   seller: string;
   shipFrom: string;
@@ -195,7 +210,7 @@ export async function fetchCatalog(): Promise<ShopCatalog> {
   return parseCatalog(await readJson(response));
 }
 
-async function paired(path: string, init?: RequestInit): Promise<unknown> {
+export async function paired(path: string, init?: RequestInit): Promise<unknown> {
   const token = await pairingToken();
   const response = await request(path, {
     ...init,
@@ -387,6 +402,10 @@ function parseRates(value: unknown): RateTable {
   return rates;
 }
 
+export class NodeApiError extends Error {
+  constructor(public readonly status: number, message: string) { super(message); this.name = "NodeApiError"; }
+}
+
 async function request(path: string, init?: RequestInit): Promise<Response> {
   let response: Response;
   try {
@@ -395,7 +414,7 @@ async function request(path: string, init?: RequestInit): Promise<Response> {
     throw new NodeOfflineError();
   }
   if (!response.ok) {
-    throw new Error(await errorMessage(response));
+    throw new NodeApiError(response.status, await errorMessage(response));
   }
   return response;
 }
@@ -458,7 +477,7 @@ function parseAddress(value: unknown): SavedAddress {
   };
 }
 
-function parseBuyerOrder(value: unknown): BuyerOrder {
+export function parseBuyerOrder(value: unknown): BuyerOrder {
   const order = recordOf(value, "The orders could not be read.");
   const settlement = order.settlement;
   if (settlement !== "direct" && settlement !== "escrow") {
@@ -481,6 +500,7 @@ function parseBuyerOrder(value: unknown): BuyerOrder {
     totalSats: requiredNumber(order.totalSats),
     settlement,
     addressLabel: typeof order.addressLabel === "string" ? order.addressLabel : "",
+    ...parseTracking(order),
     status: typeof order.status === "string" && order.status.trim() ? order.status : "Awaiting payment",
     payment: settlement === "direct" ? parsePayment(order.payment) : null,
     escrow: settlement === "escrow" ? parseEscrow(order.escrow) : null,
@@ -576,6 +596,7 @@ function parseSellerOrder(value: unknown): SellerOrder {
     totalSats: requiredNumber(order.totalSats),
     settlement,
     addressLabel: typeof order.addressLabel === "string" ? order.addressLabel : "",
+    ...parseTracking(order),
     status: typeof order.status === "string" && order.status.trim() ? order.status : "Awaiting payment",
     payment: settlement === "direct" ? parsePayment(order.payment) : null,
     escrow: settlement === "escrow" ? parseEscrow(order.escrow) : null,
@@ -634,19 +655,25 @@ function parseLines(value: unknown, fallback: BuyerLine): BuyerLine[] {
 function parsePayment(value: unknown): DirectPayment {
   const payment = recordOf(value, "The shop accepted the order but the page could not read the receipt.");
   return {
-    lightning: requiredString(payment.lightning),
-    onchain: requiredString(payment.onchain),
+    address: typeof payment.address === "string" ? payment.address : "",
+    amountSats: typeof payment.amountSats === "number" ? requiredNumber(payment.amountSats) : null,
+    network: parseNetworkName(payment.network),
+    silentPaymentCode: typeof payment.silentPaymentCode === "string" ? payment.silentPaymentCode : "",
+    lightning: typeof payment.lightning === "string" ? payment.lightning : "",
+    onchain: typeof payment.onchain === "string" ? payment.onchain : "",
   };
 }
 
-function parseEscrow(value: unknown): EscrowReceipt {
-  const escrow = recordOf(value, "The shop accepted the order but the page could not read the receipt.");
+function parseEscrow(value: unknown): EscrowReceipt | null {
+  if (value == null) return null;
+  const escrow = recordOf(value, "The shop sent unreadable escrow terms.");
+  // Awaiting vendor terms has no funding address yet. It stays read-only.
   return {
-    fundingSats: requiredNumber(escrow.fundingSats),
-    timeoutHeight: requiredNumber(escrow.timeoutHeight),
-    address: requiredString(escrow.address),
+    fundingSats: typeof escrow.fundingSats === "number" ? requiredNumber(escrow.fundingSats) : 0,
+    timeoutHeight: typeof escrow.timeoutHeight === "number" ? requiredNumber(escrow.timeoutHeight) : 0,
+    address: typeof escrow.address === "string" ? escrow.address : "",
     outpoint: typeof escrow.outpoint === "string" ? escrow.outpoint : "",
-    signaturesRequired: requiredNumber(escrow.signaturesRequired),
+    signaturesRequired: typeof escrow.signaturesRequired === "number" ? requiredNumber(escrow.signaturesRequired) : 0,
   };
 }
 
@@ -669,4 +696,19 @@ function requiredNumber(value: unknown): number {
     throw new Error("The shop sent a record the page could not read.");
   }
   return value;
+}
+
+export function parseNetworkName(value: unknown): NetworkName | null {
+  return value === "testnet4" || value === "mainnet" ? value : null;
+}
+function parseTracking(order: Record<string, unknown>): OrderTracking {
+  return {
+    network: parseNetworkName(order.network),
+    receivedSats: typeof order.receivedSats === "number" ? requiredNumber(order.receivedSats) : 0,
+    confirmations: typeof order.confirmations === "number" ? requiredNumber(order.confirmations) : 0,
+    txids: Array.isArray(order.txids) ? order.txids.filter((id): id is string => typeof id === "string" && /^[0-9a-f]{64}$/i.test(id)) : [],
+    payTxid: typeof order.payTxid === "string" && /^[0-9a-f]{64}$/i.test(order.payTxid) ? order.payTxid : null,
+    paying: order.paying === true,
+    payError: typeof order.payError === "string" ? order.payError : null,
+  };
 }
