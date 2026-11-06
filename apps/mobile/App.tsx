@@ -45,6 +45,9 @@ import { filterListings } from "./src/search";
 import { CONTENT_TAGS, parseKeywords, safetyVerdict, toggleHidden, visibleListings, type SafetySettings } from "./src/safety/filter";
 import { readSafety, writeSafety } from "./src/safety/storage";
 
+import { NativeNetworkBadge, NativeOrderPayment, NativeWallet } from "./src/NativePayments";
+import { NodePaymentsProvider } from "./src/marketplace/NodePayments";
+
 type SortKey = "relevance" | "price-asc" | "price-desc" | "newest";
 type Filters = {
   category: string | null;
@@ -60,6 +63,7 @@ type Route =
   | { name: "cart" }
   | { name: "saved" }
   | { name: "addresses" }
+  | { name: "wallet" }
   | { name: "orders" }
   | { name: "order"; id: string }
   | { name: "checkout" }
@@ -388,6 +392,8 @@ export default function App() {
     body = <Confirmation receipt={route.receipt} rates={rates} currency={currency} onOrders={() => setRoute({ name: "orders" })} onShop={goShop} />;
   } else if (route.name === "safety") {
     body = <SafetyScreen settings={safety} onChange={rememberSafety} labelers={labelers} onLabelers={setLabelerState} />;
+  } else if (route.name === "wallet") {
+    body = <NativeWallet rates={rates} currency={currency}/>;
   } else if (route.name === "addresses") {
     body = <Addresses onOffline={() => { setCatalog(null); setLoadError(OFFLINE_MESSAGE); setRoute({ name: "shop" }); }} />;
   } else if (route.name === "orders") {
@@ -413,7 +419,9 @@ export default function App() {
   const cartCount = cart.reduce((sum, line) => sum + line.quantity, 0);
 
   return (
+    <NodePaymentsProvider activeWallet={["wallet", "orders", "order", "done"].includes(route.name)} onWallet={() => { setMenu(false); setRoute({ name: "wallet" }); }}>
     <View style={styles.page}>
+      <NativeNetworkBadge/>
       <View style={styles.trust}>
         <Text style={styles.trustText}>Orders are sealed on this machine</Text>
         <Text style={styles.trustText}>Escrow when the listing accepts it</Text>
@@ -448,6 +456,7 @@ export default function App() {
               </Pressable>
               {menu ? (
                 <View style={styles.menu}>
+                  <TextButton label="Wallet" onPress={() => { setMenu(false); setRoute({ name: "wallet" }); }} />
                   <TextButton label="Addresses" onPress={() => { setMenu(false); setRoute({ name: "addresses" }); }} />
                   <TextButton label="Orders" onPress={() => { setMenu(false); setRoute({ name: "orders" }); }} />
                   <TextButton label="Content filters" onPress={() => { setMenu(false); setRoute({ name: "safety" }); }} />
@@ -459,6 +468,7 @@ export default function App() {
       ) : null}
       <View style={styles.fill}>{body}</View>
     </View>
+    </NodePaymentsProvider>
   );
 }
 
@@ -1078,10 +1088,10 @@ function Confirmation({
           <Text style={styles.meta}>Shipping {priceLabel(order.shippingSats, rates, currency)}</Text>
           <Text style={styles.price}>{priceLabel(order.totalSats, rates, currency)}</Text>
           <Text style={styles.meta}>{order.settlement === "escrow" ? "Moderated escrow" : "Direct pay"}</Text>
-          <PaymentBlock settlement={order.settlement} payment={order.payment} escrow={order.escrow} />
+          <NativeOrderPayment key={order.orderId} initial={order} />
         </View>
       ))}
-      <Text style={styles.note}>No transaction has been broadcast.</Text>
+
       <Button label="View orders" onPress={onOrders} />
       <TextButton label="Back to the shop" onPress={onShop} />
     </ScrollView>
@@ -1293,6 +1303,11 @@ function Orders({
         else setError(err instanceof Error ? err.message : "The orders could not be read.");
       });
   }, []);
+  useEffect(() => {
+    if (orders && orders.every(o => o.status === "Paid")) return;
+    const timer = setInterval(() => { void fetchOrders().then(setOrders).catch(e => setError(e instanceof Error ? e.message : "Orders unavailable")); }, 12000);
+    return () => clearInterval(timer);
+  }, [orders?.every(o => o.status === "Paid")]);
   const groups = orders ? orderGroups(orders) : [];
   return (
     <ScrollView contentContainerStyle={styles.sheetPad}>
@@ -1348,6 +1363,11 @@ function OrderDetail({
         else setError(err instanceof Error ? err.message : "That order could not be read.");
       });
   }, [id]);
+  useEffect(() => {
+    if (order?.status === "Paid") return;
+    const timer = setInterval(() => { void fetchOrder(id).then(setOrder).catch(e => setError(e instanceof Error ? e.message : "Order unavailable")); }, 12000);
+    return () => clearInterval(timer);
+  }, [id, order?.status === "Paid"]);
   if (!order) {
     return <Text style={styles.status}>{error ?? "Loading the order"}</Text>;
   }
@@ -1364,8 +1384,8 @@ function OrderDetail({
       <Text style={styles.meta}>Shipping {priceLabel(order.shippingSats, rates, currency)}</Text>
       <Text style={styles.heroPrice}>{priceLabel(order.totalSats, rates, currency)}</Text>
       <Text style={styles.meta}>{order.settlement === "escrow" ? "Moderated escrow" : "Direct pay"}</Text>
-      <PaymentBlock settlement={order.settlement} payment={order.payment} escrow={order.escrow} />
-      <Text style={styles.note}>No transaction has been broadcast.</Text>
+      <NativeOrderPayment key={order.id} initial={order} />
+
     </ScrollView>
   );
 }
