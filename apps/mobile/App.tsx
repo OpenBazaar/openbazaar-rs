@@ -270,7 +270,7 @@ export default function App() {
   } else if (loadError || !catalog) {
     body = (
       <View style={styles.offline}>
-        <Image source={{ uri: "brand/ob-mark.png" }} style={styles.offlineMark} accessibilityLabel="OpenBazaar" />
+        <Image source={require("./public/brand/ob-market-logo-256.png")} style={styles.offlineMark} accessibilityLabel="OpenBazaar" />
         <Text style={styles.offlineTitle}>Offline</Text>
         <Text style={styles.offlineBody}>{loadError ?? OFFLINE_MESSAGE}</Text>
         <Button label="Try again" onPress={() => void load()} />
@@ -422,7 +422,7 @@ export default function App() {
       {catalog && !loadError ? (
         <View style={styles.header}>
           <Pressable accessibilityRole="button" accessibilityLabel="OpenBazaar home" onPress={goShop} style={styles.brand}>
-            <Image source={{ uri: "brand/ob-mark.png" }} style={styles.mark} accessibilityLabel="OpenBazaar" />
+            <Image source={require("./public/brand/ob-market-logo-256.png")} style={styles.mark} accessibilityLabel="OpenBazaar" />
             <Text style={styles.wordmark}>OpenBazaar</Text>
           </Pressable>
           <SearchField
@@ -1512,7 +1512,7 @@ const styles = StyleSheet.create({
   trustText: { color: "#f4f8fb", fontFamily: SANS, fontSize: 13, lineHeight: 16 },
   header: { minHeight: 64, backgroundColor: CARD, borderBottomWidth: 1, borderBottomColor: LINE, flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 12, paddingHorizontal: 20, paddingVertical: 12 },
   brand: { flexDirection: "row", alignItems: "center", gap: 8 },
-  mark: { width: 32, height: 32 },
+  mark: { width: 40, height: 40, borderRadius: 7 },
   wordmark: { fontFamily: SANS, fontSize: 20, lineHeight: 24, fontWeight: "500", color: INK },
   search: { flexGrow: 1, flexBasis: 220, minHeight: 44, backgroundColor: SOFT, borderRadius: 8, paddingHorizontal: 12, fontFamily: SANS, fontSize: 16, color: INK },
   headerTools: { flexDirection: "row", alignItems: "center", gap: 8, marginLeft: "auto" },
@@ -1619,7 +1619,7 @@ const styles = StyleSheet.create({
   copy: { marginTop: 12, gap: 4 },
   copyValue: { fontFamily: SANS, fontSize: 13, lineHeight: 18, color: INK },
   offline: { flex: 1, justifyContent: "center", padding: 32, gap: 8, backgroundColor: NAVY },
-  offlineMark: { width: 56, height: 56 },
+  offlineMark: { width: 56, height: 56, borderRadius: 10 },
   offlineTitle: { fontFamily: SANS, fontSize: 32, color: "#f4f8fb" },
   offlineBody: { fontFamily: SANS, fontSize: 16, lineHeight: 24, color: "#f4f8fb", maxWidth: 460 },
 });

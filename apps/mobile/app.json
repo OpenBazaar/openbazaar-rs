@@ -3,6 +3,7 @@
     "name": "OpenBazaar",
     "slug": "openbazaar",
     "version": "0.0.0",
+    "icon": "./public/brand/ob-market-logo.png",
     "orientation": "portrait",
     "backgroundColor": "#063853",
     "userInterfaceStyle": "light",
@@ -10,7 +11,8 @@
       "baseUrl": "."
     },
     "web": {
-      "bundler": "metro"
+      "bundler": "metro",
+      "favicon": "./public/brand/ob-market-logo-256.png"
     }
   }
 }
