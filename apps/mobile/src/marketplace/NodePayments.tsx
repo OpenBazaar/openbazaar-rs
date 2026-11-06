@@ -24,6 +24,7 @@ import {
   payOrder,
   txUrl
 } from '../nodeWallet'
+import { paymentStatusView } from '../paymentStatus'
 import { useNodeResource } from '../useNodeResource'
 
 function usePaymentState(activeWallet: boolean, onWallet: () => void) {
@@ -387,7 +388,17 @@ export function OrderPayment({
     order.settlement === 'escrow' ||
     !!order.escrow ||
     order.status === 'Awaiting vendor terms'
-  const lowBalance = !!wallet.data && wallet.data.balance.spendableSats < due
+  const view = paymentStatusView({
+    network: orderNetwork ?? net ?? 'testnet4',
+    status: order.status,
+    confirmations: order.confirmations,
+    requiredConfirmations: network.data?.confirmations,
+    dueSats: due,
+    sending: order.paying || sending,
+    payTxid: order.payTxid,
+    wallet: wallet.data?.balance
+  })
+  const lowBalance = !!view.balance
   const blocked =
     escrow ||
     !net ||
@@ -449,10 +460,7 @@ export function OrderPayment({
             Still owed: {due.toLocaleString()} sats ({bitcoinAmount(due)} BTC)
           </span>
         )}
-        <span>
-          Confirmations: {order.confirmations} /{' '}
-          {network.data?.confirmations ?? '—'}
-        </span>
+        <span>{view.confirmations}</span>
       </div>
       {txids.map(txid =>
         orderNetwork ? (
@@ -492,13 +500,7 @@ export function OrderPayment({
               {network.error || wallet.error}
             </p>
           )}
-          {order.paying || sending ? (
-            <p role='status'>Sending payment from your node wallet…</p>
-          ) : order.payTxid ? (
-            <p role='status'>
-              Payment sent. Waiting for the node to observe and confirm it.
-            </p>
-          ) : null}
+          {view.progress && <p role='status'>{view.progress}</p>}
           {due > 0 && !order.payTxid && order.status === 'Awaiting payment' && (
             <div className='ob-payment-options'>
               <div className='ob-pay-wallet'>
@@ -509,15 +511,13 @@ export function OrderPayment({
                 >
                   Pay from your node wallet
                 </button>
-                {lowBalance && (
+                {view.balance && (
                   <p className='ob-pay-note is-blocking'>
-                    Your wallet has{' '}
-                    {(wallet.data?.balance.spendableSats ?? 0).toLocaleString(
-                      'en-US'
-                    )}{' '}
-                    spendable sats.{' '}
+                    {view.balance.message}{' '}
                     <button className='ob-text-link' onClick={onWallet}>
-                      Fund your node wallet
+                      {view.balance.kind === 'pending'
+                        ? 'Open wallet'
+                        : 'Fund your node wallet'}
                     </button>
                   </p>
                 )}

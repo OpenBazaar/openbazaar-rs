@@ -25,6 +25,7 @@ import {
   payOrder,
   txUrl
 } from './nodeWallet'
+import { paymentStatusView } from './paymentStatus'
 import { useNodeResource } from './useNodeResource'
 import { usePairedNode } from './marketplace/NodePayments'
 
@@ -276,7 +277,17 @@ export function NativeOrderPayment({
   const [busy, setBusy] = useState(false),
     [error, setError] = useState('')
   const lock = useRef(false)
-  const insufficient = !!wallet.data && wallet.data.balance.spendableSats < due
+  const view = paymentStatusView({
+    network: orderNet ?? net ?? 'testnet4',
+    status: order.status,
+    confirmations: order.confirmations,
+    requiredConfirmations: network.data?.confirmations,
+    dueSats: due,
+    sending: order.paying || busy,
+    payTxid: order.payTxid,
+    wallet: wallet.data?.balance
+  })
+  const insufficient = !!view.balance
   const mismatch = !!net && (orderNet !== net || wallet.data?.network !== net)
   const disabled =
     busy ||
@@ -341,10 +352,7 @@ export function NativeOrderPayment({
         Received {order.receivedSats.toLocaleString()} /{' '}
         {order.totalSats.toLocaleString()} sats
       </Text>
-      <Text style={s.body}>
-        Confirmations: {order.confirmations} /{' '}
-        {network.data?.confirmations ?? '—'}
-      </Text>
+      <Text style={s.body}>{view.confirmations}</Text>
       {txids.map(txid => (
         <Pressable
           key={txid}
@@ -381,11 +389,7 @@ export function NativeOrderPayment({
               Order, wallet, and node networks must match.
             </Text>
           )}
-          {order.paying || busy ? (
-            <Text style={s.body}>Sending payment…</Text>
-          ) : order.payTxid ? (
-            <Text style={s.body}>Payment sent. Waiting for confirmations.</Text>
-          ) : null}
+          {view.progress && <Text style={s.body}>{view.progress}</Text>}
           {due > 0 && !order.payTxid && order.status === 'Awaiting payment' && (
             <>
               <Action
@@ -393,8 +397,8 @@ export function NativeOrderPayment({
                 disabled={disabled}
                 onPress={() => void send()}
               />
-              {insufficient && (
-                <Text style={s.body}>Insufficient spendable balance.</Text>
+              {view.balance && (
+                <Text style={s.body}>{view.balance.message}</Text>
               )}
               <Action label='Open node wallet' onPress={onWallet} />
               {order.payment?.address && !mismatch && (

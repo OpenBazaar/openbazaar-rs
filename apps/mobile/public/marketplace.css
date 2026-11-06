@@ -1146,7 +1146,6 @@ svg {
   color: #8f9e7f;
 }
 .ob-order-status {
-  text-transform: capitalize;
   font-size: 9px;
   padding: 5px 9px;
   background: #f0f4e8;
