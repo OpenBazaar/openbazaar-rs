@@ -5,26 +5,30 @@
 //! signed terms, the funding script and value, the aggregate key, the exact
 //! unsigned outcome transaction, the adaptor pre-signature over its sighash,
 //! the verifiable encryption of the moderator half, and the claimant's
-//! signature over the whole letter. Only then does the moderator decrypt.
+//! signature over the whole letter. The funding output is also checked
+//! against the moderator's own chain view. Only then does the moderator
+//! decrypt, through [`crate::Moderator::open`].
 
 use bitcoin::{OutPoint, Transaction};
 use musig2::secp::{Point, Scalar, G};
 use musig2::LiftedSignature;
 use openbazaar_protocol::{EscrowBranch, EscrowTerms as EnvelopeTerms};
 
-use crate::contract::{self, Branch, Contract};
-use crate::crypto::{self, scalar_key};
+use crate::context::Context;
+use crate::contract::{self, Branch, Contract, Role};
+use crate::crypto;
+use crate::moderator::{FundingChain, ModeratorKeys, RulingKey};
 use crate::proofs::tagged;
-use crate::terms::{Policy, SignedTerms};
+use crate::terms::SignedTerms;
 use crate::tx::{self, Spend};
 use crate::vencrypt::VerifiableShare;
 use crate::wire::{Reader, Writer, MEMO_MAX};
 use crate::{Error, Party};
 
 const LETTER_MAGIC: &[u8; 4] = b"OBDL";
-const LETTER_VERSION: u8 = 2;
+const LETTER_VERSION: u8 = 3;
 const RULING_MAGIC: &[u8; 4] = b"OBRU";
-const RULING_VERSION: u8 = 1;
+const RULING_VERSION: u8 = 2;
 
 /// Build and sign a letter asking the moderator to rule for `branch.favored`.
 pub(crate) fn build_letter(
@@ -54,11 +58,11 @@ pub(crate) fn build_letter(
 }
 
 fn letter_digest(body: &[u8]) -> [u8; 32] {
-    tagged("ob-escrow/letter/v2", &[body])
+    tagged("ob-escrow/letter/v3", &[body])
 }
 
 /// A dispute letter whose every field the moderator has verified.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct DisputeCase {
     contract: Contract,
     favored: Party,
@@ -69,16 +73,24 @@ pub struct DisputeCase {
 }
 
 impl DisputeCase {
-    /// Verify a letter for the moderator holding `moderator_public`.
+    pub(crate) fn letter_hash(letter: &[u8]) -> [u8; 32] {
+        tagged("ob-escrow/letter-bytes/v3", &[letter])
+    }
+
+    /// Verify a letter against the moderator context and chain view.
     ///
-    /// `received_height` is the chain height when the letter arrived. Letters
-    /// after `dispute_deadline` are refused, so the ruling has the full
-    /// ruling window before the vendor claim becomes final.
-    pub fn verify(
+    /// `ctx.tip` is the height the letter arrived; letters after
+    /// `dispute_deadline` are refused. `ctx.moderator` must be exactly the
+    /// record in the terms, and the terms are checked against the policy in
+    /// that record, so a moderator cannot refuse terms it published.
+    ///
+    /// `proofs_cached` skips only the adaptor and share proofs, for letter
+    /// bytes whose hash already passed them.
+    pub(crate) fn verify(
         letter: &[u8],
-        moderator_public: &[u8; 33],
-        received_height: u32,
-        policy: &Policy,
+        ctx: &Context,
+        chain: &impl FundingChain,
+        proofs_cached: bool,
     ) -> Result<Self, Error> {
         let mut r = Reader::new(letter, LETTER_MAGIC, LETTER_VERSION)?;
         let signed = SignedTerms::decode(r.var(usize::MAX)?)?;
@@ -96,10 +108,7 @@ impl DisputeCase {
         let signature: [u8; 64] = r.array()?;
         r.finish()?;
 
-        let contract = Contract::new(signed, outpoint, moderator_public, policy)?;
-        if received_height > contract.signed.terms().dispute_deadline {
-            return Err(Error::DisputeWindowClosed);
-        }
+        let contract = Contract::new(signed, outpoint, ctx, Role::Moderator)?;
         let body = &letter[..body_len];
         crypto::schnorr_verify(&contract.key(favored), &letter_digest(body), &signature)?;
         if contract.funding_output.value != funding_value
@@ -108,14 +117,19 @@ impl DisputeCase {
         {
             return Err(Error::KeyMismatch);
         }
+        if chain.funding_output(&outpoint).as_ref() != Some(&contract.funding_output) {
+            return Err(Error::FundingNotOnChain);
+        }
         let spend = Spend::dispute(favored);
         if &outcome != contract.tx(spend) {
             return Err(Error::BadPayload);
         }
-        let sighash = tx::key_spend_sighash(&outcome, &contract.funding_output)?;
         let adaptor_point = contract::adaptor_point(party_point, share.point())?;
-        crypto::verify_adaptor(&contract.key_agg, &adaptor_sig, &sighash, adaptor_point)?;
-        share.verify(&contract.moderator, &contract.branch_context(favored)?)?;
+        if !proofs_cached {
+            let sighash = tx::key_spend_sighash(&outcome, &contract.funding_output)?;
+            crypto::verify_adaptor(&contract.key_agg, &adaptor_sig, &sighash, adaptor_point)?;
+            share.verify(&contract.moderator, &contract.branch_context(favored)?)?;
+        }
 
         Ok(Self {
             contract,
@@ -123,7 +137,7 @@ impl DisputeCase {
             memo,
             adaptor_point,
             share,
-            letter_hash: tagged("ob-escrow/letter-bytes/v2", &[letter]),
+            letter_hash: Self::letter_hash(letter),
         })
     }
 
@@ -148,23 +162,31 @@ impl DisputeCase {
         self.contract.tx(Spend::dispute(self.favored))
     }
 
-    /// Decrypt the moderator half and sign the ruling.
-    pub fn rule(&self, moderator_secret: &[u8; 32]) -> Result<ModeratorRuling, Error> {
-        let secret = scalar_key(moderator_secret)?;
-        if secret * G != self.contract.moderator {
+    pub(crate) fn ruling_key(&self) -> RulingKey {
+        RulingKey {
+            terms_digest: self.terms().digest(),
+            outpoint: self.contract.outpoint,
+        }
+    }
+
+    /// Decrypt the moderator half and sign the ruling. The share was verified
+    /// in [`Self::verify`]; the decrypted half is checked against its point.
+    pub(crate) fn rule(&self, keys: &ModeratorKeys) -> Result<ModeratorRuling, Error> {
+        if *keys.decryption() * G != self.contract.moderator {
             return Err(Error::WrongKey);
         }
-        let ctx = self.contract.branch_context(self.favored)?;
-        let share = self.share.open(secret, &ctx)?;
-        let message = ruling_message(&self.contract.outpoint, self.favored, &self.adaptor_point);
-        let signature = crypto::schnorr_sign(&secret, &message)?;
-        Ok(ModeratorRuling {
+        let share = self.share.open(*keys.decryption())?;
+        let mut ruling = ModeratorRuling {
+            terms_digest: self.terms().digest(),
+            output_key: self.contract.output_key,
             outpoint: self.contract.outpoint,
             favored: self.favored,
             adaptor_point: self.adaptor_point,
             share,
-            signature,
-        })
+            signature: [0; 64],
+        };
+        ruling.signature = crypto::schnorr_sign(keys.signing(), &ruling.message())?;
+        Ok(ruling)
     }
 
     /// Check that a protocol dispute envelope's escrow summary matches this letter.
@@ -176,13 +198,13 @@ impl DisputeCase {
         };
         let matches = envelope.buyer == self.contract.buyer.serialize_xonly()
             && envelope.vendor == self.contract.vendor.serialize_xonly()
-            && envelope.moderator == terms.moderator
-            && envelope.moderator_fee == terms.moderator_fee.to_sat()
+            && envelope.moderator == terms.moderator.signing_key
+            && envelope.moderator_fee == terms.moderator.fee.to_sat()
             && envelope.dispute_deadline == terms.dispute_deadline
             && envelope.vendor_claim_height == terms.vendor_claim_height
             && envelope.refund_locktime == terms.refund_height
             && claimed.adaptor_point == self.adaptor_point.serialize()
-            && tagged("ob-escrow/letter-bytes/v2", &[&claimed.letter]) == self.letter_hash;
+            && Self::letter_hash(&claimed.letter) == self.letter_hash;
         if matches {
             Ok(())
         } else {
@@ -191,37 +213,17 @@ impl DisputeCase {
     }
 }
 
-/// Verify a letter and, if it holds up, decrypt and sign a ruling for its branch.
-///
-/// Calling this is the moderator's decision. It should be called for at most
-/// one branch per escrow; see the crate docs on equivocation.
-pub fn moderator_open(
-    letter: &[u8],
-    moderator_secret: &[u8; 32],
-    received_height: u32,
-    policy: &Policy,
-) -> Result<ModeratorRuling, Error> {
-    let public = (scalar_key(moderator_secret)? * G).serialize();
-    DisputeCase::verify(letter, &public, received_height, policy)?.rule(moderator_secret)
-}
-
-fn ruling_message(outpoint: &OutPoint, favored: Party, adaptor_point: &Point) -> [u8; 32] {
-    let mut w = Writer::new(b"OBRM", 1);
-    w.outpoint(outpoint);
-    tagged(
-        "ob-escrow/ruling/v1",
-        &[w.as_slice(), &[favored as u8], &adaptor_point.serialize()],
-    )
-}
-
-/// The moderator's decision: its decrypted half, plus a signature naming the branch.
+/// The moderator's decision: its decrypted half, plus a signature naming the
+/// escrow (terms digest, funding output key, outpoint) and the branch.
 ///
 /// The half is not a Bitcoin signature. Finishing the outcome also needs the
 /// favored party's half. The signature makes the ruling attributable: two
-/// valid rulings for the same outpoint and different branches prove the
-/// moderator equivocated.
+/// valid rulings for the same terms and outpoint and different branches prove
+/// the moderator equivocated.
 #[derive(Clone)]
 pub struct ModeratorRuling {
+    terms_digest: [u8; 32],
+    output_key: [u8; 32],
     outpoint: OutPoint,
     favored: Party,
     adaptor_point: Point,
@@ -247,15 +249,30 @@ impl ModeratorRuling {
         self.outpoint
     }
 
-    /// Check the moderator's signature over (outpoint, branch, adaptor point).
-    pub fn verify(&self, moderator: &[u8; 33]) -> Result<(), Error> {
-        let key = crypto::point_from_compressed(moderator)?;
-        let message = ruling_message(&self.outpoint, self.favored, &self.adaptor_point);
-        crypto::schnorr_verify(&key, &message, &self.signature)
+    pub fn terms_digest(&self) -> [u8; 32] {
+        self.terms_digest
+    }
+
+    fn message(&self) -> [u8; 32] {
+        let mut w = Writer::new(b"OBRM", 2);
+        w.bytes(&self.terms_digest);
+        w.bytes(&self.output_key);
+        w.outpoint(&self.outpoint);
+        w.u8(self.favored as u8);
+        w.point(&self.adaptor_point);
+        tagged("ob-escrow/ruling/v2", &[w.as_slice()])
+    }
+
+    /// Check the moderator's signature with its published signing key.
+    pub fn verify(&self, moderator_signing_key: &[u8; 33]) -> Result<(), Error> {
+        let key = crypto::point_from_compressed(moderator_signing_key)?;
+        crypto::schnorr_verify(&key, &self.message(), &self.signature)
     }
 
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut w = Writer::new(RULING_MAGIC, RULING_VERSION);
+        w.bytes(&self.terms_digest);
+        w.bytes(&self.output_key);
         w.outpoint(&self.outpoint);
         w.u8(self.favored as u8);
         w.point(&self.adaptor_point);
@@ -267,6 +284,8 @@ impl ModeratorRuling {
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, Error> {
         let mut r = Reader::new(bytes, RULING_MAGIC, RULING_VERSION)?;
         let ruling = Self {
+            terms_digest: r.array()?,
+            output_key: r.array()?,
             outpoint: r.outpoint()?,
             favored: Party::from_byte(r.u8()?).ok_or(Error::Malformed)?,
             adaptor_point: r.point()?,
@@ -283,12 +302,22 @@ impl ModeratorRuling {
     }
 }
 
-/// Two rulings that prove the moderator signed both outcomes of one escrow.
-pub fn is_equivocation(a: &ModeratorRuling, b: &ModeratorRuling, moderator: &[u8; 33]) -> bool {
-    a.outpoint == b.outpoint
+/// Two rulings that prove the moderator signed both outcomes of one escrow:
+/// same terms digest, output key, and outpoint, different branches.
+///
+/// Rulings over different terms are never equivocation, so a party cannot
+/// frame the moderator by getting it to rule on terms it re-signed.
+pub fn is_equivocation(
+    a: &ModeratorRuling,
+    b: &ModeratorRuling,
+    moderator_signing_key: &[u8; 33],
+) -> bool {
+    a.terms_digest == b.terms_digest
+        && a.output_key == b.output_key
+        && a.outpoint == b.outpoint
         && a.favored != b.favored
-        && a.verify(moderator).is_ok()
-        && b.verify(moderator).is_ok()
+        && a.verify(moderator_signing_key).is_ok()
+        && b.verify(moderator_signing_key).is_ok()
 }
 
 /// Finish the favored party's dispute outcome from the moderator's ruling.
@@ -298,9 +327,12 @@ pub(crate) fn settle(
     secret: &Scalar,
     ruling: &ModeratorRuling,
 ) -> Result<Transaction, Error> {
-    ruling.verify(&contract.signed.terms().moderator)?;
+    let terms = contract.signed.terms();
+    ruling.verify(&terms.moderator.signing_key)?;
     let adaptor_point = branch.adaptor_point()?;
-    if ruling.outpoint != contract.outpoint
+    if ruling.terms_digest != terms.digest()
+        || ruling.output_key != contract.output_key
+        || ruling.outpoint != contract.outpoint
         || ruling.favored != branch.favored
         || ruling.adaptor_point != adaptor_point
     {
@@ -345,8 +377,8 @@ pub(crate) fn envelope_terms(
     EnvelopeTerms {
         buyer: contract.buyer.serialize_xonly(),
         vendor: contract.vendor.serialize_xonly(),
-        moderator: terms.moderator,
-        moderator_fee: terms.moderator_fee.to_sat(),
+        moderator: terms.moderator.signing_key,
+        moderator_fee: terms.moderator.fee.to_sat(),
         dispute_deadline: terms.dispute_deadline,
         vendor_claim_height: terms.vendor_claim_height,
         refund_locktime: terms.refund_height,

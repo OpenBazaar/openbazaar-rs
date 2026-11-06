@@ -35,6 +35,18 @@ pub enum Error {
     InvalidParams(&'static str),
     /// The MuSig aggregate and the taproot output key diverged.
     KeyMismatch,
+    /// The network fee exceeds the policy maximum.
+    FeeTooHigh,
+    /// The timeline is too close to, or too far from, the current tip.
+    HeightsOutOfRange,
+    /// An output script is not a standard payout type or is below its dust limit.
+    NonStandardOutput,
+    /// The moderator already ruled for the other branch of this escrow.
+    AlreadyRuled,
+    /// The funding output named by the letter is not on the moderator's chain.
+    FundingNotOnChain,
+    /// The ruling store failed.
+    RulingStore(&'static str),
 }
 
 impl fmt::Display for Error {
@@ -64,6 +76,16 @@ impl fmt::Display for Error {
             Error::KeyMismatch => {
                 write!(f, "taproot output key does not match the MuSig aggregate")
             }
+            Error::FeeTooHigh => write!(f, "network fee exceeds the policy maximum"),
+            Error::HeightsOutOfRange => {
+                write!(f, "escrow heights are out of range for the current tip")
+            }
+            Error::NonStandardOutput => {
+                write!(f, "output script is non-standard or below its dust limit")
+            }
+            Error::AlreadyRuled => write!(f, "the moderator already ruled for the other branch"),
+            Error::FundingNotOnChain => write!(f, "funding output is not on the moderator's chain"),
+            Error::RulingStore(msg) => write!(f, "ruling store failed: {msg}"),
         }
     }
 }

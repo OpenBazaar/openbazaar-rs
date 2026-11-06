@@ -8,7 +8,8 @@ use bitcoin::hashes::Hash;
 use bitcoin::sighash::{Prevouts, SighashCache, TapSighashType};
 use bitcoin::{absolute, Amount, OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Witness};
 
-use crate::terms::{EscrowTerms, Policy};
+use crate::policy::{Policy, ANCHOR_VALUE};
+use crate::terms::EscrowTerms;
 use crate::{Error, Party};
 
 /// Absolute locktime is enabled and replace-by-fee is not.
@@ -132,43 +133,46 @@ pub struct Templates {
 
 impl Templates {
     pub fn build(terms: &EscrowTerms, outpoint: OutPoint) -> Result<Self, Error> {
+        let short = Error::InvalidParams("fees exceed the funding value");
         let payout = terms
             .funding_value
             .checked_sub(terms.network_fee)
-            .ok_or(Error::InvalidParams("fee exceeds the funding value"))?;
-        let winner = payout
-            .checked_sub(terms.moderator_fee)
-            .ok_or(Error::InvalidParams("moderator fee exceeds the payout"))?;
-        let single = |party: Party, lock: absolute::LockTime| {
-            spend_template(
-                outpoint,
-                lock,
-                vec![TxOut {
-                    value: payout,
-                    script_pubkey: terms.payout(party).clone(),
-                }],
-            )
+            .ok_or(short.clone())?;
+        let anchored = payout.checked_sub(ANCHOR_VALUE).ok_or(short.clone())?;
+        let winner = anchored.checked_sub(terms.moderator.fee).ok_or(short)?;
+        let anchor = TxOut {
+            value: ANCHOR_VALUE,
+            script_pubkey: anchor_script(),
+        };
+        let pay = |party: Party, value: Amount| TxOut {
+            value,
+            script_pubkey: terms.payout(party).clone(),
+        };
+        let presigned = |party: Party, lock: absolute::LockTime| {
+            spend_template(outpoint, lock, vec![pay(party, anchored), anchor.clone()])
         };
         let dispute = |party: Party| {
             spend_template(
                 outpoint,
                 absolute::LockTime::ZERO,
                 vec![
+                    pay(party, winner),
                     TxOut {
-                        value: winner,
-                        script_pubkey: terms.payout(party).clone(),
+                        value: terms.moderator.fee,
+                        script_pubkey: terms.moderator.payout.clone(),
                     },
-                    TxOut {
-                        value: terms.moderator_fee,
-                        script_pubkey: terms.moderator_payout.clone(),
-                    },
+                    anchor.clone(),
                 ],
             )
         };
         Ok(Self {
-            release: single(Party::Vendor, absolute::LockTime::ZERO),
-            refund: single(Party::Buyer, height_lock(terms.refund_height)?),
-            claim: single(Party::Vendor, height_lock(terms.vendor_claim_height)?),
+            release: spend_template(
+                outpoint,
+                absolute::LockTime::ZERO,
+                vec![pay(Party::Vendor, payout)],
+            ),
+            refund: presigned(Party::Buyer, height_lock(terms.refund_height)?),
+            claim: presigned(Party::Vendor, height_lock(terms.vendor_claim_height)?),
             buyer_wins: dispute(Party::Buyer),
             vendor_wins: dispute(Party::Vendor),
         })
@@ -193,6 +197,11 @@ impl Templates {
             &self.vendor_wins,
         ]
     }
+}
+
+/// Keyless pay-to-anchor output. Anyone can spend it to CPFP the parent.
+pub fn anchor_script() -> ScriptBuf {
+    ScriptBuf::new_p2a()
 }
 
 fn height_lock(height: u32) -> Result<absolute::LockTime, Error> {

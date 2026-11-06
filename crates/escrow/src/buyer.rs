@@ -17,7 +17,14 @@ use crate::{Error, EscrowTerms, Party, Phase};
 /// Holding one means the refund is fully signed and verified, and the
 /// buyer-wins adaptor signature and its moderator share have verified. Only
 /// now is the funding PSBT handed back for signing.
-#[derive(Clone)]
+///
+/// Not `Clone`: a copy could refund after its original signed the release,
+/// or settle a dispute twice.
+///
+/// ```compile_fail
+/// fn needs_clone<T: Clone>() {}
+/// needs_clone::<openbazaar_escrow::BuyerEscrow>();
+/// ```
 pub struct BuyerEscrow {
     contract: Contract,
     secret: Scalar,
@@ -109,11 +116,15 @@ impl BuyerEscrow {
     ///
     /// The buyer generates its nonce here and signs in the same step, so no
     /// buyer secret nonce outlives this call.
+    ///
+    /// The buyer may sign again (for example after the vendor lost its
+    /// nonce) until the release confirms. Once signed, the refund and dispute
+    /// paths are closed on this side.
     pub fn sign_release(&mut self, vendor_nonce: &PubNonce) -> Result<ReleaseSignature, Error> {
-        if self.phase != Phase::Funded {
+        if !matches!(self.phase, Phase::Funded | Phase::ReleaseSigned) {
             return Err(Error::InvalidTransition {
                 from: self.phase,
-                to: Phase::Completed,
+                to: Phase::ReleaseSigned,
             });
         }
         let sighash = self.contract.sighash(Spend::Release)?;
@@ -133,7 +144,7 @@ impl BuyerEscrow {
             &sighash,
             None,
         )?;
-        contract::enter(&mut self.phase, Phase::Completed)?;
+        self.phase = Phase::ReleaseSigned;
         Ok(ReleaseSignature { nonce, partial })
     }
 
@@ -164,6 +175,20 @@ impl BuyerEscrow {
         let tx = letter::settle(&self.contract, &self.branch, &self.secret, ruling)?;
         contract::enter(&mut self.phase, Phase::Disputed)?;
         Ok(tx)
+    }
+
+    /// A copy for tests that start many scenarios from one funded escrow.
+    #[cfg(test)]
+    pub(crate) fn duplicate(&self) -> Self {
+        Self {
+            contract: self.contract.clone(),
+            secret: self.secret,
+            refund: self.refund.clone(),
+            branch: self.branch.clone(),
+            vendor_wins_point: self.vendor_wins_point,
+            psbt: self.psbt.clone(),
+            phase: self.phase,
+        }
     }
 
     #[cfg(test)]

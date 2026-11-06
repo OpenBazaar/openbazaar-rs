@@ -7,9 +7,8 @@ license = "MIT"
 publish = false
 
 [features]
-# The node demo still calls the single-process `fund`. Drop this default when
-# the node moves to the two-party API.
-default = ["legacy-single-process"]
+# Single-process `fund` shim that holds both keys. Only the node demo enables
+# it; remove it when the node moves to the two-party API.
 legacy-single-process = []
 
 [dependencies]

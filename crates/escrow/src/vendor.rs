@@ -18,7 +18,13 @@ use crate::{Error, EscrowTerms, Party, Phase};
 /// vendor-wins adaptor signature and its moderator share have verified. Ship
 /// only after [`VendorEscrow::verify_funding`] accepts the confirmed funding
 /// transaction.
-#[derive(Clone)]
+///
+/// Not `Clone`, so a copy cannot claim after its original settled a dispute.
+///
+/// ```compile_fail
+/// fn needs_clone<T: Clone>() {}
+/// needs_clone::<openbazaar_escrow::VendorEscrow>();
+/// ```
 pub struct VendorEscrow {
     contract: Contract,
     secret: Scalar,
@@ -186,6 +192,19 @@ impl VendorEscrow {
             self.buyer_wins_point,
             letter,
         ))
+    }
+
+    /// A copy for tests that start many scenarios from one funded escrow.
+    #[cfg(test)]
+    pub(crate) fn duplicate(&self) -> Self {
+        Self {
+            contract: self.contract.clone(),
+            secret: self.secret,
+            claim: self.claim.clone(),
+            branch: self.branch.clone(),
+            buyer_wins_point: self.buyer_wins_point,
+            phase: self.phase,
+        }
     }
 
     /// Finish the vendor-wins outcome with the moderator's ruling.

@@ -32,7 +32,9 @@ pub struct EscrowBranch {
 pub struct EscrowTerms {
     pub buyer: [u8; PUBKEY_LEN],
     pub vendor: [u8; PUBKEY_LEN],
+    /// The moderator's published ruling-signing key (not its encryption key).
     pub moderator: [u8; POINT_LEN],
+    /// The fee in the moderator's published record, in sats.
     pub moderator_fee: u64,
     pub dispute_deadline: u32,
     pub vendor_claim_height: u32,

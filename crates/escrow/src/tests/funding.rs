@@ -6,7 +6,7 @@ use bitcoin::{
 
 use super::support::*;
 use crate::{
-    order_public_key, BuyerOpen, BuyerSession, Error, FundingPlan, Policy, SignedTerms,
+    order_public_key, BuyerOpen, BuyerSession, Context, Error, FundingPlan, Policy, SignedTerms,
     VendorReply, VendorSession,
 };
 
@@ -39,28 +39,19 @@ fn two_parties_fund_by_exchanging_only_messages() {
 #[test]
 fn vendor_rejects_a_garbage_vendor_wins_share() {
     let o = order(ORDER_SECRET);
-    let policy = Policy::default();
+    let ctx = ctx();
     let (_, open) = BuyerSession::start(
         sign(&o),
         &o.buyer_secret,
-        &moderator_public(),
+        &ctx,
         FundingPlan::Outpoint(outpoint()),
-        &policy,
     )
     .unwrap();
 
     let mut garbage = open.clone();
     garbage.vendor_wins_share.corrupt_bit(17);
-    let accept = |msg: &BuyerOpen| {
-        VendorSession::accept(
-            sign(&o),
-            &o.vendor_secret,
-            &moderator_public(),
-            msg,
-            &policy,
-        )
-        .map(|_| ())
-    };
+    let accept =
+        |msg: &BuyerOpen| VendorSession::accept(sign(&o), &o.vendor_secret, &ctx, msg).map(|_| ());
     assert_eq!(accept(&garbage), Err(Error::BadProof));
 
     let mut swapped = open.clone();
@@ -74,21 +65,18 @@ fn vendor_rejects_a_garbage_vendor_wins_share() {
     accept(&open).unwrap();
 }
 
-fn open_for_other_moderator(o: &crate::tests::support::Order) -> BuyerOpen {
+fn open_for_other_moderator(o: &Order) -> BuyerOpen {
     let mut terms = o.terms.clone();
-    terms.moderator = public(&OTHER_MODERATOR);
-    let signed = SignedTerms::new(
-        terms.clone(),
-        terms.sign(&o.buyer_secret).unwrap(),
-        terms.sign(&o.vendor_secret).unwrap(),
-    )
-    .unwrap();
+    terms.moderator = other_record();
+    let ctx = Context {
+        moderator: other_record(),
+        ..ctx()
+    };
     BuyerSession::start(
-        signed,
+        sign_terms(o, terms),
         &o.buyer_secret,
-        &public(&OTHER_MODERATOR),
+        &ctx,
         FundingPlan::Outpoint(outpoint()),
-        &Policy::default(),
     )
     .unwrap()
     .1
@@ -97,20 +85,18 @@ fn open_for_other_moderator(o: &crate::tests::support::Order) -> BuyerOpen {
 #[test]
 fn buyer_rejects_a_garbage_buyer_wins_share_and_never_sees_the_psbt() {
     let o = order(ORDER_SECRET);
-    let policy = Policy::default();
-    let moderator = moderator_public();
+    let ctx = ctx();
     let start = || {
         BuyerSession::start(
             sign(&o),
             &o.buyer_secret,
-            &moderator,
+            &ctx,
             FundingPlan::Psbt(segwit_psbt(&o, segwit_input())),
-            &policy,
         )
         .unwrap()
     };
     let reply_for = |open: &BuyerOpen| {
-        VendorSession::accept(sign(&o), &o.vendor_secret, &moderator, open, &policy)
+        VendorSession::accept(sign(&o), &o.vendor_secret, &ctx, open)
             .unwrap()
             .1
     };
@@ -129,36 +115,26 @@ fn buyer_rejects_a_garbage_buyer_wins_share_and_never_sees_the_psbt() {
 #[test]
 fn funding_psbt_is_only_released_after_a_verified_refund() {
     let o = order(ORDER_SECRET);
-    let policy = Policy::default();
-    let moderator = moderator_public();
+    let ctx = ctx();
     let psbt = segwit_psbt(&o, segwit_input());
     let txid = psbt.unsigned_tx.compute_txid();
 
     let (buyer, open) = BuyerSession::start(
         sign(&o),
         &o.buyer_secret,
-        &moderator,
+        &ctx,
         FundingPlan::Psbt(psbt.clone()),
-        &policy,
     )
     .unwrap();
     assert_eq!(buyer.funding_outpoint(), OutPoint { txid, vout: 0 });
-    let (_, reply) =
-        VendorSession::accept(sign(&o), &o.vendor_secret, &moderator, &open, &policy).unwrap();
+    let (_, reply) = VendorSession::accept(sign(&o), &o.vendor_secret, &ctx, &open).unwrap();
 
     // A vendor who sends a bad refund partial leaves the buyer with nothing to
     // fund: `receive` consumes the state, PSBT included, and returns an error.
     // (`BuyerAwaitingReply` has no PSBT accessor at all; see the doctest on it.)
-    let (stalled, open2) = BuyerSession::start(
-        sign(&o),
-        &o.buyer_secret,
-        &moderator,
-        FundingPlan::Psbt(psbt),
-        &policy,
-    )
-    .unwrap();
-    let (_, reply2) =
-        VendorSession::accept(sign(&o), &o.vendor_secret, &moderator, &open2, &policy).unwrap();
+    let (stalled, open2) =
+        BuyerSession::start(sign(&o), &o.buyer_secret, &ctx, FundingPlan::Psbt(psbt)).unwrap();
+    let (_, reply2) = VendorSession::accept(sign(&o), &o.vendor_secret, &ctx, &open2).unwrap();
     let mut bad: VendorReply = reply2.clone();
     bad.refund_partial = reply2.buyer_wins_partial;
     assert_eq!(stalled.receive(&bad).unwrap_err(), Error::BadPartial);
@@ -171,19 +147,14 @@ fn funding_psbt_is_only_released_after_a_verified_refund() {
     escrow.verify_key_spend(refund).unwrap();
 }
 
+fn start_with_psbt(o: &Order, psbt: Psbt) -> Result<(), Error> {
+    BuyerSession::start(sign(o), &o.buyer_secret, &ctx(), FundingPlan::Psbt(psbt)).map(|_| ())
+}
+
 #[test]
 fn non_segwit_or_mismatched_funding_psbts_are_rejected() {
     let o = order(ORDER_SECRET);
-    let start = |psbt: Psbt| {
-        BuyerSession::start(
-            sign(&o),
-            &o.buyer_secret,
-            &moderator_public(),
-            FundingPlan::Psbt(psbt),
-            &Policy::default(),
-        )
-        .map(|_| ())
-    };
+    let start = |psbt: Psbt| start_with_psbt(&o, psbt);
     let legacy = TxOut {
         value: Amount::from_sat(200_000),
         script_pubkey: ScriptBuf::new_p2pkh(&bitcoin::PubkeyHash::from_byte_array([7; 20])),
@@ -207,16 +178,31 @@ fn non_segwit_or_mismatched_funding_psbts_are_rejected() {
 }
 
 #[test]
+fn funding_psbts_that_signal_rbf_are_rejected() {
+    let o = order(ORDER_SECRET);
+    let mut replaceable = segwit_psbt(&o, segwit_input());
+    replaceable.unsigned_tx.input[0].sequence = Sequence::ENABLE_RBF_NO_LOCKTIME;
+    assert!(matches!(
+        start_with_psbt(&o, replaceable),
+        Err(Error::BadFunding(_))
+    ));
+    let mut locktime_only = segwit_psbt(&o, segwit_input());
+    locktime_only.unsigned_tx.input[0].sequence = Sequence::ENABLE_LOCKTIME_NO_RBF;
+    start_with_psbt(&o, locktime_only).unwrap();
+}
+
+#[test]
 fn a_moderator_outside_the_signed_terms_is_rejected() {
     let o = order(ORDER_SECRET);
-    let policy = Policy::default();
-    let other = public(&OTHER_MODERATOR);
+    let other = Context {
+        moderator: other_record(),
+        ..ctx()
+    };
     let err = BuyerSession::start(
         sign(&o),
         &o.buyer_secret,
         &other,
         FundingPlan::Outpoint(outpoint()),
-        &policy,
     )
     .map(|_| ())
     .unwrap_err();
@@ -225,31 +211,32 @@ fn a_moderator_outside_the_signed_terms_is_rejected() {
     let (_, open) = BuyerSession::start(
         sign(&o),
         &o.buyer_secret,
-        &moderator_public(),
+        &ctx(),
         FundingPlan::Outpoint(outpoint()),
-        &policy,
     )
     .unwrap();
-    let err = VendorSession::accept(sign(&o), &o.vendor_secret, &other, &open, &policy)
+    let err = VendorSession::accept(sign(&o), &o.vendor_secret, &other, &open)
         .map(|_| ())
         .unwrap_err();
     assert_eq!(err, Error::ModeratorMismatch);
 
-    // Swapping the moderator or fee after signing breaks the terms signatures.
+    // Swapping the moderator, fee, payout, or policy after signing breaks the terms signatures.
     let buyer_sig = o.terms.sign(&o.buyer_secret).unwrap();
     let vendor_sig = o.terms.sign(&o.vendor_secret).unwrap();
-    let mut swapped = o.terms.clone();
-    swapped.moderator = other;
-    assert_eq!(
-        SignedTerms::new(swapped, buyer_sig, vendor_sig).unwrap_err(),
-        Error::BadTermsSignature
-    );
-    let mut cheaper = o.terms.clone();
-    cheaper.moderator_fee = Amount::from_sat(1_000);
-    assert_eq!(
-        SignedTerms::new(cheaper, buyer_sig, vendor_sig).unwrap_err(),
-        Error::BadTermsSignature
-    );
+    let edits: [fn(&mut crate::EscrowTerms); 4] = [
+        |t| t.moderator = other_record(),
+        |t| t.moderator.fee = Amount::from_sat(1_000),
+        |t| t.moderator.payout = p2tr(0xb4),
+        |t| t.moderator.policy.min_ruling_window += 1,
+    ];
+    for edit in edits {
+        let mut edited = o.terms.clone();
+        edit(&mut edited);
+        assert_eq!(
+            SignedTerms::new(edited, buyer_sig, vendor_sig).unwrap_err(),
+            Error::BadTermsSignature
+        );
+    }
     assert_eq!(
         SignedTerms::new(o.terms.clone(), buyer_sig, buyer_sig).unwrap_err(),
         Error::BadTermsSignature
@@ -262,14 +249,13 @@ fn each_party_session_takes_only_its_own_key() {
     let err = BuyerSession::start(
         sign(&o),
         &o.vendor_secret,
-        &moderator_public(),
+        &ctx(),
         FundingPlan::Outpoint(outpoint()),
-        &Policy::default(),
     )
     .map(|_| ())
     .unwrap_err();
     assert_eq!(err, Error::WrongKey);
-    assert_eq!(o.terms.sign(&MODERATOR).unwrap_err(), Error::WrongKey);
+    assert_eq!(o.terms.sign(&MODERATOR_SEED).unwrap_err(), Error::WrongKey);
 }
 
 #[test]
@@ -308,7 +294,7 @@ fn presigned_spends_need_a_real_fee_rate() {
     zero.network_fee = Amount::ZERO;
     assert_eq!(zero.validate(&policy), Err(Error::FeeTooLow));
 
-    // The dispute outcomes are the largest presigned spends (two outputs).
+    // The dispute outcomes are the largest presigned spends (three outputs).
     let dispute_vsize = {
         let tx = crate::tx::attach_key_spend(
             crate::tx::Templates::build(&o.terms, outpoint())
@@ -318,10 +304,11 @@ fn presigned_spends_need_a_real_fee_rate() {
         );
         tx.vsize() as u64
     };
+    let floor = dispute_vsize * policy.min_fee_rate_sat_vb;
     let mut thin = o.terms.clone();
-    thin.network_fee = Amount::from_sat(dispute_vsize - 1);
+    thin.network_fee = Amount::from_sat(floor - 1);
     assert_eq!(thin.validate(&policy), Err(Error::FeeTooLow));
-    thin.network_fee = Amount::from_sat(dispute_vsize);
+    thin.network_fee = Amount::from_sat(floor);
     thin.validate(&policy).unwrap();
 
     let strict = Policy {
@@ -332,9 +319,11 @@ fn presigned_spends_need_a_real_fee_rate() {
     let err = BuyerSession::start(
         sign(&o),
         &o.buyer_secret,
-        &moderator_public(),
+        &Context {
+            policy: strict,
+            ..ctx()
+        },
         FundingPlan::Outpoint(outpoint()),
-        &strict,
     )
     .map(|_| ())
     .unwrap_err();
@@ -358,14 +347,14 @@ fn timeline_must_order_dispute_claim_refund() {
     o.terms.validate(&policy).unwrap();
 }
 
-fn segwit_input() -> TxOut {
+pub(super) fn segwit_input() -> TxOut {
     TxOut {
         value: Amount::from_sat(200_000),
         script_pubkey: ScriptBuf::new_p2wpkh(&bitcoin::WPubkeyHash::from_byte_array([9; 20])),
     }
 }
 
-fn segwit_psbt(o: &crate::tests::support::Order, input: TxOut) -> Psbt {
+pub(super) fn segwit_psbt(o: &Order, input: TxOut) -> Psbt {
     let tx = Transaction {
         version: bitcoin::transaction::Version::TWO,
         lock_time: absolute::LockTime::ZERO,
@@ -375,7 +364,7 @@ fn segwit_psbt(o: &crate::tests::support::Order, input: TxOut) -> Psbt {
                 vout: 3,
             },
             script_sig: ScriptBuf::new(),
-            sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
+            sequence: Sequence::MAX,
             witness: Witness::new(),
         }],
         output: vec![

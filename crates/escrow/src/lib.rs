@@ -10,13 +10,26 @@
 //! Every spend needs both commercial keys. All of them are signed before the
 //! buyer funds, except the happy-path release:
 //!
-//! | spend          | `nLockTime`           | pays                        | moderator |
-//! |----------------|-----------------------|-----------------------------|-----------|
-//! | release        | 0                     | vendor                      | no        |
-//! | vendor claim   | `vendor_claim_height` | vendor                      | no        |
-//! | buyer refund   | `refund_height`       | buyer                       | no        |
-//! | buyer wins     | 0                     | buyer + `moderator_fee`     | picks it  |
-//! | vendor wins    | 0                     | vendor + `moderator_fee`    | picks it  |
+//! | spend          | `nLockTime`           | pays                              | moderator |
+//! |----------------|-----------------------|-----------------------------------|-----------|
+//! | release        | 0                     | vendor                            | no        |
+//! | vendor claim   | `vendor_claim_height` | vendor + anchor                   | no        |
+//! | buyer refund   | `refund_height`       | buyer + anchor                    | no        |
+//! | buyer wins     | 0                     | buyer + moderator fee + anchor    | picks it  |
+//! | vendor wins    | 0                     | vendor + moderator fee + anchor   | picks it  |
+//!
+//! The anchor is a 240-sat pay-to-anchor output ([`ANCHOR_VALUE`]) so the
+//! recipient can CPFP a presigned spend whose fee was fixed at funding.
+//!
+//! # Context
+//!
+//! The buyer, the vendor, and the moderator each build the contract from a
+//! [`Context`]: the chain tip, the moderator's published [`ModeratorRecord`]
+//! (signing key, encryption key, payout script, fee, policy), and their own
+//! [`Policy`]. The terms must carry that exact record and pass both policies,
+//! and every payout must be a standard script above its dust limit. Because
+//! the moderator checks letters against the policy in its own record, terms
+//! that funded cannot be refused later by a private moderator policy.
 //!
 //! The two dispute outcomes are MuSig2 adaptor signatures. Branch `X` (favoring
 //! party `X`) has adaptor point `T_X + M_X`, where:
@@ -56,7 +69,9 @@
 //!
 //! Let `D = dispute_deadline`, `V = vendor_claim_height`, `R = refund_height`,
 //! with `D < V < R` (checked against [`Policy`] gaps, 144 blocks each by
-//! default). A transaction with `nLockTime = h` can first be mined at `h + 1`.
+//! default). At funding, `D >= tip + min_delivery_window` and
+//! `R <= tip + max_refund_horizon`. A transaction with `nLockTime = h` can
+//! first be mined at `h + 1`.
 //!
 //! ```text
 //! funding ──── ship, deliver ──── D ── ruling window ── V ── claim window ── R ──▶
@@ -84,22 +99,44 @@
 //! "after the dispute opens" cannot be expressed: opening a dispute is not
 //! a transaction, and every outcome is presigned at funding. A moderator who
 //! reveals both halves creates a broadcast race. That moderator also hands out
-//! two [`ModeratorRuling`]s it signed for the same outpoint, and
-//! [`is_equivocation`] turns those into transferable proof of misconduct.
+//! two [`ModeratorRuling`]s it signed for the same terms digest and outpoint,
+//! and [`is_equivocation`] turns those into transferable proof of misconduct.
+//!
+//! An honest moderator rules only through [`Moderator::open`], which checks
+//! the funding output against its own [`FundingChain`] and records the branch
+//! in a [`RulingStore`] before decrypting. A second letter for the other
+//! branch of the same escrow gets [`Error::AlreadyRuled`]. The store must be
+//! durable: an in-memory store forgets rulings on restart.
 //!
 //! # Moderator fee collection
 //!
 //! The fee is an output of each dispute outcome, so it is collected only when
 //! the winner broadcasts that outcome. A vendor who wins close to `V` can
 //! skip it and wait for the fee-free claim. A buyer who wins cannot. That
-//! skews moderator pay toward buyer-wins rulings. A fee bond posted at
-//! funding is the natural fix and is not implemented here.
+//! skews moderator pay toward buyer-wins rulings.
+//!
+//! Proposed fix, not implemented: make the fee owed on every path that can
+//! follow a dispute. Either (a) the vendor claim also pays the moderator fee
+//! once a dispute could have been opened, so skipping the ruling saves the
+//! vendor nothing; or (b) a fee bond: the funding transaction creates a second
+//! output worth the fee, spendable by the moderator with a ruling-revealed
+//! secret or returned to the parties after `R`. Option (a) charges undisputed
+//! orders that end in a claim; option (b) needs a second funding output and
+//! its own presigned spends.
 //!
 //! # Caller obligations
 //!
-//! * **Segwit funding.** The funding txid is committed in every presigned
-//!   spend. Fund from native segwit inputs only. [`FundingPlan::Psbt`]
-//!   enforces this. With [`FundingPlan::Outpoint`] it is on the caller.
+//! * **Segwit, non-replaceable funding.** The funding txid is committed in
+//!   every presigned spend. Fund from native segwit inputs whose sequences do
+//!   not signal RBF, and never replace the funding transaction: a fee-bumped
+//!   replacement has a new txid and strands every presigned spend. Bump with
+//!   CPFP instead. [`FundingPlan::Psbt`] enforces the input rules. With
+//!   [`FundingPlan::Outpoint`] they are on the caller.
+//! * **Fees.** Presigned spends carry a fee fixed at funding, at least
+//!   [`Policy::min_fee_rate_sat_vb`]. Near `V` the vendor claim and a ruled
+//!   outcome can race; the winner should CPFP through the anchor at once.
+//! * **Moderator chain view and store.** [`FundingChain`] must answer from a
+//!   node the moderator runs, and [`RulingStore`] must persist atomically.
 //! * **Per-order keys.** Derive keys with [`order_secret_key`] /
 //!   [`order_public_key`] from a 32-byte secret shared only by the two
 //!   parties, and use fresh payout scripts, so orders are unlinkable.
@@ -111,6 +148,7 @@
 #![forbid(unsafe_code)]
 
 mod buyer;
+mod context;
 mod contract;
 mod crypto;
 mod error;
@@ -119,6 +157,8 @@ mod funding;
 mod legacy;
 mod letter;
 mod messages;
+mod moderator;
+mod policy;
 mod proofs;
 mod terms;
 mod tx;
@@ -127,6 +167,7 @@ mod vendor;
 mod wire;
 
 pub use buyer::BuyerEscrow;
+pub use context::Context;
 pub use contract::{SignedClaim, SignedRefund};
 pub use error::Error;
 pub use funding::{
@@ -135,11 +176,16 @@ pub use funding::{
 #[cfg(feature = "legacy-single-process")]
 #[allow(deprecated)]
 pub use legacy::{fund, FundParams, LegacyEscrowAddress};
-pub use letter::{is_equivocation, moderator_open, DisputeCase, ModeratorRuling};
+pub use letter::{is_equivocation, DisputeCase, ModeratorRuling};
 pub use messages::{BuyerOpen, BuyerSignatures, FundingNonces, ReleaseSignature, VendorReply};
+pub use moderator::{
+    FundingChain, InMemoryRulingStore, Moderator, ModeratorKeys, ModeratorRecord, RulingKey,
+    RulingStore,
+};
+pub use policy::{payout_dust_limit, Policy, ANCHOR_VALUE};
 pub use proofs::Pok;
-pub use terms::{order_public_key, order_secret_key, EscrowTerms, Policy, SignedTerms, DUST_LIMIT};
-pub use tx::is_final_at_height;
+pub use terms::{order_public_key, order_secret_key, EscrowTerms, SignedTerms};
+pub use tx::{anchor_script, is_final_at_height};
 pub use vencrypt::VerifiableShare;
 pub use vendor::{ReleaseNonce, VendorEscrow};
 
@@ -166,11 +212,15 @@ impl Party {
 
 /// Explicit escrow state, per party.
 ///
-/// Only `Funded` has outgoing transitions, and each of those is terminal.
+/// Only `Funded` has outgoing transitions. `ReleaseSigned` may only re-sign
+/// the release; every other phase is terminal.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Phase {
     Funded,
-    /// Happy-path release signed (buyer) or assembled (vendor).
+    /// Buyer signed the happy-path release. It may sign again (fresh nonces)
+    /// until the release confirms; refund and dispute are closed.
+    ReleaseSigned,
+    /// Happy-path release assembled (vendor).
     Completed,
     /// Buyer refund broadcast.
     Refunded,

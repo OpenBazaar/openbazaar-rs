@@ -19,7 +19,7 @@ bdk_esplora = { version = "0.22.3", default-features = false, features = ["std",
 bdk_wallet = { version = "3.2.0", features = ["keys-bip39"] }
 bitcoin = "0.32.7"
 chacha20poly1305 = "0.10"
-openbazaar-escrow = { path = "../escrow" }
+openbazaar-escrow = { path = "../escrow", features = ["legacy-single-process"] }
 openbazaar-pay = { path = "../pay" }
 openbazaar-protocol = { path = "../protocol" }
 rand = "0.9"

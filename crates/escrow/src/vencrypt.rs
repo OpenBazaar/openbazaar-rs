@@ -89,9 +89,10 @@ impl VerifiableShare {
         self.link.verify(moderator, &a_sum, &target, &digest)
     }
 
-    /// Verify, then decrypt with the moderator secret.
-    pub fn open(&self, moderator: Scalar, ctx: &[u8; 32]) -> Result<Scalar, Error> {
-        self.verify(&(moderator * G), ctx)?;
+    /// Decrypt with the moderator secret. Call [`Self::verify`] first: the
+    /// result is checked against `point`, but an unverified share may not
+    /// decrypt at all.
+    pub fn open(&self, moderator: Scalar) -> Result<Scalar, Error> {
         let one = MaybePoint::from(Point::generator());
         let mut acc = MaybeScalar::Zero;
         for (a, b) in self.ciphertexts.iter().rev() {

@@ -4,9 +4,10 @@ use bitcoin::{OutPoint, Transaction, TxOut};
 use musig2::secp::{Point, Scalar};
 use musig2::{AdaptorSignature, KeyAggContext, LiftedSignature};
 
+use crate::context::Context;
 use crate::crypto;
 use crate::proofs::tagged;
-use crate::terms::{Policy, SignedTerms};
+use crate::terms::SignedTerms;
 use crate::tx::{self, Spend, Templates};
 use crate::vencrypt::VerifiableShare;
 use crate::wire::{Reader, Writer};
@@ -21,27 +22,52 @@ pub(crate) struct Contract {
     pub output_key: [u8; 32],
     pub buyer: Point,
     pub vendor: Point,
+    /// Moderator encryption key: shares are encrypted to it.
     pub moderator: Point,
     pub templates: Templates,
 }
 
+/// Who is constructing the contract, which decides the height check.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Role {
+    /// Buyer or vendor at funding: `ctx.tip` is the current tip.
+    Party,
+    /// Moderator reviewing a letter: `ctx.tip` is the height it arrived.
+    Moderator,
+}
+
 impl Contract {
-    /// Validate the terms under `policy` and derive every spend for `outpoint`.
+    /// The one place every term is checked, then every spend is derived.
     ///
-    /// `expected_moderator` is the key the caller already trusts (from the
-    /// listing). Terms naming a different moderator are rejected.
+    /// The terms must name exactly `ctx.moderator`, satisfy both `ctx.policy`
+    /// and the moderator's published policy, and (for a party) fit the
+    /// timeline relative to `ctx.tip`. A moderator only checks that the
+    /// letter arrived by `dispute_deadline`.
     pub fn new(
         signed: SignedTerms,
         outpoint: OutPoint,
-        expected_moderator: &[u8; 33],
-        policy: &Policy,
+        ctx: &Context,
+        role: Role,
     ) -> Result<Self, Error> {
         let terms = signed.terms();
-        terms.check_moderator(expected_moderator)?;
-        terms.validate(policy)?;
+        if terms.moderator != ctx.moderator {
+            return Err(Error::ModeratorMismatch);
+        }
+        terms.validate(&ctx.policy)?;
+        terms.validate(&terms.moderator.policy)?;
+        match role {
+            Role::Party => {
+                terms.validate_at_tip(&ctx.policy, ctx.tip)?;
+                terms.validate_at_tip(&terms.moderator.policy, ctx.tip)?;
+            }
+            Role::Moderator if ctx.tip > terms.dispute_deadline => {
+                return Err(Error::DisputeWindowClosed);
+            }
+            Role::Moderator => {}
+        }
         let buyer = terms.key(Party::Buyer)?;
         let vendor = terms.key(Party::Vendor)?;
-        let moderator = crypto::point_from_compressed(&terms.moderator)?;
+        let moderator = terms.moderator.encryption_point()?;
         let key_agg = crypto::aggregate(buyer, vendor)?;
         let output_key = crypto::output_xonly(&key_agg);
         let funding_output = terms.funding_output()?;

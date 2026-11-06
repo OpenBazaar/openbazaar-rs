@@ -13,17 +13,27 @@
 //! PSBT is moved in at round 1 and only handed back by [`BuyerEscrow`], which
 //! exists only once the refund and the buyer-wins adaptor signature have
 //! verified against the aggregate key and the exact funding outpoint.
+//!
+//! Both sides pass a [`Context`]: the current tip, the moderator record they
+//! trust, and their own policy. [`Contract`] construction checks all of it.
+//!
+//! The funding transaction must never be replaced. Every presigned spend
+//! commits to its txid, so an RBF bump of the funding transaction strands
+//! the refund, claim, and both dispute outcomes. A funding PSBT whose inputs
+//! signal replaceability is rejected; with a bare outpoint the caller must
+//! guarantee the same.
 
 use bitcoin::{OutPoint, Psbt};
 use musig2::secp::{Point, Scalar, G};
 use musig2::{AggNonce, PartialSignature, SecNonce};
 
 use crate::buyer::BuyerEscrow;
-use crate::contract::{self, Branch, Contract, SignedClaim, SignedRefund};
+use crate::context::Context;
+use crate::contract::{self, Branch, Contract, Role, SignedClaim, SignedRefund};
 use crate::crypto::{self, random_scalar, scalar_key};
 use crate::messages::{BuyerOpen, BuyerSignatures, FundingNonces, VendorReply};
 use crate::proofs::Pok;
-use crate::terms::{Policy, SignedTerms};
+use crate::terms::SignedTerms;
 use crate::tx::Spend;
 use crate::vencrypt::VerifiableShare;
 use crate::vendor::VendorEscrow;
@@ -33,8 +43,10 @@ use crate::{Error, Party};
 ///
 /// The funding txid is committed into every presigned spend, so it must not
 /// change when the funding transaction is signed. Fund only from native
-/// segwit inputs (P2WPKH, P2WSH, P2TR). A `Psbt` is checked for that; with a
-/// bare `Outpoint` the caller is responsible for it.
+/// segwit inputs (P2WPKH, P2WSH, P2TR) whose sequences do not signal RBF
+/// (`nSequence >= 0xfffffffe`), and never fee-bump it by replacement. A
+/// `Psbt` is checked for both; with a bare `Outpoint` the caller is
+/// responsible for them.
 pub enum FundingPlan {
     Psbt(Psbt),
     Outpoint(OutPoint),
@@ -228,6 +240,11 @@ fn validate_psbt(psbt: &Psbt, funding_output: &bitcoin::TxOut) -> Result<OutPoin
                 "every input must be a native segwit output with a witness_utxo",
             ));
         }
+        if txin.sequence.is_rbf() {
+            return Err(Error::BadFunding(
+                "funding inputs must not signal replace-by-fee",
+            ));
+        }
     }
     let mut matches = tx
         .output
@@ -254,9 +271,8 @@ impl BuyerSession {
     pub fn start(
         terms: SignedTerms,
         buyer_secret: &[u8; 32],
-        expected_moderator: &[u8; 33],
+        ctx: &Context,
         funding: FundingPlan,
-        policy: &Policy,
     ) -> Result<(BuyerAwaitingReply, BuyerOpen), Error> {
         let (outpoint, psbt) = match funding {
             FundingPlan::Outpoint(outpoint) => (outpoint, None),
@@ -265,7 +281,7 @@ impl BuyerSession {
                 (validate_psbt(&psbt, &funding_output)?, Some(psbt))
             }
         };
-        let contract = Contract::new(terms, outpoint, expected_moderator, policy)?;
+        let contract = Contract::new(terms, outpoint, ctx, Role::Party)?;
         let secret = own_secret(&contract, buyer_secret, Party::Buyer)?;
         let (nonces, public) = generate_nonces(&contract, secret, Party::Buyer)?;
         let (buyer_half, buyer_half_proof) = favored_half(&contract, &secret, Party::Buyer)?;
@@ -414,11 +430,10 @@ impl VendorSession {
     pub fn accept(
         terms: SignedTerms,
         vendor_secret: &[u8; 32],
-        expected_moderator: &[u8; 33],
+        ctx: &Context,
         open: &BuyerOpen,
-        policy: &Policy,
     ) -> Result<(VendorAwaitingSignatures, VendorReply), Error> {
-        let contract = Contract::new(terms, open.funding_outpoint, expected_moderator, policy)?;
+        let contract = Contract::new(terms, open.funding_outpoint, ctx, Role::Party)?;
         let secret = own_secret(&contract, vendor_secret, Party::Vendor)?;
         let buyer_ctx = contract.branch_context(Party::Buyer)?;
         open.buyer_half_proof.verify(&open.buyer_half, &buyer_ctx)?;

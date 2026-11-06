@@ -24,7 +24,7 @@ fn verifiable_share_round_trips_and_only_the_moderator_opens_it() {
     let decoded = VerifiableShare::read(&mut r).unwrap();
     r.finish().unwrap();
     assert_eq!(decoded, share);
-    assert_eq!(decoded.open(moderator, &CTX).unwrap(), secret);
+    assert_eq!(decoded.open(moderator).unwrap(), secret);
 
     assert_eq!(
         share.verify(&(moderator * G), &OTHER_CTX),
@@ -32,7 +32,7 @@ fn verifiable_share_round_trips_and_only_the_moderator_opens_it() {
     );
     let stranger = random_scalar();
     assert_eq!(share.verify(&(stranger * G), &CTX), Err(Error::BadProof));
-    assert!(share.open(stranger, &CTX).is_err());
+    assert!(share.open(stranger).is_err());
 }
 
 #[test]

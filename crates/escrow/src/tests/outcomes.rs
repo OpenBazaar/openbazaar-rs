@@ -3,8 +3,8 @@ use bitcoin::Amount;
 use super::support::*;
 use crate::crypto::random_scalar;
 use crate::{
-    is_equivocation, moderator_open, DisputeCase, Error, ModeratorRuling, Party, Phase, Policy,
-    ReleaseSignature, SignedClaim, SignedRefund, VerifiableShare,
+    is_equivocation, Error, ModeratorRuling, Party, Phase, ReleaseSignature, SignedClaim,
+    SignedRefund, VerifiableShare, ANCHOR_VALUE,
 };
 
 #[test]
@@ -36,14 +36,17 @@ fn buyer_who_disputes_in_time_wins() {
     let (mut buyer, vendor) = funded();
     let mut chain = Chain::at(DEADLINE);
     let letter = buyer.dispute_letter(b"never shipped").unwrap();
-    let ruling = moderator_open(&letter, &MODERATOR, chain.tip, &Policy::default()).unwrap();
+    let ruling = rule(&letter, chain.tip).unwrap();
     let ruling = ModeratorRuling::from_bytes(&ruling.to_bytes()).unwrap();
 
     let won = buyer.settle_dispute(&ruling).unwrap();
     assert_eq!(buyer.phase(), Phase::Disputed);
     buyer.verify_key_spend(&won).unwrap();
     assert_eq!(won.output[0].script_pubkey, buyer.terms().buyer_payout);
-    assert_eq!(won.output[0].value, FUNDING - NETWORK_FEE - MODERATOR_FEE);
+    assert_eq!(
+        won.output[0].value,
+        FUNDING - NETWORK_FEE - MODERATOR_FEE - ANCHOR_VALUE
+    );
     chain.mine(&won).unwrap();
 
     chain.advance_to(CLAIM);
@@ -59,7 +62,7 @@ fn letters_after_the_deadline_are_refused() {
     let (buyer, _) = funded();
     let letter = buyer.dispute_letter(b"late").unwrap();
     assert_eq!(
-        moderator_open(&letter, &MODERATOR, DEADLINE + 1, &Policy::default()).unwrap_err(),
+        rule(&letter, DEADLINE + 1).unwrap_err(),
         Error::DisputeWindowClosed
     );
 }
@@ -68,7 +71,7 @@ fn letters_after_the_deadline_are_refused() {
 fn vendor_can_win_a_dispute_and_buyer_cannot_use_its_ruling() {
     let (mut buyer, mut vendor) = funded();
     let letter = vendor.dispute_letter(b"buyer received it").unwrap();
-    let ruling = moderator_open(&letter, &MODERATOR, 900, &Policy::default()).unwrap();
+    let ruling = rule(&letter, TIP).unwrap();
     assert_eq!(ruling.favored(), Party::Vendor);
 
     assert_eq!(
@@ -87,7 +90,7 @@ fn vendor_can_win_a_dispute_and_buyer_cannot_use_its_ruling() {
 fn moderator_share_alone_does_not_finish_a_branch() {
     let (buyer, _) = funded();
     let letter = buyer.dispute_letter(b"memo").unwrap();
-    let ruling = moderator_open(&letter, &MODERATOR, 900, &Policy::default()).unwrap();
+    let ruling = rule(&letter, TIP).unwrap();
     let branch = buyer.branch();
     let adapted = branch
         .adaptor_sig
@@ -106,19 +109,13 @@ fn moderator_share_alone_does_not_finish_a_branch() {
 #[test]
 fn rulings_are_signed_and_equivocation_is_provable() {
     let (mut buyer, vendor) = funded();
-    let policy = Policy::default();
-    let for_buyer =
-        moderator_open(&buyer.dispute_letter(b"a").unwrap(), &MODERATOR, 1, &policy).unwrap();
-    let for_vendor = moderator_open(
-        &vendor.dispute_letter(b"b").unwrap(),
-        &MODERATOR,
-        1,
-        &policy,
-    )
-    .unwrap();
-    let moderator = moderator_public();
+    // A moderator who bypasses its ruling store (two fresh stores) can sign both.
+    let for_buyer = rule(&buyer.dispute_letter(b"a").unwrap(), TIP).unwrap();
+    let for_vendor = rule(&vendor.dispute_letter(b"b").unwrap(), TIP).unwrap();
+    let moderator = record().signing_key;
     for_buyer.verify(&moderator).unwrap();
-    assert!(for_buyer.verify(&public(&OTHER_MODERATOR)).is_err());
+    assert!(for_buyer.verify(&record().encryption_key).is_err());
+    assert!(for_buyer.verify(&other_record().signing_key).is_err());
     assert!(is_equivocation(&for_buyer, &for_vendor, &moderator));
     assert!(!is_equivocation(&for_buyer, &for_buyer, &moderator));
 
@@ -136,7 +133,7 @@ fn rulings_are_signed_and_equivocation_is_provable() {
 #[test]
 fn moderator_fee_appears_only_in_dispute_outcomes_and_is_signed() {
     let (mut buyer, vendor) = funded();
-    let moderator_script = buyer.terms().moderator_payout.clone();
+    let moderator_script = buyer.terms().moderator.payout.clone();
     let pays_moderator = |tx: &bitcoin::Transaction| {
         tx.output
             .iter()
@@ -145,20 +142,20 @@ fn moderator_fee_appears_only_in_dispute_outcomes_and_is_signed() {
 
     assert!(!pays_moderator(buyer.refund().transaction()));
     assert!(!pays_moderator(vendor.claim().transaction()));
-    let release = release(&mut buyer.clone(), &mut vendor.clone());
+    let release = release(&mut buyer.duplicate(), &mut vendor.duplicate());
     assert!(!pays_moderator(&release));
     assert_eq!(release.output.len(), 1);
     assert_eq!(release.output[0].value, FUNDING - NETWORK_FEE);
 
     for favored in [Party::Buyer, Party::Vendor] {
         let outcome = buyer.dispute_outcome(favored);
-        assert_eq!(outcome.output.len(), 2);
+        assert_eq!(outcome.output.len(), 3);
         assert_eq!(outcome.output[1].script_pubkey, moderator_script);
         assert_eq!(outcome.output[1].value, MODERATOR_FEE);
     }
 
     let letter = buyer.dispute_letter(b"x").unwrap();
-    let ruling = moderator_open(&letter, &MODERATOR, 1, &Policy::default()).unwrap();
+    let ruling = rule(&letter, TIP).unwrap();
     let won = buyer.settle_dispute(&ruling).unwrap();
     let mut skimmed = won.clone();
     skimmed.output[1].value = Amount::from_sat(1);
@@ -172,20 +169,22 @@ fn moderator_fee_appears_only_in_dispute_outcomes_and_is_signed() {
 #[test]
 fn letters_are_self_verifying() {
     let (buyer, _) = funded();
-    let policy = Policy::default();
     let letter = buyer.dispute_letter(b"cover arrived torn").unwrap();
-    let case = DisputeCase::verify(&letter, &moderator_public(), 1, &policy).unwrap();
+    let case = moderator().review(&letter, TIP).unwrap();
     assert_eq!(case.favored(), Party::Buyer);
     assert_eq!(case.memo(), b"cover arrived torn");
     assert_eq!(case.outcome(), buyer.dispute_outcome(Party::Buyer));
-    assert_eq!(case.terms().moderator_fee, MODERATOR_FEE);
+    assert_eq!(case.terms().moderator.fee, MODERATOR_FEE);
 
+    let mut stranger = crate::Moderator::new(
+        crate::ModeratorKeys::from_seed(&OTHER_MODERATOR_SEED).unwrap(),
+        other_record(),
+        std::collections::HashMap::from([(outpoint(), buyer.funding_output().clone())]),
+        crate::InMemoryRulingStore::default(),
+    )
+    .unwrap();
     assert_eq!(
-        DisputeCase::verify(&letter, &public(&OTHER_MODERATOR), 1, &policy).unwrap_err(),
-        Error::ModeratorMismatch
-    );
-    assert_eq!(
-        moderator_open(&letter, &OTHER_MODERATOR, 1, &policy).unwrap_err(),
+        stranger.open(&letter, TIP).unwrap_err(),
         Error::ModeratorMismatch
     );
 
@@ -195,7 +194,7 @@ fn letters_are_self_verifying() {
         let mut tampered = letter.clone();
         tampered[at] ^= 0x01;
         assert!(
-            moderator_open(&tampered, &MODERATOR, 1, &policy).is_err(),
+            rule(&tampered, TIP).is_err(),
             "byte {at} of {} was not covered",
             letter.len()
         );
@@ -205,8 +204,7 @@ fn letters_are_self_verifying() {
 #[test]
 fn a_claimant_signed_letter_with_a_bad_branch_is_refused() {
     let (buyer, _) = funded();
-    let policy = Policy::default();
-    let open = |letter: &[u8]| moderator_open(letter, &MODERATOR, 1, &policy).map(|_| ());
+    let open = |letter: &[u8]| rule(letter, TIP).map(|_| ());
 
     let garbage = buyer.forged_letter(|branch| branch.share.corrupt_bit(3));
     assert_eq!(open(&garbage), Err(Error::BadProof));
@@ -216,7 +214,7 @@ fn a_claimant_signed_letter_with_a_bad_branch_is_refused() {
     assert_eq!(open(&wrong_half), Err(Error::BadSignature));
 
     // A well-formed share the vendor never signed over changes the adaptor point.
-    let moderator = musig2::secp::Point::from_slice(&moderator_public()).unwrap();
+    let moderator = musig2::secp::Point::from_slice(&record().encryption_key).unwrap();
     let fresh_share = buyer.forged_letter(|branch| {
         branch.share = VerifiableShare::encrypt(random_scalar(), &moderator, &[0; 32]).unwrap();
     });
@@ -230,7 +228,7 @@ fn happy_path_release_needs_both_parties() {
     vendor.verify_key_spend(&tx).unwrap();
     assert_eq!(tx.output[0].script_pubkey, vendor.terms().vendor_payout);
     assert_eq!(tx.lock_time, bitcoin::absolute::LockTime::ZERO);
-    assert_eq!(buyer.phase(), Phase::Completed);
+    assert_eq!(buyer.phase(), Phase::ReleaseSigned);
     assert_eq!(vendor.phase(), Phase::Completed);
     assert!(matches!(
         buyer.broadcast_refund(REFUND + 1),
@@ -321,13 +319,9 @@ fn protocol_dispute_envelope_carries_both_branches() {
         panic!("plaintext envelope");
     };
 
-    let case = DisputeCase::verify(
-        &dispute.escrow.buyer_wins.letter,
-        &moderator_public(),
-        1,
-        &Policy::default(),
-    )
-    .unwrap();
+    let case = moderator()
+        .review(&dispute.escrow.buyer_wins.letter, TIP)
+        .unwrap();
     case.check_envelope(&dispute.escrow).unwrap();
 
     let mut swapped = dispute.escrow.clone();
@@ -344,14 +338,14 @@ fn protocol_dispute_envelope_carries_both_branches() {
 #[cfg(feature = "legacy-single-process")]
 #[test]
 #[allow(deprecated)]
-fn legacy_shim_only_derives_an_address() {
+fn legacy_shim_derives_an_address_and_one_refund() {
     let escrow = crate::fund(crate::FundParams {
         buyer_secret: BUYER_LONG_TERM,
         vendor_secret: VENDOR_LONG_TERM,
-        moderator_public: moderator_public(),
+        moderator_public: record().signing_key,
         funding_outpoint: outpoint(),
         funding_value: FUNDING,
-        fee: Amount::ZERO,
+        fee: Amount::from_sat(500),
         timeout_height: REFUND,
         buyer_payout: p2tr(1),
         vendor_payout: p2tr(2),
@@ -360,4 +354,12 @@ fn legacy_shim_only_derives_an_address() {
     assert_eq!(escrow.funding_output().value, FUNDING);
     assert_eq!(escrow.timeout_height(), REFUND);
     assert!(crate::tx::p2tr_output_key(&escrow.funding_output().script_pubkey).is_some());
+    let refund = escrow.refund_transaction().clone();
+    escrow.verify_key_spend(&refund).unwrap();
+    assert_eq!(refund.lock_time.to_consensus_u32(), REFUND);
+    assert_eq!(refund.output[0].script_pubkey, p2tr(1));
+    assert_eq!(refund.output[0].value, FUNDING - Amount::from_sat(500));
+    let mut bumped = refund;
+    bumped.output[0].value -= Amount::from_sat(1);
+    assert_eq!(escrow.verify_key_spend(&bumped), Err(Error::BadSignature));
 }
