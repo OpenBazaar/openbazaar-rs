@@ -39,6 +39,8 @@ import {
 import { alsoSoldBy, cartPackages, type CartLine } from "./src/cart";
 import { photosFor } from "./src/goods";
 import { filterListings } from "./src/search";
+import { parseKeywords, safetyVerdict, visibleListings, type SafetySettings } from "./src/safety/filter";
+import { readSafety, writeSafety } from "./src/safety/storage";
 
 type SortKey = "relevance" | "price-asc" | "price-desc" | "newest";
 type Filters = {
@@ -58,7 +60,8 @@ type Route =
   | { name: "orders" }
   | { name: "order"; id: string }
   | { name: "checkout" }
-  | { name: "done"; receipt: CheckoutReceipt };
+  | { name: "done"; receipt: CheckoutReceipt }
+  | { name: "safety" };
 
 const NAVY = "#063853";
 const BLUE = "#0e6da5";
@@ -158,6 +161,17 @@ export default function App() {
   const [route, setRoute] = useState<Route>({ name: "shop" });
   const [menu, setMenu] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState(false);
+  const [safety, setSafety] = useState<SafetySettings>(readSafety);
+  const [revealed, setRevealed] = useState<string[]>([]);
+  const shown = useMemo(
+    () => (catalog ? { ...catalog, listings: visibleListings(catalog.listings, catalog.store.contentRating, safety) } : null),
+    [catalog, safety],
+  );
+
+  const rememberSafety = (next: SafetySettings) => {
+    setSafety(next);
+    writeSafety(next);
+  };
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -257,7 +271,7 @@ export default function App() {
   } else if (route.name === "shop" || route.name === "saved") {
     body = (
       <Shop
-        catalog={catalog}
+        catalog={shown ?? catalog}
         query={query}
         filters={filters}
         sort={sort}
@@ -286,7 +300,15 @@ export default function App() {
     );
   } else if (route.name === "detail") {
     const listing = listingByHash(route.hash);
-    body = listing ? (
+    const verdict = listing ? safetyVerdict(listing, catalog.store.contentRating, safety) : null;
+    body = listing && verdict?.hidden && !revealed.includes(listing.hash) ? (
+      <View style={styles.sheetPad}>
+        <Text style={styles.pageTitle}>This listing is hidden on this device.</Text>
+        <Text style={styles.body}>{verdict.reason} You can change this in Content filters.</Text>
+        <Button label="Show it anyway" onPress={() => setRevealed([...revealed, listing.hash])} />
+        <TextButton label="Back to the shop" onPress={goShop} />
+      </View>
+    ) : listing ? (
       <Detail
         listing={listing}
         rates={rates}
@@ -342,6 +364,8 @@ export default function App() {
     );
   } else if (route.name === "done") {
     body = <Confirmation receipt={route.receipt} rates={rates} currency={currency} onOrders={() => setRoute({ name: "orders" })} onShop={goShop} />;
+  } else if (route.name === "safety") {
+    body = <SafetyScreen settings={safety} onChange={rememberSafety} />;
   } else if (route.name === "addresses") {
     body = <Addresses onOffline={() => { setCatalog(null); setLoadError(OFFLINE_MESSAGE); setRoute({ name: "shop" }); }} />;
   } else if (route.name === "orders") {
@@ -404,6 +428,7 @@ export default function App() {
                 <View style={styles.menu}>
                   <TextButton label="Addresses" onPress={() => { setMenu(false); setRoute({ name: "addresses" }); }} />
                   <TextButton label="Orders" onPress={() => { setMenu(false); setRoute({ name: "orders" }); }} />
+                  <TextButton label="Content filters" onPress={() => { setMenu(false); setRoute({ name: "safety" }); }} />
                 </View>
               ) : null}
             </View>
@@ -1102,6 +1127,31 @@ function Addresses({ onOffline }: { onOffline: () => void }) {
       <AddressFields value={draft} onChange={setDraft} />
       {error ? <Text style={styles.error}>{error}</Text> : null}
       <Button label={editing ? "Save address" : "Add address"} onPress={() => void save()} />
+    </ScrollView>
+  );
+}
+
+function SafetyScreen({ settings, onChange }: { settings: SafetySettings; onChange: (settings: SafetySettings) => void }) {
+  const [text, setText] = useState(() => settings.blockedKeywords.join("\n"));
+  return (
+    <ScrollView contentContainerStyle={styles.sheetPad}>
+      <Text style={styles.pageTitle}>Content filters</Text>
+      <Text style={styles.body}>These filters run on this device. They are not sent to your node or anyone else, and they do not remove anything from the network.</Text>
+      <Pressable accessibilityRole="checkbox" accessibilityState={{ checked: settings.safeMode }} onPress={() => onChange({ ...settings, safeMode: !settings.safeMode })} style={styles.checkRow}>
+        <View style={[styles.check, settings.safeMode && styles.checkOn]} />
+        <Text style={styles.body}>Safe mode</Text>
+      </Pressable>
+      <Text style={styles.meta}>Hides listings the seller rated sensitive or adult, every listing from a store rated adult, and unlabeled listings that use a short list of explicit words.</Text>
+      <Field
+        label="Blocked words, one per line"
+        value={text}
+        multiline
+        onChangeText={(next) => {
+          setText(next);
+          onChange({ ...settings, blockedKeywords: parseKeywords(next) });
+        }}
+      />
+      <Text style={styles.meta}>Listings whose title, category, description, or tags contain one of these whole words are hidden, even with safe mode off.</Text>
     </ScrollView>
   );
 }

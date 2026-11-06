@@ -52,7 +52,8 @@ use bitcoin::secp256k1::{PublicKey, Secp256k1};
 use bitcoin::Amount;
 use openbazaar_pay::{Bolt12Offer, SilentPaymentCode};
 use openbazaar_protocol::{
-    fixture_catalog, fixture_keys, Catalog, DirectPay, Error as ProtocolError, Listing, Store,
+    fixture_catalog, fixture_keys, Catalog, ContentRating, DirectPay, Error as ProtocolError,
+    Listing, Store,
 };
 use serde_json::{json, Value};
 use tormail::Mailbox;
@@ -335,6 +336,7 @@ fn install_direct_pay(catalog: &mut Catalog, network: NetworkMode) -> Result<(),
             bolt12_offer: offer,
             silent_payment_code: code,
         },
+        catalog.store.rating.unwrap_or(ContentRating::General),
         &keys.store,
     )
     .map_err(Error::Protocol)?;
@@ -374,7 +376,14 @@ pub(crate) fn listing_value(catalog: &Catalog, listing: &Listing) -> Result<Valu
         "shippingSats": listing.shipping_sats,
         "freeOverSats": listing.free_over_sats,
         "acceptsModerator": accepts_moderator(catalog, listing),
+        "contentRating": rating_name(listing.content.map(|label| label.rating)),
+        "contentTags": listing.content.map(|label| label.tags.names()).unwrap_or_default(),
     }))
+}
+
+/// A record signed before labels existed is "unrated", not "general".
+fn rating_name(rating: Option<ContentRating>) -> &'static str {
+    rating.map_or("unrated", ContentRating::as_str)
 }
 
 pub fn catalog_value(catalog: &Catalog) -> Result<Value, ProtocolError> {
@@ -387,6 +396,7 @@ pub fn catalog_value(catalog: &Catalog) -> Result<Value, ProtocolError> {
             "id": catalog.store.id.to_hex(),
             "name": catalog.store.name,
             "region": catalog.store.region,
+            "contentRating": rating_name(catalog.store.rating),
         },
         "moderator": {
             "name": catalog.moderator.name,
@@ -525,6 +535,34 @@ mod tests {
             .unwrap_or_else(|err| panic!("read {}: {err}", path.display()));
         let committed: Value = serde_json::from_str(&text).unwrap();
         assert_eq!(committed, catalog_value(&catalog).unwrap());
+    }
+
+    #[test]
+    fn catalog_headers_carry_the_signed_labels() {
+        use openbazaar_protocol::{ContentLabel, ContentTags};
+        let mut catalog = load_catalog(NetworkMode::Testnet4).unwrap();
+        let value = catalog_value(&catalog).unwrap();
+        assert_eq!(value["store"]["contentRating"], "general");
+        assert!(value["listings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|listing| listing["contentRating"] == "general"
+                && listing["contentTags"] == json!([])));
+
+        catalog.listings[0].content = Some(ContentLabel::new(
+            ContentRating::Sensitive,
+            ContentTags::WEAPONS.with(ContentTags::VIOLENCE),
+        ));
+        catalog.listings[1].content = None;
+        let value = catalog_value(&catalog).unwrap();
+        assert_eq!(value["listings"][0]["contentRating"], "sensitive");
+        assert_eq!(
+            value["listings"][0]["contentTags"],
+            json!(["violence", "weapons"])
+        );
+        assert_eq!(value["listings"][1]["contentRating"], "unrated");
+        assert_eq!(value["listings"][1]["contentTags"], json!([]));
     }
 
     #[test]

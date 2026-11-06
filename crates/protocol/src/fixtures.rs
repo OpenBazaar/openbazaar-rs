@@ -5,6 +5,7 @@
 
 use bitcoin::secp256k1::SecretKey;
 
+use crate::content::{ContentLabel, ContentRating};
 use crate::dispute::{DisputeEnvelope, DisputePlaintext};
 use crate::encode;
 use crate::escrow::{EscrowBranch, EscrowTerms};
@@ -209,6 +210,7 @@ pub fn fixture_catalog() -> Catalog {
             bolt12_offer: "bolt12-offer:fixture:marlow-goods".to_string(),
             silent_payment_code: "bip352-code:fixture:marlow-goods".to_string(),
         },
+        ContentRating::General,
         &store_secret,
     )
     .expect("fixture store signs");
@@ -231,6 +233,7 @@ pub fn fixture_catalog() -> Catalog {
                 product_key(draft.title),
                 shipping_sats,
                 free_over_sats,
+                ContentLabel::GENERAL,
                 &store_secret,
             )
             .expect("fixture listing is signed by the fixture store")
@@ -327,6 +330,11 @@ mod tests {
         }
         assert!(sellers.len() >= 3);
         assert!(catalog.listings.len() >= 30);
+        assert_eq!(catalog.store.rating, Some(ContentRating::General));
+        assert!(catalog
+            .listings
+            .iter()
+            .all(|listing| listing.content == Some(ContentLabel::GENERAL)));
         assert_eq!(catalog.moderator.name, "June Pell");
         assert_ne!(catalog.moderator.id, *catalog.store.id.as_bytes());
 
@@ -383,5 +391,39 @@ mod tests {
         *last ^= 0xff;
         let decoded = Catalog::decode_signed(&bad, catalog.moderator.clone()).unwrap();
         assert_eq!(decoded.verify(), Err(Error::BadSignature));
+    }
+
+    #[test]
+    fn catalog_mixes_unlabeled_and_labeled_listings() {
+        let mut catalog = fixture_catalog();
+        let pen = catalog
+            .listings
+            .iter_mut()
+            .find(|listing| listing.title == "Dip pen")
+            .unwrap();
+        // The same listing, signed by the version 4 code before labels existed.
+        let mut legacy = pen.clone();
+        legacy.content = None;
+        let encoded = legacy.encode().unwrap();
+        let body = &encoded[..encoded.len() - sign::SIG_LEN];
+        legacy.signature = sign::sign("ob/listing/v1", body, &sign::secret_from_label(STORE_KEY));
+        assert_eq!(
+            legacy.content_hash().unwrap().to_hex(),
+            "9344117bf6a09a44e8f193f6ee9bd687602b38b569f5b3239b4a3106bb0e4471"
+        );
+        *pen = legacy;
+        catalog.verify().unwrap();
+        let decoded =
+            Catalog::decode_signed(&catalog.encode().unwrap(), catalog.moderator.clone()).unwrap();
+        assert_eq!(decoded, catalog);
+        decoded.verify().unwrap();
+        assert_eq!(
+            decoded
+                .listings
+                .iter()
+                .filter(|l| l.content.is_none())
+                .count(),
+            1
+        );
     }
 }

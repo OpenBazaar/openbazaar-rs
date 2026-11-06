@@ -23,6 +23,9 @@ export class NodeOfflineError extends Error {
 
 export type ListingKind = "physical" | "digital";
 
+/** The vendor's signed self-label. "unrated" means the record predates labels. */
+export type ContentRating = "general" | "sensitive" | "adult" | "unrated";
+
 export type ListingHeader = {
   hash: string;
   storeId: string;
@@ -39,6 +42,8 @@ export type ListingHeader = {
   product: string;
   shippingSats: number;
   freeOverSats: number;
+  contentRating: ContentRating;
+  contentTags: string[];
 };
 
 export type Moderator = {
@@ -51,6 +56,7 @@ export type ShopCatalog = {
     id: string;
     name: string;
     region: string;
+    contentRating: ContentRating;
   };
   moderator: Moderator | null;
   listings: ListingHeader[];
@@ -369,6 +375,7 @@ function parseCatalog(value: unknown): ShopCatalog {
       id: requiredString(store.id),
       name: requiredString(store.name),
       region: requiredString(store.region),
+      contentRating: parseRating(store.contentRating),
     },
     moderator: parseModerator(record.moderator),
     listings: listings.map(parseListing),
@@ -459,7 +466,19 @@ function parseListing(value: unknown): ListingHeader {
     product: typeof listing.product === "string" ? listing.product : "",
     shippingSats: listing.shippingSats === undefined ? 0 : requiredNumber(listing.shippingSats),
     freeOverSats: listing.freeOverSats === undefined ? 0 : requiredNumber(listing.freeOverSats),
+    contentRating: parseRating(listing.contentRating),
+    contentTags: Array.isArray(listing.contentTags)
+      ? listing.contentTags.filter((tag): tag is string => typeof tag === "string")
+      : [],
   };
+}
+
+// A node that predates labels sends nothing: unrated. A rating this page
+// does not know yet is treated as the most restricted one.
+function parseRating(value: unknown): ContentRating {
+  if (value === undefined || value === null) return "unrated";
+  if (value === "general" || value === "sensitive" || value === "adult" || value === "unrated") return value;
+  return "adult";
 }
 
 function parseCheckout(value: unknown): CheckoutReceipt {

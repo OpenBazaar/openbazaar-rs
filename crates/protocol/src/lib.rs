@@ -5,6 +5,7 @@
 
 #![forbid(unsafe_code)]
 
+mod content;
 mod dispute;
 mod encode;
 mod error;
@@ -17,6 +18,7 @@ mod payment;
 mod sign;
 mod store;
 
+pub use content::{ContentLabel, ContentRating, ContentTags};
 pub use dispute::{DisputeEnvelope, DisputePlaintext};
 pub use error::Error;
 pub use escrow::{EscrowBranch, EscrowTerms};
