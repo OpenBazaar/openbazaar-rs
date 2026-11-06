@@ -472,7 +472,7 @@ export function SpendConfirmDialog({
   const mainnet = quote.network === 'mainnet'
   return (
     <Dialog label={mainnet ? 'Send real bitcoin?' : 'Confirm payment'} onCancel={onCancel}>
-      <form
+      <form className='ob-spend-confirm'
         onSubmit={(e: FormEvent) => {
           e.preventDefault()
           void run(async () => onTicket(await issueTicket(quote.quote, passphrase)), 'The payment could not be confirmed.')

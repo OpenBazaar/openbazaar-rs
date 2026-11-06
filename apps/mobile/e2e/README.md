@@ -57,3 +57,12 @@ is bundle-checked; actual device wallet/clipboard behavior needs device testing.
 The settings browser checks also cover separated shopping/settings navigation,
 keyboard dismissal, persistent filter choices, blocked words with safe mode off,
 hidden-listing recovery, the separate store-label page, and a 320 px mobile drawer.
+
+The layout walkthrough visits browsing, search and empty states, product detail,
+saved goods, bag, address creation/editing, physical checkout, receipt, order
+payment, wallet, filters and store labels at 320, 768 and 1366 px. It checks
+horizontal overflow, outer padding, square QR codes and active-button contrast.
+It also verifies checkout includes the saved apartment/suite, Buy now returns to
+the product, keyboard search works from settings, and local filters remain
+accessible when the catalog is unavailable. Mainnet confirmation is also checked
+at 320 px with requests intercepted. No real mainnet transaction is submitted.

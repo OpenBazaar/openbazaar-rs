@@ -69,7 +69,7 @@ const server = createServer(async (req, res) => {
     return
   }
   if (
-    /^\/(catalog|rates|network|wallet|pair|orders|checkout|addresses|labelers|vendor-labels|listings|lock|unlock|setup|spend-tickets)(\/|$)/.test(
+    /^\/(catalog|rates|network|wallet|pair|orders|checkout|addresses|labelers|content-labels|vendor-labels|listings|lock|unlock|setup|spend-tickets)(\/|$)/.test(
       path
     )
   ) {

@@ -108,7 +108,7 @@ async function steppedUp(page: Page, network = 'testnet4') {
     network,
     amountSats: 4321,
     feeCapSats: 300,
-    address: `${network === 'mainnet' ? 'bc1q' : 'tb1q'}quotedbythenode`,
+    address: `${network === 'mainnet' ? 'bc1q' : 'tb1q'}quotedbythenode${'x'.repeat(42)}`,
     recipientScript: '0014',
     feeRateSatVb: 2,
     expiresInSecs: 60
@@ -134,12 +134,13 @@ async function stepUp(page: Page, confirm = 'Confirm payment') {
 
 test('testnet4 wallet, setup, real checkout, and a real quote request', async ({
   page
-}) => {
+}, testInfo) => {
   await page.goto('/')
   await expect(
     page.getByText('Testnet4 · test coins, no value', { exact: true })
   ).toBeVisible()
   await protect(page)
+  await page.locator('.ob-wallet-fund').filter({ has: page.getByRole('heading', { name: 'Wallet unlocked', exact: true }) }).screenshot({ path: testInfo.outputPath('wallet-unlocked.png') })
   const receive = page.locator('.ob-wallet-receive code')
   await expect(receive).toHaveText(/^tb1/)
   const original = await receive.innerText()
@@ -234,7 +235,7 @@ test('a locked wallet unlocks before the step-up', async ({ page }) => {
 
 test('mainnet shows the node’s terms and needs the passphrase before confirm:true', async ({
   page
-}) => {
+}, testInfo) => {
   const { id, order } = await checkout(page)
   await fundedUi(page, 'mainnet')
   const tickets = await steppedUp(page, 'mainnet')
@@ -289,6 +290,16 @@ test('mainnet shows the node’s terms and needs the passphrase before confirm:t
   await expect(dialog).toContainText('bc1qquotedbythenode')
   await expect(dialog).toContainText('4,321 sats')
   expect(bodies).toEqual([])
+  await page.emulateMedia({ reducedMotion: 'reduce' })
+  await page.setViewportSize({ width: 320, height: 740 })
+  await expect(dialog).toBeVisible()
+  const box = await dialog.boundingBox()
+  expect(box!.x).toBeGreaterThanOrEqual(16)
+  expect(box!.x + box!.width).toBeLessThanOrEqual(304)
+  await expect(dialog.getByLabel('Wallet passphrase', { exact: true })).toBeFocused()
+  await expect(dialog.getByRole('button', { name: 'Cancel', exact: true })).toBeInViewport()
+  await expect(dialog.getByRole('button', { name: 'Confirm mainnet payment', exact: true })).toBeInViewport()
+  await page.screenshot({ path: testInfo.outputPath('mainnet-dialog-320.png') })
   await page.getByRole('button', { name: 'Cancel', exact: true }).click()
   expect(bodies).toEqual([])
   expect(tickets).toEqual([])
@@ -392,7 +403,7 @@ test('network mismatch and escrow are read-only', async ({ page }) => {
   await page.clock.fastForward(13000)
   await expect(
     page.getByText(
-      'Escrow payment is not available in this client. This order’s status is read-only.'
+      'Escrow payment is not available here yet. You can track this order’s status here.'
     )
   ).toBeVisible()
   await expect(
@@ -418,6 +429,7 @@ test('a multi-seller checkout submits one separate pay request per seller', asyn
       .getByRole('button', { name: `View ${title}`, exact: true })
       .click()
     await page.getByRole('button', { name: 'Add to bag', exact: true }).click()
+    await page.getByRole('button', { name: 'Back to products', exact: true }).click()
   }
   await page.getByRole('button', { name: 'Your bag', exact: true }).click()
   await page
