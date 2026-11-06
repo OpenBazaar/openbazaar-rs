@@ -56,10 +56,12 @@ impl NetworkMode {
         root.join(self.as_str())
     }
 
-    pub fn default_esplora(self) -> &'static str {
+    /// Esplora servers for this network, tried in order. Every one serves only
+    /// this network; the chain client also checks its genesis block.
+    pub fn default_esplora(self) -> &'static [&'static str] {
         match self {
-            NetworkMode::Testnet4 => "https://mempool.space/testnet4/api",
-            NetworkMode::Mainnet => "https://mempool.space/api",
+            NetworkMode::Testnet4 => &["https://mempool.space/testnet4/api", "https://blockstream.info/testnet4/api"],
+            NetworkMode::Mainnet => &["https://mempool.space/api"],
         }
     }
 
@@ -83,7 +85,8 @@ pub struct ServeOptions {
     pub port: u16,
     pub network: NetworkMode,
     pub data_root: PathBuf,
-    pub esplora_url: String,
+    /// Tried in order. `--esplora` may be repeated or comma-separated.
+    pub esplora_urls: Vec<String>,
     pub confirmations: u32,
     pub poll_secs: u64,
 }
@@ -96,7 +99,7 @@ impl ServeOptions {
         let mut port = 8787u16;
         let mut network = None;
         let mut data_root = PathBuf::from("data");
-        let mut esplora = None;
+        let mut esplora: Vec<String> = Vec::new();
         let mut confirmations = None;
         let mut poll_secs = 30u64;
         let mut iter = args.iter();
@@ -109,7 +112,14 @@ impl ServeOptions {
             match arg.as_str() {
                 "--network" => network = Some(NetworkMode::from_flag(&value("--network")?)?),
                 "--data-dir" => data_root = PathBuf::from(value("--data-dir")?),
-                "--esplora" => esplora = Some(value("--esplora")?),
+                "--esplora" => {
+                    let text = value("--esplora")?;
+                    let before = esplora.len();
+                    esplora.extend(text.split(',').map(str::trim).filter(|url| !url.is_empty()).map(String::from));
+                    if esplora.len() == before {
+                        return Err("--esplora needs a URL".to_string());
+                    }
+                }
                 "--confirmations" => {
                     let text = value("--confirmations")?;
                     let parsed: u32 = text
@@ -141,7 +151,11 @@ impl ServeOptions {
             port,
             network,
             data_root,
-            esplora_url: esplora.unwrap_or_else(|| network.default_esplora().to_string()),
+            esplora_urls: if esplora.is_empty() {
+                network.default_esplora().iter().map(|url| url.to_string()).collect()
+            } else {
+                esplora
+            },
             confirmations: confirmations.unwrap_or_else(|| network.default_confirmations()),
             poll_secs,
         })
@@ -151,9 +165,9 @@ impl ServeOptions {
         self.network.data_dir(&self.data_root)
     }
 
-    /// True when chain queries go to a server that is not on this machine or LAN.
+    /// True when chain queries may go to a server that is not on this machine or LAN.
     pub fn uses_public_server(&self) -> bool {
-        !is_private_url(&self.esplora_url)
+        self.esplora_urls.iter().any(|url| !is_private_url(url))
     }
 }
 
@@ -231,7 +245,10 @@ mod tests {
         assert_eq!(options.port, 8787);
         assert_eq!(options.confirmations, 1);
         assert_eq!(options.data_dir(), PathBuf::from("data/testnet4"));
-        assert_eq!(options.esplora_url, "https://mempool.space/testnet4/api");
+        assert_eq!(
+            options.esplora_urls,
+            ["https://mempool.space/testnet4/api", "https://blockstream.info/testnet4/api"]
+        );
 
         let main = ServeOptions::parse(&args(&["9100", "--network", "mainnet"])).unwrap();
         assert_eq!(main.network, NetworkMode::Mainnet);
@@ -265,6 +282,27 @@ mod tests {
         }
         let public = ServeOptions::parse(&args(&["--esplora", "https://blockstream.info/api"])).unwrap();
         assert!(public.uses_public_server());
+        let mixed = ServeOptions::parse(&args(&["--esplora", "http://127.0.0.1:3002, https://mempool.space/api"])).unwrap();
+        assert!(mixed.uses_public_server());
+    }
+
+    #[test]
+    fn esplora_servers_are_an_ordered_list() {
+        let options = ServeOptions::parse(&args(&[
+            "--esplora",
+            "http://127.0.0.1:3002,http://node.local/api",
+            "--esplora",
+            "http://192.168.1.20:3002",
+        ]))
+        .unwrap();
+        assert_eq!(
+            options.esplora_urls,
+            ["http://127.0.0.1:3002", "http://node.local/api", "http://192.168.1.20:3002"]
+        );
+        assert!(!options.uses_public_server());
+        assert!(ServeOptions::parse(&args(&["--esplora", " , "])).is_err());
+        let main = ServeOptions::parse(&args(&["--network", "mainnet"])).unwrap();
+        assert!(main.esplora_urls.iter().all(|url| !url.contains("testnet")));
     }
 
     #[test]

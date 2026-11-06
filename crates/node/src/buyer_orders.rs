@@ -41,6 +41,11 @@ pub(crate) struct BuyerOrder {
     pub txids: Vec<String>,
     /// Transaction this node broadcast to pay the order, if any.
     pub pay_txid: Option<String>,
+    /// A `POST /orders/{id}/pay` is queued or running. Not read back on start,
+    /// so a payment cut off by a restart can be asked for again.
+    pub paying: bool,
+    /// Why the last payment attempt sent nothing.
+    pub pay_error: Option<String>,
 }
 
 impl BuyerOrder {
@@ -62,9 +67,13 @@ impl BuyerOrder {
             "receivedSats": self.received_sats,
             "confirmations": self.confirmations,
             "txids": self.txids,
+            "paying": self.paying,
         });
         if let Some(txid) = &self.pay_txid {
             value["payTxid"] = json!(txid);
+        }
+        if let Some(error) = &self.pay_error {
+            value["payError"] = json!(error);
         }
         if let Some(payment) = &self.payment {
             value["payment"] = payment.clone();
@@ -208,6 +217,8 @@ fn decode(bytes: &[u8]) -> Result<Vec<BuyerOrder>, Error> {
                     .map(|list| list.iter().filter_map(Value::as_str).map(str::to_string).collect())
                     .unwrap_or_default(),
                 pay_txid: item.get("payTxid").and_then(Value::as_str).map(str::to_string),
+                paying: false,
+                pay_error: item.get("payError").and_then(Value::as_str).map(str::to_string),
             })
         })
         .collect()

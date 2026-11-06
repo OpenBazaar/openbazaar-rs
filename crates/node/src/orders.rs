@@ -362,6 +362,8 @@ impl Node {
                 confirmations: 0,
                 txids: Vec::new(),
                 pay_txid: None,
+                paying: false,
+                pay_error: None,
             })
             .map_err(OrderError::Failed)
     }

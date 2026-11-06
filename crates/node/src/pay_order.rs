@@ -1,5 +1,12 @@
 //! `POST /orders/{id}/pay`: pay one seller order from the node wallet.
 //!
+//! The route checks the request, marks the order `paying`, and answers 202
+//! with the order. The pay worker thread then syncs, signs, and broadcasts,
+//! and writes `payTxid` or `payError` into the order; `GET /orders/{id}`
+//! shows the result and the watcher reports the status from the chain. A
+//! slow chain server never holds up the HTTP accept loop. There is one
+//! worker, so payments run one at a time and an order is never paid twice.
+//!
 //! One order, one recipient, one transaction. The only other output is the
 //! wallet's own change, so two sellers are never paid in one transaction.
 //! On mainnet the request must carry `"confirm": true`.
@@ -14,6 +21,11 @@
 //! and seal the presigned refund into the order record, and only then
 //! broadcast. If the broadcast fails, a retry sends the same transaction so
 //! the stored refund still spends it.
+
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+use std::sync::Mutex;
+use std::time::Duration;
 
 use bitcoin::consensus::encode::{deserialize_hex, serialize_hex};
 use bitcoin::secp256k1::{PublicKey, Secp256k1};
@@ -41,8 +53,142 @@ pub enum PayError {
     Failed(String),
 }
 
+impl PayError {
+    fn message(&self) -> String {
+        match self {
+            PayError::NotFound => "That order is not on this node.".into(),
+            PayError::Invalid(message)
+            | PayError::Conflict(message)
+            | PayError::Chain(message)
+            | PayError::Failed(message) => message.clone(),
+        }
+    }
+}
+
+/// Order ids waiting for the pay worker.
+pub(crate) struct PayJobs {
+    queue: Sender<String>,
+    pending: Mutex<Receiver<String>>,
+}
+
+impl PayJobs {
+    pub(crate) fn new() -> Self {
+        let (queue, pending) = mpsc::channel();
+        Self { queue, pending: Mutex::new(pending) }
+    }
+}
+
 impl Node {
+    /// Check the request and pay the order now, on this thread.
     pub fn pay_order(&self, id: &str, body: &Value) -> Result<Value, PayError> {
+        self.check_pay_request(body)?;
+        self.pay_now(id)
+    }
+
+    /// Check the request, mark the order `paying`, and queue it for the pay
+    /// worker. Returns the order as it is now.
+    pub fn queue_payment(&self, id: &str, body: &Value) -> Result<Value, PayError> {
+        self.check_pay_request(body)?;
+        let mut orders = self.orders();
+        let order = orders.get(id).ok_or(PayError::NotFound)?;
+        if order.paying {
+            return Err(PayError::Conflict("A payment for this order is already being sent.".into()));
+        }
+        self.ready_to_pay(order)?;
+        orders
+            .update(id, |order| {
+                order.paying = true;
+                order.pay_error = None;
+            })
+            .map_err(PayError::Failed)?;
+        self.pay_jobs
+            .queue
+            .send(id.to_string())
+            .map_err(|err| PayError::Failed(err.to_string()))?;
+        orders.get_value(id).ok_or(PayError::NotFound)
+    }
+
+    /// Run every queued payment now. Returns how many ran.
+    pub fn run_pay_jobs(&self) -> usize {
+        let mut ran = 0;
+        loop {
+            let next = self.pay_jobs.pending.lock().unwrap_or_else(|err| err.into_inner()).try_recv();
+            let Ok(id) = next else {
+                return ran;
+            };
+            self.run_pay_job(&id);
+            ran += 1;
+        }
+    }
+
+    /// Run queued payments as they arrive until `stop` is set.
+    pub(crate) fn run_pay_worker(&self, stop: &AtomicBool) {
+        while !stop.load(Ordering::Relaxed) {
+            let next = self
+                .pay_jobs
+                .pending
+                .lock()
+                .unwrap_or_else(|err| err.into_inner())
+                .recv_timeout(Duration::from_millis(250));
+            match next {
+                Ok(id) => self.run_pay_job(&id),
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => return,
+            }
+        }
+    }
+
+    fn run_pay_job(&self, id: &str) {
+        let result = self.pay_now(id);
+        let error = result.as_ref().err().map(PayError::message);
+        match &result {
+            Ok(paid) => eprintln!("ob-node: paid order {id} in {}", paid["txid"]),
+            Err(err) => eprintln!("ob-node: pay {id}: {}", err.message()),
+        }
+        let saved = self.orders().update(id, |order| {
+            order.paying = false;
+            order.pay_error = error;
+        });
+        if let Err(err) = saved {
+            eprintln!("ob-node: order {id}: {err}");
+        }
+    }
+
+    fn pay_now(&self, id: &str) -> Result<Value, PayError> {
+        let order = self.orders().get(id).cloned().ok_or(PayError::NotFound)?;
+        self.ready_to_pay(&order)?;
+        if order.settlement == "escrow" {
+            self.fund_escrow(order)
+        } else {
+            self.pay_direct(order)
+        }
+    }
+
+    /// Refuse an order this node must not pay right now.
+    fn ready_to_pay(&self, order: &BuyerOrder) -> Result<(), PayError> {
+        let escrow = order.settlement == "escrow";
+        if escrow && self.network != NetworkMode::Testnet4 {
+            return Err(PayError::Invalid(ESCROW_MAINNET_REFUSAL.into()));
+        }
+        if let Some(txid) = &order.pay_txid {
+            let what = if escrow { "funded this escrow" } else { "paid this order" };
+            return Err(PayError::Conflict(format!("This node already {what} in {txid}.")));
+        }
+        let waiting = if escrow { AWAITING_FUNDING } else { AWAITING_PAYMENT };
+        if order.status != waiting {
+            let what = if escrow { "escrow" } else { "order" };
+            return Err(PayError::Conflict(format!("This {what} is {}.", order.status)));
+        }
+        if !escrow {
+            if order.total_sats.saturating_sub(order.received_sats) == 0 {
+                return Err(PayError::Conflict("Nothing is left to pay on this order.".into()));
+            }
+            self.order_address(order.payment.as_ref(), "address")?;
+        }
+        Ok(())
+    }
+
+    fn check_pay_request(&self, body: &Value) -> Result<(), PayError> {
         let Some(map) = body.as_object() else {
             return Err(PayError::Invalid("The request could not be read.".into()));
         };
@@ -59,26 +205,12 @@ impl Node {
                 "This node is on mainnet and pays with real bitcoin. Send \"confirm\": true to pay.".into(),
             ));
         }
-        let order = self.orders().get(id).cloned().ok_or(PayError::NotFound)?;
-        if order.settlement == "escrow" {
-            self.fund_escrow(order)
-        } else {
-            self.pay_direct(order)
-        }
+        Ok(())
     }
 
     fn pay_direct(&self, order: BuyerOrder) -> Result<Value, PayError> {
-        if let Some(txid) = &order.pay_txid {
-            return Err(PayError::Conflict(format!("This node already paid this order in {txid}.")));
-        }
-        if order.status != AWAITING_PAYMENT {
-            return Err(PayError::Conflict(format!("This order is {}.", order.status)));
-        }
         let address = self.order_address(order.payment.as_ref(), "address")?;
         let due = order.total_sats.saturating_sub(order.received_sats);
-        if due == 0 {
-            return Err(PayError::Conflict("Nothing is left to pay on this order.".into()));
-        }
         self.sync_buyer_wallet().map_err(PayError::Chain)?;
         let fee_rate = self.pay_fee_rate()?;
         let tx = self.sign_payment(&address, due, fee_rate)?;
@@ -89,15 +221,6 @@ impl Node {
     }
 
     fn fund_escrow(&self, order: BuyerOrder) -> Result<Value, PayError> {
-        if self.network != NetworkMode::Testnet4 {
-            return Err(PayError::Invalid(ESCROW_MAINNET_REFUSAL.into()));
-        }
-        if let Some(txid) = &order.pay_txid {
-            return Err(PayError::Conflict(format!("This node already funded this escrow in {txid}.")));
-        }
-        if order.status != AWAITING_FUNDING {
-            return Err(PayError::Conflict(format!("This escrow is {}.", order.status)));
-        }
         let escrow = order
             .escrow
             .clone()

@@ -85,8 +85,8 @@ pub(crate) fn pay_response(
             Err(_) => return json_error("400 Bad Request", "The request could not be read.", origin),
         }
     };
-    match node.pay_order(id, &parsed) {
-        Ok(value) => json_body("200 OK", &value, origin),
+    match node.queue_payment(id, &parsed) {
+        Ok(value) => json_body("202 Accepted", &value, origin),
         Err(PayError::NotFound) => json_error("404 Not Found", "That order is not on this node.", origin),
         Err(PayError::Invalid(message)) => json_error("400 Bad Request", &message, origin),
         Err(PayError::Conflict(message)) => json_error("409 Conflict", &message, origin),

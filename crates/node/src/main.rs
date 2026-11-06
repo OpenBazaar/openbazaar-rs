@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use ob_node::{EsploraChain, NetworkMode, NodeConfig, ServeOptions};
 
-const USAGE: &str = "ob-node [print | serve [port] [--network testnet4|mainnet] [--data-dir DIR] [--esplora URL] [--confirmations N] [--poll-secs S]]";
+const USAGE: &str = "ob-node [print | serve [port] [--network testnet4|mainnet] [--data-dir DIR] [--esplora URL[,URL...]] [--confirmations N] [--poll-secs S]]";
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
@@ -57,7 +57,7 @@ fn serve(args: &[String]) -> ExitCode {
     };
     eprintln!("ob-node: ==== network {banner} ====");
     eprintln!("ob-node: data dir {}", options.data_dir().display());
-    eprintln!("ob-node: chain server {}", options.esplora_url);
+    eprintln!("ob-node: chain servers {}", options.esplora_urls.join(", "));
     eprintln!("ob-node: paid after {} confirmation(s)", options.confirmations);
     if network == NetworkMode::Mainnet && options.uses_public_server() {
         eprintln!("ob-node: WARNING: this public server sees every address the node watches, and the node is not on Tor; pass --esplora with your own server to keep them private.");
@@ -69,11 +69,18 @@ fn serve(args: &[String]) -> ExitCode {
             return ExitCode::from(1);
         }
     };
+    let chain = match EsploraChain::new(&options.esplora_urls, network.bitcoin()) {
+        Ok(chain) => chain,
+        Err(err) => {
+            eprintln!("ob-node: chain client: {err}");
+            return ExitCode::from(1);
+        }
+    };
     let config = NodeConfig {
         network,
         confirmations: options.confirmations,
         public_server: options.uses_public_server(),
-        chain: Box::new(EsploraChain::new(&options.esplora_url)),
+        chain: Box::new(chain),
     };
     let node = match ob_node::Node::open_with(options.data_dir(), catalog, config) {
         Ok(node) => node,

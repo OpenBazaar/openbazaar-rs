@@ -238,6 +238,20 @@ fn order(node: &Node, id: &str) -> Value {
     value
 }
 
+/// `POST /orders/{id}/pay`, then run the queued payment the way the pay
+/// worker would. Returns the HTTP status and the order afterwards.
+fn pay(node: &Node, id: &str, body: &str) -> (String, Value) {
+    let (status, value) = request(node, "POST", &format!("/orders/{id}/pay"), body);
+    if !status.contains("202") {
+        return (status, value);
+    }
+    assert_eq!(value["paying"], true, "{value}");
+    assert_eq!(node.run_pay_jobs(), 1);
+    let after = order(node, id);
+    assert_eq!(after["paying"], false);
+    (status, after)
+}
+
 fn fund_node_wallet(node: &Node, chain: &MockChain, sats: u64) {
     let address = node.buyer_wallet().fresh_address().unwrap();
     chain.fund_wallet(&address, sats);
@@ -360,8 +374,9 @@ fn multi_seller_checkout_gets_separate_wallets_and_separate_transactions() {
 
     for order in &placed {
         let id = order["orderId"].as_str().unwrap();
-        let (status, paid) = request(&node, "POST", &format!("/orders/{id}/pay"), "{}");
-        assert!(status.contains("200"), "{status} {paid}");
+        let (status, paid) = pay(&node, id, "{}");
+        assert!(status.contains("202"), "{status} {paid}");
+        assert!(paid["payTxid"].is_string(), "{paid}");
     }
     let sent = chain.broadcasts();
     assert_eq!(sent.len(), 3);
@@ -392,8 +407,7 @@ fn paying_twice_is_refused_and_the_fee_rate_has_a_floor() {
     *chain.0.fee_rate.lock().unwrap() = 0.1;
     let placed = checkout(&node, &[("Paperback novel", "Marlow Goods", "direct")]);
     let id = placed[0]["orderId"].as_str().unwrap();
-    let (status, paid) = request(&node, "POST", &format!("/orders/{id}/pay"), "");
-    assert!(status.contains("200"), "{status} {paid}");
+    let paid = node.pay_order(id, &json!({})).unwrap();
     assert_eq!(paid["feeRateSatVb"], 1.0);
     assert_eq!(paid["payjoin"], false);
     assert_eq!(order(&node, id)["payTxid"], paid["txid"]);
@@ -403,14 +417,39 @@ fn paying_twice_is_refused_and_the_fee_rate_has_a_floor() {
 
     let (status, again) = request(&node, "POST", &format!("/orders/{id}/pay"), "{}");
     assert!(status.contains("409"), "{status} {again}");
+    assert_eq!(node.run_pay_jobs(), 0);
     assert_eq!(chain.broadcasts().len(), 1);
 
     *chain.0.fee_rate.lock().unwrap() = 5_000.0;
     let other = checkout(&node, &[("Letterpress cards", "Hale Paper", "direct")]);
     let other_id = other[0]["orderId"].as_str().unwrap();
-    let (status, _) = request(&node, "POST", &format!("/orders/{other_id}/pay"), "{}");
-    assert!(status.contains("502"), "{status}");
+    let (_, after) = pay(&node, other_id, "{}");
+    assert!(after["payError"].as_str().unwrap().contains("above 500"), "{after}");
+    assert!(after.get("payTxid").is_none());
     assert_eq!(chain.broadcasts().len(), 1);
+}
+
+#[test]
+fn pay_answers_at_once_and_the_worker_sends_it_once() {
+    let (_dir, chain, node) = testnet();
+    fund_node_wallet(&node, &chain, 100_000);
+    let placed = checkout(&node, &[("Paperback novel", "Marlow Goods", "direct")]);
+    let id = placed[0]["orderId"].as_str().unwrap();
+    let (status, queued) = request(&node, "POST", &format!("/orders/{id}/pay"), "{}");
+    assert!(status.contains("202"), "{status} {queued}");
+    assert_eq!(queued["status"], "Awaiting payment");
+    assert_eq!(queued["paying"], true);
+    assert!(chain.broadcasts().is_empty(), "nothing is sent on the request thread");
+    let (status, again) = request(&node, "POST", &format!("/orders/{id}/pay"), "{}");
+    assert!(status.contains("409"), "{status}");
+    assert!(again["error"].as_str().unwrap().contains("already being sent"));
+
+    assert_eq!(node.run_pay_jobs(), 1);
+    assert_eq!(chain.broadcasts().len(), 1);
+    let after = order(&node, id);
+    assert_eq!(after["paying"], false);
+    assert_eq!(after["payTxid"], json!(chain.broadcasts()[0].compute_txid().to_string()));
+    assert!(after.get("payError").is_none());
 }
 
 #[test]
@@ -418,10 +457,10 @@ fn an_empty_wallet_cannot_pay_and_nothing_is_sent() {
     let (_dir, chain, node) = testnet();
     let placed = checkout(&node, &[("Paperback novel", "Marlow Goods", "direct")]);
     let id = placed[0]["orderId"].as_str().unwrap();
-    let (status, body) = request(&node, "POST", &format!("/orders/{id}/pay"), "{}");
-    assert!(status.contains("400"), "{status} {body}");
+    let (_, after) = pay(&node, id, "{}");
+    assert!(after["payError"].as_str().unwrap().contains("cannot pay"), "{after}");
     assert!(chain.broadcasts().is_empty());
-    assert_eq!(order(&node, id)["status"], "Awaiting payment");
+    assert_eq!(after["status"], "Awaiting payment");
 }
 
 #[test]
@@ -445,9 +484,10 @@ fn mainnet_pay_needs_the_confirm_flag() {
     assert!(status.contains("400"));
     assert!(chain.broadcasts().is_empty());
 
-    let (status, paid) = request(&node, "POST", &format!("/orders/{id}/pay"), r#"{"confirm": true}"#);
-    assert!(status.contains("200"), "{status} {paid}");
+    let (status, paid) = pay(&node, id, r#"{"confirm": true}"#);
+    assert!(status.contains("202"), "{status} {paid}");
     assert_eq!(paid["network"], "mainnet");
+    assert!(paid["payTxid"].is_string(), "{paid}");
     assert_eq!(chain.broadcasts().len(), 1);
 }
 
@@ -500,7 +540,7 @@ fn testnet4_never_shows_a_mainnet_address() {
         &[("Paperback novel", "Marlow Goods", "escrow"), ("Letterpress cards", "Hale Paper", "direct")],
     );
     let escrow_id = placed[0]["orderId"].as_str().unwrap();
-    request(&node, "POST", &format!("/orders/{escrow_id}/pay"), "{}");
+    pay(&node, escrow_id, "{}");
     let mut found = Vec::new();
     for value in [
         json!(placed),
@@ -639,16 +679,16 @@ fn escrow_funding_holds_the_refund_before_it_broadcasts() {
     let address = address_for(terms["address"].as_str().unwrap(), NetworkMode::Testnet4).unwrap();
 
     chain.0.fail_broadcast.store(true, Ordering::Relaxed);
-    let (status, _) = request(&node, "POST", &format!("/orders/{id}/pay"), "{}");
-    assert!(status.contains("502"), "{status}");
-    let held = order(&node, id);
+    let (_, held) = pay(&node, id, "{}");
+    assert!(held["payError"].as_str().unwrap().contains("relay is down"), "{held}");
     assert_eq!(held["escrow"]["refundHeld"], true, "the refund is saved before the broadcast");
     assert_eq!(held["status"], "Awaiting funding");
     let stored_funding = held["escrow"]["fundingTx"].as_str().unwrap().to_string();
 
-    let (status, paid) = request(&node, "POST", &format!("/orders/{id}/pay"), "{}");
-    assert!(status.contains("200"), "{status} {paid}");
-    assert_eq!(paid["refundHeld"], true);
+    let (_, paid) = pay(&node, id, "{}");
+    assert!(paid["payTxid"].is_string(), "{paid}");
+    assert!(paid.get("payError").is_none());
+    assert_eq!(paid["escrow"]["refundHeld"], true);
     let sent = chain.broadcasts();
     assert_eq!(sent.len(), 1);
     let funding_tx = &sent[0];
@@ -716,7 +756,11 @@ fn escrow_funded_from_elsewhere_is_flagged_without_a_refund() {
 fn live_testnet4() {
     use std::time::{Duration, Instant};
     let dir = PathBuf::from(std::env::var("OB_LIVE_DIR").unwrap_or_else(|_| "/tmp/ob-live-testnet4".to_string()));
-    let url = std::env::var("OB_ESPLORA").unwrap_or_else(|_| NetworkMode::Testnet4.default_esplora().to_string());
+    let urls: Vec<String> = match std::env::var("OB_ESPLORA") {
+        Ok(list) => list.split(',').map(|url| url.trim().to_string()).collect(),
+        Err(_) => NetworkMode::Testnet4.default_esplora().iter().map(|url| url.to_string()).collect(),
+    };
+    let chain = crate::EsploraChain::new(&urls, NetworkMode::Testnet4.bitcoin()).unwrap();
     let node = Node::open_with(
         &dir,
         load_catalog(NetworkMode::Testnet4).unwrap(),
@@ -724,7 +768,7 @@ fn live_testnet4() {
             network: NetworkMode::Testnet4,
             confirmations: 1,
             public_server: true,
-            chain: Box::new(crate::EsploraChain::new(&url)),
+            chain: Box::new(chain),
         },
     )
     .unwrap();
@@ -739,9 +783,9 @@ fn live_testnet4() {
     let placed = checkout(&node, &[("Graphite pencils", "Hale Paper", "direct")]);
     let id = placed[0]["orderId"].as_str().unwrap();
     println!("order {id} pays {}", placed[0]["payment"]["bip21"]);
-    let (status, paid) = request(&node, "POST", &format!("/orders/{id}/pay"), "{}");
-    assert!(status.contains("200"), "{status} {paid}");
-    println!("broadcast {}", paid["txid"]);
+    let (status, paid) = pay(&node, id, "{}");
+    assert!(paid["payTxid"].is_string(), "{status} {paid}");
+    println!("broadcast {}", paid["payTxid"]);
     let start = Instant::now();
     loop {
         node.watch_once().unwrap();

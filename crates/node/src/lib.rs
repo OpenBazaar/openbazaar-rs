@@ -128,6 +128,7 @@ pub struct Node {
     buyer_wallet: Mutex<NodeWallet>,
     /// One wallet per fixture store, keyed by seller name. The node plays these vendors.
     store_wallets: BTreeMap<String, Mutex<NodeWallet>>,
+    pub(crate) pay_jobs: pay_order::PayJobs,
 }
 
 impl Node {
@@ -181,6 +182,7 @@ impl Node {
             chain: config.chain,
             buyer_wallet: Mutex::new(buyer_wallet),
             store_wallets,
+            pay_jobs: pay_order::PayJobs::new(),
         })
     }
 
@@ -223,11 +225,13 @@ impl Node {
         self.pairing_fresh.then_some(self.pairing_token.as_str())
     }
 
-    /// Serve HTTP on this thread and run the chain watcher on another, every `poll`.
+    /// Serve HTTP on this thread. The chain watcher (every `poll`) and the pay
+    /// worker each run on their own thread, so chain calls never block HTTP.
     pub fn serve(&self, port: u16, poll: Duration) -> std::io::Result<()> {
         let stop = AtomicBool::new(false);
         std::thread::scope(|scope| {
             scope.spawn(|| self.run_watcher(poll, &stop));
+            scope.spawn(|| self.run_pay_worker(&stop));
             let result = http::serve(self, port);
             stop.store(true, Ordering::Relaxed);
             result
