@@ -126,6 +126,10 @@ impl<'a> Reader<'a> {
             Ok(())
         }
     }
+
+    pub(crate) fn position(&self) -> usize {
+        self.index
+    }
 }
 
 pub fn to_hex(bytes: &[u8]) -> String {

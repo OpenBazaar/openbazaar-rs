@@ -62,11 +62,22 @@ impl Store {
     }
 
     pub fn decode(bytes: &[u8]) -> Result<Self, Error> {
+        let (store, len) = Self::decode_one(bytes)?;
+        if len != bytes.len() {
+            return Err(Error::TrailingBytes);
+        }
+        Ok(store)
+    }
+
+    /// Decode the first store record in `bytes`.
+    ///
+    /// Returns the record and how many bytes it occupied. Bytes after that
+    /// belong to the next catalog record.
+    pub(crate) fn decode_one(bytes: &[u8]) -> Result<(Self, usize), Error> {
         let mut reader = Reader::new(bytes);
         let store = Self::decode_body(&mut reader)?;
         let signature = reader.array()?;
-        reader.finish()?;
-        Ok(Self { signature, ..store })
+        Ok((Self { signature, ..store }, reader.position()))
     }
 
     pub fn verify(&self) -> Result<(), Error> {

@@ -7,7 +7,7 @@ use crate::Error;
 
 const TAG: &str = "ob/listing/v1";
 const MAGIC: [u8; 4] = *b"OBLS";
-const VERSION: u8 = 1;
+const VERSION: u8 = 4;
 
 /// Address of a listing: SHA256 of the canonical body, without the signature.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -64,7 +64,19 @@ pub struct Listing {
     pub category: String,
     pub price_sats: u64,
     pub ship_from: String,
+    pub description: String,
+    pub seller: String,
+    pub stock: u32,
+    /// Calendar day the listing was signed, as YYYYMMDD.
+    pub listed_on: u32,
+    pub moderated: bool,
     pub kind: ListingKind,
+    /// Shared product key. Empty when this listing is the only offer.
+    pub product: String,
+    /// Flat shipping for one physical package from this seller, in sats.
+    pub shipping_sats: u64,
+    /// Item subtotal, in sats, at which that flat shipping drops to zero. Zero means it never does.
+    pub free_over_sats: u64,
     pub signature: [u8; SIG_LEN],
 }
 
@@ -75,7 +87,15 @@ impl Listing {
         category: impl Into<String>,
         price_sats: u64,
         ship_from: impl Into<String>,
+        description: impl Into<String>,
+        seller: impl Into<String>,
+        stock: u32,
+        listed_on: u32,
+        moderated: bool,
         kind: ListingKind,
+        product: impl Into<String>,
+        shipping_sats: u64,
+        free_over_sats: u64,
         secret: &SecretKey,
     ) -> Result<Self, Error> {
         if sign::xonly(secret) != *store_id.as_bytes() {
@@ -87,7 +107,15 @@ impl Listing {
             category: category.into(),
             price_sats,
             ship_from: ship_from.into(),
+            description: description.into(),
+            seller: seller.into(),
+            stock,
+            listed_on,
+            moderated,
             kind,
+            product: product.into(),
+            shipping_sats,
+            free_over_sats,
             signature: [0u8; SIG_LEN],
         };
         let body = listing.encode_body()?;
@@ -111,14 +139,27 @@ impl Listing {
     }
 
     pub fn decode(bytes: &[u8]) -> Result<Self, Error> {
+        let (listing, len) = Self::decode_one(bytes)?;
+        if len != bytes.len() {
+            return Err(Error::TrailingBytes);
+        }
+        Ok(listing)
+    }
+
+    /// Decode the first listing record in `bytes`.
+    ///
+    /// Returns the record and how many bytes it occupied.
+    pub(crate) fn decode_one(bytes: &[u8]) -> Result<(Self, usize), Error> {
         let mut reader = Reader::new(bytes);
         let listing = Self::decode_body(&mut reader)?;
         let signature = reader.array()?;
-        reader.finish()?;
-        Ok(Self {
-            signature,
-            ..listing
-        })
+        Ok((
+            Self {
+                signature,
+                ..listing
+            },
+            reader.position(),
+        ))
     }
 
     pub fn verify(&self) -> Result<(), Error> {
@@ -135,7 +176,15 @@ impl Listing {
         writer.str(&self.category)?;
         writer.u64(self.price_sats);
         writer.str(&self.ship_from)?;
+        writer.str(&self.description)?;
+        writer.str(&self.seller)?;
+        writer.u32(self.stock);
+        writer.u32(self.listed_on);
+        writer.u8(u8::from(self.moderated));
         writer.u8(self.kind.tag());
+        writer.str(&self.product)?;
+        writer.u64(self.shipping_sats);
+        writer.u64(self.free_over_sats);
         Ok(writer.finish())
     }
 
@@ -147,7 +196,15 @@ impl Listing {
             category: reader.str()?,
             price_sats: reader.u64()?,
             ship_from: reader.str()?,
+            description: reader.str()?,
+            seller: reader.str()?,
+            stock: reader.u32()?,
+            listed_on: reader.u32()?,
+            moderated: reader.u8()? == 1,
             kind: ListingKind::from_tag(reader.u8()?)?,
+            product: reader.str()?,
+            shipping_sats: reader.u64()?,
+            free_over_sats: reader.u64()?,
             signature: [0u8; SIG_LEN],
         })
     }
@@ -177,7 +234,15 @@ mod tests {
             "Books",
             18_000,
             "Oregon",
+            "A sewn paperback from a small press. It is packed flat so the spine stays straight.",
+            "Marlow Goods",
+            8,
+            20260312,
+            true,
             ListingKind::Physical,
+            "",
+            800,
+            30_000,
             &secret,
         )
         .unwrap()
@@ -234,7 +299,15 @@ mod tests {
             "Books",
             18_000,
             "Oregon",
+            "A sewn paperback from a small press.",
+            "Marlow Goods",
+            8,
+            20260312,
+            true,
             ListingKind::Physical,
+            "",
+            800,
+            30_000,
             &other,
         );
         assert_eq!(result.err(), Some(Error::StoreMismatch));

@@ -20,7 +20,10 @@ mod store;
 pub use dispute::{DisputeEnvelope, DisputePlaintext};
 pub use error::Error;
 pub use escrow::EscrowTerms;
-pub use fixtures::{fixture_catalog, fixture_dispute, fixture_order, Catalog};
+pub use fixtures::{
+    fixture_catalog, fixture_dispute, fixture_keys, fixture_order, package_rate, vendor_mail_key,
+    Catalog, FixtureKeys, Moderator,
+};
 pub use keys::KeyRole;
 pub use listing::{Listing, ListingHash, ListingKind};
 pub use order::{OrderEnvelope, OrderPlaintext};

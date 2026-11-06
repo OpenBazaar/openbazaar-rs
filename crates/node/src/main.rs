@@ -37,7 +37,19 @@ fn main() -> ExitCode {
                     }
                 },
             };
-            if let Err(err) = ob_node::serve(&json, port) {
+            let node = match ob_node::Node::open(ob_node::default_mailbox_dir(), catalog) {
+                Ok(node) => node,
+                Err(err) => {
+                    eprintln!("ob-node: {err}");
+                    return ExitCode::from(1);
+                }
+            };
+            // First boot only. The token file in the data dir is kept, and a
+            // later start does not print it again.
+            if let Some(token) = node.fresh_pairing_token() {
+                eprintln!("ob-node pairing token: {token}");
+            }
+            if let Err(err) = node.serve(port) {
                 eprintln!("ob-node: {err}");
                 return ExitCode::from(1);
             }
