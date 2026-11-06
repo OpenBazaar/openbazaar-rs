@@ -1,0 +1,19 @@
+[package]
+name = "ob-node"
+description = "Local fixture catalog for the OpenBazaar client"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+name = "ob_node"
+path = "src/lib.rs"
+
+[[bin]]
+name = "ob-node"
+path = "src/main.rs"
+
+[dependencies]
+openbazaar-protocol = { path = "../protocol" }
+serde_json = "1"

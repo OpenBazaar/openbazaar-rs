@@ -1,0 +1,20 @@
+[workspace]
+
+[package]
+name = "openbazaar-desktop"
+version = "0.0.0"
+description = "Tauri shell for the shared OpenBazaar store screen"
+edition = "2021"
+license = "MIT"
+rust-version = "1.90"
+publish = false
+
+[lib]
+name = "openbazaar_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }

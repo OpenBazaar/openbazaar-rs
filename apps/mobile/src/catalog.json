@@ -1,0 +1,45 @@
+{
+  "listings": [
+    {
+      "category": "Books",
+      "hash": "f05e7650091430c5a8c0b3b0a9a6f4c141cb95e00475035f0346c8fee1a3a811",
+      "kind": "physical",
+      "priceSats": 18000,
+      "shipFrom": "Oregon",
+      "storeId": "2b489bf1506ec6e9fc3d968a519fcaf07ffe0394fdc313b513fc7d0ba4229056",
+      "title": "Paperback novel"
+    },
+    {
+      "category": "Grocery",
+      "hash": "82107681e9ef974a245fb36b1bfe6d5194f7451d350467974587b3487b37d99f",
+      "kind": "physical",
+      "priceSats": 9500,
+      "shipFrom": "Oregon",
+      "storeId": "2b489bf1506ec6e9fc3d968a519fcaf07ffe0394fdc313b513fc7d0ba4229056",
+      "title": "Whole bean coffee, 12 oz"
+    },
+    {
+      "category": "Home",
+      "hash": "6f1cf2ec5d355a3d52e766494def0ad9796f2f6bfa0d4a841fc31e80c92ab78c",
+      "kind": "physical",
+      "priceSats": 7000,
+      "shipFrom": "Oregon",
+      "storeId": "2b489bf1506ec6e9fc3d968a519fcaf07ffe0394fdc313b513fc7d0ba4229056",
+      "title": "Linen dish towel"
+    },
+    {
+      "category": "Music",
+      "hash": "6e66e62133249c9e3f7de36e5942d23b9e2f9a3156b7be4dbf8aa68f2a4a7d57",
+      "kind": "digital",
+      "priceSats": 4000,
+      "shipFrom": "Digital",
+      "storeId": "2b489bf1506ec6e9fc3d968a519fcaf07ffe0394fdc313b513fc7d0ba4229056",
+      "title": "Field recordings"
+    }
+  ],
+  "store": {
+    "id": "2b489bf1506ec6e9fc3d968a519fcaf07ffe0394fdc313b513fc7d0ba4229056",
+    "name": "Marlow Goods",
+    "region": "Oregon"
+  }
+}

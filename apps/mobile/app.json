@@ -1,0 +1,16 @@
+{
+  "expo": {
+    "name": "OpenBazaar",
+    "slug": "openbazaar",
+    "version": "0.0.0",
+    "orientation": "portrait",
+    "backgroundColor": "#f3efe8",
+    "userInterfaceStyle": "light",
+    "experiments": {
+      "baseUrl": "."
+    },
+    "web": {
+      "bundler": "metro"
+    }
+  }
+}

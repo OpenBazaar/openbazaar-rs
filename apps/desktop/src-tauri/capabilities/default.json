@@ -1,0 +1,6 @@
+{
+  "identifier": "default",
+  "description": "The shop window shows the shared catalog.",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}
