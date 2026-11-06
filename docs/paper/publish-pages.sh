@@ -16,7 +16,6 @@ if ! git -C "$repo_root" diff --quiet HEAD -- "$paper_dir"; then
 fi
 commit=$(git -C "$repo_root" rev-parse HEAD)
 short=${commit:0:7}
-commit_date=$(git -C "$repo_root" log -1 --format=%cs HEAD)
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
@@ -83,10 +82,7 @@ cat >"$site/paper/index.html" <<EOF
   <a class="download" href="openbazaar.pdf">Download PDF</a>
   <h2>Abstract</h2>
 $abstract_html
-  <footer>
-    Built from <a href="https://github.com/$repo_slug/commit/$commit"><code>$short</code></a> ($commit_date) of
-    <a href="https://github.com/$repo_slug">$repo_slug</a>.
-  </footer>
+  <footer><a href="https://github.com/$repo_slug/tree/$commit/docs/paper">Source</a></footer>
 </body>
 </html>
 EOF

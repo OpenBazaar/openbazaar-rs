@@ -1,21 +1,40 @@
-\section{Residual Trust and Limitations}
+\section{Limitations and Future Work}
 \label{sec:limitations}
 
-We collect the limitations stated elsewhere, ordered roughly by how much they matter to a user today.
+\subsection{Limitations}
+
+We collect the limitations of the design, ordered roughly by how much they matter to a user.
 
 \begin{enumerate}
-  \item \textbf{No network.} Nothing travels over Tor. In the demonstration, buyer and vendor share one node and the letter is written to that node's own mailbox. Every network-privacy statement in this paper about Tor is a design statement.
-  \item \textbf{Escrow is not two-party in any running node.} The node uses the merged single-process escrow, in which one process holds both secret keys. It is restricted to testnet4 in PR~\#2 and is labeled unsafe. The two-party protocol exists as a tested library in PR~\#3 with no transport.
-  \item \textbf{The moderator is trusted to rule, and to rule in time.} A moderator that does not rule leaves a non-delivered buyer to lose at $h_C+1$. A moderator colluding with one party decides for that party. Equivocation is provable, not preventable.
+  \item \textbf{The moderator is trusted to rule, and to rule in time.} A moderator that does not rule leaves a non-delivered buyer to lose at $h_C+1$. Equivocation is provable, not preventable.
+  \item \textbf{Moderator and party collusion.} A moderator colluding with one party decides the dispute for that party. This is the same economic trust as a 2-of-3 multisignature escrow, and the protocol does not reduce it; it only removes the moderator's ability to take funds for itself or redirect them. Reputation, published equivocation proofs, and moderator panels (below) are the only counterweights.
+  \item \textbf{Moderator fee bias.} The fee is paid only from a dispute outcome. A vendor who wins a ruling near $h_C$ can wait for the fee-free claim, while a buyer who wins must broadcast $\tx{B}$ and pay. In expectation the moderator is paid more for buyer wins than for vendor wins, an incentive toward ruling for the buyer. Two remedies preserve the rest of the protocol: put the moderator fee into the claim $\tx{clm}$ as well, at the cost of charging it on undisputed escrows that end by claim; or lock a separate fee bond at funding, paid to the moderator by any dispute outcome and refunded to its owner otherwise, at the cost of a second output and its own presigned spends. Neither is part of the protocol above.
   \item \textbf{The buyer must act before $h_D$.} The default outcome after $h_C$ is the vendor's, so a buyer who does not dispute non-delivery in time loses the payment.
-  \item \textbf{Chain queries leak.} The Esplora server, and on testnet4 its fallback once used, sees every watched address and the node's IP address.
-  \item \textbf{The mailbox key is not bound to the store.} Until the signed store record names the mailbox key, a buyer's letter is only as confidential as the lookup that told it which key to use.
-  \item \textbf{At-rest encryption keeps its key beside the data.} It is not a defense against anyone who can read the data directory.
-  \item \textbf{Local processes can act as the client.} The pairing token is available to any process on the machine.
-  \item \textbf{No catalog freshness, completeness, replication, or spam cost.} A replica can serve stale listings or omit them; a store is available only from its own node today.
-  \item \textbf{Payment rails beyond on-chain are not live.} BOLT 12 offers and BIP 352 codes are valid strings that nothing answers or scans; Payjoin is a library.
-  \item \textbf{Amounts can identify listings, and payments can be linked.} Public prices let a chain observer guess what was bought from the payment amount, and because the wallet spends its own unconfirmed change, consecutive payments to different sellers can be chained together on chain.
-  \item \textbf{Presigned fees.} Presigned escrow spends have fixed fees and no anchor output, so fee bumping is not possible and a fee spike near $h_C$ can let the vendor's claim race the buyer's dispute (finding M4).
-  \item \textbf{No padding.} Letter sizes leak approximate content length.
-  \item \textbf{Open review findings; no external review.} An internal adversarial review of the two-party escrow found the issues in Table~\ref{tab:review}; at \reviewcommit{} their status is as listed there. The code has not been audited by a third party, and the security arguments here are informal.
+  \item \textbf{Proof size and verification cost.} Each verifiable share is about 50~KB and costs about 50~ms to verify. Funding carries two shares, and an attacker can make a moderator verify many letters. The cost is tolerable on a laptop and heavy on a phone.
+  \item \textbf{Presigned fees and pinning.} Presigned escrow spends have fees fixed at funding and rely on a child-pays-for-parent bump through the anchor. As version-2 transactions they lack TRUC's pinning protection, and a fee spike near $h_C$ can let the vendor's claim race the buyer's dispute outcome.
+  \item \textbf{Escrow outcomes are recognizable.} The anchor output marks refund, claim, and dispute spends as contract spends, and a moderator that reuses its payout script links its disputes.
+  \item \textbf{No catalog freshness or completeness.} A replica can serve stale listings or omit them without detection.
+  \item \textbf{Amounts can identify listings.} Public prices let a chain observer guess what was bought from the payment amount.
+  \item \textbf{Letter sizes leak.} Letters are not padded, so their sizes leak approximate content length.
+  \item \textbf{Timing correlation.} Tor does not resist an adversary who can watch both a buyer's node and a vendor's onion service, or who correlates letter timing with chain timing.
+  \item \textbf{Labels are only advice.} Self-labels are only as honest as the vendor, and labelers only as good as the buyer's choice of them; nothing in the design removes content from the network.
+  \item \textbf{The device is trusted.} A process on the same machine can act as the client, and at-rest encryption is only as strong as the protection of its key.
+  \item \textbf{Informal analysis.} The security arguments in \S\ref{sec:security} are informal, and the protocol has had no external cryptographic review.
 \end{enumerate}
+
+\subsection{Future work}
+\label{sec:future}
+
+\paragraph{Smaller verifiable encryption.} Bitwise ElGamal is simple and relies only on the discrete-log setting of secp256k1, but it is large. Batch verification of the 256 bit proofs would cut the moderator's verification cost substantially without changing the format. Verifiable encryption in a group with an easy discrete-log subgroup, such as the class-group or Paillier-based constructions used for two-party ECDSA and scriptless swaps~\citep{shlomovits2020juggling}, could reduce the share to a few kilobytes, at the cost of a second hardness assumption.
+
+\paragraph{Moderator panels.} Replacing the single moderator with a $t$-of-$n$ panel that shares the decryption key with FROST-style key generation~\citep{komlo2020frost} would require collusion between a party and $t$ moderators rather than one.
+
+\paragraph{Fee neutrality.} Choosing between the two fee remedies above, or finding one that charges the moderator fee exactly when a dispute was opened, is open.
+
+\paragraph{Pinning-resistant presigned spends.} Moving the presigned spends to TRUC transactions with an ephemeral anchor would give them the pinning protection that version-2 transactions lack.
+
+\paragraph{Catalog freshness and spam.} A per-store sequence number and a signed index of current listings would let a buyer detect stale and withheld records. A publishing cost that replicas check would make open replication safe against spam; its form (a small payment, a proof of a funded output, or a rate limit tied to store age) is not designed.
+
+\paragraph{Private retrieval and transport.} Private information retrieval for catalog records at scale; padding letters to fixed size buckets; carrying letters over a mix network; and a pairing transport that lets a phone reach its owner's node on another machine with mutual authentication.
+
+\paragraph{Formal analysis.} A game-based proof of the escrow properties, and a machine-checked model of the message rounds and timeline.

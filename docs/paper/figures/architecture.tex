@@ -6,7 +6,6 @@
   box/.style={draw, rounded corners=2pt, align=center, minimum height=1.05cm, text width=2.5cm, fill=white},
   ext/.style={box, fill=black!5},
   impl/.style={-{Stealth[length=2mm]}, thick},
-  spec/.style={-{Stealth[length=2mm]}, thick, dashed},
   lbl/.style={font=\scriptsize, align=center, fill=white, inner sep=1pt}
 ]
 \node[box] (client) at (0,0) {Buyer client\\\scriptsize web app, desktop shell};
@@ -16,22 +15,22 @@
 \node[ext] (tor) at (4.5,-2.6) {Tor network};
 \node[ext] (rep) at (4.5,-0.3) {Replicas and seeds};
 \node[ext] (mod) at (13.6,0.4) {Moderator\\\scriptsize dispute only};
-\node[ext] (esplora) at (0,-5.0) {Esplora server};
+\node[ext] (esplora) at (0,-5.0) {Chain data\\\scriptsize own node or filters};
 \node[ext] (chain) at (4.5,-5.0) {Bitcoin network};
 \node[ext] (rates) at (-4.5,-2.6) {Exchange-rate\\endpoint};
 
-\draw[impl] (client) -- node[lbl, left, xshift=-2pt]{loopback HTTP\\pairing token} (bnode);
-\draw[spec] (bnode) -- node[lbl, above=3pt]{sealed\\letter} (tor);
-\draw[spec] (tor) -- node[lbl, above=3pt]{onion\\service} (vnode);
-\draw[impl] (vnode) -- node[lbl, right]{loopback} (vapp);
-\draw[spec] (bnode.north east) -- node[lbl, sloped, above]{catalog} (rep.south west);
-\draw[spec] (vnode.north west) -- node[lbl, sloped, above]{publish} (rep.south east);
+\draw[impl] (client) -- node[lbl, left, xshift=-2pt]{loopback or paired\\channel; token} (bnode);
+\draw[impl] (bnode) -- node[lbl, above=3pt]{sealed\\letter} (tor);
+\draw[impl] (tor) -- node[lbl, above=3pt]{onion\\service} (vnode);
+\draw[impl] (vnode) -- node[lbl, right]{paired} (vapp);
+\draw[impl] (bnode.north east) -- node[lbl, sloped, above]{catalog} (rep.south west);
+\draw[impl] (vnode.north west) -- node[lbl, sloped, above]{publish} (rep.south east);
 \draw[impl] (bnode) -- node[lbl, left]{addresses, txs} (esplora);
 \draw[impl] (bnode.south east) -- node[lbl, sloped, above]{broadcast} (chain);
 \draw[impl] (vnode.south west) -- node[lbl, sloped, above]{payments} (chain);
-\draw[spec] (vnode) -- node[lbl, sloped, above]{dispute letter} (mod);
-\draw[impl] (bnode) -- node[lbl, above=3pt]{clear-\\net} (rates);
+\draw[impl] (vnode) -- node[lbl, sloped, above]{dispute letter (Tor)} (mod);
+\draw[impl] (bnode) -- node[lbl, above=3pt]{over\\Tor} (rates);
 \end{tikzpicture}}
-\caption{Components and data paths. Solid arrows exist in code on main or an open pull request; dashed arrows are specified but not implemented. In today's demonstration the buyer node and vendor node are the same process, and the sealed letter is written to that process's own mailbox directory. The phone-to-node pairing is not drawn; the client currently reaches only a node on the same machine.}
+\caption{Components and data paths. A client talks only to its own node. Everything between nodes, including catalog fetches, sealed letters, escrow messages, and dispute letters, travels over Tor. The moderator is contacted only when a party opens a dispute.}
 \label{fig:architecture}
 \end{figure}

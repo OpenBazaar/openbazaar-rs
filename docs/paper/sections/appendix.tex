@@ -1,27 +1,24 @@
 \section{Wire Formats}
 \label{app:formats}
 
-All integers are little-endian. \code{str} is a 2-byte length followed by UTF-8 bytes. Every format begins with a 4-byte magic and a 1-byte version, and decoders reject unknown versions and trailing bytes. The escrow crate's signed-terms wrapper reuses the magic \code{OBST}; it is never parsed in the same context as a store record, but a future version should give it a distinct magic.
+All integers are little-endian. \code{str} is a 2-byte length followed by UTF-8 bytes. Every format begins with a 4-byte magic and a 1-byte version, and decoders reject unknown versions and trailing bytes.
 
 \begin{center}\small
 \begin{tabularx}{\textwidth}{@{}lp{0.15\textwidth}X@{}}
 \toprule
 \textbf{Magic} & \textbf{Record} & \textbf{Fields after magic and version} \\
 \midrule
-\code{OBST} v1 & Store & name (str), region (str), BOLT 12 offer (str), BIP 352 code (str), store key (32 bytes), then a 64-byte BIP 340 signature over the preceding bytes with tag \code{ob/store/v1}. \\
-\code{OBLS} v4 & Listing & store key (32), title (str), category (str), price (u64), ship-from (str), description (str), seller (str), stock (u32), listed-on date (u32), moderated (u8), kind (u8), product (str), shipping (u64), free-over (u64), then a signature with tag \code{ob/listing/v1}. Address: SHA-256 of everything before the signature. \\
+\code{OBST} v2 & Store & name (str), region (str), BOLT 12 offer (str), BIP 352 code (str), store key (32 bytes), store rating (u8: 0 general, 1 sensitive, 2 adult), then a 64-byte BIP 340 signature over the preceding bytes with tag \code{ob/store/v1}. Version 1 omits the rating. The mailbox key and onion address of \S\ref{sec:identity} are added at the end in a later version. \\
+\code{OBLS} v5 & Listing & store key (32), title (str), category (str), price (u64), ship-from (str), description (str), seller (str), stock (u32), listed-on date (u32), moderated (u8), kind (u8), product (str), shipping (u64), free-over (u64), rating (u8), tags (u16 bit set), then a signature with tag \code{ob/listing/v1}. Address: SHA-256 of everything before the signature. Version 4 omits the rating and tags. \\
+\code{OBLB} v1 & Label set & labeler key (32), name (str, at most 64 bytes), sequence (u64), issued-on date (u32), entry count (u16, at most 4{,}096), then entries sorted by target with no repeats: target kind (u8: 0 listing, 1 store), target (32), flags (u8; bit 0 retracts, others zero), rating (u8), tags (u16), reason (str, \code{[a-z0-9-]}, at most 32 bytes). A retraction has rating 0, tags 0, and no reason. Signature with tag \code{ob/labels/v1}; address: SHA-256 of the body. \\
 \code{OBOD} v1 & Order plaintext & listing address (32), quantity (u32), option count (u16) and name/value pairs (str, str), ship-to (str), rail (u8), reply key (32). \\
-\code{OBSL} v1 & Sealed letter & HPKE encapsulated key (32), ciphertext length (u32), ciphertext. At most 64~KiB. \\
+\code{OBSL} v1 & Sealed letter & HPKE encapsulated key (32), ciphertext length (u32), ciphertext. At most 64~KiB. Orders and escrow messages use different HPKE \code{info} strings, so neither opens as the other. \\
 \code{OBSR} v1 & Sealed reply & As \code{OBSL}, sealed to the order's reply key; at most 8~KiB. \\
 \code{OBML} v1 & Onion frame & Letter length (u32), then one \code{OBSL} letter. \\
-\code{OBET} v1 & Escrow terms & The keys, amounts, heights, and payout scripts of \S\ref{sec:escrow-notation}. \\
-\code{OBDL} v2 & Dispute letter & The fields of the dispute letter in \S\ref{sec:escrow}, then the claimant's signature. \\
-\code{OBRU} v1 & Ruling & Funding outpoint, favored party (u8), adaptor point (33), moderator share (32), moderator signature (64). \\
+\code{OBET} v2 & Escrow terms & The keys, moderator record (keys, payout, fee, policy), amounts, heights, and payout scripts of \S\ref{sec:escrow-notation}. \\
+\code{OBEM} v1 & Escrow mail & Message kind (u8), escrow id (16), field count (u8), then fields as u32 length and bytes; sealed as an \code{OBSL} letter between nodes. \\
+\code{OBDL} v3 & Dispute letter & The fields of the dispute letter in \S\ref{sec:escrow}, then the claimant's signature. \\
+\code{OBRU} v2 & Ruling & Terms digest (32), output key (32), funding outpoint, favored party (u8), adaptor point (33), moderator share (32), signature (64) by the moderator's signing key over all preceding fields. \\
 \bottomrule
 \end{tabularx}
 \end{center}
-
-\section{Reproducing the Measurements}
-\label{app:repro}
-
-The test counts in \S\ref{sec:evaluation} come from \code{cargo test --workspace} at main \code{b015bff} and PR~\#2 \paycommit, and from \code{cargo test --release -p openbazaar-escrow -p openbazaar-protocol} at PR~\#3 \reviewcommit. The timing programs call only public functions: \code{Listing::sign}, \code{Listing::verify}, \code{Catalog::verify}, \code{seal\_order}, and \code{open\_order} for the catalog and sealing rows; \code{VerifiableShare::encrypt}, \code{verify}, and \code{open} for the escrow rows; and the client's \code{filterListings} for search. They are not committed with the paper.

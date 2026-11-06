@@ -27,17 +27,9 @@
 \theoremstyle{definition}
 \newtheorem{assumption}{Assumption}
 
-% Implementation status labels. Every mechanism in the paper carries one.
-\newcommand{\status}[1]{\textsf{\small[#1]}}
-\newcommand{\IT}{\status{implemented, tested}}
-\newcommand{\ID}{\status{implemented, demo}}
-\newcommand{\SP}{\status{specified, not implemented}}
-\newcommand{\FW}{\status{future work}}
-
 \newcommand{\code}[1]{\texttt{\small #1}}
 \newcommand{\Hash}{\mathsf{H}}
 \newcommand{\tx}[1]{\mathsf{tx}_{\mathrm{#1}}}
-\input{sections/review-status}
 
 \title{OpenBazaar: Signed Catalogs, Sealed Orders, and\\Scriptless Two-Party Escrow for a Non-Custodial Marketplace}
 \author{Brian Hoffman\\[2pt]\normalsize OpenBazaar project}
@@ -48,7 +40,6 @@
 
 \input{sections/abstract}
 \input{sections/introduction}
-\input{sections/status}
 \input{sections/goals}
 \input{sections/model}
 \input{sections/threats}
@@ -61,14 +52,15 @@
 \input{sections/discovery}
 \input{sections/security}
 \input{sections/privacy}
-\input{sections/limitations}
 \input{sections/evaluation}
+\input{sections/limitations}
 \input{sections/related}
 \input{sections/conclusion}
 
 \bibliographystyle{plainnat}
 \bibliography{references}
 
+\clearpage
 \appendix
 \input{sections/appendix}
 

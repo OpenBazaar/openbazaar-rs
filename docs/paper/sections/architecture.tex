@@ -3,29 +3,18 @@
 
 \input{figures/architecture}
 
-Figure~\ref{fig:architecture} shows the components. The repository is a Rust workspace with five crates and two applications:
-\begin{itemize}
-  \item \code{crates/protocol}: store, listing, order, and dispute record types, canonical encoding, and Schnorr signing.
-  \item \code{crates/tormail}: order sealing, the onion mailbox, and the Arti transport.
-  \item \code{crates/pay}: BOLT 12 offers, BIP 352 codes, and Payjoin v2 session wrappers.
-  \item \code{crates/escrow}: the scriptless escrow.
-  \item \code{crates/node}: the node binary (\code{ob-node}), its loopback HTTP server, checkout, the encrypted vault, and (in PR~\#2) the wallet and chain watcher.
-  \item \code{apps/mobile}: the client, an Expo (React Native) application exported for the web.
-  \item \code{apps/desktop}: a Tauri 2 shell that hosts the same web export and, in PR~\#1, starts a bundled node.
-\end{itemize}
+Figure~\ref{fig:architecture} shows the components. A user runs a client and a node. The node holds the keys, the wallet, the encrypted vault, the verified catalog, and the escrow state; it watches the chain and talks to other nodes. The client renders the catalog, the cart, and the order screens, and holds no keys.
 
 \subsection{The client-node boundary}
 
-The node listens only on \code{127.0.0.1} \IT. It refuses requests whose TCP peer is not a loopback address. On first start it writes a 256-bit random pairing token to a file with mode \code{0600} and prints it once. Requests that place orders, read or write the address book, or read the buyer's order list must carry the token in an \code{X-Ob-Pair} header. A loopback caller can fetch the token with \code{GET /pair}; a non-loopback caller cannot. Cross-origin responses name only the shop origin, the node's own origin, and (in PR~\#1) the desktop webview origins, so a web page from another origin cannot read the token through the browser.
+A node listens only on a loopback address and refuses requests whose TCP peer is not a loopback address. On first start it creates a 256-bit random pairing token, stored in a file readable only by its owner. Requests that place orders, read or write the address book, or read the buyer's order list must carry the token. Cross-origin responses name only the client's origins, so a web page from another origin in the user's browser cannot read the token or call the node with it. A phone that pairs with a node on another machine needs an authenticated, encrypted channel to it in addition to the token; we leave that pairing transport to future work (\S\ref{sec:future}).
 
-This boundary protects against remote callers and against other web origins in the user's browser. It does not protect against another process running as any user on the same machine: such a process can call \code{GET /pair} and then act as the client. We list this in \S\ref{sec:limitations}.
+This boundary protects against remote callers and against other web origins in the user's browser. It does not protect against another process running as the same user on the same machine, which can read the token file; we treat that as a compromised device (A6).
 
-The node refuses any request in which the client names a destination \IT: a JSON key such as \code{peer}, \code{onion}, \code{seed}, \code{replica}, or \code{url}, or any string value containing \code{://} or \code{.onion}. A client therefore cannot direct the node to dial an address of the client's choosing. The vendor is always the store that signed the listing the node already holds.
+Nodes leave escrow letters for each other in a drop that takes no pairing token, since the sender is another node, not the owner's client. The drop only stores the bytes. A letter has effect only if it opens under one of the node's keys and parses as an escrow message for an escrow the node is in, and every message is then checked against the signed terms (\S\ref{sec:escrow}).
 
-\subsection{Intended deployment}
+The node refuses any client request that names a destination: a field such as \code{peer}, \code{onion}, \code{seed}, \code{replica}, or \code{url}, or any string value containing \code{://} or \code{.onion}. A client therefore cannot direct the node to dial an address of the client's choosing. The vendor is always the store that signed the listing the node already holds, reached at the mailbox that store published.
 
-A vendor runs a node that stays awake (the desktop app with its bundled node, or an Android device), publishes the catalog, runs an onion service that accepts sealed letters, and watches the chain. A buyer uses the same software; a buyer on an iPhone pairs the installed web app with their own desktop or Android node \SP. All peer-to-peer traffic, including catalog fetches, publishing, and letter delivery, is intended to run over Tor between nodes \SP.
+\subsection{Deployment}
 
-\subsection{What runs today}
-
-On main, \code{ob-node serve} loads a fixture catalog, verifies every signature, and serves it on loopback. Checkout validates every requested listing against that catalog, seals one letter per seller, and writes each letter into the node's own mailbox directory: in the demonstration, buyer and vendor share one node \ID. PR~\#1 bundles the node with the desktop app and starts it on a free loopback port. PR~\#2 adds real seeds, wallets, testnet4 payments, and a chain watcher. No code path sends anything over Tor.
+A vendor runs a node that stays awake (a desktop computer or an Android device), publishes the catalog, runs an onion service that accepts sealed letters, and watches the chain. A buyer uses the same software; a buyer on an iPhone pairs the installed web app with their own desktop or Android node. All peer-to-peer traffic, including catalog fetches, publishing, label sets, letter delivery, and escrow messages, runs over Tor between nodes. A moderator is a node like any other, with a published record and an onion mailbox; it needs to be online only to answer disputes.

@@ -2,7 +2,7 @@
 
 `main.tex` is the source, `sections/` holds one file per section, `figures/` holds the TikZ figures, and `openbazaar.pdf` is the built paper.
 
-The commits the paper describes are set in `sections/review-status.tex` (`\paycommit`, `\reviewcommit`), along with the status of each escrow review finding. Update them there when PR #2 or PR #3 moves, and rerun the tests before changing a status.
+The paper describes the network as a design. How much of it the reference implementation covers, and the escrow review tracking, are in [`docs/STATUS.md`](../STATUS.md); keep commit hashes, PR numbers, and status out of the paper.
 
 ## Build
 
@@ -16,7 +16,7 @@ cp main.pdf openbazaar.pdf
 
 ## Public copy
 
-The paper is published at https://openbazaar.github.io/openbazaar-rs/paper/ (PDF: https://openbazaar.github.io/openbazaar-rs/paper/openbazaar.pdf) from the `gh-pages` branch. To republish after committing a new `openbazaar.pdf`, run `docs/paper/publish-pages.sh` on macOS. It rebuilds the page, abstract, and preview image from the current commit and pushes to `gh-pages`. The URLs stay the same.
+The paper is published at https://openbazaar.github.io/openbazaar-rs/paper/ (PDF: https://openbazaar.github.io/openbazaar-rs/paper/openbazaar.pdf) from the `gh-pages` branch. To republish after committing a new `openbazaar.pdf`, run `docs/paper/publish-pages.sh` on macOS. It rebuilds the page, abstract, and preview image and pushes to `gh-pages`; the page links to the source at the current commit. The URLs stay the same.
 
 ## Submission (not yet submitted)
 

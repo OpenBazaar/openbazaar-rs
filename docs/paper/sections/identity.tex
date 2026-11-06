@@ -3,7 +3,7 @@
 
 \subsection{Key roles}
 
-The design gives each user one backup phrase and derives a separate key for each role, so that a key used to sign the public catalog is never the key that spends coins. PR~\#2 implements this \IT{} with a 12-word BIP 39 phrase~\citep{bip39} and BIP 32 derivation~\citep{bip32}:
+Each user has one backup phrase, and the node derives a separate key for each role, so that a key used to sign the public catalog is never the key that spends coins. The phrase is a 12-word BIP 39 mnemonic~\citep{bip39} with BIP 32 derivation~\citep{bip32}:
 
 \begin{center}\small
 \begin{tabular}{@{}ll@{}}
@@ -13,24 +13,21 @@ The design gives each user one backup phrase and derives a separate key for each
 Spend wallet (BIP 86 Taproot~\citep{bip86}) & \code{m/86'/c'/0'/\{0,1\}/*} \\
 Store signing key & \code{m/1984'/c'/0'/0'} \\
 Escrow key $i$ & \code{m/1984'/c'/1'/i'} \\
+Escrow mail key & \code{m/1984'/c'/2'/0'} \\
 BIP 352 scan key & \code{m/352'/c'/0'/1'/0} \\
 BIP 352 spend key & \code{m/352'/c'/0'/0'/0} \\
 \bottomrule
 \end{tabular}
 \end{center}
 
-The coin type $c$ is 0 on mainnet and 1 on testnet4, and each network has its own data directory, so a phrase used on both networks never yields the same key on both. A test checks that all role keys are pairwise distinct across both networks. Escrow keys are indexed, and the index is advanced and persisted before a key is used, so each escrow gets a new key.
-
-On main, every key is a fixture: a scalar computed by hashing a fixed label \ID. The demonstration node holds the store key, the vendor spend and scan keys, a buyer key, and the moderator's secret key in one process. Those fixtures exist so the demonstration can run end to end on one machine; they are not a security configuration.
+The coin type $c$ is 0 on mainnet and 1 on test networks, and each network has its own data directory, so a phrase used on both never yields the same key on both. All role keys are pairwise distinct. Escrow keys are indexed, and the index is advanced and persisted before a key is used, so each escrow gets a new key and no key is reused across escrows. Labeler keys and moderator keys are role keys of the same kind, on their own paths, for users who act in those roles.
 
 \subsection{The mailbox key}
 
-Orders are sealed to an X25519 public key belonging to the vendor (\S\ref{sec:orders}). That key must be bound to the store, so that a buyer who verified a listing also knows which key to seal to. The intended binding is a field in the signed store record \SP. Today the store record has no such field: the node looks up the vendor's mailbox key in a fixture table keyed by seller display name \ID. For one fixture seller, the mailbox key is the same 32-byte string as the store's secp256k1 signing key, interpreted as an X25519 scalar. Reusing one secret across two groups and two protocols has no known attack in this specific combination, but it is poor hygiene; the mailbox key should be derived on its own path \SP.
+Orders are sealed to an X25519 public key belonging to the vendor (\S\ref{sec:orders}). That key must be bound to the store, so that a buyer who verified a listing also knows which key to seal to. The binding is a field in the signed store record, next to the vendor's onion address. The mailbox key is derived from the phrase on its own hardened path under \code{m/1984'} and is never the store signing scalar reinterpreted as an X25519 key: reusing one secret across two groups and two protocols has no known attack in this combination, but there is no reason to rely on that.
 
 \subsection{Encryption at rest}
 
-The node stores the buyer's address book and the buyer's own order records encrypted with ChaCha20-Poly1305 under a random 256-bit key and a random 96-bit nonce per write \IT. PR~\#2 stores the BIP 39 phrase and the wallet state the same way \IT. The key is in a file named \code{vault.key}, mode \code{0600}, in the same data directory.
+The node stores the buyer's address book, the buyer's own order records, the backup phrase, the wallet state, and the labeler follow list encrypted with ChaCha20-Poly1305 under a random 256-bit key and a random 96-bit nonce per write. The buyer's order record keeps the label of the address used (for example, ``Home''), not the street.
 
-This protects against the encrypted files being copied or synced on their own, for example by a backup tool that skips key files, and keeps addresses out of logs and the catalog. It does not protect against anyone who can read the data directory, since the key sits beside the ciphertext. It is not a defense against a compromised device (A6). Wrapping the key with an operating-system keystore or a passphrase is not implemented.
-
-The buyer's order record keeps the label of the address used (for example, ``Home''), not the street.
+This protects against the encrypted files being copied or synced on their own, for example by a backup tool that skips key files, and keeps addresses out of logs and the catalog. If the key is stored in the same data directory, it does not protect against anyone who can read that directory; wrapping it with an operating-system keystore or a passphrase does. It is not a defense against a compromised device (A6).
