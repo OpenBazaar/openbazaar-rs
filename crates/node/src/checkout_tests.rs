@@ -346,6 +346,35 @@ fn cors_allows_the_node_origin_only() {
     assert!(!text.contains(node.pairing_token()));
 }
 
+#[test]
+fn desktop_webview_origins_can_pair() {
+    let (_dir, node) = node();
+    for origin in ["tauri://localhost", "http://tauri.localhost", "https://tauri.localhost"] {
+        let request = format!("GET /pair HTTP/1.1\r\nHost: 127.0.0.1:49152\r\nOrigin: {origin}\r\n\r\n");
+        let response = respond(
+            &node,
+            request.as_bytes(),
+            Client {
+                loopback: true,
+                port: 49152,
+            },
+        );
+        let text = String::from_utf8(response).unwrap();
+        assert!(text.contains(&format!("Access-Control-Allow-Origin: {origin}\r\n")));
+        assert!(text.contains(node.pairing_token()));
+    }
+    let lookalike = respond(
+        &node,
+        b"GET /catalog HTTP/1.1\r\nHost: 127.0.0.1:8787\r\nOrigin: tauri://localhost.evil.example\r\n\r\n",
+        Client {
+            loopback: true,
+            port: 8787,
+        },
+    );
+    let text = String::from_utf8(lookalike).unwrap();
+    assert!(!text.split_once("\r\n\r\n").unwrap().0.contains("Access-Control-Allow-Origin"));
+}
+
 fn authed(node: &Node, request: &str) -> Vec<u8> {
     let (method_path, rest) = request.split_once("\r\n").unwrap();
     format!(

@@ -94,6 +94,9 @@ fn serve(args: &[String]) -> ExitCode {
     if let Some(token) = node.fresh_pairing_token() {
         eprintln!("ob-node pairing token: {token}");
     }
+    if env::var_os("OB_EXIT_ON_STDIN_EOF").is_some() {
+        ob_node::exit_when_stdin_closes();
+    }
     if let Err(err) = node.serve(options.port, Duration::from_secs(options.poll_secs)) {
         eprintln!("ob-node: {err}");
         return ExitCode::from(1);

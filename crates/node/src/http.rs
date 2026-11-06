@@ -1,8 +1,9 @@
 //! Loopback HTTP for the shop page. One request per connection.
 //!
-//! The shop origin (`http://127.0.0.1:4173`) and this node's own origin are
-//! the only CORS callers. `GET /pair` returns the pairing token to a loopback
-//! peer so the local shop can send it on `POST /orders`. A non-loopback
+//! The shop origin (`http://127.0.0.1:4173`), the desktop webview origins, and
+//! this node's own origin are the only CORS callers. `GET /pair` returns the
+//! pairing token to a loopback peer so the local shop can send it on
+//! `POST /orders`. A non-loopback
 //! caller does not get the token. The listener is bound to 127.0.0.1; the
 //! peer check refuses a connection that was forwarded from somewhere else.
 //! The token itself is created in the node data dir on first boot and printed
@@ -17,6 +18,13 @@ use serde_json::{json, Value};
 use crate::{catalog_json, find_listing, listing_value, wallet_http, Node, OrderError};
 
 const SHOP_ORIGIN: &str = "http://127.0.0.1:4173";
+/// The Tauri desktop webview: macOS and Linux use the custom scheme, and
+/// Windows WebView2 serves the same page from an http or https host.
+const DESKTOP_ORIGINS: [&str; 3] = [
+    "tauri://localhost",
+    "http://tauri.localhost",
+    "https://tauri.localhost",
+];
 const PAIR_HEADER: &str = "X-Ob-Pair";
 const MAX_REQUEST: usize = 64 * 1024;
 
@@ -270,7 +278,11 @@ fn checkout_response(node: &Node, client: &Client, head: &str, body: &[u8], orig
 fn cors_origin(request_origin: Option<&str>, port: u16) -> Option<String> {
     let own = format!("http://127.0.0.1:{port}");
     match request_origin {
-        Some(origin) if origin == SHOP_ORIGIN || origin == own => Some(origin.to_string()),
+        Some(origin)
+            if origin == SHOP_ORIGIN || origin == own || DESKTOP_ORIGINS.contains(&origin) =>
+        {
+            Some(origin.to_string())
+        }
         Some(_) => None,
         None => Some(SHOP_ORIGIN.to_string()),
     }

@@ -1,8 +1,48 @@
 name: release
 
+# Builds the desktop app with the bundled ob-node for macOS (universal),
+# Linux (AppImage, deb), and Windows (NSIS), then writes SHA256SUMS.
+#
+# A v* tag publishes a GitHub Release. A manual run builds from any branch and
+# keeps the installers as workflow artifacts; it publishes only when `publish`
+# is checked, tagging v<version> at the built commit. A version with a
+# pre-release part (0.1.0-alpha.1) is published as a prerelease.
+#
+# Unsigned builds need no secrets. Signing runs only when these repository
+# secrets exist:
+#
+#   macOS code signing (Developer ID Application certificate):
+#     APPLE_CERTIFICATE            base64 of the exported .p12
+#     APPLE_CERTIFICATE_PASSWORD   password of that .p12
+#     APPLE_SIGNING_IDENTITY       e.g. "Developer ID Application: Name (TEAMID)"
+#   macOS notarization (needs signing as well):
+#     APPLE_ID                     Apple ID email
+#     APPLE_PASSWORD               app-specific password for that Apple ID
+#     APPLE_TEAM_ID                10-character team ID
+#   Windows Authenticode:
+#     WINDOWS_CERTIFICATE          base64 of the code-signing .pfx
+#     WINDOWS_CERTIFICATE_PASSWORD password of that .pfx
+
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Installer version (semver, e.g. 0.1.0-alpha.1)"
+        required: true
+        default: "0.1.0-dev"
+      publish:
+        description: "Publish a GitHub Release tagged v<version> at this commit"
+        type: boolean
+        default: false
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}
 
 jobs:
   verify:
@@ -26,22 +66,31 @@ jobs:
         working-directory: apps/mobile
 
   desktop:
-    name: tauri (${{ matrix.os }})
+    name: tauri (${{ matrix.name }})
     needs: verify
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     permissions:
       contents: read
-      actions: write
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: macos-latest
+          - name: macos-universal
+            os: macos-latest
+            target: universal-apple-darwin
+            rust-targets: aarch64-apple-darwin,x86_64-apple-darwin
             bundles: app,dmg
-          - os: ubuntu-24.04
+          # 22.04 keeps the AppImage and deb on an older glibc than 24.04.
+          - name: linux-x64
+            os: ubuntu-22.04
+            target: ""
+            rust-targets: ""
             bundles: deb,appimage
-          - os: windows-latest
+          - name: windows-x64
+            os: windows-latest
+            target: ""
+            rust-targets: ""
             bundles: nsis
     steps:
       - uses: actions/checkout@v4
@@ -53,9 +102,14 @@ jobs:
             apps/mobile/package-lock.json
             apps/desktop/package-lock.json
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust-targets }}
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: apps/desktop/src-tauri
+          key: ${{ matrix.name }}
+          workspaces: |
+            . -> target
+            apps/desktop/src-tauri -> target
       - name: install Linux bundle dependencies
         if: runner.os == 'Linux'
         run: |
@@ -73,14 +127,14 @@ jobs:
         working-directory: apps/mobile
       - run: npm ci
         working-directory: apps/desktop
-      - name: set the installer version from the tag
+      - name: set the installer version
         shell: bash
         run: |
           node <<'NODE'
           const fs = require("fs");
-          const version = process.env.GITHUB_REF_NAME.replace(/^v/, "");
+          const version = process.env.VERSION.replace(/^v/, "");
           if (!/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(version)) {
-            console.error(`Tag ${process.env.GITHUB_REF_NAME} is not a semver version.`);
+            console.error(`${process.env.VERSION} is not a semver version.`);
             process.exit(1);
           }
           const confPath = "apps/desktop/src-tauri/tauri.conf.json";
@@ -95,28 +149,106 @@ jobs:
             process.exit(1);
           }
           fs.writeFileSync(cargoPath, updated);
+          fs.appendFileSync(process.env.GITHUB_ENV, `APP_VERSION=${version}\n`);
           NODE
+
+      # Tauri signs when APPLE_CERTIFICATE is set and notarizes when APPLE_ID,
+      # APPLE_PASSWORD, and APPLE_TEAM_ID are set. An empty variable still
+      # counts as set, so each one is exported only when its secret exists.
+      # Without them the app keeps the ad-hoc signature from tauri.conf.json.
+      - name: configure macOS signing (optional)
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          S_APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          S_APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          S_APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          S_APPLE_ID: ${{ secrets.APPLE_ID }}
+          S_APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          S_APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          export_env() {
+            local delimiter="EOF_$(openssl rand -hex 8)"
+            printf '%s<<%s\n%s\n%s\n' "$1" "$delimiter" "$2" "$delimiter" >> "$GITHUB_ENV"
+          }
+          if [ -n "$S_APPLE_CERTIFICATE" ] && [ -n "$S_APPLE_CERTIFICATE_PASSWORD" ] && [ -n "$S_APPLE_SIGNING_IDENTITY" ]; then
+            export_env APPLE_CERTIFICATE "$S_APPLE_CERTIFICATE"
+            export_env APPLE_CERTIFICATE_PASSWORD "$S_APPLE_CERTIFICATE_PASSWORD"
+            export_env APPLE_SIGNING_IDENTITY "$S_APPLE_SIGNING_IDENTITY"
+            echo "macOS: signing with the Developer ID certificate."
+            if [ -n "$S_APPLE_ID" ] && [ -n "$S_APPLE_PASSWORD" ] && [ -n "$S_APPLE_TEAM_ID" ]; then
+              export_env APPLE_ID "$S_APPLE_ID"
+              export_env APPLE_PASSWORD "$S_APPLE_PASSWORD"
+              export_env APPLE_TEAM_ID "$S_APPLE_TEAM_ID"
+              echo "macOS: notarizing."
+            else
+              echo "macOS: notarization secrets missing; the app is signed but not notarized."
+            fi
+          else
+            echo "macOS: signing secrets missing; the app is ad-hoc signed."
+          fi
+
+      - name: configure Windows signing (optional)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          S_WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          S_WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          if (-not $env:S_WINDOWS_CERTIFICATE -or -not $env:S_WINDOWS_CERTIFICATE_PASSWORD) {
+            Write-Output "Windows: signing secrets missing; the installer is unsigned."
+            exit 0
+          }
+          $pfx = Join-Path $env:RUNNER_TEMP "codesign.pfx"
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:S_WINDOWS_CERTIFICATE))
+          $password = ConvertTo-SecureString -String $env:S_WINDOWS_CERTIFICATE_PASSWORD -Force -AsPlainText
+          $cert = Import-PfxCertificate -FilePath $pfx -CertStoreLocation Cert:\CurrentUser\My -Password $password
+          Remove-Item $pfx
+          $confPath = "apps/desktop/src-tauri/tauri.conf.json"
+          $conf = Get-Content $confPath -Raw | ConvertFrom-Json
+          $windows = [pscustomobject]@{
+            certificateThumbprint = $cert.Thumbprint
+            digestAlgorithm = "sha256"
+            timestampUrl = "http://timestamp.digicert.com"
+          }
+          $conf.bundle | Add-Member -NotePropertyName windows -NotePropertyValue $windows -Force
+          $conf | ConvertTo-Json -Depth 20 | Set-Content $confPath -Encoding utf8
+          Write-Output "Windows: signing with certificate $($cert.Thumbprint)."
+
       - name: build installers
         working-directory: apps/desktop
+        shell: bash
         env:
           APPIMAGE_EXTRACT_AND_RUN: "1"
-        run: npm run build -- --bundles ${{ matrix.bundles }}
+        run: |
+          set -euo pipefail
+          args=(--bundles "${{ matrix.bundles }}")
+          if [ -n "${{ matrix.target }}" ]; then
+            args+=(--target "${{ matrix.target }}")
+          fi
+          npm run build -- "${args[@]}"
       - name: collect installers
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p dist-release
+          if [ -n "${{ matrix.target }}" ]; then
+            bundle="apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle"
+          else
+            bundle="apps/desktop/src-tauri/target/release/bundle"
+          fi
           case "${RUNNER_OS}" in
             macOS)
-              ditto -c -k --keepParent apps/desktop/src-tauri/target/release/bundle/macos/*.app dist-release/OpenBazaar-macos.app.zip
-              cp apps/desktop/src-tauri/target/release/bundle/dmg/*.dmg dist-release/
+              ditto -c -k --keepParent "$bundle"/macos/*.app "dist-release/OpenBazaar_${APP_VERSION}_universal.app.zip"
+              cp "$bundle"/dmg/*.dmg dist-release/
               ;;
             Linux)
-              cp apps/desktop/src-tauri/target/release/bundle/deb/*.deb dist-release/
-              cp apps/desktop/src-tauri/target/release/bundle/appimage/*.AppImage dist-release/
+              cp "$bundle"/deb/*.deb dist-release/
+              cp "$bundle"/appimage/*.AppImage dist-release/
               ;;
             Windows)
-              cp apps/desktop/src-tauri/target/release/bundle/nsis/*.exe dist-release/
+              cp "$bundle"/nsis/*.exe dist-release/
               ;;
             *)
               echo "Unexpected runner ${RUNNER_OS}" >&2
@@ -126,46 +258,72 @@ jobs:
           find dist-release -type f -print
       - uses: actions/upload-artifact@v4
         with:
-          name: desktop-${{ matrix.os }}
+          name: desktop-${{ matrix.name }}
           path: dist-release/
           if-no-files-found: error
 
-  publish:
-    name: attach installers to the release
+  release:
+    name: checksums and release
     needs: desktop
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      actions: read
     steps:
       - uses: actions/download-artifact@v4
         with:
           pattern: desktop-*
           path: release-assets
           merge-multiple: true
-      - name: publish the GitHub release
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: write SHA256SUMS
+        working-directory: release-assets
         run: |
           set -euo pipefail
-          files=()
-          while IFS= read -r -d '' file; do
-            files+=("$file")
-          done < <(find release-assets -type f -print0)
-          if [ "${#files[@]}" -eq 0 ]; then
-            echo "The tag build produced no installers." >&2
-            exit 1
-          fi
+          sha256sum -- * > SHA256SUMS
+          cat SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: openbazaar-installers
+          path: release-assets/
+          if-no-files-found: error
+      - name: publish the GitHub release
+        if: startsWith(github.ref, 'refs/tags/v') || inputs.publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          version="${VERSION#v}"
+          tag="v${version}"
+          flags=()
+          case "$version" in *-*) flags+=(--prerelease) ;; esac
           cat > release-notes.md <<EOF
-          Unsigned desktop installers for ${GITHUB_REF_NAME}.
+          OpenBazaar ${version} desktop app. It runs on Bitcoin testnet4, not mainnet. Do not send real bitcoin.
 
-          macOS is ad-hoc signed and not notarized. The disk image and the zipped app are built for the macOS runner architecture, which is Apple silicon on macos-latest. Windows has no Authenticode signature. Linux packages are unsigned. No Apple or Google credentials are stored in this repository.
+          Download the file for your computer, install it, and open OpenBazaar. The app starts its own node and stops it when you quit. There is nothing else to run.
 
-          Android is not in this release. The repository has no Android package project. iOS is a paired client and is not built here. This workflow does not submit to the App Store or the Play Store.
+          - macOS (Apple silicon and Intel): the .dmg, or the zipped .app
+          - Windows: the -setup.exe
+          - Linux: the .AppImage, or the .deb for Debian and Ubuntu
+
+          These builds are unsigned, so your system will warn you the first time.
+
+          macOS: open the app once, then go to System Settings > Privacy & Security and click Open Anyway. On older macOS, right-click the app in Finder, choose Open, then Open again.
+
+          Windows: when SmartScreen says it protected your PC, click More info, then Run anyway.
+
+          Linux: make the AppImage executable (chmod +x) and run it.
+
+          SHA256SUMS lists the checksum of every file.
           EOF
-          gh release create "$GITHUB_REF_NAME" "${files[@]}" \
-            --title "OpenBazaar ${GITHUB_REF_NAME}" \
-            --notes-file release-notes.md
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" release-assets/* --clobber
+          else
+            gh release create "$tag" release-assets/* \
+              --target "$GITHUB_SHA" \
+              --title "OpenBazaar ${version} (testnet4)" \
+              --notes-file release-notes.md \
+              "${flags[@]}"
+          fi
 
   # The Android package is not in this repository. There is no Gradle project
   # and no Expo prebuild, so a tag must not publish a placeholder APK.
