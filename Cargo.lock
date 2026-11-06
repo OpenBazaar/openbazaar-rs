@@ -2942,6 +2942,7 @@ dependencies = [
  "bdk_wallet",
  "bitcoin",
  "chacha20poly1305",
+ "musig2",
  "openbazaar-escrow",
  "openbazaar-pay",
  "openbazaar-protocol",
@@ -2999,6 +3000,7 @@ version = "0.0.0"
 dependencies = [
  "bitcoin",
  "musig2",
+ "openbazaar-protocol",
  "rand 0.9.5",
  "secp256k1 0.31.1",
 ]

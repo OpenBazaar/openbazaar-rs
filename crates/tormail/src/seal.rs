@@ -22,6 +22,7 @@ type Encapped = <Suite as KemTrait>::EncappedKey;
 
 const ORDER_INFO: &[u8] = b"openbazaar-tormail-order-v1";
 const REPLY_INFO: &[u8] = b"openbazaar-tormail-reply-v1";
+const MESSAGE_INFO: &[u8] = b"openbazaar-tormail-message-v1";
 const LETTER_MAGIC: &[u8; 4] = b"OBSL";
 const REPLY_MAGIC: &[u8; 4] = b"OBSR";
 const VERSION: u8 = 1;
@@ -209,6 +210,26 @@ pub fn seal_order(order: &Order, vendor: &StoreKey) -> Result<SealedLetter, Erro
 pub fn open_order(letter: &SealedLetter, secret: &StoreSecret) -> Result<Order, Error> {
     let plaintext = open_with(&secret.0, ORDER_INFO, &letter.enc, &letter.ciphertext)?;
     Order::decode(&plaintext)
+}
+
+/// Largest body [`seal_message`] accepts: the sealed blob stays within [`MAX_SEALED_LEN`].
+pub const MAX_MESSAGE_LEN: usize = MAX_SEALED_LEN - (4 + 1 + KEY_LEN + 4) - TAG_LEN;
+
+/// Seal an opaque message (not an order) so only `to`'s secret can open it.
+///
+/// It is a [`SealedLetter`] like an order, under a separate HPKE context, so
+/// [`open_order`] refuses a message and [`open_message`] refuses an order.
+pub fn seal_message(body: &[u8], to: &StoreKey) -> Result<SealedLetter, Error> {
+    if body.is_empty() || body.len() > MAX_MESSAGE_LEN {
+        return Err(Error::InvalidOrder("message body is empty or too long"));
+    }
+    let (enc, ciphertext) = seal_to(&to.0, MESSAGE_INFO, body)?;
+    SealedLetter::from_parts(enc, ciphertext)
+}
+
+/// Open a [`seal_message`] letter.
+pub fn open_message(letter: &SealedLetter, secret: &StoreSecret) -> Result<Vec<u8>, Error> {
+    open_with(&secret.0, MESSAGE_INFO, &letter.enc, &letter.ciphertext)
 }
 
 /// Seal a vendor reply to the ephemeral key found in an opened order.

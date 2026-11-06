@@ -15,26 +15,23 @@
 //! payment terms carry no `pj=` endpoint, because the vendor side does not run
 //! a Payjoin receiver session yet.
 //!
-//! Escrow funding is a testnet4-only demo (mainnet refuses it). It keeps the
-//! in-process ceremony and enforces its order:
-//! sign the funding transaction, run [`fund`] for that exact outpoint, check
-//! and seal the presigned refund into the order record, and only then
-//! broadcast. If the broadcast fails, a retry sends the same transaction so
-//! the stored refund still spends it.
+//! Escrow funding is a testnet4-only demo (mainnet refuses it). Here the
+//! worker only builds the unsigned funding PSBT (non-RBF inputs) and opens
+//! round 1 with the vendor's node; the funding is signed and broadcast when
+//! the vendor's reply has been verified and the refund is stored (see
+//! `escrow_buyer`). If that broadcast fails, a retry sends the same
+//! transaction so the stored refund still spends it.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::Mutex;
 use std::time::Duration;
 
-use bitcoin::consensus::encode::{deserialize_hex, serialize_hex};
-use bitcoin::secp256k1::{PublicKey, Secp256k1};
-use bitcoin::{Address, Amount, FeeRate, OutPoint, Transaction};
-use openbazaar_escrow::{fund, FundParams};
+use bitcoin::{Address, Amount, FeeRate, Psbt, Sequence, Transaction};
 use serde_json::{json, Value};
 
 use crate::buyer_orders::{now_secs, BuyerOrder};
-use crate::instructions::{ESCROW_MAINNET_REFUSAL, ESCROW_SPEND_FEE_SATS, ESCROW_TIMEOUT_BLOCKS};
+use crate::instructions::ESCROW_MAINNET_REFUSAL;
 use crate::network::{address_for, NetworkMode};
 use crate::watch::{AWAITING_FUNDING, AWAITING_PAYMENT};
 use crate::Node;
@@ -158,7 +155,7 @@ impl Node {
         let order = self.orders().get(id).cloned().ok_or(PayError::NotFound)?;
         self.ready_to_pay(&order)?;
         if order.settlement == "escrow" {
-            self.fund_escrow(order)
+            self.open_escrow(order)
         } else {
             self.pay_direct(order)
         }
@@ -220,107 +217,7 @@ impl Node {
         Ok(self.paid_value(&order.id, &tx, due, fee_rate))
     }
 
-    fn fund_escrow(&self, order: BuyerOrder) -> Result<Value, PayError> {
-        let escrow = order
-            .escrow
-            .clone()
-            .ok_or_else(|| PayError::Invalid("This order has no escrow terms.".into()))?;
-        if let Some(stored) = escrow.get("fundingTx").and_then(Value::as_str) {
-            let tx: Transaction = deserialize_hex(stored).map_err(|err| PayError::Failed(err.to_string()))?;
-            return self.broadcast_funding(&order, tx, escrow["fundingSats"].as_u64().unwrap_or(0), None);
-        }
-        let address = self.order_address(Some(&escrow), "address")?;
-        let funding = escrow
-            .get("fundingSats")
-            .and_then(Value::as_u64)
-            .ok_or_else(|| PayError::Invalid("This escrow has no funding amount.".into()))?;
-        let buyer_payout = self.order_address(Some(&escrow), "buyerPayout")?;
-        let vendor_payout = self.order_address(Some(&escrow), "vendorPayout")?;
-        let index = |key: &str| {
-            escrow
-                .get(key)
-                .and_then(Value::as_u64)
-                .and_then(|value| u32::try_from(value).ok())
-                .ok_or_else(|| PayError::Invalid("This escrow has no key index.".into()))
-        };
-        let (buyer_index, vendor_index) = (index("buyerKeyIndex")?, index("vendorKeyIndex")?);
-
-        self.sync_buyer_wallet().map_err(PayError::Chain)?;
-        let fee_rate = self.pay_fee_rate()?;
-        let tip = self.chain.tip_height().map_err(PayError::Chain)?;
-        let tx = self.sign_payment(&address, funding, fee_rate)?;
-        let vout = tx
-            .output
-            .iter()
-            .position(|out| out.script_pubkey == address.script_pubkey())
-            .ok_or_else(|| PayError::Failed("the funding output is missing".into()))?;
-        let outpoint = OutPoint { txid: tx.compute_txid(), vout: vout as u32 };
-
-        let buyer_secret = self.buyer_wallet().seed.escrow_key(buyer_index).secret_bytes();
-        let vendor_secret = self
-            .store_wallet(&order.seller)
-            .map_err(|err| PayError::Failed(err.to_string()))?
-            .seed
-            .escrow_key(vendor_index)
-            .secret_bytes();
-        let timeout_height = tip
-            .checked_add(ESCROW_TIMEOUT_BLOCKS)
-            .ok_or_else(|| PayError::Chain("the chain tip is out of range".into()))?;
-        let session = fund(FundParams {
-            buyer_secret,
-            vendor_secret,
-            moderator_public: PublicKey::from_secret_key(&Secp256k1::new(), &self.keys.moderator).serialize(),
-            funding_outpoint: outpoint,
-            funding_value: Amount::from_sat(funding),
-            fee: Amount::from_sat(ESCROW_SPEND_FEE_SATS),
-            timeout_height,
-            buyer_payout: buyer_payout.script_pubkey(),
-            vendor_payout: vendor_payout.script_pubkey(),
-        })
-        .map_err(|err| PayError::Failed(err.to_string()))?;
-        if session.funding_output().script_pubkey != address.script_pubkey() {
-            return Err(PayError::Failed("the escrow keys do not match this address".into()));
-        }
-        let refund = session.refund_transaction().clone();
-        session
-            .verify_key_spend(&refund)
-            .map_err(|err| PayError::Failed(format!("the presigned refund does not verify: {err}")))?;
-
-        let held = self.orders().update(&order.id, |stored| {
-            if let Some(Value::Object(terms)) = stored.escrow.as_mut() {
-                terms.insert("outpoint".into(), json!(outpoint.to_string()));
-                terms.insert("timeoutHeight".into(), json!(timeout_height));
-                terms.insert("refundTx".into(), json!(serialize_hex(&refund)));
-                terms.insert("refundTxid".into(), json!(refund.compute_txid().to_string()));
-                terms.insert("fundingTx".into(), json!(serialize_hex(&tx)));
-                terms.insert("refundHeld".into(), json!(true));
-                terms.insert("safeToSend".into(), json!(true));
-            }
-        });
-        match held {
-            Ok(true) => {}
-            Ok(false) => return Err(PayError::NotFound),
-            Err(err) => return Err(PayError::Failed(format!("the refund could not be saved, nothing was sent: {err}"))),
-        }
-        self.broadcast_funding(&order, tx, funding, Some(fee_rate))
-    }
-
-    fn broadcast_funding(
-        &self,
-        order: &BuyerOrder,
-        tx: Transaction,
-        funding: u64,
-        fee_rate: Option<FeeRate>,
-    ) -> Result<Value, PayError> {
-        self.chain.broadcast(&tx).map_err(PayError::Chain)?;
-        let txid = tx.compute_txid().to_string();
-        self.after_broadcast(&order.id, tx.clone(), &txid)?;
-        let mut value = self.paid_value(&order.id, &tx, funding, fee_rate.unwrap_or(FeeRate::ZERO));
-        value["refundHeld"] = json!(true);
-        Ok(value)
-    }
-
-    fn order_address(&self, terms: Option<&Value>, key: &str) -> Result<Address, PayError> {
+    pub(crate) fn order_address(&self, terms: Option<&Value>, key: &str) -> Result<Address, PayError> {
         let text = terms
             .and_then(|terms| terms.get(key))
             .and_then(Value::as_str)
@@ -328,7 +225,7 @@ impl Node {
         address_for(text, self.network).map_err(PayError::Invalid)
     }
 
-    fn pay_fee_rate(&self) -> Result<FeeRate, PayError> {
+    pub(crate) fn pay_fee_rate(&self) -> Result<FeeRate, PayError> {
         let rate = self.chain.fee_rate().map_err(PayError::Chain)?;
         if !rate.is_finite() || rate > MAX_FEE_RATE {
             return Err(PayError::Chain(format!(
@@ -341,25 +238,42 @@ impl Node {
 
     /// Build and sign a transaction with exactly one recipient output.
     fn sign_payment(&self, address: &Address, sats: u64, fee_rate: FeeRate) -> Result<Transaction, PayError> {
-        let mut wallet = self.buyer_wallet();
-        let untrusted = wallet.untrusted_pending();
-        let mut builder = wallet.wallet.build_tx();
-        builder
-            .add_recipient(address.script_pubkey(), Amount::from_sat(sats))
-            .fee_rate(fee_rate);
-        for outpoint in untrusted {
-            builder.add_unspendable(outpoint);
-        }
-        let mut psbt = builder.finish().map_err(|err| {
-            PayError::Invalid(format!("The node wallet cannot pay {sats} sats: {err}"))
-        })?;
+        let mut psbt = self.build_payment(address, sats, fee_rate, false)?;
+        let wallet = self.buyer_wallet();
         let finalized = wallet
             .sign(&mut psbt)
             .map_err(|err| PayError::Failed(err.to_string()))?;
         if !finalized {
             return Err(PayError::Failed("the payment could not be fully signed".into()));
         }
-        let tx = psbt.extract_tx().map_err(|err| PayError::Failed(err.to_string()))?;
+        psbt.extract_tx().map_err(|err| PayError::Failed(err.to_string()))
+    }
+
+    /// An unsigned PSBT with exactly one recipient output. `final_inputs`
+    /// sets every input's sequence so it does not signal replace-by-fee.
+    pub(crate) fn build_payment(
+        &self,
+        address: &Address,
+        sats: u64,
+        fee_rate: FeeRate,
+        final_inputs: bool,
+    ) -> Result<Psbt, PayError> {
+        let mut wallet = self.buyer_wallet();
+        let untrusted = wallet.untrusted_pending();
+        let mut builder = wallet.wallet.build_tx();
+        builder
+            .add_recipient(address.script_pubkey(), Amount::from_sat(sats))
+            .fee_rate(fee_rate);
+        if final_inputs {
+            builder.set_exact_sequence(Sequence::ENABLE_LOCKTIME_NO_RBF).only_witness_utxo();
+        }
+        for outpoint in untrusted {
+            builder.add_unspendable(outpoint);
+        }
+        let psbt = builder.finish().map_err(|err| {
+            PayError::Invalid(format!("The node wallet cannot pay {sats} sats: {err}"))
+        })?;
+        let tx = &psbt.unsigned_tx;
         let foreign = tx
             .output
             .iter()
@@ -369,10 +283,10 @@ impl Node {
             return Err(PayError::Failed("a payment must pay exactly one order".into()));
         }
         wallet.persist().map_err(|err| PayError::Failed(err.to_string()))?;
-        Ok(tx)
+        Ok(psbt)
     }
 
-    fn after_broadcast(&self, id: &str, tx: Transaction, txid: &str) -> Result<(), PayError> {
+    pub(crate) fn after_broadcast(&self, id: &str, tx: Transaction, txid: &str) -> Result<(), PayError> {
         {
             let mut wallet = self.buyer_wallet();
             wallet.wallet.apply_unconfirmed_txs([(tx, now_secs())]);

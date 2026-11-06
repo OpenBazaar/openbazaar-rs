@@ -9,7 +9,7 @@ use serde_json::{json, Value};
 use tormail::{open_order, SealedLetter, StoreSecret};
 
 use crate::http::{dispatch, respond, Client};
-use crate::{load_catalog, NetworkMode, Node, ESCROW_SPEND_FEE_SATS, ESCROW_TIMEOUT_BLOCKS};
+use crate::{load_catalog, NetworkMode, Node, NodeConfig, ESCROW_SPEND_FEE_SATS};
 
 struct TempDir(PathBuf);
 
@@ -202,16 +202,25 @@ fn seals_the_ship_to_into_the_mailbox_and_keeps_it_out_of_the_catalog() {
 }
 
 #[test]
-fn moderated_order_returns_a_local_funding_session() {
-    let (_dir, node) = node();
+fn moderated_order_records_the_buyer_side_and_asks_the_vendor_node() {
+    let (_dir, offline) = node();
     let note = "DELIVERY-NOTE-7c2e-reply-to-ada";
-    let recording = hash_of(&node, "Field recordings");
+    let recording = hash_of(&offline, "Field recordings");
     let order = json!({
         "listingHash": recording,
         "quantity": 1,
         "settlement": "escrow",
         "deliveryNote": note
     });
+    let response = dispatch(&offline, &post(&offline, &order.to_string()));
+    let (status, body) = status_and_body(&response);
+    assert!(status.contains("400"), "no vendor node is set up: {body}");
+    assert!(offline.mailbox.list().unwrap().is_empty());
+
+    let dir = TempDir::new();
+    let mut config = NodeConfig::offline(NetworkMode::Testnet4);
+    config.escrow = crate::harness::unreachable_escrow();
+    let node = Node::open_with(&dir.0, load_catalog(NetworkMode::Testnet4).unwrap(), config).unwrap();
     let response = dispatch(&node, &post(&node, &order.to_string()));
     let (status, body) = status_and_body(&response);
     assert!(status.contains("200"), "{body}");
@@ -219,14 +228,14 @@ fn moderated_order_returns_a_local_funding_session() {
     assert_eq!(receipt["sealed"], true);
     assert_eq!(receipt["settlement"], "escrow");
     assert_eq!(receipt["escrow"]["fundingSats"], 4_000 + ESCROW_SPEND_FEE_SATS);
-    assert_eq!(receipt["escrow"]["timeoutBlocks"], ESCROW_TIMEOUT_BLOCKS);
     assert_eq!(receipt["escrow"]["signaturesRequired"], 2);
-    let address = receipt["escrow"]["address"].as_str().unwrap();
-    assert!(address.starts_with("tb1p"), "{address}");
-    assert_eq!(receipt["escrow"]["outpoint"], "");
+    assert_eq!(receipt["escrow"]["stage"], "requested");
+    assert!(receipt["escrow"]["buyerPayout"].as_str().unwrap().starts_with("tb1p"));
+    assert!(receipt["escrow"].get("address").is_none(), "the address comes with the vendor's terms");
+    assert!(receipt["escrow"]["error"].is_string(), "the vendor node could not be reached");
     assert_eq!(receipt["escrow"]["refundHeld"], false);
     assert_eq!(receipt["escrow"]["safeToSend"], false);
-    assert_eq!(receipt["status"], "Awaiting funding");
+    assert_eq!(receipt["status"], "Awaiting vendor terms");
     assert!(!body.contains(note));
     assert!(receipt.get("payment").is_none());
 

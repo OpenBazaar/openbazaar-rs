@@ -1,0 +1,245 @@
+//! The moderator: published record, keys, chain hook, ruling store.
+//!
+//! A moderator publishes a [`ModeratorRecord`]: a signing key for rulings, a
+//! separate encryption key for shares, its payout script, its fee, and its
+//! acceptance policy. Both parties embed that exact record in the signed
+//! terms, so the moderator's fee, payout, and policy are fixed at funding.
+//!
+//! [`Moderator::open`] is the only way to produce a ruling. Before decrypting
+//! it checks the letter, checks the funding output against the chain through
+//! [`FundingChain`], and records the branch in a [`RulingStore`] so a second
+//! letter for the other branch of the same escrow is refused.
+
+use std::collections::{HashMap, HashSet};
+
+use bitcoin::{Amount, OutPoint, ScriptBuf, TxOut};
+use musig2::secp::{Point, Scalar, G};
+
+use crate::context::Context;
+use crate::crypto::point_from_compressed;
+use crate::letter::{DisputeCase, ModeratorRuling};
+use crate::policy::{check_payout, Policy};
+use crate::proofs::tagged;
+use crate::wire::{Reader, Writer};
+use crate::{Error, Party};
+
+/// What a moderator publishes. Parties copy it verbatim into the terms.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ModeratorRecord {
+    /// Verifies rulings.
+    pub signing_key: [u8; 33],
+    /// Receives verifiably encrypted shares. Distinct from `signing_key`.
+    pub encryption_key: [u8; 33],
+    pub payout: ScriptBuf,
+    pub fee: Amount,
+    pub policy: Policy,
+}
+
+impl ModeratorRecord {
+    pub fn validate(&self) -> Result<(), Error> {
+        let signing = point_from_compressed(&self.signing_key)?;
+        let encryption = point_from_compressed(&self.encryption_key)?;
+        if signing == encryption {
+            return Err(Error::InvalidParams(
+                "moderator signing and encryption keys must differ",
+            ));
+        }
+        check_payout(&self.payout, self.fee)
+    }
+
+    pub(crate) fn signing_point(&self) -> Result<Point, Error> {
+        point_from_compressed(&self.signing_key)
+    }
+
+    pub(crate) fn encryption_point(&self) -> Result<Point, Error> {
+        point_from_compressed(&self.encryption_key)
+    }
+
+    pub(crate) fn write(&self, w: &mut Writer) {
+        w.bytes(&self.signing_key);
+        w.bytes(&self.encryption_key);
+        w.script(&self.payout);
+        w.amount(self.fee);
+        self.policy.write(w);
+    }
+
+    pub(crate) fn read(r: &mut Reader<'_>) -> Result<Self, Error> {
+        Ok(Self {
+            signing_key: r.array()?,
+            encryption_key: r.array()?,
+            payout: r.script()?,
+            fee: r.amount()?,
+            policy: Policy::read(r)?,
+        })
+    }
+}
+
+/// Moderator secrets, derived from one seed with distinct tags.
+pub struct ModeratorKeys {
+    signing: Scalar,
+    decryption: Scalar,
+}
+
+impl core::fmt::Debug for ModeratorKeys {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ModeratorKeys").finish_non_exhaustive()
+    }
+}
+
+impl ModeratorKeys {
+    pub fn from_seed(seed: &[u8; 32]) -> Result<Self, Error> {
+        let derive = |tag: &str| {
+            Scalar::from_slice(&tagged(tag, &[seed])).map_err(|_| Error::InvalidParams("seed"))
+        };
+        Ok(Self {
+            signing: derive("ob-escrow/moderator-signing/v1")?,
+            decryption: derive("ob-escrow/moderator-decryption/v1")?,
+        })
+    }
+
+    pub fn signing_public(&self) -> [u8; 33] {
+        (self.signing * G).serialize()
+    }
+
+    pub fn encryption_public(&self) -> [u8; 33] {
+        (self.decryption * G).serialize()
+    }
+
+    /// The record to publish for these keys.
+    pub fn record(&self, payout: ScriptBuf, fee: Amount, policy: Policy) -> ModeratorRecord {
+        ModeratorRecord {
+            signing_key: self.signing_public(),
+            encryption_key: self.encryption_public(),
+            payout,
+            fee,
+            policy,
+        }
+    }
+
+    pub(crate) fn signing(&self) -> &Scalar {
+        &self.signing
+    }
+
+    pub(crate) fn decryption(&self) -> &Scalar {
+        &self.decryption
+    }
+}
+
+/// The moderator's view of the chain. Implementations must answer from a
+/// node or index the moderator trusts, not from data in the letter.
+pub trait FundingChain {
+    /// The unspent or spent output created at `outpoint`, if it exists on chain.
+    fn funding_output(&self, outpoint: &OutPoint) -> Option<TxOut>;
+}
+
+impl FundingChain for HashMap<OutPoint, TxOut> {
+    fn funding_output(&self, outpoint: &OutPoint) -> Option<TxOut> {
+        self.get(outpoint).cloned()
+    }
+}
+
+/// Which escrow a ruling belongs to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct RulingKey {
+    pub terms_digest: [u8; 32],
+    pub outpoint: OutPoint,
+}
+
+/// Durable record of which branch the moderator has ruled for.
+pub trait RulingStore {
+    /// Record `favored` for `key` unless a branch is already recorded.
+    /// Returns the branch recorded after the call. Must be atomic.
+    fn record_once(&mut self, key: RulingKey, favored: Party) -> Result<Party, Error>;
+}
+
+/// A [`RulingStore`] that forgets everything on drop. For tests and demos.
+#[derive(Debug, Default)]
+pub struct InMemoryRulingStore {
+    rulings: HashMap<RulingKey, Party>,
+}
+
+impl RulingStore for InMemoryRulingStore {
+    fn record_once(&mut self, key: RulingKey, favored: Party) -> Result<Party, Error> {
+        Ok(*self.rulings.entry(key).or_insert(favored))
+    }
+}
+
+const VERIFIED_CACHE_MAX: usize = 1024;
+
+/// A moderator able to review letters and issue at most one ruling per escrow.
+pub struct Moderator<C, S> {
+    keys: ModeratorKeys,
+    record: ModeratorRecord,
+    chain: C,
+    store: S,
+    verified: HashSet<[u8; 32]>,
+}
+
+impl<C: FundingChain, S: RulingStore> Moderator<C, S> {
+    pub fn new(
+        keys: ModeratorKeys,
+        record: ModeratorRecord,
+        chain: C,
+        store: S,
+    ) -> Result<Self, Error> {
+        record.validate()?;
+        if record.signing_key != keys.signing_public()
+            || record.encryption_key != keys.encryption_public()
+        {
+            return Err(Error::WrongKey);
+        }
+        Ok(Self {
+            keys,
+            record,
+            chain,
+            store,
+            verified: HashSet::new(),
+        })
+    }
+
+    pub fn record(&self) -> &ModeratorRecord {
+        &self.record
+    }
+
+    pub fn store(&self) -> &S {
+        &self.store
+    }
+
+    fn context(&self, received_height: u32) -> Context {
+        Context {
+            tip: received_height,
+            moderator: self.record.clone(),
+            policy: self.record.policy,
+        }
+    }
+
+    /// Verify a letter that arrived at `received_height`.
+    ///
+    /// The expensive proof checks are skipped for a letter whose exact bytes
+    /// already passed them. The cheap checks (terms, deadline, chain) always run.
+    pub fn review(&mut self, letter: &[u8], received_height: u32) -> Result<DisputeCase, Error> {
+        let ctx = self.context(received_height);
+        let hash = DisputeCase::letter_hash(letter);
+        let cached = self.verified.contains(&hash);
+        let case = DisputeCase::verify(letter, &ctx, &self.chain, cached)?;
+        if !cached {
+            if self.verified.len() >= VERIFIED_CACHE_MAX {
+                self.verified.clear();
+            }
+            self.verified.insert(hash);
+        }
+        Ok(case)
+    }
+
+    /// Review a letter and rule for its branch, unless the other branch of
+    /// the same escrow was already ruled for.
+    pub fn open(&mut self, letter: &[u8], received_height: u32) -> Result<ModeratorRuling, Error> {
+        let case = self.review(letter, received_height)?;
+        let key = case.ruling_key();
+        let recorded = self.store.record_once(key, case.favored())?;
+        if recorded != case.favored() {
+            return Err(Error::AlreadyRuled);
+        }
+        case.rule(&self.keys)
+    }
+}

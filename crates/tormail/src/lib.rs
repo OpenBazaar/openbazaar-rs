@@ -39,8 +39,9 @@ pub use mailbox::{LetterId, Mailbox};
 pub use onion::{HsIdParseError, OnionAddress, ORDER_PORT};
 pub use order::{ListingHash, Order, PaymentRail};
 pub use seal::{
-    open_order, open_reply, seal_order, seal_reply, ReplyKeypair, ReplyPublic, ReplySecret,
-    SealedLetter, SealedReply, StoreKey, StoreKeypair, StoreSecret,
+    open_message, open_order, open_reply, seal_message, seal_order, seal_reply, ReplyKeypair,
+    ReplyPublic, ReplySecret, SealedLetter, SealedReply, StoreKey, StoreKeypair, StoreSecret,
+    MAX_MESSAGE_LEN,
 };
 pub use transport::{ArtiOrderTransport, MemoryTransport, OrderTransport};
 

@@ -1,7 +1,8 @@
 //! Where the node learns about the chain.
 //!
 //! [`ChainSource`] is the whole surface: tip height, the transactions that
-//! pay one address, a fee estimate, broadcast, and a BDK wallet update.
+//! pay one address, a fee estimate, broadcast, a BDK wallet update, and one
+//! output by outpoint (for escrow funding checks).
 //! [`EsploraChain`] talks to a list of Esplora servers (mempool.space by
 //! default). Every query names addresses to that server; on mainnet the node
 //! prints a warning when the server is public. Tests use their own
@@ -16,7 +17,7 @@ use bdk_esplora::EsploraAsyncExt;
 use bdk_wallet::chain::spk_client::{FullScanRequest, SyncRequest};
 use bdk_wallet::{KeychainKind, Update};
 use bitcoin::constants::genesis_block;
-use bitcoin::{Address, BlockHash, Network, Transaction, Txid};
+use bitcoin::{Address, BlockHash, Network, OutPoint, Transaction, TxOut, Txid};
 
 const STOP_GAP: usize = 20;
 const PARALLEL_REQUESTS: usize = 4;
@@ -56,6 +57,9 @@ pub trait ChainSource: Send + Sync {
     fn fee_rate(&self) -> Result<f64, String>;
     fn broadcast(&self, tx: &Transaction) -> Result<(), String>;
     fn wallet_update(&self, request: WalletRequest) -> Result<Update, String>;
+    /// The output created at `outpoint` and the block height of its
+    /// transaction (`None` in the mempool), or `None` if no such output is known.
+    fn output(&self, outpoint: &OutPoint) -> Result<Option<(TxOut, Option<u32>)>, String>;
 }
 
 /// Esplora over HTTPS, trying each configured server in order.
@@ -230,6 +234,20 @@ impl ChainSource for EsploraChain {
             result.map_err(|err| err.to_string())
         })
     }
+
+    fn output(&self, outpoint: &OutPoint) -> Result<Option<(TxOut, Option<u32>)>, String> {
+        let txid = outpoint.txid;
+        self.each(|client| async move {
+            let Some(tx) = client.get_tx(&txid).await.map_err(|err| err.to_string())? else {
+                return Ok(None);
+            };
+            let Some(out) = tx.output.get(outpoint.vout as usize).cloned() else {
+                return Ok(None);
+            };
+            let status = client.get_tx_status(&txid).await.map_err(|err| err.to_string())?;
+            Ok(Some((out, if status.confirmed { status.block_height } else { None })))
+        })
+    }
 }
 
 /// No chain at all. Every query fails, so status stays where it is.
@@ -249,6 +267,9 @@ impl ChainSource for OfflineChain {
         Err(offline())
     }
     fn wallet_update(&self, _: WalletRequest) -> Result<Update, String> {
+        Err(offline())
+    }
+    fn output(&self, _: &OutPoint) -> Result<Option<(TxOut, Option<u32>)>, String> {
         Err(offline())
     }
 }

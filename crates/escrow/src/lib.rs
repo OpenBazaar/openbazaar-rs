@@ -1,78 +1,188 @@
-//! Scriptless moderated escrow.
+//! Scriptless two-party escrow with a bounded moderator.
 //!
 //! The funding output is a Taproot key-path spend. Its internal key is the
-//! BIP 327 MuSig2 aggregate of the buyer and vendor keys, tweaked with the
-//! unspendable BIP 341 taproot tweak (no script tree). The chain sees an
-//! ordinary key-path payment for every outcome, including a dispute.
+//! BIP 327 MuSig2 aggregate of the buyer's and vendor's per-order keys, with
+//! the unspendable BIP 341 tweak (no script tree). The moderator key is never
+//! aggregated. Every outcome is an ordinary 64-byte key-path signature.
 //!
-//! # Outcomes
+//! # Who can do what
 //!
-//! * **Happy path.** Buyer and vendor run MuSig2 and key-spend to the vendor.
-//!   The moderator is not involved. One of those keys alone cannot produce a
-//!   signature that verifies under the aggregate.
-//! * **Timeout.** At funding, both parties presign a refund that pays the
-//!   buyer and sets `nLockTime` to the agreed height. The moderator is not a
-//!   signer. Bitcoin Core's `IsFinalTx` rule rejects the refund until the
-//!   chain height is greater than that `nLockTime`.
-//! * **Dispute.** Each outcome (pay the buyer, or pay the vendor) is a MuSig2
-//!   adaptor signature under the same aggregate key. The adaptor secret is
-//!   the sum of two scalars: one derived from the favored party's long-term
-//!   key, and one sampled at funding and encrypted to the moderator. The
-//!   plaintext moderator half is not retained. [`Escrow::dispute_payload`]
-//!   builds the letter (outpoint, claim, settlement terms, encrypted half).
-//!   [`moderator_open`] decrypts that half. The favored party then adapts the
-//!   signature. Either half alone leaves a signature that does not verify.
-//!   The witness is a single 64-byte BIP 340 Schnorr signature.
+//! Every spend needs both commercial keys. All of them are signed before the
+//! buyer funds, except the happy-path release:
 //!
-//! Adaptor signatures come from the `musig2` crate (`musig2::adaptor`), which
-//! delegates curve arithmetic to `libsecp256k1`. This crate does not implement
-//! a script-leaf spend, `OP_CHECKMULTISIG`, FROST, or BitVM.
+//! | spend          | `nLockTime`           | pays                              | moderator |
+//! |----------------|-----------------------|-----------------------------------|-----------|
+//! | release        | 0                     | vendor                            | no        |
+//! | vendor claim   | `vendor_claim_height` | vendor + anchor                   | no        |
+//! | buyer refund   | `refund_height`       | buyer + anchor                    | no        |
+//! | buyer wins     | 0                     | buyer + moderator fee + anchor    | picks it  |
+//! | vendor wins    | 0                     | vendor + moderator fee + anchor   | picks it  |
+//!
+//! The anchor is a 240-sat pay-to-anchor output ([`ANCHOR_VALUE`]) so the
+//! recipient can CPFP a presigned spend whose fee was fixed at funding.
+//!
+//! # Context
+//!
+//! The buyer, the vendor, and the moderator each build the contract from a
+//! [`Context`]: the chain tip, the moderator's published [`ModeratorRecord`]
+//! (signing key, encryption key, payout script, fee, policy), and their own
+//! [`Policy`]. The terms must carry that exact record and pass both policies,
+//! and every payout must be a standard script above its dust limit. Because
+//! the moderator checks letters against the policy in its own record, terms
+//! that funded cannot be refused later by a private moderator policy.
+//!
+//! The two dispute outcomes are MuSig2 adaptor signatures. Branch `X` (favoring
+//! party `X`) has adaptor point `T_X + M_X`, where:
+//!
+//! * `T_X` is derived from `X`'s per-order key and proved with a Schnorr proof
+//!   of knowledge, so `X` cannot pick it to cancel `M_X`;
+//! * `M_X` is sampled by the party that *loses* branch `X` and verifiably
+//!   encrypted to the moderator key (see [`VerifiableShare`]). `X` checks the
+//!   proof before it signs anything that leads to funding.
+//!
+//! So the moderator can only reveal one of the two halves, and only for
+//! payouts both parties signed. It cannot redirect funds, change amounts, or
+//! sign alone. The favored party alone cannot finish its branch, and the
+//! losing party cannot finish a branch that pays it.
+//!
+//! # Protocol
+//!
+//! ```text
+//! round 0  buyer & vendor  EscrowTerms::sign, SignedTerms::new
+//! round 1  buyer  -> vendor  BuyerOpen         (outpoint, nonces, T_b + PoK, enc(M_vendor_wins) + proof)
+//! round 2  vendor -> buyer   VendorReply       (nonces, T_v + PoK, enc(M_buyer_wins) + proof,
+//!                                               partials: refund, buyer-wins)
+//! round 3  buyer  -> vendor  BuyerSignatures   (partials: vendor claim, vendor-wins)
+//! release  vendor -> buyer   ReleaseNonce::public
+//!          buyer  -> vendor  ReleaseSignature
+//! dispute  claimant -> moderator   dispute letter (self-verifying)
+//!          moderator -> claimant   ModeratorRuling
+//! ```
+//!
+//! [`BuyerSession`], [`BuyerAwaitingReply`], [`VendorSession`], and
+//! [`VendorAwaitingSignatures`] each hold one party's secret only. The buyer's
+//! funding PSBT is moved in at round 1 and is only returned by
+//! [`BuyerEscrow::funding_psbt`], after the refund has verified against the
+//! aggregate key and the exact funding outpoint and value.
+//!
+//! # Timeline
+//!
+//! Let `D = dispute_deadline`, `V = vendor_claim_height`, `R = refund_height`,
+//! with `D < V < R` (checked against [`Policy`] gaps, 144 blocks each by
+//! default). At funding, `D >= tip + min_delivery_window` and
+//! `R <= tip + max_refund_horizon`. A transaction with `nLockTime = h` can
+//! first be mined at `h + 1`.
+//!
+//! ```text
+//! funding ──── ship, deliver ──── D ── ruling window ── V ── claim window ── R ──▶
+//!   │                              │                     │                    │
+//!   │ release any time             │ last height a       │ vendor claim       │ buyer refund
+//!   │ dispute letters accepted ────┘ letter is accepted  │ minable at V + 1   │ minable at R + 1
+//!   │ dispute outcomes valid at any height once ruled    │                    │
+//! ```
+//!
+//! * Before `D`, a buyer who did not get the goods opens a dispute. The
+//!   moderator must rule, and the winner must confirm, before `V + 1`.
+//! * A buyer who got the goods and stalls loses at `V + 1`: the vendor claim
+//!   becomes final before the refund.
+//! * The refund at `R` only matters if the vendor vanished and never claimed.
+//!
+//! The default is the vendor from order acceptance onward. A second presigned
+//! set after a shipping attestation would not help: a buyer who wants to
+//! cheat would simply not sign it, and without a third-party oracle a
+//! shipping attestation is not a cryptographic event. So the buyer must be
+//! online and dispute non-delivery before `D`.
+//!
+//! # Equivocation
+//!
+//! Both dispute outcomes are valid from height 0. An on-chain delay
+//! "after the dispute opens" cannot be expressed: opening a dispute is not
+//! a transaction, and every outcome is presigned at funding. A moderator who
+//! reveals both halves creates a broadcast race. That moderator also hands out
+//! two [`ModeratorRuling`]s it signed for the same terms digest and outpoint,
+//! and [`is_equivocation`] turns those into transferable proof of misconduct.
+//!
+//! An honest moderator rules only through [`Moderator::open`], which checks
+//! the funding output against its own [`FundingChain`] and records the branch
+//! in a [`RulingStore`] before decrypting. A second letter for the other
+//! branch of the same escrow gets [`Error::AlreadyRuled`]. The store must be
+//! durable: an in-memory store forgets rulings on restart.
+//!
+//! # Moderator fee collection
+//!
+//! The fee is an output of each dispute outcome, so it is collected only when
+//! the winner broadcasts that outcome. A vendor who wins close to `V` can
+//! skip it and wait for the fee-free claim. A buyer who wins cannot. That
+//! skews moderator pay toward buyer-wins rulings.
+//!
+//! Proposed fix, not implemented: make the fee owed on every path that can
+//! follow a dispute. Either (a) the vendor claim also pays the moderator fee
+//! once a dispute could have been opened, so skipping the ruling saves the
+//! vendor nothing; or (b) a fee bond: the funding transaction creates a second
+//! output worth the fee, spendable by the moderator with a ruling-revealed
+//! secret or returned to the parties after `R`. Option (a) charges undisputed
+//! orders that end in a claim; option (b) needs a second funding output and
+//! its own presigned spends.
 //!
 //! # Caller obligations
 //!
-//! * **Key order.** Buyer and vendor compressed keys are sorted lexicographically
-//!   before BIP 327 key aggregation. Swapping the party labels does not change
-//!   the aggregate. The moderator key is not aggregated.
-//! * **Sighash.** Every signature is a BIP 341 key spend of input 0 with
-//!   `SIGHASH_DEFAULT` and `Prevouts::All` containing only the funding output.
-//!   The witness is 64 bytes. The input sequence is `0xfffffffe`, so absolute
-//!   locktime is enforced.
-//! * **Locktime.** `timeout_height` is an absolute block height in
-//!   `1..500_000_000`. It is the last height at which the refund is not final.
-//!   The refund can be mined at height `timeout_height + 1`. Time-based
-//!   locktimes are not used. Consensus does not authenticate who broadcasts;
-//!   the refund pays the buyer, and both commercial keys are required to
-//!   create it.
-//! * **Funding.** The caller must create an output whose `scriptPubKey` and
-//!   value are [`Escrow::funding_output`], and whose outpoint is the one
-//!   passed to [`fund`]. This crate does not broadcast.
-//! * **Nonces.** Funding nonces and the moderator adaptor halves are drawn
-//!   from the operating-system RNG and discarded before [`fund`] returns.
-//!   Do not reuse a MuSig nonce across messages. The happy-path release draws
-//!   fresh nonces, distinct from the vendor-wins dispute even though both
-//!   pay the vendor the same amount.
-//!
-//! # State
-//!
-//! [`Phase::Funded`] is the only non-terminal state. It can move to
-//! [`Phase::Completed`], [`Phase::Refunded`], or [`Phase::Disputed`]. Any
-//! other transition returns [`Error::InvalidTransition`] and leaves the phase
-//! unchanged.
+//! * **Segwit, non-replaceable funding.** The funding txid is committed in
+//!   every presigned spend. Fund from native segwit inputs whose sequences do
+//!   not signal RBF, and never replace the funding transaction: a fee-bumped
+//!   replacement has a new txid and strands every presigned spend. Bump with
+//!   CPFP instead. [`FundingPlan::Psbt`] enforces the input rules. With
+//!   [`FundingPlan::Outpoint`] they are on the caller.
+//! * **Fees.** Presigned spends carry a fee fixed at funding, at least
+//!   [`Policy::min_fee_rate_sat_vb`]. Near `V` the vendor claim and a ruled
+//!   outcome can race; the winner should CPFP through the anchor at once.
+//! * **Moderator chain view and store.** [`FundingChain`] must answer from a
+//!   node the moderator runs, and [`RulingStore`] must persist atomically.
+//! * **Per-order keys.** Derive keys with [`order_secret_key`] /
+//!   [`order_public_key`] from a 32-byte secret shared only by the two
+//!   parties, and use fresh payout scripts, so orders are unlinkable.
+//! * **Persistence.** Store [`SignedRefund`] (buyer) or [`SignedClaim`] (vendor)
+//!   before funding or shipping.
+//! * **Ship after funding.** The vendor ships only after
+//!   [`VendorEscrow::verify_funding`] accepts the confirmed funding transaction.
 
 #![forbid(unsafe_code)]
 
+mod buyer;
+mod context;
+mod contract;
 mod crypto;
 mod error;
-mod payload;
-mod session;
+mod funding;
+mod letter;
+mod messages;
+mod moderator;
+mod policy;
+mod proofs;
+mod terms;
 mod tx;
+mod vencrypt;
+mod vendor;
+mod wire;
 
+pub use buyer::BuyerEscrow;
+pub use context::Context;
+pub use contract::{SignedClaim, SignedRefund};
 pub use error::Error;
-pub use payload::Claim;
-pub use session::{
-    fund, moderator_open, Contribution, Escrow, FundParams, ModeratorShare, ReleaseNonce,
+pub use funding::{
+    BuyerAwaitingReply, BuyerSession, FundingPlan, VendorAwaitingSignatures, VendorSession,
 };
-pub use tx::is_final_at_height;
+pub use letter::{is_equivocation, DisputeCase, ModeratorRuling};
+pub use messages::{BuyerOpen, BuyerSignatures, FundingNonces, ReleaseSignature, VendorReply};
+pub use moderator::{
+    FundingChain, InMemoryRulingStore, Moderator, ModeratorKeys, ModeratorRecord, RulingKey,
+    RulingStore,
+};
+pub use policy::{payout_dust_limit, Policy, ANCHOR_VALUE};
+pub use proofs::Pok;
+pub use terms::{order_public_key, order_secret_key, EscrowTerms, SignedTerms};
+pub use tx::{anchor_script, is_final_at_height};
+pub use vencrypt::VerifiableShare;
+pub use vendor::{ReleaseNonce, VendorEscrow};
 
 #[cfg(test)]
 mod tests;
@@ -95,13 +205,22 @@ impl Party {
     }
 }
 
-/// Explicit escrow state.
+/// Explicit escrow state, per party.
 ///
-/// Only `Funded` has outgoing transitions, and each of those is terminal.
+/// Only `Funded` has outgoing transitions. `ReleaseSigned` may only re-sign
+/// the release; every other phase is terminal.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Phase {
     Funded,
+    /// Buyer signed the happy-path release. It may sign again (fresh nonces)
+    /// until the release confirms; refund and dispute are closed.
+    ReleaseSigned,
+    /// Happy-path release assembled (vendor).
     Completed,
+    /// Buyer refund broadcast.
     Refunded,
+    /// Vendor claim broadcast.
+    Claimed,
+    /// A dispute outcome was finished from a moderator ruling.
     Disputed,
 }

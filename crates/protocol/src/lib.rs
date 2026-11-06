@@ -19,7 +19,7 @@ mod store;
 
 pub use dispute::{DisputeEnvelope, DisputePlaintext};
 pub use error::Error;
-pub use escrow::EscrowTerms;
+pub use escrow::{EscrowBranch, EscrowTerms};
 pub use fixtures::{
     fixture_catalog, fixture_dispute, fixture_keys, fixture_order, package_rate, vendor_mail_key,
     Catalog, FixtureKeys, Moderator,

@@ -5,33 +5,26 @@
 //! BOLT 12 offer for the amount. The code and the offer are shown but not
 //! watched: this node does not scan for silent payments or run Lightning.
 //!
-//! Moderated pay (testnet4 only, an unsafe demo): the MuSig2 funding address
-//! for a fresh buyer escrow key and a fresh vendor escrow key, both derived
-//! from this node's seeds. The address is not safe to fund from another
-//! wallet. Funding goes through `POST /orders/{id}/pay`, which presigns the
-//! refund for the real outpoint before it broadcasts. Mainnet refuses escrow.
-//! The escrow crate's API is expected to change (two-party funding), so this
-//! module is the only place the node builds escrow terms.
+//! Moderated pay (testnet4 only, an unsafe demo) is two-party: see
+//! `escrow_buyer` and `escrow_vendor`. Checkout records a fresh buyer key and
+//! payout; the funding address arrives with the vendor node's terms.
+//! Mainnet refuses escrow.
 
 use bitcoin::secp256k1::{PublicKey, Secp256k1};
-use bitcoin::{Address, Amount, OutPoint};
-use openbazaar_escrow::{fund, FundParams};
+use bitcoin::Amount;
 use openbazaar_pay::{Bolt12Offer, DirectPay, SilentPaymentCode};
 use serde_json::{json, Value};
 
-use crate::network::{bip21, NetworkMode};
+use crate::network::bip21;
 use crate::{Node, OrderError};
 
 pub const ESCROW_MAINNET_REFUSAL: &str =
-    "Moderated escrow is not available on mainnet. It is a testnet4 demo until the two-party escrow protocol ships.";
+    "Moderated escrow is not available on mainnet. It is a testnet4 demo until the two-party escrow protocol is reviewed.";
 
-pub const ESCROW_DEMO_WARNING: &str = "Unsafe demo: testnet4 coins only. This node holds both the buyer and the vendor escrow keys and runs the ceremony in one process, the moderator key is a public fixture, and the escrow protocol is about to change. Do not send anything of value.";
+pub const ESCROW_DEMO_WARNING: &str = "Unsafe demo: testnet4 coins only. The moderator and the vendor mailbox keys are public fixtures, escrow messages travel over unauthenticated loopback HTTP, and a node restart after funding keeps only the presigned refund. Do not send anything of value.";
 
-/// Blocks from funding until the presigned refund can be mined (about 30 days).
-pub const ESCROW_TIMEOUT_BLOCKS: u32 = 4_320;
-
-/// Sats the buyer adds on top of the price so the escrow spend can pay its fee.
-pub const ESCROW_SPEND_FEE_SATS: u64 = 500;
+/// Network fee every presigned escrow spend carries. The buyer adds it to the price.
+pub const ESCROW_SPEND_FEE_SATS: u64 = 1_000;
 
 impl Node {
     pub(crate) fn direct_payment(&self, total: u64, seller: &str) -> Result<Value, OrderError> {
@@ -54,65 +47,6 @@ impl Node {
             "lightning": pay.offer().to_string(),
             "silentPaymentCode": pay.silent_payment_code().to_string(),
             "watched": ["onchain"],
-        }))
-    }
-
-    pub(crate) fn escrow_terms(&self, total: u64, seller: &str) -> Result<Value, OrderError> {
-        let network = self.network;
-        if network != NetworkMode::Testnet4 {
-            return Err(OrderError::Invalid(ESCROW_MAINNET_REFUSAL));
-        }
-        let funding = total
-            .checked_add(ESCROW_SPEND_FEE_SATS)
-            .ok_or(OrderError::Invalid("Enter a quantity of at most 99."))?;
-        let (buyer_index, buyer_secret, buyer_payout) = {
-            let mut wallet = self.buyer_wallet();
-            let index = wallet.next_escrow_index().map_err(failed)?;
-            let secret = wallet.seed.escrow_key(index).secret_bytes();
-            (index, secret, wallet.fresh_address().map_err(failed)?)
-        };
-        let (vendor_index, vendor_secret, vendor_payout) = {
-            let mut wallet = self.store_wallet(seller)?;
-            let index = wallet.next_escrow_index().map_err(failed)?;
-            let secret = wallet.seed.escrow_key(index).secret_bytes();
-            (index, secret, wallet.fresh_address().map_err(failed)?)
-        };
-        // The funding script depends only on the two keys. The outpoint and
-        // timeout here are placeholders; `POST /orders/{id}/pay` runs the
-        // ceremony again for the real outpoint before anything is sent.
-        let preview = fund(FundParams {
-            buyer_secret,
-            vendor_secret,
-            moderator_public: PublicKey::from_secret_key(&Secp256k1::new(), &self.keys.moderator).serialize(),
-            funding_outpoint: OutPoint::null(),
-            funding_value: Amount::from_sat(funding),
-            fee: Amount::from_sat(ESCROW_SPEND_FEE_SATS),
-            timeout_height: 1,
-            buyer_payout: buyer_payout.script_pubkey(),
-            vendor_payout: vendor_payout.script_pubkey(),
-        })
-        .map_err(failed)?;
-        let address = Address::from_script(&preview.funding_output().script_pubkey, network.bitcoin())
-            .map_err(failed)?;
-        Ok(json!({
-            "network": network.as_str(),
-            "demo": true,
-            "unsafe": true,
-            "warning": ESCROW_DEMO_WARNING,
-            "fundingSats": funding,
-            "spendFeeSats": ESCROW_SPEND_FEE_SATS,
-            "address": address.to_string(),
-            "timeoutHeight": 0,
-            "timeoutBlocks": ESCROW_TIMEOUT_BLOCKS,
-            "outpoint": "",
-            "signaturesRequired": 2,
-            "buyerKeyIndex": buyer_index,
-            "vendorKeyIndex": vendor_index,
-            "buyerPayout": buyer_payout.to_string(),
-            "vendorPayout": vendor_payout.to_string(),
-            "refundHeld": false,
-            "safeToSend": false,
-            "fundWith": "node",
         }))
     }
 }

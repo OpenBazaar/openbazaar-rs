@@ -1,8 +1,9 @@
 //! Checkout: verify the listing, seal a tormail letter, and describe how to pay.
 //!
 //! Each seller order gets its own payment terms from [`crate::instructions`]:
-//! a fresh address for direct pay, or a fresh escrow address for moderated
-//! pay. Nothing here broadcasts a transaction.
+//! a fresh address for direct pay, or, for moderated pay, a fresh buyer
+//! escrow key and a request for terms sent to the vendor's node. Nothing
+//! here broadcasts a transaction.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -53,7 +54,7 @@ impl Settlement {
     fn initial_status(self) -> &'static str {
         match self {
             Settlement::Direct => crate::watch::AWAITING_PAYMENT,
-            Settlement::Escrow => crate::watch::AWAITING_FUNDING,
+            Settlement::Escrow => crate::watch::AWAITING_TERMS,
         }
     }
 }
@@ -86,7 +87,7 @@ impl Node {
             ));
         }
         let settlement = settlement_of(body.get("settlement"))?;
-        self.allow_settlement(settlement)?;
+        self.allow_settlement(settlement, &seller)?;
         if settlement == Settlement::Escrow
             && lines
                 .iter()
@@ -146,7 +147,7 @@ impl Node {
         }
         self.remember(
             checkout_id,
-            letter_id,
+            letter_id.clone(),
             now_secs(),
             seller,
             listing.store_id.to_hex(),
@@ -159,6 +160,13 @@ impl Node {
             escrow,
             address_label,
         )?;
+        if settlement == Settlement::Escrow {
+            let mut escrow = response.get("escrow").cloned();
+            self.request_terms(&letter_id, &mut escrow);
+            if let Some(escrow) = escrow {
+                response["escrow"] = escrow;
+            }
+        }
         Ok(response)
     }
 
@@ -175,7 +183,7 @@ impl Node {
         expect_fields(body, CHECKOUT_FIELDS)?;
         let packages = checkout_packages(&self.catalog, body)?;
         for package in &packages {
-            self.allow_settlement(package.settlement)?;
+            self.allow_settlement(package.settlement, &package.lines[0].0.seller)?;
         }
         let needs_address = packages.iter().any(|package| {
             package.lines.iter().any(|(listing, _)| listing.kind == ListingKind::Physical)
@@ -231,7 +239,7 @@ impl Node {
                 .checked_add(package.shipping)
                 .ok_or(OrderError::Invalid("Enter a quantity of at most 99."))?;
             let lines = line_values(&package.lines)?;
-            let (payment, escrow) = self.payment_for(package.settlement, total, &seller)?;
+            let (payment, mut escrow) = self.payment_for(package.settlement, total, &seller)?;
             self.remember(
                 checkout_id.clone(),
                 id.clone(),
@@ -247,6 +255,9 @@ impl Node {
                 escrow.clone(),
                 address_label.clone(),
             )?;
+            if package.settlement == Settlement::Escrow {
+                self.request_terms(&id, &mut escrow);
+            }
             let mut order = json!({
                 "orderId": id,
                 "letterId": id,
@@ -299,12 +310,21 @@ impl Node {
         Ok(id.as_str())
     }
 
-    /// Escrow is a testnet4 demo. Refuse it before any letter is sealed.
-    fn allow_settlement(&self, settlement: Settlement) -> Result<(), OrderError> {
-        if settlement == Settlement::Escrow && self.network != crate::NetworkMode::Testnet4 {
-            return Err(OrderError::Invalid(crate::instructions::ESCROW_MAINNET_REFUSAL));
+    /// Escrow is a testnet4 demo with a vendor on another node. Refuse it
+    /// before any letter is sealed.
+    fn allow_settlement(&self, settlement: Settlement, seller: &str) -> Result<(), OrderError> {
+        if settlement == Settlement::Escrow {
+            self.escrow_ready(seller)?;
         }
         Ok(())
+    }
+
+    /// Ask the vendor's node for terms once the order is stored. A failure is
+    /// kept on the order (and returned in `escrow.error`); checkout still succeeds.
+    fn request_terms(&self, id: &str, escrow: &mut Option<Value>) {
+        if let (Err(err), Some(value)) = (self.send_escrow_request(id), escrow.as_mut()) {
+            value["error"] = json!(err);
+        }
     }
 
     fn payment_for(
@@ -315,7 +335,7 @@ impl Node {
     ) -> Result<(Option<Value>, Option<Value>), OrderError> {
         match settlement {
             Settlement::Direct => Ok((Some(self.direct_payment(total, seller)?), None)),
-            Settlement::Escrow => Ok((None, Some(self.escrow_terms(total, seller)?))),
+            Settlement::Escrow => Ok((None, Some(self.escrow_request(total, seller)?))),
         }
     }
 
@@ -335,10 +355,6 @@ impl Node {
         escrow: Option<Value>,
         address_label: String,
     ) -> Result<(), OrderError> {
-        let escrow = escrow.map(|mut value| {
-            value.as_object_mut().map(|map| map.remove("outpoint"));
-            value
-        });
         self.buyer_orders
             .lock()
             .unwrap_or_else(|err| err.into_inner())

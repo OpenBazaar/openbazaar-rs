@@ -9,5 +9,6 @@ publish = false
 [dependencies]
 bitcoin = "0.32.7"
 musig2 = { version = "0.4.1", features = ["rand"] }
+openbazaar-protocol = { path = "../protocol" }
 rand = "0.9"
 secp256k1 = "0.31"

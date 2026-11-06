@@ -1,7 +1,7 @@
-//! MuSig2 key aggregation and the split adaptor secret.
+//! MuSig2 key aggregation, partial signatures, and BIP 340 helpers.
 //!
-//! Curve operations go through `musig2` / `secp`. This module only hashes,
-//! compares, and XORs.
+//! Curve operations go through `musig2` / `secp` / `libsecp256k1`. Every
+//! signing helper takes exactly one secret key.
 
 use musig2::secp::{Point, Scalar};
 use musig2::{
@@ -9,12 +9,10 @@ use musig2::{
     SecNonce,
 };
 use rand::Rng;
-use secp256k1::{Secp256k1, XOnlyPublicKey};
+use secp256k1::{Keypair, Secp256k1, SecretKey, XOnlyPublicKey};
 
+use crate::proofs::tagged;
 use crate::Error;
-
-pub const MEMO_MAX: usize = 4096;
-pub const SCRIPT_MAX: usize = 10_000;
 
 pub fn random_scalar() -> Scalar {
     let mut rng = rand::rng();
@@ -27,19 +25,18 @@ pub fn random_scalar() -> Scalar {
     }
 }
 
-pub fn hash32(tag: &[u8], parts: &[&[u8]]) -> [u8; 32] {
-    use bitcoin::hashes::{sha256, Hash};
-    let mut data = Vec::with_capacity(tag.len() + parts.iter().map(|p| p.len()).sum::<usize>());
-    data.extend_from_slice(tag);
-    for part in parts {
-        data.extend_from_slice(part);
-    }
-    sha256::Hash::hash(&data).to_byte_array()
+pub fn scalar_key(bytes: &[u8; 32]) -> Result<Scalar, Error> {
+    Scalar::from_slice(bytes).map_err(|_| Error::WrongKey)
 }
 
-/// Derive the favored party's half of an adaptor secret from their long-term key.
+pub fn point_from_compressed(bytes: &[u8; 33]) -> Result<Point, Error> {
+    Point::from_slice(bytes).map_err(|_| Error::InvalidParams("public key"))
+}
+
+/// The favored party's half of a branch adaptor secret.
 ///
-/// The other party never learns this scalar. It is recomputed at settlement.
+/// Derived from that party's per-order key and the branch sighash, so it can
+/// be recomputed at settlement and is never sent.
 pub fn party_adaptor_secret(
     secret: &Scalar,
     label: &[u8],
@@ -47,8 +44,10 @@ pub fn party_adaptor_secret(
 ) -> Result<Scalar, Error> {
     let key = secret.serialize();
     for counter in 0u32..8 {
-        let n = counter.to_le_bytes();
-        let digest = hash32(b"ob-escrow/party-adaptor/v1", &[&key, label, sighash, &n]);
+        let digest = tagged(
+            "ob-escrow/party-adaptor/v2",
+            &[&key, label, sighash, &counter.to_le_bytes()],
+        );
         if let Ok(scalar) = Scalar::from_slice(&digest) {
             return Ok(scalar);
         }
@@ -73,7 +72,7 @@ fn sorted_context(buyer: Point, vendor: Point) -> Result<KeyAggContext, Error> {
         return Err(Error::InvalidParams("buyer and vendor keys must differ"));
     }
     let mut keys = [buyer, vendor];
-    keys.sort_by(|left, right| left.serialize().cmp(&right.serialize()));
+    keys.sort_by_key(|key| key.serialize());
     KeyAggContext::new(keys).map_err(|_| Error::InvalidParams("key aggregation"))
 }
 
@@ -81,18 +80,14 @@ pub fn output_xonly(ctx: &KeyAggContext) -> [u8; 32] {
     ctx.aggregated_pubkey::<Point>().serialize_xonly()
 }
 
-pub fn aggregate_nonce(left: &PubNonce, right: &PubNonce) -> AggNonce {
-    [left, right].into_iter().sum()
+pub fn aggregate_nonce(buyer: &PubNonce, vendor: &PubNonce) -> AggNonce {
+    [buyer, vendor].into_iter().sum()
 }
 
 pub fn fresh_nonce(seckey: Scalar, agg: &KeyAggContext, message: &[u8], extra: &[u8]) -> SecNonce {
     let pubkey: Point = agg.aggregated_pubkey();
     let mut rng = rand::rng();
     SecNonce::generate(&mut rng, seckey, pubkey, message, extra)
-}
-
-pub fn public_nonce(secnonce: &SecNonce) -> PubNonce {
-    secnonce.public_nonce()
 }
 
 pub fn partial_sign(
@@ -111,16 +106,23 @@ pub fn partial_sign(
     }
 }
 
-pub fn verify_plain_partial(
+#[allow(clippy::too_many_arguments)]
+pub fn verify_partial(
     ctx: &KeyAggContext,
     partial: PartialSignature,
     nonce: &AggNonce,
     pubkey: Point,
     pubnonce: &PubNonce,
     message: &[u8],
+    adaptor: Option<Point>,
 ) -> Result<(), Error> {
-    musig2::verify_partial(ctx, partial, nonce, pubkey, pubnonce, message)
-        .map_err(|_| Error::BadPartial)
+    match adaptor {
+        Some(point) => {
+            musig2::adaptor::verify_partial(ctx, partial, nonce, point, pubkey, pubnonce, message)
+        }
+        None => musig2::verify_partial(ctx, partial, nonce, pubkey, pubnonce, message),
+    }
+    .map_err(|_| Error::BadPartial)
 }
 
 pub fn aggregate_plain(
@@ -143,14 +145,19 @@ pub fn aggregate_adaptor(
     let signature =
         musig2::adaptor::aggregate_partial_signatures(ctx, nonce, adaptor, partials, message)
             .map_err(|_| Error::BadSignature)?;
-    let pubkey: Point = ctx.aggregated_pubkey();
-    musig2::adaptor::verify_single(pubkey, &signature, message, adaptor)
-        .map_err(|_| Error::BadSignature)?;
+    verify_adaptor(ctx, &signature, message, adaptor)?;
     Ok(signature)
 }
 
-pub fn signature_bytes(signature: &LiftedSignature) -> [u8; 64] {
-    signature.serialize()
+pub fn verify_adaptor(
+    ctx: &KeyAggContext,
+    signature: &AdaptorSignature,
+    message: &[u8],
+    adaptor: Point,
+) -> Result<(), Error> {
+    let pubkey: Point = ctx.aggregated_pubkey();
+    musig2::adaptor::verify_single(pubkey, signature, message, adaptor)
+        .map_err(|_| Error::BadSignature)
 }
 
 pub fn bip340_verify(
@@ -165,198 +172,19 @@ pub fn bip340_verify(
         .map_err(|_| Error::BadSignature)
 }
 
-/// Encrypt `secret` to `moderator` with an ephemeral ECDH key.
-///
-/// The MAC covers the settlement context so the moderator can see which
-/// outpoint and payout the secret authorizes.
-#[derive(Clone, Copy, Debug)]
-pub struct EncryptedSecret {
-    pub ephemeral_pk: [u8; 33],
-    pub ciphertext: [u8; 32],
-    pub mac: [u8; 32],
+/// BIP 340 signature by a single key over a 32-byte digest.
+pub fn schnorr_sign(secret: &Scalar, digest: &[u8; 32]) -> Result<[u8; 64], Error> {
+    let secp = Secp256k1::signing_only();
+    let key = SecretKey::from_byte_array(secret.serialize()).map_err(|_| Error::WrongKey)?;
+    let pair = Keypair::from_secret_key(&secp, &key);
+    let mut aux = [0u8; 32];
+    rand::rng().fill(&mut aux);
+    Ok(secp
+        .sign_schnorr_with_aux_rand(digest, &pair, &aux)
+        .to_byte_array())
 }
 
-pub struct MacContext<'a> {
-    pub adaptor_point: &'a [u8; 33],
-    pub sighash: &'a [u8; 32],
-    pub txid: &'a [u8; 32],
-    pub vout: u32,
-    pub lock_time: u32,
-    pub value: u64,
-    pub favored: u8,
-    pub script: &'a [u8],
-}
-
-impl EncryptedSecret {
-    pub fn seal(
-        moderator: Point,
-        secret: Scalar,
-        ephemeral: Scalar,
-        context: &MacContext<'_>,
-    ) -> Self {
-        let ephemeral_pk = ephemeral.base_point_mul().serialize();
-        let shared = moderator * ephemeral;
-        let pad = hash32(b"ob-escrow/ecdh/v1", &[&shared.serialize(), &ephemeral_pk]);
-        let secret_bytes = secret.serialize();
-        let mut ciphertext = [0u8; 32];
-        for i in 0..32 {
-            ciphertext[i] = secret_bytes[i] ^ pad[i];
-        }
-        let mac = mac(&pad, &ciphertext, context);
-        Self {
-            ephemeral_pk,
-            ciphertext,
-            mac,
-        }
-    }
-
-    pub fn open(&self, moderator: Scalar, context: &MacContext<'_>) -> Result<Scalar, Error> {
-        let ephemeral = Point::from_slice(&self.ephemeral_pk).map_err(|_| Error::BadPayload)?;
-        let shared = ephemeral * moderator;
-        let pad = hash32(
-            b"ob-escrow/ecdh/v1",
-            &[&shared.serialize(), &self.ephemeral_pk],
-        );
-        let mac = mac(&pad, &self.ciphertext, context);
-        if !ct_eq(&mac, &self.mac) {
-            return Err(Error::BadPayload);
-        }
-        let mut plain = [0u8; 32];
-        for i in 0..32 {
-            plain[i] = self.ciphertext[i] ^ pad[i];
-        }
-        Scalar::from_slice(&plain).map_err(|_| Error::BadPayload)
-    }
-}
-
-fn mac(pad: &[u8; 32], ciphertext: &[u8; 32], context: &MacContext<'_>) -> [u8; 32] {
-    let vout = context.vout.to_le_bytes();
-    let lock_time = context.lock_time.to_le_bytes();
-    let value = context.value.to_le_bytes();
-    hash32(
-        b"ob-escrow/mac/v1",
-        &[
-            pad,
-            ciphertext,
-            context.adaptor_point,
-            context.sighash,
-            context.txid,
-            &vout,
-            &lock_time,
-            &value,
-            &[context.favored],
-            context.script,
-        ],
-    )
-}
-
-fn ct_eq(left: &[u8], right: &[u8]) -> bool {
-    if left.len() != right.len() {
-        return false;
-    }
-    let mut diff = 0u8;
-    for (a, b) in left.iter().zip(right) {
-        diff |= a ^ b;
-    }
-    diff == 0
-}
-
-pub fn cosign_plain(
-    ctx: &KeyAggContext,
-    buyer: Scalar,
-    vendor: Scalar,
-    message: &[u8],
-    label: &str,
-) -> Result<LiftedSignature, Error> {
-    let (nonce, partials) = exchange(ctx, buyer, vendor, message, label, None)?;
-    aggregate_plain(ctx, &nonce, partials, message)
-}
-
-pub fn cosign_adaptor(
-    ctx: &KeyAggContext,
-    buyer: Scalar,
-    vendor: Scalar,
-    message: &[u8],
-    label: &str,
-    adaptor: Point,
-) -> Result<AdaptorSignature, Error> {
-    let (nonce, partials) = exchange(ctx, buyer, vendor, message, label, Some(adaptor))?;
-    aggregate_adaptor(ctx, &nonce, adaptor, partials, message)
-}
-
-fn exchange(
-    ctx: &KeyAggContext,
-    buyer: Scalar,
-    vendor: Scalar,
-    message: &[u8],
-    label: &str,
-    adaptor: Option<Point>,
-) -> Result<(AggNonce, [PartialSignature; 2]), Error> {
-    let buyer_extra = format!("ob-escrow/{label}/buyer");
-    let vendor_extra = format!("ob-escrow/{label}/vendor");
-    let buyer_sec = fresh_nonce(buyer, ctx, message, buyer_extra.as_bytes());
-    let vendor_sec = fresh_nonce(vendor, ctx, message, vendor_extra.as_bytes());
-    let buyer_pub = public_nonce(&buyer_sec);
-    let vendor_pub = public_nonce(&vendor_sec);
-    let nonce = aggregate_nonce(&buyer_pub, &vendor_pub);
-    let buyer_partial = partial_sign(ctx, buyer, buyer_sec, &nonce, message, adaptor)?;
-    let vendor_partial = partial_sign(ctx, vendor, vendor_sec, &nonce, message, adaptor)?;
-    let buyer_point = buyer.base_point_mul();
-    let vendor_point = vendor.base_point_mul();
-    verify_branch_partial(
-        ctx,
-        buyer_partial,
-        &nonce,
-        buyer_point,
-        &buyer_pub,
-        message,
-        adaptor,
-    )?;
-    verify_branch_partial(
-        ctx,
-        vendor_partial,
-        &nonce,
-        vendor_point,
-        &vendor_pub,
-        message,
-        adaptor,
-    )?;
-    Ok((nonce, [buyer_partial, vendor_partial]))
-}
-
-fn verify_branch_partial(
-    ctx: &KeyAggContext,
-    partial: PartialSignature,
-    nonce: &AggNonce,
-    pubkey: Point,
-    pubnonce: &PubNonce,
-    message: &[u8],
-    adaptor: Option<Point>,
-) -> Result<(), Error> {
-    match adaptor {
-        Some(point) => {
-            musig2::adaptor::verify_partial(ctx, partial, nonce, point, pubkey, pubnonce, message)
-                .map_err(|_| Error::BadPartial)
-        }
-        None => verify_plain_partial(ctx, partial, nonce, pubkey, pubnonce, message),
-    }
-}
-
-pub fn encode_partial(partial: &PartialSignature) -> [u8; 32] {
-    partial.serialize()
-}
-
-pub fn decode_partial(bytes: &[u8]) -> Result<PartialSignature, Error> {
-    PartialSignature::from_slice(bytes).map_err(|_| Error::BadPartial)
-}
-
-pub fn point_from_compressed(bytes: &[u8; 33]) -> Result<Point, Error> {
-    Point::from_slice(bytes).map_err(|_| Error::InvalidParams("public key"))
-}
-
-/// Add two adaptor halves. The sum is the discrete log of `T_party + T_mod`.
-pub fn combine_adaptor_halves(party: Scalar, moderator: Scalar) -> Result<Scalar, Error> {
-    (party + moderator)
-        .not_zero()
-        .map_err(|_| Error::BadSignature)
+/// Verify a [`schnorr_sign`] signature against a compressed key's x-coordinate.
+pub fn schnorr_verify(key: &Point, digest: &[u8; 32], signature: &[u8; 64]) -> Result<(), Error> {
+    bip340_verify(&key.serialize_xonly(), signature, digest)
 }

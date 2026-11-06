@@ -7,7 +7,7 @@ use bitcoin::secp256k1::SecretKey;
 
 use crate::dispute::{DisputeEnvelope, DisputePlaintext};
 use crate::encode;
-use crate::escrow::EscrowTerms;
+use crate::escrow::{EscrowBranch, EscrowTerms};
 use crate::listing::{Listing, ListingKind};
 use crate::order::{OrderEnvelope, OrderPlaintext};
 use crate::payment::DirectPay;
@@ -21,6 +21,13 @@ const SCAN_KEY: &str = "openbazaar/phase0/fixture/scan";
 const BUYER_SPEND_KEY: &str = "openbazaar/phase0/fixture/buyer-spend";
 const MODERATOR_KEY: &str = "openbazaar/phase0/fixture/moderator";
 const ADAPTOR_POINT: &str = "openbazaar/phase0/fixture/adaptor-point";
+const VENDOR_WINS_POINT: &str = "openbazaar/phase0/fixture/vendor-wins-point";
+
+fn compressed(label: &str) -> [u8; 33] {
+    let secp = bitcoin::secp256k1::Secp256k1::signing_only();
+    bitcoin::secp256k1::PublicKey::from_secret_key(&secp, &sign::secret_from_label(label))
+        .serialize()
+}
 
 struct Draft {
     title: &'static str,
@@ -275,9 +282,19 @@ pub fn fixture_dispute(catalog: &Catalog) -> DisputeEnvelope {
             escrow: EscrowTerms {
                 buyer,
                 vendor: vendor_spend,
+                moderator: compressed(MODERATOR_KEY),
+                moderator_fee: 1_000,
+                dispute_deadline: 720,
+                vendor_claim_height: 864,
                 refund_locktime: 1008,
-                presigned_refund: Vec::new(),
-                adaptor_point: sign::xonly(&sign::secret_from_label(ADAPTOR_POINT)),
+                buyer_wins: EscrowBranch {
+                    adaptor_point: compressed(ADAPTOR_POINT),
+                    letter: Vec::new(),
+                },
+                vendor_wins: EscrowBranch {
+                    adaptor_point: compressed(VENDOR_WINS_POINT),
+                    letter: Vec::new(),
+                },
             },
         },
         &buyer_secret,
@@ -340,7 +357,11 @@ mod tests {
         else {
             panic!("plaintext dispute");
         };
-        assert!(dispute.escrow.presigned_refund.is_empty());
+        assert!(dispute.escrow.buyer_wins.letter.is_empty());
+        assert_ne!(
+            dispute.escrow.buyer_wins.adaptor_point,
+            dispute.escrow.vendor_wins.adaptor_point
+        );
         assert_ne!(dispute.escrow.buyer, *catalog.store.id.as_bytes());
         assert_ne!(dispute.escrow.vendor, *catalog.store.id.as_bytes());
         assert_ne!(dispute.escrow.buyer, dispute.escrow.vendor);

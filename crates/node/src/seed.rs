@@ -8,6 +8,7 @@
 //! | spend wallet  | `m/86'/coin'/0'/{0,1}/*` (BIP 86 taproot) |
 //! | store signing | `m/1984'/coin'/0'/0'`        |
 //! | escrow keys   | `m/1984'/coin'/1'/index'`    |
+//! | escrow mail   | `m/1984'/coin'/2'/0'`        |
 //! | BIP 352 scan  | `m/352'/coin'/0'/1'/0`       |
 //! | BIP 352 spend | `m/352'/coin'/0'/0'/0`       |
 //!
@@ -77,6 +78,11 @@ impl Seed {
         self.derive(&format!("m/1984'/{}'/1'/{index}'", self.network.coin_type()))
     }
 
+    /// Opens escrow messages sent to this node as buyer.
+    pub(crate) fn mail_key(&self) -> SecretKey {
+        self.derive(&format!("m/1984'/{}'/2'/0'", self.network.coin_type()))
+    }
+
     pub(crate) fn scan_key(&self) -> SecretKey {
         self.derive(&format!("m/352'/{}'/0'/1'/0", self.network.coin_type()))
     }
@@ -109,6 +115,7 @@ mod tests {
                 seed.store_signing_key(),
                 seed.escrow_key(0),
                 seed.escrow_key(1),
+                seed.mail_key(),
                 seed.scan_key(),
                 seed.silent_spend_key(),
             ]
