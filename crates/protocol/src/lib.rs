@@ -10,8 +10,10 @@ mod dispute;
 mod encode;
 mod error;
 mod escrow;
+mod fixture_labels;
 mod fixtures;
 mod keys;
+mod labeler;
 mod listing;
 mod order;
 mod payment;
@@ -22,11 +24,13 @@ pub use content::{ContentLabel, ContentRating, ContentTags};
 pub use dispute::{DisputeEnvelope, DisputePlaintext};
 pub use error::Error;
 pub use escrow::{EscrowBranch, EscrowTerms};
+pub use fixture_labels::{fixture_label_sets, fixture_labeler_key};
 pub use fixtures::{
     fixture_catalog, fixture_dispute, fixture_keys, fixture_order, package_rate, vendor_mail_key,
     Catalog, FixtureKeys, Moderator,
 };
 pub use keys::KeyRole;
+pub use labeler::{resolve_labels, LabelEntry, LabelSet, LabelTarget, ResolvedLabel};
 pub use listing::{Listing, ListingHash, ListingKind};
 pub use order::{OrderEnvelope, OrderPlaintext};
 pub use payment::DirectPay;

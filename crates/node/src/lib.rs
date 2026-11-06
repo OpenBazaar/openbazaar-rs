@@ -17,6 +17,7 @@ mod escrow_moderator;
 mod escrow_vendor;
 mod http;
 mod instructions;
+mod labelers;
 mod network;
 mod orders;
 mod pay_order;
@@ -61,6 +62,7 @@ use tormail::Mailbox;
 
 use addresses::AddressBook;
 use buyer_orders::BuyerOrders;
+use labelers::Labelers;
 use rates::Rates;
 use vault::Vault;
 use vendor_labels::VendorLabels;
@@ -151,6 +153,7 @@ pub struct Node {
     rates: Rates,
     pub(crate) addresses: Mutex<AddressBook>,
     pub(crate) buyer_orders: Mutex<BuyerOrders>,
+    pub(crate) labelers: Mutex<Labelers>,
     pub(crate) network: NetworkMode,
     pub(crate) settings: ChainSettings,
     pub(crate) chain: Box<dyn ChainSource>,
@@ -184,6 +187,7 @@ impl Node {
         let vault = Vault::open(&dir)?;
         let addresses = AddressBook::open(&dir, vault.clone())?;
         let buyer_orders = BuyerOrders::open(&dir, vault.clone(), network.as_str())?;
+        let labelers = Labelers::open(&dir, vault.clone())?;
         let wallets = dir.join("wallets");
         let buyer_wallet = NodeWallet::open(&wallets, "node", &vault, network)?;
         let mut store_wallets = BTreeMap::new();
@@ -205,6 +209,7 @@ impl Node {
             rates: Rates::new(),
             addresses: Mutex::new(addresses),
             buyer_orders: Mutex::new(buyer_orders),
+            labelers: Mutex::new(labelers),
             network,
             settings: ChainSettings {
                 confirmations: config.confirmations,

@@ -1,3 +1,5 @@
+import type { LabelerLabel } from "./safety/filter";
+
 // The shop dials only this origin. A query parameter, settings field, seed,
 // peer, or vendor address cannot point it anywhere else. GET /pair on this
 // loopback node returns the pairing token; POST /orders sends it back.
@@ -290,6 +292,50 @@ export async function setContentLabel(label: {
     "The label could not be saved.",
   );
   return { hash: typeof body.hash === "string" ? body.hash : null, catalog: parseCatalog(body.catalog) };
+}
+
+export type FollowedLabeler = { key: string; url: string | null; name: string | null; sequence: number | null; error: string | null };
+export type LabelerState = { labelers: FollowedLabeler[]; samples: { key: string; name: string }[]; labels: LabelerLabel[] };
+
+/// Labelers this node follows and their verified labels. Only the paired client sees the list.
+export async function fetchLabelers(): Promise<LabelerState> {
+  return parseLabelers(await paired("/labelers"));
+}
+
+export async function setLabelers(labelers: { key: string; url?: string | null }[]): Promise<LabelerState> {
+  return parseLabelers(
+    await paired("/labelers", { method: "PUT", body: JSON.stringify({ labelers }), headers: { "Content-Type": "application/json" } }),
+  );
+}
+
+function parseLabelers(value: unknown): LabelerState {
+  const body = recordOf(value, "The labelers could not be read.");
+  const list = (items: unknown) => (Array.isArray(items) ? items.filter((item): item is Record<string, unknown> => !!item && typeof item === "object") : []);
+  const text = (item: unknown) => (typeof item === "string" ? item : null);
+  return {
+    labelers: list(body.labelers).map((item) => ({
+      key: text(item.key) ?? "",
+      url: text(item.url),
+      name: text(item.name),
+      sequence: typeof item.sequence === "number" ? item.sequence : null,
+      error: text(item.error),
+    })),
+    samples: list(body.samples).map((item) => ({ key: text(item.key) ?? "", name: text(item.name) ?? "" })),
+    labels: list(body.labels).flatMap((item): LabelerLabel[] => {
+      const rating = item.rating;
+      const targetKind = item.targetKind;
+      if ((rating !== "general" && rating !== "sensitive" && rating !== "adult") || (targetKind !== "listing" && targetKind !== "store")) return [];
+      return [{
+        labeler: text(item.labeler) ?? "",
+        labelerName: text(item.labelerName) ?? "a labeler",
+        targetKind,
+        target: text(item.target) ?? "",
+        rating,
+        tags: Array.isArray(item.tags) ? item.tags.filter((tag): tag is string => typeof tag === "string") : [],
+        reason: text(item.reason) ?? "",
+      }];
+    }),
+  };
 }
 
 async function pairingToken(): Promise<string> {

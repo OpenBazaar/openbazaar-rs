@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
 import type { ListingHeader } from "../catalog";
-import { DEFAULT_SAFETY, matchedKeyword, parseKeywords, parseSafety, safetyVerdict, toggleHidden, visibleListings, type SafetySettings } from "./filter.ts";
+import { DEFAULT_SAFETY, matchedKeyword, parseKeywords, parseSafety, safetyVerdict, toggleHidden, visibleListings, type LabelerLabel, type SafetySettings } from "./filter.ts";
 
 function listing(overrides: Partial<ListingHeader> = {}): ListingHeader {
   return {
@@ -168,6 +168,51 @@ test("stored hidden lists keep only well-formed, unique keys", () => {
   const parsed = parseSafety(JSON.stringify({ hiddenStores: [{ id: STORE, label: "Marlow" }, { id: STORE, label: "dup" }, { id: "Marlow Goods" }, 7], hiddenListings: [{ id: HASH }] }));
   assert.deepEqual(parsed.hiddenStores, [{ id: STORE, label: "Marlow" }]);
   assert.deepEqual(parsed.hiddenListings, [{ id: HASH, label: HASH.slice(0, 12) }]);
+});
+
+const LABELER = "c".repeat(64);
+const blade = (target: string, targetKind: LabelerLabel["targetKind"] = "listing"): LabelerLabel => ({
+  labeler: LABELER,
+  labelerName: "Sample labeler",
+  targetKind,
+  target,
+  rating: "sensitive",
+  tags: ["weapons"],
+  reason: "blade",
+});
+
+test("a followed labeler's label hides a listing the seller rated general, and says who", () => {
+  const shears = listing({ hash: HASH, title: "Kitchen shears" });
+  assert.deepEqual(safetyVerdict(shears, "general", SAFE, [blade(HASH)]), { action: "hide", reason: "Labeler “Sample labeler” (blade) rated it sensitive." });
+  assert.deepEqual(safetyVerdict(shears, "general", { ...SAFE, sensitive: "cover" }, [blade(HASH)]).action, "cover");
+  assert.equal(safetyVerdict(shears, "general", { ...SAFE, sensitive: "show" }, [blade(HASH)]).action, "show");
+  const tagged = safetyVerdict(shears, "general", { ...SAFE, sensitive: "show", tags: { ...SAFE.tags, weapons: "hide" } }, [blade(HASH)]);
+  assert.deepEqual(tagged, { action: "hide", reason: "Labeler “Sample labeler” (blade) tagged it weapons, which you hide." });
+});
+
+test("unfollowing a labeler restores the listing", () => {
+  const shears = listing({ hash: HASH });
+  assert.equal(action(shears, SAFE), "show");
+  assert.equal(safetyVerdict(shears, "general", SAFE, [blade(HASH)]).action, "hide");
+  assert.equal(safetyVerdict(shears, "general", SAFE, []).action, "show");
+});
+
+test("a labeler can label a whole store by key, and labels only apply in safe mode", () => {
+  const settings = SAFE;
+  const labels = [blade(STORE, "store")];
+  assert.equal(safetyVerdict(listing({ storeId: STORE }), "general", settings, labels).action, "hide");
+  assert.equal(safetyVerdict(listing({ storeId: "d".repeat(64) }), "general", settings, labels).action, "show");
+  assert.equal(safetyVerdict(listing({ storeId: STORE }), "general", OPEN, labels).action, "show");
+  assert.equal(visibleListings([listing({ storeId: STORE }), listing({ storeId: "d".repeat(64) })], "general", settings, labels).length, 1);
+});
+
+test("the strictest of the vendor's label and every labeler's label wins", () => {
+  const item = listing({ hash: HASH, contentRating: "sensitive" });
+  const adult: LabelerLabel = { ...blade(HASH), labelerName: "Strict", rating: "adult", tags: [], reason: "" };
+  const cover = { ...SAFE, sensitive: "cover" as const };
+  assert.deepEqual(safetyVerdict(item, "general", cover, [blade(HASH), adult]), { action: "hide", reason: "Labeler “Strict” rated it adult." });
+  const general: LabelerLabel = { ...adult, rating: "general" };
+  assert.deepEqual(safetyVerdict(item, "general", cover, [general]), { action: "cover", reason: "The seller rated it sensitive." });
 });
 
 test("parseKeywords splits on commas and lines, trims, lowercases, and drops repeats", () => {

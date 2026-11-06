@@ -13,6 +13,8 @@ pub enum Error {
     UnknownRating,
     UnknownEnvelope,
     StoreMismatch,
+    /// A label set entry is out of order, repeated, or not canonical.
+    BadLabel,
     FieldTooLong,
     /// A sealed envelope has no plaintext to check in this phase.
     Sealed,
@@ -32,6 +34,7 @@ impl fmt::Display for Error {
             Error::UnknownRating => "unknown content rating",
             Error::UnknownEnvelope => "unknown envelope tag",
             Error::StoreMismatch => "listing is not signed by this store",
+            Error::BadLabel => "label set entry is not canonical",
             Error::FieldTooLong => "field exceeds the canonical length limit",
             Error::Sealed => "sealed envelope is not opened in this phase",
         };

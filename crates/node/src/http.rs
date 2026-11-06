@@ -16,7 +16,7 @@ use std::time::Duration;
 use serde_json::{json, Value};
 
 use crate::escrow_http::{self, Action};
-use crate::{catalog_json, find_listing, listing_value, vendor_labels, wallet_http, Node, OrderError};
+use crate::{catalog_json, find_listing, labelers, listing_value, vendor_labels, wallet_http, Node, OrderError};
 
 const SHOP_ORIGIN: &str = "http://127.0.0.1:4173";
 /// The Tauri desktop webview: macOS and Linux use the custom scheme, and
@@ -74,6 +74,7 @@ pub fn serve_on(node: &Node, listener: TcpListener) -> std::io::Result<()> {
     eprintln!("ob-node network at http://127.0.0.1:{port}/network");
     eprintln!("ob-node wallet at http://127.0.0.1:{port}/wallet");
     eprintln!("ob-node content labels at http://127.0.0.1:{port}/content-labels");
+    eprintln!("ob-node labelers at http://127.0.0.1:{port}/labelers");
     eprintln!("ob-node mailbox {}", node.mailbox_path().display());
     for connection in listener.incoming() {
         let mut stream = match connection {
@@ -212,6 +213,9 @@ pub(crate) fn respond(node: &Node, raw: &[u8], client: Client) -> Vec<u8> {
         }
         ("POST", "/orders") => order_response(node, head, body_of(head, rest), origin.as_deref()),
         ("POST", "/checkout") => checkout_response(node, &client, head, body_of(head, rest), origin.as_deref()),
+        ("GET", "/labelers") | ("PUT", "/labelers") => {
+            labelers::response(node, &client, head, method, body_of(head, rest), origin.as_deref())
+        }
         ("POST", "/content-labels") => {
             vendor_labels::response(node, &client, head, body_of(head, rest), origin.as_deref())
         }

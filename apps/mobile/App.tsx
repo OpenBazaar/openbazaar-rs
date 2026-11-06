@@ -19,14 +19,17 @@ import {
   deleteAddress,
   fetchAddresses,
   fetchCatalog,
+  fetchLabelers,
   fetchOrder,
   fetchOrders,
   fetchRates,
   NodeOfflineError,
   OFFLINE_MESSAGE,
   placeCheckout,
+  setLabelers,
   updateAddress,
   type AddressInput,
+  type LabelerState,
   type BuyerOrder,
   type CheckoutReceipt,
   type CurrencyCode,
@@ -163,9 +166,14 @@ export default function App() {
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [safety, setSafety] = useState<SafetySettings>(readSafety);
   const [revealed, setRevealed] = useState<string[]>([]);
+  const [labelers, setLabelerState] = useState<LabelerState | null>(null);
+  useEffect(() => {
+    void fetchLabelers().then(setLabelerState, () => setLabelerState(null));
+  }, []);
+  const labels = useMemo(() => labelers?.labels ?? [], [labelers]);
   const shown = useMemo(
-    () => (catalog ? { ...catalog, listings: visibleListings(catalog.listings, catalog.store.contentRating, safety) } : null),
-    [catalog, safety],
+    () => (catalog ? { ...catalog, listings: visibleListings(catalog.listings, catalog.store.contentRating, safety, labels) } : null),
+    [catalog, safety, labels],
   );
 
   const rememberSafety = (next: SafetySettings) => {
@@ -298,7 +306,7 @@ export default function App() {
         onClearQuery={() => setQuery("")}
         coverReason={(listing) => {
           if (revealed.includes(listing.hash)) return null;
-          const verdict = safetyVerdict(listing, catalog.store.contentRating, safety);
+          const verdict = safetyVerdict(listing, catalog.store.contentRating, safety, labels);
           return verdict.action === "cover" ? verdict.reason : null;
         }}
         onReveal={(hash) => setRevealed([...revealed, hash])}
@@ -306,7 +314,7 @@ export default function App() {
     );
   } else if (route.name === "detail") {
     const listing = listingByHash(route.hash);
-    const verdict = listing ? safetyVerdict(listing, catalog.store.contentRating, safety) : null;
+    const verdict = listing ? safetyVerdict(listing, catalog.store.contentRating, safety, labels) : null;
     body = listing && verdict && verdict.action !== "show" && !revealed.includes(listing.hash) ? (
       <View style={styles.sheetPad}>
         <Text style={styles.pageTitle}>This listing is hidden on this device.</Text>
@@ -379,7 +387,7 @@ export default function App() {
   } else if (route.name === "done") {
     body = <Confirmation receipt={route.receipt} rates={rates} currency={currency} onOrders={() => setRoute({ name: "orders" })} onShop={goShop} />;
   } else if (route.name === "safety") {
-    body = <SafetyScreen settings={safety} onChange={rememberSafety} />;
+    body = <SafetyScreen settings={safety} onChange={rememberSafety} labelers={labelers} onLabelers={setLabelerState} />;
   } else if (route.name === "addresses") {
     body = <Addresses onOffline={() => { setCatalog(null); setLoadError(OFFLINE_MESSAGE); setRoute({ name: "shop" }); }} />;
   } else if (route.name === "orders") {
@@ -1158,8 +1166,32 @@ function Addresses({ onOffline }: { onOffline: () => void }) {
   );
 }
 
-function SafetyScreen({ settings, onChange }: { settings: SafetySettings; onChange: (settings: SafetySettings) => void }) {
+function SafetyScreen({
+  settings,
+  onChange,
+  labelers,
+  onLabelers,
+}: {
+  settings: SafetySettings;
+  onChange: (settings: SafetySettings) => void;
+  labelers: LabelerState | null;
+  onLabelers: (state: LabelerState) => void;
+}) {
   const [text, setText] = useState(() => settings.blockedKeywords.join("\n"));
+  const [labelerKey, setLabelerKey] = useState("");
+  const [labelerError, setLabelerError] = useState("");
+  const followed = labelers?.labelers ?? [];
+  const saveLabelers = (next: { key: string; url: string | null }[]) => {
+    setLabelerError("");
+    setLabelers(next).then(
+      (state) => {
+        onLabelers(state);
+        setLabelerKey("");
+      },
+      (error: unknown) => setLabelerError(error instanceof Error ? error.message : "The labelers could not be saved."),
+    );
+  };
+  const current = followed.map((item) => ({ key: item.key, url: item.url }));
   return (
     <ScrollView contentContainerStyle={styles.sheetPad}>
       <Text style={styles.pageTitle}>Content filters</Text>
@@ -1193,6 +1225,22 @@ function SafetyScreen({ settings, onChange }: { settings: SafetySettings; onChan
       {settings.hiddenListings.map((item) => (
         <TextButton key={item.id} label={`Unhide listing ${item.label}`} onPress={() => onChange({ ...settings, hiddenListings: toggleHidden(settings.hiddenListings, item) })} />
       ))}
+      <Text style={styles.section}>Labelers</Text>
+      <Text style={styles.meta}>Follow a labeler and safe mode uses its signed labels too, whichever is strictest. Labelers only hide or cover things on this device. You follow none by default.</Text>
+      {followed.map((item) => (
+        <View key={item.key}>
+          <Text style={styles.meta}>{`${item.name ?? "Unknown labeler"} ${item.key.slice(0, 16)}…${item.error ? ` — ${item.error}` : ""}`}</Text>
+          <TextButton label="Unfollow" onPress={() => saveLabelers(current.filter((entry) => entry.key !== item.key))} />
+        </View>
+      ))}
+      {labelers?.samples
+        .filter((sample) => !followed.some((item) => item.key === sample.key))
+        .map((sample) => (
+          <TextButton key={sample.key} label={`Follow sample: ${sample.name}`} onPress={() => saveLabelers([...current, { key: sample.key, url: null }])} />
+        ))}
+      <Field label="Labeler key" value={labelerKey} onChangeText={(next) => setLabelerKey(next.trim())} />
+      <TextButton label="Follow this key" onPress={() => saveLabelers([...current, { key: labelerKey, url: null }])} />
+      {labelerError ? <Text style={styles.error}>{labelerError}</Text> : null}
     </ScrollView>
   );
 }

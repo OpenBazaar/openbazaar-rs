@@ -83,16 +83,44 @@ function forSensitive(mode: SensitiveMode, reason: string): Verdict {
   return mode === "show" ? SHOWN : { action: mode, reason };
 }
 
+/** One label from a labeler the buyer follows, as the buyer's node verified it. */
+export type LabelerLabel = {
+  labeler: string;
+  labelerName: string;
+  targetKind: "listing" | "store";
+  target: string;
+  rating: Exclude<ContentRating, "unrated">;
+  tags: string[];
+  reason: string;
+};
+
+function ratingVerdicts(rating: ContentRating, tags: readonly string[], who: string, settings: SafetySettings): Verdict[] {
+  const verdicts: Verdict[] = [];
+  if (rating === "adult" && settings.adult === "hide") verdicts.push({ action: "hide", reason: `${who} rated it adult.` });
+  if (rating === "sensitive") verdicts.push(forSensitive(settings.sensitive, `${who} rated it sensitive.`));
+  for (const tag of tags) {
+    if (settings.tags[tag as ContentTag] === "hide") verdicts.push({ action: "hide", reason: `${who} tagged it ${tag}, which you hide.` });
+  }
+  return verdicts;
+}
+
+/** Labels that name this listing by hash or its store by key. */
+export function labelsFor(listing: ListingHeader, labels: readonly LabelerLabel[]): LabelerLabel[] {
+  return labels.filter((label) => (label.targetKind === "listing" ? label.target === listing.hash : label.target === listing.storeId));
+}
+
 /**
  * Decide whether this device shows, covers, or hides a listing.
  *
- * A store rating raises every listing in it. When several rules apply, the
- * strictest one wins and its reason is the one shown.
+ * A store rating raises every listing in it, and so does each label from a
+ * labeler the buyer follows. When several rules apply, the strictest one
+ * wins and its reason, naming who labeled it, is the one shown.
  */
 export function safetyVerdict(
   listing: ListingHeader,
   storeRating: ContentRating,
   settings: SafetySettings,
+  labels: readonly LabelerLabel[] = [],
   builtIn: readonly string[] = SENSITIVE_KEYWORDS,
 ): Verdict {
   if (settings.hiddenListings.some((item) => item.id === listing.hash)) return { action: "hide", reason: "You hid this listing." };
@@ -100,13 +128,16 @@ export function safetyVerdict(
   const blocked = matchedKeyword(listing, settings.blockedKeywords);
   if (blocked) return { action: "hide", reason: `It matches your blocked word “${blocked}”.` };
   if (!settings.safeMode) return SHOWN;
-  const verdicts: Verdict[] = [];
   const rating = RANK[storeRating] > RANK[listing.contentRating] ? storeRating : listing.contentRating;
-  const who = rating === storeRating && rating !== listing.contentRating ? "store" : "seller";
-  if (rating === "adult" && settings.adult === "hide") verdicts.push({ action: "hide", reason: `The ${who} rated it adult.` });
-  if (rating === "sensitive") verdicts.push(forSensitive(settings.sensitive, `The ${who} rated it sensitive.`));
+  const who = rating === storeRating && rating !== listing.contentRating ? "The store" : "The seller";
+  const verdicts = ratingVerdicts(rating, [], who, settings);
   for (const tag of listing.contentTags) {
     if (settings.tags[tag as ContentTag] === "hide") verdicts.push({ action: "hide", reason: `It is tagged ${tag}, which you hide.` });
+  }
+  for (const label of labelsFor(listing, labels)) {
+    const code = label.reason ? ` (${label.reason})` : "";
+    const by = `Labeler “${label.labelerName}”${code}`;
+    verdicts.push(...ratingVerdicts(label.rating, label.tags, by, settings));
   }
   const flagged = matchedKeyword(listing, builtIn);
   if (flagged) verdicts.push(forSensitive(settings.sensitive, `It mentions “${flagged}”, which safe mode treats as sensitive.`));
@@ -117,8 +148,9 @@ export function visibleListings(
   listings: readonly ListingHeader[],
   storeRating: ContentRating,
   settings: SafetySettings,
+  labels: readonly LabelerLabel[] = [],
 ): ListingHeader[] {
-  return listings.filter((listing) => safetyVerdict(listing, storeRating, settings).action !== "hide");
+  return listings.filter((listing) => safetyVerdict(listing, storeRating, settings, labels).action !== "hide");
 }
 
 function pick<T extends string>(value: unknown, allowed: readonly T[], fallback: T): T {
