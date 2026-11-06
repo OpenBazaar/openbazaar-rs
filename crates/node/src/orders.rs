@@ -79,7 +79,8 @@ impl Node {
             ));
         }
         expect_order_fields(body)?;
-        let lines = order_lines(&self.catalog, body)?;
+        let catalog = self.catalog();
+        let lines = order_lines(&catalog, body)?;
         let seller = lines[0].0.seller.clone();
         if lines.iter().any(|(listing, _)| listing.seller != seller) {
             return Err(OrderError::Invalid(
@@ -91,7 +92,7 @@ impl Node {
         if settlement == Settlement::Escrow
             && lines
                 .iter()
-                .any(|(listing, _)| !accepts_moderator(&self.catalog, listing))
+                .any(|(listing, _)| !accepts_moderator(&catalog, listing))
         {
             return Err(OrderError::Invalid(
                 "This listing does not accept a moderator.",
@@ -130,7 +131,7 @@ impl Node {
             "totalSats": total,
             "settlement": settlement.as_str(),
             "sealed": true,
-            "storeName": self.catalog.store.name,
+            "storeName": catalog.store.name,
             "seller": seller,
             "storeId": listing.store_id.to_hex(),
             "addressLabel": address_label,
@@ -181,7 +182,8 @@ impl Node {
             ));
         }
         expect_fields(body, CHECKOUT_FIELDS)?;
-        let packages = checkout_packages(&self.catalog, body)?;
+        let catalog = self.catalog();
+        let packages = checkout_packages(&catalog, body)?;
         for package in &packages {
             self.allow_settlement(package.settlement, &package.lines[0].0.seller)?;
         }

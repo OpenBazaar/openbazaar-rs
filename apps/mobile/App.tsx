@@ -19,14 +19,17 @@ import {
   deleteAddress,
   fetchAddresses,
   fetchCatalog,
+  fetchLabelers,
   fetchOrder,
   fetchOrders,
   fetchRates,
   NodeOfflineError,
   OFFLINE_MESSAGE,
   placeCheckout,
+  setLabelers,
   updateAddress,
   type AddressInput,
+  type LabelerState,
   type BuyerOrder,
   type CheckoutReceipt,
   type CurrencyCode,
@@ -39,6 +42,8 @@ import {
 import { alsoSoldBy, cartPackages, type CartLine } from "./src/cart";
 import { photosFor } from "./src/goods";
 import { filterListings } from "./src/search";
+import { CONTENT_TAGS, parseKeywords, safetyVerdict, toggleHidden, visibleListings, type SafetySettings } from "./src/safety/filter";
+import { readSafety, writeSafety } from "./src/safety/storage";
 
 type SortKey = "relevance" | "price-asc" | "price-desc" | "newest";
 type Filters = {
@@ -58,7 +63,8 @@ type Route =
   | { name: "orders" }
   | { name: "order"; id: string }
   | { name: "checkout" }
-  | { name: "done"; receipt: CheckoutReceipt };
+  | { name: "done"; receipt: CheckoutReceipt }
+  | { name: "safety" };
 
 const NAVY = "#063853";
 const BLUE = "#0e6da5";
@@ -158,6 +164,22 @@ export default function App() {
   const [route, setRoute] = useState<Route>({ name: "shop" });
   const [menu, setMenu] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState(false);
+  const [safety, setSafety] = useState<SafetySettings>(readSafety);
+  const [revealed, setRevealed] = useState<string[]>([]);
+  const [labelers, setLabelerState] = useState<LabelerState | null>(null);
+  useEffect(() => {
+    void fetchLabelers().then(setLabelerState, () => setLabelerState(null));
+  }, []);
+  const labels = useMemo(() => labelers?.labels ?? [], [labelers]);
+  const shown = useMemo(
+    () => (catalog ? { ...catalog, listings: visibleListings(catalog.listings, catalog.store.contentRating, safety, labels) } : null),
+    [catalog, safety, labels],
+  );
+
+  const rememberSafety = (next: SafetySettings) => {
+    setSafety(next);
+    writeSafety(next);
+  };
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -257,7 +279,7 @@ export default function App() {
   } else if (route.name === "shop" || route.name === "saved") {
     body = (
       <Shop
-        catalog={catalog}
+        catalog={shown ?? catalog}
         query={query}
         filters={filters}
         sort={sort}
@@ -282,11 +304,25 @@ export default function App() {
         onOpen={(hash) => setRoute({ name: "detail", hash })}
         onToggleSave={(hash) => rememberSaved(saved.includes(hash) ? saved.filter((item) => item !== hash) : [...saved, hash])}
         onClearQuery={() => setQuery("")}
+        coverReason={(listing) => {
+          if (revealed.includes(listing.hash)) return null;
+          const verdict = safetyVerdict(listing, catalog.store.contentRating, safety, labels);
+          return verdict.action === "cover" ? verdict.reason : null;
+        }}
+        onReveal={(hash) => setRevealed([...revealed, hash])}
       />
     );
   } else if (route.name === "detail") {
     const listing = listingByHash(route.hash);
-    body = listing ? (
+    const verdict = listing ? safetyVerdict(listing, catalog.store.contentRating, safety, labels) : null;
+    body = listing && verdict && verdict.action !== "show" && !revealed.includes(listing.hash) ? (
+      <View style={styles.sheetPad}>
+        <Text style={styles.pageTitle}>This listing is hidden on this device.</Text>
+        <Text style={styles.body}>{verdict.reason} You can change this in Content filters.</Text>
+        <Button label="Show it anyway" onPress={() => setRevealed([...revealed, listing.hash])} />
+        <TextButton label="Back to the shop" onPress={goShop} />
+      </View>
+    ) : listing ? (
       <Detail
         listing={listing}
         rates={rates}
@@ -299,6 +335,14 @@ export default function App() {
         onBuy={(quantity) => {
           addToCart(listing.hash, quantity);
           setRoute({ name: "checkout" });
+        }}
+        onHide={(kind) => {
+          rememberSafety(
+            kind === "listing"
+              ? { ...safety, hiddenListings: toggleHidden(safety.hiddenListings, { id: listing.hash, label: listing.title }) }
+              : { ...safety, hiddenStores: toggleHidden(safety.hiddenStores, { id: listing.storeId, label: listing.seller }) },
+          );
+          goShop();
         }}
       />
     ) : (
@@ -342,6 +386,8 @@ export default function App() {
     );
   } else if (route.name === "done") {
     body = <Confirmation receipt={route.receipt} rates={rates} currency={currency} onOrders={() => setRoute({ name: "orders" })} onShop={goShop} />;
+  } else if (route.name === "safety") {
+    body = <SafetyScreen settings={safety} onChange={rememberSafety} labelers={labelers} onLabelers={setLabelerState} />;
   } else if (route.name === "addresses") {
     body = <Addresses onOffline={() => { setCatalog(null); setLoadError(OFFLINE_MESSAGE); setRoute({ name: "shop" }); }} />;
   } else if (route.name === "orders") {
@@ -404,6 +450,7 @@ export default function App() {
                 <View style={styles.menu}>
                   <TextButton label="Addresses" onPress={() => { setMenu(false); setRoute({ name: "addresses" }); }} />
                   <TextButton label="Orders" onPress={() => { setMenu(false); setRoute({ name: "orders" }); }} />
+                  <TextButton label="Content filters" onPress={() => { setMenu(false); setRoute({ name: "safety" }); }} />
                 </View>
               ) : null}
             </View>
@@ -434,6 +481,8 @@ function Shop({
   onOpen,
   onToggleSave,
   onClearQuery,
+  coverReason,
+  onReveal,
 }: {
   catalog: ShopCatalog;
   query: string;
@@ -453,6 +502,8 @@ function Shop({
   onOpen: (hash: string) => void;
   onToggleSave: (hash: string) => void;
   onClearQuery: () => void;
+  coverReason: (listing: ListingHeader) => string | null;
+  onReveal: (hash: string) => void;
 }) {
   const { width } = useWindowDimensions();
   const columns = width >= 1280 ? 3 : width >= 900 ? 2 : 1;
@@ -536,7 +587,12 @@ function Shop({
           </View>
         ) : (
           <View style={view === "grid" ? styles.grid : styles.list}>
-            {visible.map((listing) => (
+            {visible.map((listing) => coverReason(listing) ? (
+              <View key={listing.hash} style={[styles.card, styles.cardBody]}>
+                <Text style={styles.meta}>Covered by your content filters. {coverReason(listing)}</Text>
+                <TextButton label="Show" onPress={() => onReveal(listing.hash)} />
+              </View>
+            ) : (
               <ListingCard
                 key={listing.hash}
                 listing={listing}
@@ -667,12 +723,14 @@ function Detail({
   onToggleSave,
   onAdd,
   onBuy,
+  onHide,
 }: {
   listing: ListingHeader;
   rates: RateTable;
   currency: CurrencyCode;
   saved: boolean;
   onToggleSave: () => void;
+  onHide: (kind: "listing" | "seller") => void;
   onAdd: (quantity: number) => void;
   onBuy: (quantity: number) => void;
 }) {
@@ -707,6 +765,8 @@ function Detail({
         <Button label="Add to cart" onPress={() => valid && onAdd(quantity)} />
         <Button label="Buy now" onPress={() => valid && onBuy(quantity)} />
         <TextButton label={saved ? "Saved" : "Save"} onPress={onToggleSave} />
+        <TextButton label="Hide this listing" onPress={() => onHide("listing")} />
+        <TextButton label="Hide this seller" onPress={() => onHide("seller")} />
       </View>
     </ScrollView>
   );
@@ -1103,6 +1163,98 @@ function Addresses({ onOffline }: { onOffline: () => void }) {
       {error ? <Text style={styles.error}>{error}</Text> : null}
       <Button label={editing ? "Save address" : "Add address"} onPress={() => void save()} />
     </ScrollView>
+  );
+}
+
+function SafetyScreen({
+  settings,
+  onChange,
+  labelers,
+  onLabelers,
+}: {
+  settings: SafetySettings;
+  onChange: (settings: SafetySettings) => void;
+  labelers: LabelerState | null;
+  onLabelers: (state: LabelerState) => void;
+}) {
+  const [text, setText] = useState(() => settings.blockedKeywords.join("\n"));
+  const [labelerKey, setLabelerKey] = useState("");
+  const [labelerError, setLabelerError] = useState("");
+  const followed = labelers?.labelers ?? [];
+  const saveLabelers = (next: { key: string; url: string | null }[]) => {
+    setLabelerError("");
+    setLabelers(next).then(
+      (state) => {
+        onLabelers(state);
+        setLabelerKey("");
+      },
+      (error: unknown) => setLabelerError(error instanceof Error ? error.message : "The labelers could not be saved."),
+    );
+  };
+  const current = followed.map((item) => ({ key: item.key, url: item.url }));
+  return (
+    <ScrollView contentContainerStyle={styles.sheetPad}>
+      <Text style={styles.pageTitle}>Content filters</Text>
+      <Text style={styles.body}>These filters run on this device. They are not sent to your node or anyone else, and they do not remove anything from the network.</Text>
+      <Pressable accessibilityRole="checkbox" accessibilityState={{ checked: settings.safeMode }} onPress={() => onChange({ ...settings, safeMode: !settings.safeMode })} style={styles.checkRow}>
+        <View style={[styles.check, settings.safeMode && styles.checkOn]} />
+        <Text style={styles.body}>Safe mode</Text>
+      </Pressable>
+      <Text style={styles.meta}>Safe mode applies the rating and tag choices below, and treats unlabeled listings that use a short list of explicit words as sensitive.</Text>
+      <Options label="Sensitive listings" value={settings.sensitive} options={["hide", "cover", "show"]} onChange={(sensitive) => onChange({ ...settings, sensitive })} />
+      <Options label="Adult listings" value={settings.adult} options={["hide", "show"]} onChange={(adult) => onChange({ ...settings, adult })} />
+      {CONTENT_TAGS.map((tag) => (
+        <Options key={tag} label={`Tagged ${tag}`} value={settings.tags[tag]} options={["show", "hide"]} onChange={(mode) => onChange({ ...settings, tags: { ...settings.tags, [tag]: mode } })} />
+      ))}
+      <Field
+        label="Blocked words, one per line"
+        value={text}
+        multiline
+        onChangeText={(next) => {
+          setText(next);
+          onChange({ ...settings, blockedKeywords: parseKeywords(next) });
+        }}
+      />
+      <Text style={styles.meta}>Listings whose title, category, description, or tags contain one of these whole words are hidden, even with safe mode off.</Text>
+      <Text style={styles.section}>Hidden</Text>
+      <Text style={styles.meta}>Sellers and listings you hid stay hidden even with safe mode off. A seller is remembered by its store key.</Text>
+      {settings.hiddenStores.length + settings.hiddenListings.length === 0 ? <Text style={styles.meta}>Nothing hidden.</Text> : null}
+      {settings.hiddenStores.map((item) => (
+        <TextButton key={item.id} label={`Unhide seller ${item.label}`} onPress={() => onChange({ ...settings, hiddenStores: toggleHidden(settings.hiddenStores, item) })} />
+      ))}
+      {settings.hiddenListings.map((item) => (
+        <TextButton key={item.id} label={`Unhide listing ${item.label}`} onPress={() => onChange({ ...settings, hiddenListings: toggleHidden(settings.hiddenListings, item) })} />
+      ))}
+      <Text style={styles.section}>Labelers</Text>
+      <Text style={styles.meta}>Follow a labeler and safe mode uses its signed labels too, whichever is strictest. Labelers only hide or cover things on this device. You follow none by default.</Text>
+      {followed.map((item) => (
+        <View key={item.key}>
+          <Text style={styles.meta}>{`${item.name ?? "Unknown labeler"} ${item.key.slice(0, 16)}…${item.error ? ` — ${item.error}` : ""}`}</Text>
+          <TextButton label="Unfollow" onPress={() => saveLabelers(current.filter((entry) => entry.key !== item.key))} />
+        </View>
+      ))}
+      {labelers?.samples
+        .filter((sample) => !followed.some((item) => item.key === sample.key))
+        .map((sample) => (
+          <TextButton key={sample.key} label={`Follow sample: ${sample.name}`} onPress={() => saveLabelers([...current, { key: sample.key, url: null }])} />
+        ))}
+      <Field label="Labeler key" value={labelerKey} onChangeText={(next) => setLabelerKey(next.trim())} />
+      <TextButton label="Follow this key" onPress={() => saveLabelers([...current, { key: labelerKey, url: null }])} />
+      {labelerError ? <Text style={styles.error}>{labelerError}</Text> : null}
+    </ScrollView>
+  );
+}
+
+function Options<T extends string>({ label, value, options, onChange }: { label: string; value: T; options: readonly T[]; onChange: (value: T) => void }) {
+  return (
+    <View style={styles.row}>
+      <Text style={styles.label}>{label}</Text>
+      {options.map((option) => (
+        <Pressable key={option} accessibilityRole="button" accessibilityState={{ selected: value === option }} onPress={() => onChange(option)} style={[styles.sort, value === option && styles.sortOn]}>
+          <Text style={[styles.sortText, value === option && styles.sortTextOn]}>{option}</Text>
+        </Pressable>
+      ))}
+    </View>
   );
 }
 

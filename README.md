@@ -23,6 +23,7 @@ cargo run -p ob-node -- serve
 cd apps/mobile
 npm ci
 npm run typecheck
+npm test
 npm run build
 ```
 

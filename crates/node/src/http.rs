@@ -16,7 +16,7 @@ use std::time::Duration;
 use serde_json::{json, Value};
 
 use crate::escrow_http::{self, Action};
-use crate::{catalog_json, find_listing, listing_value, wallet_http, Node, OrderError};
+use crate::{catalog_json, find_listing, labelers, listing_value, vendor_labels, wallet_http, Node, OrderError};
 
 const SHOP_ORIGIN: &str = "http://127.0.0.1:4173";
 /// The Tauri desktop webview: macOS and Linux use the custom scheme, and
@@ -73,6 +73,8 @@ pub fn serve_on(node: &Node, listener: TcpListener) -> std::io::Result<()> {
     eprintln!("ob-node rates at http://127.0.0.1:{port}/rates");
     eprintln!("ob-node network at http://127.0.0.1:{port}/network");
     eprintln!("ob-node wallet at http://127.0.0.1:{port}/wallet");
+    eprintln!("ob-node content labels at http://127.0.0.1:{port}/content-labels");
+    eprintln!("ob-node labelers at http://127.0.0.1:{port}/labelers");
     eprintln!("ob-node mailbox {}", node.mailbox_path().display());
     for connection in listener.incoming() {
         let mut stream = match connection {
@@ -129,7 +131,7 @@ pub(crate) fn respond(node: &Node, raw: &[u8], client: Client) -> Vec<u8> {
         return http_response_cors("204 No Content", "text/plain", b"", origin.as_deref());
     }
     match (method, path) {
-        ("GET", "/catalog") | ("GET", "/") => match catalog_json(&node.catalog) {
+        ("GET", "/catalog") | ("GET", "/") => match catalog_json(&node.catalog()) {
             Ok(json) => http_response_cors(
                 "200 OK",
                 "application/json",
@@ -211,6 +213,12 @@ pub(crate) fn respond(node: &Node, raw: &[u8], client: Client) -> Vec<u8> {
         }
         ("POST", "/orders") => order_response(node, head, body_of(head, rest), origin.as_deref()),
         ("POST", "/checkout") => checkout_response(node, &client, head, body_of(head, rest), origin.as_deref()),
+        ("GET", "/labelers") | ("PUT", "/labelers") => {
+            labelers::response(node, &client, head, method, body_of(head, rest), origin.as_deref())
+        }
+        ("POST", "/content-labels") => {
+            vendor_labels::response(node, &client, head, body_of(head, rest), origin.as_deref())
+        }
         _ => http_response_cors(
             "404 Not Found",
             "text/plain",
@@ -235,10 +243,11 @@ fn pair_response(node: &Node, client: &Client, origin: Option<&str>) -> Vec<u8> 
 }
 
 fn listing_response(node: &Node, hash: &str, origin: Option<&str>) -> Vec<u8> {
-    let Some(listing) = find_listing(&node.catalog, hash) else {
+    let catalog = node.catalog();
+    let Some(listing) = find_listing(&catalog, hash) else {
         return json_error("404 Not Found", "That listing is not in this shop.", origin);
     };
-    match listing_value(&node.catalog, listing) {
+    match listing_value(&catalog, listing) {
         Ok(value) => json_body("200 OK", &value, origin),
         Err(err) => {
             eprintln!("ob-node: {err}");

@@ -3,7 +3,9 @@
   "compilerOptions": {
     "strict": true,
     "resolveJsonModule": true,
-    "noEmit": true
+    "noEmit": true,
+    "allowImportingTsExtensions": true
   },
-  "include": ["App.tsx", "index.ts", "src/**/*.ts", "src/**/*.tsx"]
+  "include": ["App.tsx", "index.ts", "src/**/*.ts", "src/**/*.tsx"],
+  "exclude": ["src/**/*.test.ts"]
 }

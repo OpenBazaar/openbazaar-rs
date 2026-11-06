@@ -1,5 +1,6 @@
 use bitcoin::secp256k1::SecretKey;
 
+use crate::content::ContentRating;
 use crate::encode::{self, Reader, Writer};
 use crate::payment::DirectPay;
 use crate::sign::{self, PUBKEY_LEN, SIG_LEN};
@@ -7,7 +8,9 @@ use crate::Error;
 
 const TAG: &str = "ob/store/v1";
 const MAGIC: [u8; 4] = *b"OBST";
-const VERSION: u8 = 1;
+/// Signed before stores carried a rating. Still decoded and verified.
+const VERSION_UNRATED: u8 = 1;
+const VERSION: u8 = 2;
 
 /// X-only store key. Listings name the store by this value.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -33,6 +36,9 @@ pub struct Store {
     pub region: String,
     pub direct_pay: DirectPay,
     pub id: StoreId,
+    /// A rating for everything the store sells, on top of each listing's
+    /// own label. `None` only for a version 1 record.
+    pub rating: Option<ContentRating>,
     pub signature: [u8; SIG_LEN],
 }
 
@@ -41,6 +47,7 @@ impl Store {
         name: impl Into<String>,
         region: impl Into<String>,
         direct_pay: DirectPay,
+        rating: ContentRating,
         secret: &SecretKey,
     ) -> Result<Self, Error> {
         let store = Self {
@@ -48,11 +55,20 @@ impl Store {
             region: region.into(),
             direct_pay,
             id: StoreId::from_bytes(sign::xonly(secret)),
+            rating: Some(rating),
             signature: [0u8; SIG_LEN],
         };
         let body = store.encode_body()?;
         let signature = sign::sign(TAG, &body, secret);
         Ok(Self { signature, ..store })
+    }
+
+    /// The same store with a new rating, signed again with its key.
+    pub fn rerate(&self, rating: ContentRating, secret: &SecretKey) -> Result<Self, Error> {
+        if sign::xonly(secret) != *self.id.as_bytes() {
+            return Err(Error::StoreMismatch);
+        }
+        Self::sign(self.name.clone(), self.region.clone(), self.direct_pay.clone(), rating, secret)
     }
 
     pub fn encode(&self) -> Result<Vec<u8>, Error> {
@@ -88,18 +104,24 @@ impl Store {
     fn encode_body(&self) -> Result<Vec<u8>, Error> {
         let mut writer = Writer::new();
         writer.bytes(&MAGIC);
-        writer.u8(VERSION);
+        writer.u8(match self.rating {
+            Some(_) => VERSION,
+            None => VERSION_UNRATED,
+        });
         writer.str(&self.name)?;
         writer.str(&self.region)?;
         writer.str(&self.direct_pay.bolt12_offer)?;
         writer.str(&self.direct_pay.silent_payment_code)?;
         writer.bytes(self.id.as_bytes());
+        if let Some(rating) = self.rating {
+            writer.u8(rating.tag());
+        }
         Ok(writer.finish())
     }
 
     fn decode_body(reader: &mut Reader<'_>) -> Result<Self, Error> {
-        reader.expect_magic(&MAGIC, VERSION)?;
-        Ok(Self {
+        let version = reader.expect_magic_in(&MAGIC, &[VERSION_UNRATED, VERSION])?;
+        let mut store = Self {
             name: reader.str()?,
             region: reader.str()?,
             direct_pay: DirectPay {
@@ -107,8 +129,13 @@ impl Store {
                 silent_payment_code: reader.str()?,
             },
             id: StoreId::from_bytes(reader.array()?),
+            rating: None,
             signature: [0u8; SIG_LEN],
-        })
+        };
+        if version == VERSION {
+            store.rating = Some(ContentRating::from_tag(reader.u8()?)?);
+        }
+        Ok(store)
     }
 }
 
@@ -124,9 +151,65 @@ mod tests {
                 bolt12_offer: "bolt12-offer:fixture:marlow-goods".to_string(),
                 silent_payment_code: "bip352-code:fixture:marlow-goods".to_string(),
             },
+            ContentRating::General,
             &sign::secret_from_label("store-test"),
         )
         .unwrap()
+    }
+
+    /// The fixture store as the version 1 code signed it, before ratings.
+    const UNRATED_STORE: &str = "4f425354010c004d61726c6f7720476f6f647306004f7265676f6e2100626f6c7431322d6f666665723a666978747572653a6d61726c6f772d676f6f647320006269703335322d636f64653a666978747572653a6d61726c6f772d676f6f64732b489bf1506ec6e9fc3d968a519fcaf07ffe0394fdc313b513fc7d0ba4229056a70d3658e80be6a04bf99694daf664f22842d0860d82fb274a245ed59811a8ffb07c5e61ec90f020f02d698b161f5260dd9cfe8fb440d17da686d44c7b75891f";
+
+    fn from_hex(hex: &str) -> Vec<u8> {
+        (0..hex.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn version_1_store_still_verifies_as_unrated() {
+        let bytes = from_hex(UNRATED_STORE);
+        let store = Store::decode(&bytes).unwrap();
+        assert_eq!(store.rating, None);
+        store.verify().unwrap();
+        assert_eq!(store.encode().unwrap(), bytes);
+    }
+
+    #[test]
+    fn rating_is_covered_by_the_signature() {
+        let store = Store::sign(
+            "Late Shop",
+            "Nevada",
+            sample().direct_pay,
+            ContentRating::Adult,
+            &sign::secret_from_label("store-test"),
+        )
+        .unwrap();
+        let decoded = Store::decode(&store.encode().unwrap()).unwrap();
+        assert_eq!(decoded.rating, Some(ContentRating::Adult));
+        decoded.verify().unwrap();
+
+        let mut softened = store.clone();
+        softened.rating = Some(ContentRating::General);
+        assert_eq!(softened.verify(), Err(Error::BadSignature));
+
+        let mut stripped = store;
+        stripped.rating = None;
+        assert_eq!(stripped.verify(), Err(Error::BadSignature));
+    }
+
+    #[test]
+    fn rerate_signs_again_with_the_store_key_only() {
+        let store = sample();
+        let adult = store.rerate(ContentRating::Adult, &sign::secret_from_label("store-test")).unwrap();
+        assert_eq!(adult.rating, Some(ContentRating::Adult));
+        assert_eq!((adult.id, &adult.name), (store.id, &store.name));
+        adult.verify().unwrap();
+        assert_eq!(
+            store.rerate(ContentRating::Adult, &sign::secret_from_label("someone-else")),
+            Err(Error::StoreMismatch)
+        );
     }
 
     #[test]

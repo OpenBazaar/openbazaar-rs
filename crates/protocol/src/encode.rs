@@ -15,6 +15,10 @@ impl Writer {
         self.buf.push(value);
     }
 
+    pub fn u16(&mut self, value: u16) {
+        self.buf.extend_from_slice(&value.to_le_bytes());
+    }
+
     pub fn u32(&mut self, value: u32) {
         self.buf.extend_from_slice(&value.to_le_bytes());
     }
@@ -74,6 +78,11 @@ impl<'a> Reader<'a> {
         Ok(self.take(1)?[0])
     }
 
+    pub fn u16(&mut self) -> Result<u16, Error> {
+        let bytes = self.take(2)?;
+        Ok(u16::from_le_bytes(bytes.try_into().expect("2 bytes")))
+    }
+
     pub fn u32(&mut self) -> Result<u32, Error> {
         let bytes = self.take(4)?;
         Ok(u32::from_le_bytes(bytes.try_into().expect("4 bytes")))
@@ -117,6 +126,20 @@ impl<'a> Reader<'a> {
             return Err(Error::BadVersion);
         }
         Ok(())
+    }
+
+    /// Like [`Reader::expect_magic`], for a record that has more than one
+    /// readable version. Returns the version that was found.
+    pub fn expect_magic_in(&mut self, magic: &[u8; 4], versions: &[u8]) -> Result<u8, Error> {
+        let got = self.array::<4>()?;
+        if got != *magic {
+            return Err(Error::BadMagic);
+        }
+        let got_version = self.u8()?;
+        if !versions.contains(&got_version) {
+            return Err(Error::BadVersion);
+        }
+        Ok(got_version)
     }
 
     pub fn finish(self) -> Result<(), Error> {

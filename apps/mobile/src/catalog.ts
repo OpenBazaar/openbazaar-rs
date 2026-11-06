@@ -1,3 +1,5 @@
+import type { LabelerLabel } from "./safety/filter";
+
 // The shop dials only this origin. A query parameter, settings field, seed,
 // peer, or vendor address cannot point it anywhere else. GET /pair on this
 // loopback node returns the pairing token; POST /orders sends it back.
@@ -23,6 +25,9 @@ export class NodeOfflineError extends Error {
 
 export type ListingKind = "physical" | "digital";
 
+/** The vendor's signed self-label. "unrated" means the record predates labels. */
+export type ContentRating = "general" | "sensitive" | "adult" | "unrated";
+
 export type ListingHeader = {
   hash: string;
   storeId: string;
@@ -39,6 +44,8 @@ export type ListingHeader = {
   product: string;
   shippingSats: number;
   freeOverSats: number;
+  contentRating: ContentRating;
+  contentTags: string[];
 };
 
 export type Moderator = {
@@ -51,6 +58,7 @@ export type ShopCatalog = {
     id: string;
     name: string;
     region: string;
+    contentRating: ContentRating;
   };
   moderator: Moderator | null;
   listings: ListingHeader[];
@@ -272,6 +280,64 @@ export async function placeOrder(order: CheckoutRequest): Promise<OrderReceipt> 
   return parseReceipt(await readJson(response));
 }
 
+/// Sign the store or one of its listings again with a new self-label.
+/// A listing gets a new hash; the returned catalog already carries it.
+export async function setContentLabel(label: {
+  target: "store" | string;
+  rating: Exclude<ContentRating, "unrated">;
+  tags: string[];
+}): Promise<{ hash: string | null; catalog: ShopCatalog }> {
+  const body = recordOf(
+    await paired("/content-labels", { method: "POST", body: JSON.stringify(label), headers: { "Content-Type": "application/json" } }),
+    "The label could not be saved.",
+  );
+  return { hash: typeof body.hash === "string" ? body.hash : null, catalog: parseCatalog(body.catalog) };
+}
+
+export type FollowedLabeler = { key: string; url: string | null; name: string | null; sequence: number | null; error: string | null };
+export type LabelerState = { labelers: FollowedLabeler[]; samples: { key: string; name: string }[]; labels: LabelerLabel[] };
+
+/// Labelers this node follows and their verified labels. Only the paired client sees the list.
+export async function fetchLabelers(): Promise<LabelerState> {
+  return parseLabelers(await paired("/labelers"));
+}
+
+export async function setLabelers(labelers: { key: string; url?: string | null }[]): Promise<LabelerState> {
+  return parseLabelers(
+    await paired("/labelers", { method: "PUT", body: JSON.stringify({ labelers }), headers: { "Content-Type": "application/json" } }),
+  );
+}
+
+function parseLabelers(value: unknown): LabelerState {
+  const body = recordOf(value, "The labelers could not be read.");
+  const list = (items: unknown) => (Array.isArray(items) ? items.filter((item): item is Record<string, unknown> => !!item && typeof item === "object") : []);
+  const text = (item: unknown) => (typeof item === "string" ? item : null);
+  return {
+    labelers: list(body.labelers).map((item) => ({
+      key: text(item.key) ?? "",
+      url: text(item.url),
+      name: text(item.name),
+      sequence: typeof item.sequence === "number" ? item.sequence : null,
+      error: text(item.error),
+    })),
+    samples: list(body.samples).map((item) => ({ key: text(item.key) ?? "", name: text(item.name) ?? "" })),
+    labels: list(body.labels).flatMap((item): LabelerLabel[] => {
+      const rating = item.rating;
+      const targetKind = item.targetKind;
+      if ((rating !== "general" && rating !== "sensitive" && rating !== "adult") || (targetKind !== "listing" && targetKind !== "store")) return [];
+      return [{
+        labeler: text(item.labeler) ?? "",
+        labelerName: text(item.labelerName) ?? "a labeler",
+        targetKind,
+        target: text(item.target) ?? "",
+        rating,
+        tags: Array.isArray(item.tags) ? item.tags.filter((tag): tag is string => typeof tag === "string") : [],
+        reason: text(item.reason) ?? "",
+      }];
+    }),
+  };
+}
+
 async function pairingToken(): Promise<string> {
   const response = await request("/pair");
   const body = recordOf(await readJson(response), OFFLINE_MESSAGE);
@@ -369,6 +435,7 @@ function parseCatalog(value: unknown): ShopCatalog {
       id: requiredString(store.id),
       name: requiredString(store.name),
       region: requiredString(store.region),
+      contentRating: parseRating(store.contentRating),
     },
     moderator: parseModerator(record.moderator),
     listings: listings.map(parseListing),
@@ -459,7 +526,19 @@ function parseListing(value: unknown): ListingHeader {
     product: typeof listing.product === "string" ? listing.product : "",
     shippingSats: listing.shippingSats === undefined ? 0 : requiredNumber(listing.shippingSats),
     freeOverSats: listing.freeOverSats === undefined ? 0 : requiredNumber(listing.freeOverSats),
+    contentRating: parseRating(listing.contentRating),
+    contentTags: Array.isArray(listing.contentTags)
+      ? listing.contentTags.filter((tag): tag is string => typeof tag === "string")
+      : [],
   };
+}
+
+// A node that predates labels sends nothing: unrated. A rating this page
+// does not know yet is treated as the most restricted one.
+function parseRating(value: unknown): ContentRating {
+  if (value === undefined || value === null) return "unrated";
+  if (value === "general" || value === "sensitive" || value === "adult" || value === "unrated") return value;
+  return "adult";
 }
 
 function parseCheckout(value: unknown): CheckoutReceipt {

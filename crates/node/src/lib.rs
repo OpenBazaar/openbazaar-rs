@@ -17,12 +17,14 @@ mod escrow_moderator;
 mod escrow_vendor;
 mod http;
 mod instructions;
+mod labelers;
 mod network;
 mod orders;
 mod pay_order;
 mod rates;
 mod seed;
 mod vault;
+mod vendor_labels;
 mod wallet;
 mod wallet_http;
 mod watch;
@@ -42,7 +44,7 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::Duration;
 
 use rand::rngs::StdRng;
@@ -52,15 +54,18 @@ use bitcoin::secp256k1::{PublicKey, Secp256k1};
 use bitcoin::Amount;
 use openbazaar_pay::{Bolt12Offer, SilentPaymentCode};
 use openbazaar_protocol::{
-    fixture_catalog, fixture_keys, Catalog, DirectPay, Error as ProtocolError, Listing, Store,
+    fixture_catalog, fixture_keys, Catalog, ContentRating, DirectPay, Error as ProtocolError,
+    Listing, Store,
 };
 use serde_json::{json, Value};
 use tormail::Mailbox;
 
 use addresses::AddressBook;
 use buyer_orders::BuyerOrders;
+use labelers::Labelers;
 use rates::Rates;
 use vault::Vault;
+use vendor_labels::VendorLabels;
 use wallet::NodeWallet;
 
 pub use chain::{AddressTx, ChainSource, EsploraChain, OfflineChain, WalletRequest};
@@ -137,7 +142,9 @@ impl fmt::Display for Error {
 impl std::error::Error for Error {}
 
 pub struct Node {
-    pub(crate) catalog: Catalog,
+    /// Written only by `POST /content-labels`.
+    catalog: RwLock<Catalog>,
+    pub(crate) vendor_labels: Mutex<VendorLabels>,
     pub(crate) mailbox: Mailbox,
     pub(crate) escrow: escrow_mail::Escrow,
     pairing_token: String,
@@ -146,6 +153,7 @@ pub struct Node {
     rates: Rates,
     pub(crate) addresses: Mutex<AddressBook>,
     pub(crate) buyer_orders: Mutex<BuyerOrders>,
+    pub(crate) labelers: Mutex<Labelers>,
     pub(crate) network: NetworkMode,
     pub(crate) settings: ChainSettings,
     pub(crate) chain: Box<dyn ChainSource>,
@@ -167,17 +175,19 @@ impl Node {
     /// The catalog must carry payment codes for `config.network`. The
     /// mailbox lives in `mailbox/`, wallets in `wallets/`, and the vault key,
     /// pairing token, address book, and orders at the top of `dir`.
-    pub fn open_with(dir: impl Into<PathBuf>, catalog: Catalog, config: NodeConfig) -> Result<Self, Error> {
+    pub fn open_with(dir: impl Into<PathBuf>, mut catalog: Catalog, config: NodeConfig) -> Result<Self, Error> {
         let dir = dir.into();
         let network = config.network;
         check_catalog_network(&catalog, network)?;
         fs::create_dir_all(&dir).map_err(|err| Error::Detail(err.to_string()))?;
+        let vendor_labels = VendorLabels::open(&dir, &mut catalog, &fixture_keys().store)?;
         let mailbox = Mailbox::open(dir.join("mailbox")).map_err(|err| Error::Detail(err.to_string()))?;
         let escrow_inbox = Mailbox::open(dir.join("escrow-mail")).map_err(|err| Error::Detail(err.to_string()))?;
         let (pairing_token, pairing_fresh) = load_pairing(&dir)?;
         let vault = Vault::open(&dir)?;
         let addresses = AddressBook::open(&dir, vault.clone())?;
         let buyer_orders = BuyerOrders::open(&dir, vault.clone(), network.as_str())?;
+        let labelers = Labelers::open(&dir, vault.clone())?;
         let wallets = dir.join("wallets");
         let buyer_wallet = NodeWallet::open(&wallets, "node", &vault, network)?;
         let mut store_wallets = BTreeMap::new();
@@ -190,7 +200,8 @@ impl Node {
             store_wallets.insert(listing.seller.clone(), Mutex::new(wallet));
         }
         Ok(Self {
-            catalog,
+            catalog: RwLock::new(catalog),
+            vendor_labels: Mutex::new(vendor_labels),
             mailbox,
             escrow: escrow_mail::Escrow::new(config.escrow, escrow_inbox),
             pairing_token,
@@ -198,6 +209,7 @@ impl Node {
             rates: Rates::new(),
             addresses: Mutex::new(addresses),
             buyer_orders: Mutex::new(buyer_orders),
+            labelers: Mutex::new(labelers),
             network,
             settings: ChainSettings {
                 confirmations: config.confirmations,
@@ -212,6 +224,14 @@ impl Node {
 
     pub fn network(&self) -> NetworkMode {
         self.network
+    }
+
+    pub(crate) fn catalog(&self) -> RwLockReadGuard<'_, Catalog> {
+        self.catalog.read().unwrap_or_else(|err| err.into_inner())
+    }
+
+    pub(crate) fn catalog_mut(&self) -> RwLockWriteGuard<'_, Catalog> {
+        self.catalog.write().unwrap_or_else(|err| err.into_inner())
     }
 
     pub(crate) fn buyer_wallet(&self) -> MutexGuard<'_, NodeWallet> {
@@ -335,6 +355,7 @@ fn install_direct_pay(catalog: &mut Catalog, network: NetworkMode) -> Result<(),
             bolt12_offer: offer,
             silent_payment_code: code,
         },
+        catalog.store.rating.unwrap_or(ContentRating::General),
         &keys.store,
     )
     .map_err(Error::Protocol)?;
@@ -374,7 +395,14 @@ pub(crate) fn listing_value(catalog: &Catalog, listing: &Listing) -> Result<Valu
         "shippingSats": listing.shipping_sats,
         "freeOverSats": listing.free_over_sats,
         "acceptsModerator": accepts_moderator(catalog, listing),
+        "contentRating": rating_name(listing.content.map(|label| label.rating)),
+        "contentTags": listing.content.map(|label| label.tags.names()).unwrap_or_default(),
     }))
+}
+
+/// A record signed before labels existed is "unrated", not "general".
+fn rating_name(rating: Option<ContentRating>) -> &'static str {
+    rating.map_or("unrated", ContentRating::as_str)
 }
 
 pub fn catalog_value(catalog: &Catalog) -> Result<Value, ProtocolError> {
@@ -387,6 +415,7 @@ pub fn catalog_value(catalog: &Catalog) -> Result<Value, ProtocolError> {
             "id": catalog.store.id.to_hex(),
             "name": catalog.store.name,
             "region": catalog.store.region,
+            "contentRating": rating_name(catalog.store.rating),
         },
         "moderator": {
             "name": catalog.moderator.name,
@@ -525,6 +554,34 @@ mod tests {
             .unwrap_or_else(|err| panic!("read {}: {err}", path.display()));
         let committed: Value = serde_json::from_str(&text).unwrap();
         assert_eq!(committed, catalog_value(&catalog).unwrap());
+    }
+
+    #[test]
+    fn catalog_headers_carry_the_signed_labels() {
+        use openbazaar_protocol::{ContentLabel, ContentTags};
+        let mut catalog = load_catalog(NetworkMode::Testnet4).unwrap();
+        let value = catalog_value(&catalog).unwrap();
+        assert_eq!(value["store"]["contentRating"], "general");
+        assert!(value["listings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|listing| listing["contentRating"] == "general"
+                && listing["contentTags"] == json!([])));
+
+        catalog.listings[0].content = Some(ContentLabel::new(
+            ContentRating::Sensitive,
+            ContentTags::WEAPONS.with(ContentTags::VIOLENCE),
+        ));
+        catalog.listings[1].content = None;
+        let value = catalog_value(&catalog).unwrap();
+        assert_eq!(value["listings"][0]["contentRating"], "sensitive");
+        assert_eq!(
+            value["listings"][0]["contentTags"],
+            json!(["violence", "weapons"])
+        );
+        assert_eq!(value["listings"][1]["contentRating"], "unrated");
+        assert_eq!(value["listings"][1]["contentTags"], json!([]));
     }
 
     #[test]
