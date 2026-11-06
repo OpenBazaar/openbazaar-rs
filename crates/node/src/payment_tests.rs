@@ -7,13 +7,13 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use bdk_wallet::chain::TxUpdate;
+use bdk_wallet::chain::{BlockId, ConfirmationBlockTime, TxUpdate};
 use bdk_wallet::Update;
 use bitcoin::absolute::LockTime;
 use bitcoin::consensus::encode::deserialize_hex;
 use bitcoin::hashes::Hash;
 use bitcoin::transaction::Version;
-use bitcoin::{Address, Amount, OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Txid, Witness};
+use bitcoin::{Address, Amount, BlockHash, OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Txid, Witness};
 use serde_json::{json, Value};
 
 use crate::chain::{AddressTx, ChainSource, WalletRequest};
@@ -25,7 +25,8 @@ use crate::{load_catalog, Node, NodeConfig, ESCROW_SPEND_FEE_SATS};
 struct Chain {
     tip: Mutex<u32>,
     by_script: Mutex<HashMap<ScriptBuf, Vec<AddressTx>>>,
-    wallet_txs: Mutex<Vec<Transaction>>,
+    /// Coins sent to the node wallet, and whether each is confirmed.
+    wallet_txs: Mutex<Vec<(Transaction, bool)>>,
     broadcasts: Mutex<Vec<Transaction>>,
     fee_rate: Mutex<f64>,
     fail_broadcast: AtomicBool,
@@ -70,8 +71,12 @@ impl MockChain {
         }
     }
 
-    /// Give the node wallet a coin it can spend.
+    /// Give the node wallet a confirmed coin it can spend.
     fn fund_wallet(&self, address: &Address, sats: u64) {
+        self.send_to_wallet(address, sats, true);
+    }
+
+    fn send_to_wallet(&self, address: &Address, sats: u64, confirmed: bool) {
         static NEXT: AtomicU64 = AtomicU64::new(1);
         let n = NEXT.fetch_add(1, Ordering::Relaxed);
         let tx = Transaction {
@@ -91,7 +96,7 @@ impl MockChain {
                 script_pubkey: address.script_pubkey(),
             }],
         };
-        self.0.wallet_txs.lock().unwrap().push(tx);
+        self.0.wallet_txs.lock().unwrap().push((tx, confirmed));
     }
 
     fn broadcasts(&self) -> Vec<Transaction> {
@@ -137,13 +142,25 @@ impl ChainSource for MockChain {
         Ok(())
     }
 
-    fn wallet_update(&self, _: WalletRequest) -> Result<Update, String> {
+    /// Confirmed wallet coins are anchored in one fixed block on top of the wallet's own tip.
+    fn wallet_update(&self, request: WalletRequest) -> Result<Update, String> {
         let txs = self.0.wallet_txs.lock().unwrap().clone();
+        let tip = match &request {
+            WalletRequest::Full(request) => request.chain_tip(),
+            WalletRequest::Sync(request) => request.chain_tip(),
+        };
+        let block = BlockId { height: 50, hash: BlockHash::from_byte_array([0x50; 32]) };
         let mut tx_update = TxUpdate::default();
-        tx_update.seen_ats = txs.iter().map(|tx| (tx.compute_txid(), 1)).collect::<HashSet<_>>();
-        tx_update.txs = txs.into_iter().map(Arc::new).collect();
+        tx_update.seen_ats = txs.iter().map(|(tx, _)| (tx.compute_txid(), 1)).collect::<HashSet<_>>();
+        tx_update.anchors = txs
+            .iter()
+            .filter(|(_, confirmed)| *confirmed)
+            .map(|(tx, _)| (ConfirmationBlockTime { block_id: block, confirmation_time: 1 }, tx.compute_txid()))
+            .collect();
+        tx_update.txs = txs.into_iter().map(|(tx, _)| Arc::new(tx)).collect();
         Ok(Update {
             tx_update,
+            chain: tip.map(|tip| tip.insert(block)),
             ..Default::default()
         })
     }
@@ -450,6 +467,34 @@ fn pay_answers_at_once_and_the_worker_sends_it_once() {
     assert_eq!(after["paying"], false);
     assert_eq!(after["payTxid"], json!(chain.broadcasts()[0].compute_txid().to_string()));
     assert!(after.get("payError").is_none());
+}
+
+#[test]
+fn unconfirmed_coins_from_others_are_not_spent_but_own_change_is() {
+    let (_dir, chain, node) = testnet();
+    let address = node.buyer_wallet().fresh_address().unwrap();
+    chain.send_to_wallet(&address, 100_000, false);
+    node.watch_once().unwrap();
+    let (_, wallet) = request(&node, "GET", "/wallet", "");
+    assert_eq!(wallet["balance"]["pendingSats"], 100_000);
+    assert_eq!(wallet["balance"]["spendableSats"], 0);
+    let placed = checkout(&node, &[("Paperback novel", "Marlow Goods", "direct")]);
+    let id = placed[0]["orderId"].as_str().unwrap();
+    let (_, after) = pay(&node, id, "{}");
+    assert!(after["payError"].as_str().unwrap().contains("cannot pay"), "{after}");
+    assert!(chain.broadcasts().is_empty());
+
+    chain.0.wallet_txs.lock().unwrap()[0].1 = true;
+    let (_, paid) = pay(&node, id, "{}");
+    assert!(paid["payTxid"].is_string(), "{paid}");
+    let (_, wallet) = request(&node, "GET", "/wallet", "");
+    let change = wallet["balance"]["spendableSats"].as_u64().unwrap();
+    assert!(change > 0 && wallet["balance"]["confirmedSats"] == 0, "{wallet}");
+
+    let other = checkout(&node, &[("Letterpress cards", "Hale Paper", "direct")]);
+    let (_, second) = pay(&node, other[0]["orderId"].as_str().unwrap(), "{}");
+    assert!(second["payTxid"].is_string(), "unconfirmed change is spendable: {second}");
+    assert_eq!(chain.broadcasts()[1].input[0].previous_output.txid, chain.broadcasts()[0].compute_txid());
 }
 
 #[test]
@@ -775,9 +820,12 @@ fn live_testnet4() {
     node.sync_buyer_wallet().unwrap();
     let (_, wallet) = request(&node, "GET", "/wallet", "");
     println!("node wallet on testnet4: {wallet:#}");
-    let confirmed = wallet["balance"]["totalSats"].as_u64().unwrap();
-    if confirmed < 20_000 {
-        println!("fund {} with at least 20000 testnet4 sats, then run again", wallet["receiveAddress"]);
+    let spendable = wallet["balance"]["spendableSats"].as_u64().unwrap();
+    if spendable < 20_000 {
+        println!(
+            "fund {} with at least 20000 testnet4 sats and run again once it confirms",
+            wallet["receiveAddress"]
+        );
         return;
     }
     let placed = checkout(&node, &[("Graphite pencils", "Hale Paper", "direct")]);

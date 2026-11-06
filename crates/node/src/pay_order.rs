@@ -342,10 +342,14 @@ impl Node {
     /// Build and sign a transaction with exactly one recipient output.
     fn sign_payment(&self, address: &Address, sats: u64, fee_rate: FeeRate) -> Result<Transaction, PayError> {
         let mut wallet = self.buyer_wallet();
+        let untrusted = wallet.untrusted_pending();
         let mut builder = wallet.wallet.build_tx();
         builder
             .add_recipient(address.script_pubkey(), Amount::from_sat(sats))
             .fee_rate(fee_rate);
+        for outpoint in untrusted {
+            builder.add_unspendable(outpoint);
+        }
         let mut psbt = builder.finish().map_err(|err| {
             PayError::Invalid(format!("The node wallet cannot pay {sats} sats: {err}"))
         })?;

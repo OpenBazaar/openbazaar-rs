@@ -12,7 +12,7 @@ use bdk_wallet::chain::Merge;
 use bdk_wallet::descriptor::IntoWalletDescriptor;
 use bdk_wallet::signer::SignersContainer;
 use bdk_wallet::{Balance, ChangeSet, KeychainKind, SignOptions, Update, Wallet};
-use bitcoin::{Address, Psbt};
+use bitcoin::{Address, OutPoint, Psbt};
 use serde_json::{json, Value};
 
 use crate::chain::WalletRequest;
@@ -146,10 +146,22 @@ impl NodeWallet {
         self.wallet.balance()
     }
 
+    /// Unconfirmed coins someone else sent. They can still be replaced or
+    /// double-spent, so payments do not spend them. Unconfirmed change from
+    /// this wallet's own transactions stays spendable.
+    pub(crate) fn untrusted_pending(&self) -> Vec<OutPoint> {
+        self.wallet
+            .list_unspent()
+            .filter(|utxo| !utxo.chain_position.is_confirmed() && utxo.keychain == KeychainKind::External)
+            .map(|utxo| utxo.outpoint)
+            .collect()
+    }
+
     pub(crate) fn balance_value(&self) -> Value {
         let balance = self.balance();
         json!({
             "confirmedSats": balance.confirmed.to_sat(),
+            "spendableSats": (balance.confirmed + balance.trusted_pending).to_sat(),
             "pendingSats": (balance.trusted_pending + balance.untrusted_pending).to_sat(),
             "immatureSats": balance.immature.to_sat(),
             "totalSats": balance.total().to_sat(),
