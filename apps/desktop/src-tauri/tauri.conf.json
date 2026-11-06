@@ -4,33 +4,29 @@
   "version": "0.0.0",
   "identifier": "app.openbazaar.desktop",
   "build": {
-    "beforeBuildCommand": "npm run build --prefix ../mobile",
+    "beforeBuildCommand": "node scripts/sidecar.mjs && npm run build --prefix ../mobile",
     "frontendDist": "../../mobile/dist"
   },
   "app": {
-    "windows": [
-      {
-        "label": "main",
-        "title": "OpenBazaar",
-        "width": 960,
-        "height": 720,
-        "resizable": true,
-        "backgroundColor": "#063853"
-      }
-    ],
+    "windows": [],
     "security": {
-      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' ipc: http://ipc.localhost http://127.0.0.1:8787"
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' ipc: http://ipc.localhost http://127.0.0.1:*"
     }
   },
   "bundle": {
     "active": true,
     "targets": "all",
+    "externalBin": ["binaries/ob-node"],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "macOS": {
+      "signingIdentity": "-",
+      "minimumSystemVersion": "11.0"
+    }
   }
 }

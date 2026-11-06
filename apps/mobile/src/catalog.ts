@@ -1,7 +1,13 @@
 // The shop dials only this origin. A query parameter, settings field, seed,
 // peer, or vendor address cannot point it anywhere else. GET /pair on this
 // loopback node returns the pairing token; POST /orders sends it back.
-export const NODE_ORIGIN = "http://127.0.0.1:8787";
+// The desktop app starts its own node on a free loopback port and sets
+// __OB_NODE_ORIGIN__ before this script runs; only a 127.0.0.1 origin is taken.
+const DESKTOP_NODE_ORIGIN = (globalThis as { __OB_NODE_ORIGIN__?: unknown }).__OB_NODE_ORIGIN__;
+export const NODE_ORIGIN =
+  typeof DESKTOP_NODE_ORIGIN === "string" && /^http:\/\/127\.0\.0\.1:\d{1,5}$/.test(DESKTOP_NODE_ORIGIN)
+    ? DESKTOP_NODE_ORIGIN
+    : "http://127.0.0.1:8787";
 
 export const OFFLINE_MESSAGE =
   "The shop cannot be reached because your node is offline.";

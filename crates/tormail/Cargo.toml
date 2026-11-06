@@ -8,7 +8,7 @@ publish = false
 description = "Sealed OpenBazaar order letters carried to a vendor onion mailbox"
 
 [dependencies]
-arti-client = { version = "0.48", features = ["onion-service-client", "onion-service-service"] }
+arti-client = { version = "0.48", features = ["onion-service-client", "onion-service-service", "static-sqlite"] }
 async-trait = "0.1"
 futures = "0.3"
 hpke = { version = "0.13", default-features = false, features = ["std", "x25519"] }

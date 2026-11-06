@@ -246,6 +246,19 @@ fn slug(name: &str) -> String {
 }
 
 /// The fixture catalog with store payment codes for `network`.
+/// Exit the process once stdin reaches end of file.
+///
+/// The desktop app holds the write end of this pipe. The OS closes it when the
+/// app quits or crashes, so the node does not outlive the app.
+pub fn exit_when_stdin_closes() {
+    std::thread::spawn(|| {
+        let mut sink = [0u8; 64];
+        let mut stdin = std::io::stdin();
+        while matches!(std::io::Read::read(&mut stdin, &mut sink), Ok(n) if n > 0) {}
+        std::process::exit(0);
+    });
+}
+
 pub fn load_catalog(network: NetworkMode) -> Result<Catalog, Error> {
     let mut catalog = fixture_catalog();
     install_direct_pay(&mut catalog, network)?;
