@@ -1,8 +1,8 @@
 //! Checkout: verify the listing, seal a tormail letter, and describe how to pay.
 //!
-//! Direct pay returns the store's BIP 352 code and a BOLT 12 offer for this
-//! order's amount. Moderated pay builds a local escrow session and does not
-//! publish a script-leaf moderator key. Nothing here broadcasts a transaction.
+//! Each seller order gets its own payment terms from [`crate::instructions`]:
+//! a fresh address for direct pay, or a fresh escrow address for moderated
+//! pay. Nothing here broadcasts a transaction.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -10,11 +10,6 @@ use std::fmt;
 use rand::rngs::StdRng;
 use rand::{RngCore, SeedableRng};
 
-use bitcoin::hashes::Hash;
-use bitcoin::secp256k1::{PublicKey, Secp256k1};
-use bitcoin::{Address, Amount, Network, OutPoint, ScriptBuf, Txid};
-use openbazaar_escrow::{fund, FundParams};
-use openbazaar_pay::{Bolt12Offer, DirectPay, SilentPaymentCode};
 use openbazaar_protocol::{vendor_mail_key, Catalog, Listing, ListingKind};
 use serde_json::{json, Value};
 use tormail::{
@@ -23,9 +18,6 @@ use tormail::{
 
 use crate::buyer_orders::{now_secs, BuyerOrder};
 use crate::{accepts_moderator, find_listing, Node};
-
-/// Absolute height stored on the local refund. No chain tip is queried.
-pub const ESCROW_TIMEOUT_HEIGHT: u32 = 1_050_000;
 
 #[derive(Debug)]
 pub enum OrderError {
@@ -57,6 +49,13 @@ impl Settlement {
             Settlement::Escrow => "escrow",
         }
     }
+
+    fn initial_status(self) -> &'static str {
+        match self {
+            Settlement::Direct => crate::watch::AWAITING_PAYMENT,
+            Settlement::Escrow => crate::watch::AWAITING_FUNDING,
+        }
+    }
 }
 
 struct ShipTo {
@@ -67,13 +66,6 @@ struct ShipTo {
     region: String,
     postal_code: String,
     country: String,
-}
-
-struct EscrowFacts {
-    funding_sats: u64,
-    timeout_height: u32,
-    address: String,
-    outpoint: String,
 }
 
 impl Node {
@@ -94,6 +86,7 @@ impl Node {
             ));
         }
         let settlement = settlement_of(body.get("settlement"))?;
+        self.allow_settlement(settlement)?;
         if settlement == Settlement::Escrow
             && lines
                 .iter()
@@ -141,8 +134,10 @@ impl Node {
             "storeId": listing.store_id.to_hex(),
             "addressLabel": address_label,
             "lines": sealed_lines,
+            "status": settlement.initial_status(),
+            "network": self.network.as_str(),
         });
-        let (payment, escrow) = self.payment_for(settlement, total, &seller, listing)?;
+        let (payment, escrow) = self.payment_for(settlement, total, &seller)?;
         if let Some(payment) = &payment {
             response["payment"] = payment.clone();
         }
@@ -179,6 +174,9 @@ impl Node {
         }
         expect_fields(body, CHECKOUT_FIELDS)?;
         let packages = checkout_packages(&self.catalog, body)?;
+        for package in &packages {
+            self.allow_settlement(package.settlement)?;
+        }
         let needs_address = packages.iter().any(|package| {
             package.lines.iter().any(|(listing, _)| listing.kind == ListingKind::Physical)
         });
@@ -233,7 +231,7 @@ impl Node {
                 .checked_add(package.shipping)
                 .ok_or(OrderError::Invalid("Enter a quantity of at most 99."))?;
             let lines = line_values(&package.lines)?;
-            let (payment, escrow) = self.payment_for(package.settlement, total, &seller, listing)?;
+            let (payment, escrow) = self.payment_for(package.settlement, total, &seller)?;
             self.remember(
                 checkout_id.clone(),
                 id.clone(),
@@ -261,7 +259,8 @@ impl Node {
                 "totalSats": total,
                 "settlement": package.settlement.as_str(),
                 "addressLabel": address_label,
-                "status": "Awaiting payment",
+                "status": package.settlement.initial_status(),
+                "network": self.network.as_str(),
             });
             if let Some(payment) = payment {
                 order["payment"] = payment;
@@ -300,40 +299,23 @@ impl Node {
         Ok(id.as_str())
     }
 
+    /// Escrow is a testnet4 demo. Refuse it before any letter is sealed.
+    fn allow_settlement(&self, settlement: Settlement) -> Result<(), OrderError> {
+        if settlement == Settlement::Escrow && self.network != crate::NetworkMode::Testnet4 {
+            return Err(OrderError::Invalid(crate::instructions::ESCROW_MAINNET_REFUSAL));
+        }
+        Ok(())
+    }
+
     fn payment_for(
         &self,
         settlement: Settlement,
         total: u64,
         seller: &str,
-        listing: &Listing,
     ) -> Result<(Option<Value>, Option<Value>), OrderError> {
         match settlement {
-            Settlement::Direct => {
-                let (lightning, onchain) = self.direct_instructions(total, seller)?;
-                Ok((
-                    Some(json!({
-                        "lightning": lightning,
-                        "onchain": onchain,
-                    })),
-                    None,
-                ))
-            }
-            Settlement::Escrow => {
-                let hash = listing
-                    .content_hash()
-                    .map_err(|err| OrderError::Failed(err.to_string()))?;
-                let facts = self.open_escrow(total, hash.as_bytes())?;
-                Ok((
-                    None,
-                    Some(json!({
-                        "fundingSats": facts.funding_sats,
-                        "timeoutHeight": facts.timeout_height,
-                        "address": facts.address,
-                        "outpoint": facts.outpoint,
-                        "signaturesRequired": 2,
-                    })),
-                ))
-            }
+            Settlement::Direct => Ok((Some(self.direct_payment(total, seller)?), None)),
+            Settlement::Escrow => Ok((None, Some(self.escrow_terms(total, seller)?))),
         }
     }
 
@@ -374,7 +356,12 @@ impl Node {
                 payment,
                 escrow,
                 address_label,
-                status: "Awaiting payment".to_string(),
+                status: settlement.initial_status().to_string(),
+                network: self.network.as_str().to_string(),
+                received_sats: 0,
+                confirmations: 0,
+                txids: Vec::new(),
+                pay_txid: None,
             })
             .map_err(OrderError::Failed)
     }
@@ -403,80 +390,8 @@ impl Node {
             .to_string();
         Ok((label, format_ship_to(ship)))
     }
-
-    fn direct_instructions(
-        &self,
-        total: u64,
-        description: &str,
-    ) -> Result<(String, String), OrderError> {
-        let code = if let Ok(code) =
-            SilentPaymentCode::parse(&self.catalog.store.direct_pay.silent_payment_code)
-        {
-            code
-        } else {
-            SilentPaymentCode::from_keys(&self.keys.scan, &self.keys.spend, Network::Bitcoin)
-                .map_err(|err| OrderError::Failed(err.to_string()))?
-        };
-        let offer = match Bolt12Offer::parse(&self.catalog.store.direct_pay.bolt12_offer) {
-            Ok(offer) if offer.price().to_sat() == total => offer,
-            _ => {
-                let secp = Secp256k1::new();
-                let pubkey = PublicKey::from_secret_key(&secp, &self.keys.store);
-                Bolt12Offer::create(
-                    pubkey,
-                    Amount::from_sat(total),
-                    description,
-                    Network::Bitcoin,
-                )
-                .map_err(|err| OrderError::Failed(err.to_string()))?
-            }
-        };
-        let pay = DirectPay::new(Amount::from_sat(total), offer, code)
-            .map_err(|err| OrderError::Failed(err.to_string()))?;
-        Ok((
-            pay.offer().to_string(),
-            pay.silent_payment_code().to_string(),
-        ))
-    }
-
-    fn open_escrow(&self, total: u64, listing_hash: &[u8; 32]) -> Result<EscrowFacts, OrderError> {
-        let secp = Secp256k1::new();
-        let moderator_public = PublicKey::from_secret_key(&secp, &self.keys.moderator).serialize();
-        let mut txid_bytes = *listing_hash;
-        txid_bytes[0] ^= (total as u8).wrapping_add(1);
-        let session = fund(FundParams {
-            buyer_secret: self.keys.buyer.secret_bytes(),
-            vendor_secret: self.keys.spend.secret_bytes(),
-            moderator_public,
-            funding_outpoint: OutPoint {
-                txid: Txid::from_byte_array(txid_bytes),
-                vout: 0,
-            },
-            funding_value: Amount::from_sat(total),
-            fee: Amount::from_sat(0),
-            timeout_height: ESCROW_TIMEOUT_HEIGHT,
-            buyer_payout: payout_script(&self.keys.buyer),
-            vendor_payout: payout_script(&self.keys.spend),
-        })
-        .map_err(|err| OrderError::Failed(err.to_string()))?;
-        let address =
-            Address::from_script(&session.funding_output().script_pubkey, Network::Bitcoin)
-                .map_err(|err| OrderError::Failed(err.to_string()))?;
-        Ok(EscrowFacts {
-            funding_sats: session.funding_output().value.to_sat(),
-            timeout_height: session.timeout_height(),
-            address: address.to_string(),
-            outpoint: session.funding_outpoint().to_string(),
-        })
-    }
 }
 
-fn payout_script(secret: &bitcoin::secp256k1::SecretKey) -> ScriptBuf {
-    let secp = Secp256k1::new();
-    let public = PublicKey::from_secret_key(&secp, secret);
-    let (xonly, _) = public.x_only_public_key();
-    ScriptBuf::new_p2tr(&secp, xonly, None)
-}
 
 struct PackagePlan<'a> {
     lines: Vec<(&'a Listing, u32)>,

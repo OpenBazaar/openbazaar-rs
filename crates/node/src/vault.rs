@@ -68,6 +68,26 @@ impl Vault {
     }
 }
 
+impl Vault {
+    /// Seal `plaintext` into `path` (mode 0600), replacing it atomically.
+    pub(crate) fn write_sealed(&self, path: &Path, plaintext: &[u8]) -> Result<(), Error> {
+        let sealed = self.seal(plaintext)?;
+        let tmp = path.with_extension("tmp");
+        let _ = fs::remove_file(&tmp);
+        write_secret(&tmp, &sealed)?;
+        fs::rename(&tmp, path).map_err(|err| Error::Detail(err.to_string()))
+    }
+
+    /// Open a file written by [`Vault::write_sealed`]. `None` when it does not exist.
+    pub(crate) fn read_sealed(&self, path: &Path) -> Result<Option<Vec<u8>>, Error> {
+        match fs::read(path) {
+            Ok(blob) => self.open_bytes(&blob).map(Some),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(err) => Err(Error::Detail(err.to_string())),
+        }
+    }
+}
+
 fn write_secret(path: &Path, bytes: &[u8]) -> Result<(), Error> {
     let mut options = OpenOptions::new();
     options.write(true).create_new(true);

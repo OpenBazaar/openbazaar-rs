@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 
-use crate::{catalog_json, find_listing, listing_value, Node, OrderError};
+use crate::{catalog_json, find_listing, listing_value, wallet_http, Node, OrderError};
 
 const SHOP_ORIGIN: &str = "http://127.0.0.1:4173";
 const PAIR_HEADER: &str = "X-Ob-Pair";
@@ -56,6 +56,8 @@ pub fn serve(node: &Node, port: u16) -> std::io::Result<()> {
     eprintln!("ob-node addresses at http://127.0.0.1:{port}/addresses");
     eprintln!("ob-node pair at http://127.0.0.1:{port}/pair");
     eprintln!("ob-node rates at http://127.0.0.1:{port}/rates");
+    eprintln!("ob-node network at http://127.0.0.1:{port}/network");
+    eprintln!("ob-node wallet at http://127.0.0.1:{port}/wallet");
     eprintln!("ob-node mailbox {}", node.mailbox_path().display());
     for connection in listener.incoming() {
         let mut stream = match connection {
@@ -143,6 +145,19 @@ pub(crate) fn respond(node: &Node, raw: &[u8], client: Client) -> Vec<u8> {
         ("DELETE", path) if path.starts_with("/addresses/") => {
             addresses_delete(node, &client, head, &path["/addresses/".len()..], origin.as_deref())
         }
+        ("GET", "/network") => wallet_http::network_response(node, origin.as_deref()),
+        ("GET", "/wallet") => wallet_http::wallet_response(node, &client, head, origin.as_deref()),
+        ("POST", "/wallet/address") => {
+            wallet_http::wallet_address_response(node, &client, head, origin.as_deref())
+        }
+        ("POST", path) if path.starts_with("/orders/") && path.ends_with("/pay") => wallet_http::pay_response(
+            node,
+            &client,
+            head,
+            &path["/orders/".len()..path.len() - "/pay".len()],
+            body_of(head, rest),
+            origin.as_deref(),
+        ),
         ("GET", "/orders") => orders_list(node, &client, head, origin.as_deref()),
         ("GET", path) if path.starts_with("/orders/") => {
             orders_get(node, &client, head, &path["/orders/".len()..], origin.as_deref())
@@ -261,7 +276,7 @@ fn cors_origin(request_origin: Option<&str>, port: u16) -> Option<String> {
     }
 }
 
-fn local_guard(node: &Node, client: &Client, head: &str, origin: Option<&str>) -> Result<(), Vec<u8>> {
+pub(crate) fn local_guard(node: &Node, client: &Client, head: &str, origin: Option<&str>) -> Result<(), Vec<u8>> {
     if !client.loopback {
         return Err(json_error(
             "403 Forbidden",
@@ -365,12 +380,12 @@ fn orders_get(node: &Node, client: &Client, head: &str, id: &str, origin: Option
     }
 }
 
-fn json_body(status: &str, value: &Value, origin: Option<&str>) -> Vec<u8> {
+pub(crate) fn json_body(status: &str, value: &Value, origin: Option<&str>) -> Vec<u8> {
     let body = serde_json::to_vec_pretty(value).unwrap_or_else(|_| b"{}".to_vec());
     http_response_cors(status, "application/json", &body, origin)
 }
 
-fn json_error(status: &str, message: &str, origin: Option<&str>) -> Vec<u8> {
+pub(crate) fn json_error(status: &str, message: &str, origin: Option<&str>) -> Vec<u8> {
     json_body(status, &json!({ "error": message }), origin)
 }
 
