@@ -20,7 +20,7 @@ use crate::escrow_http::{self, Action};
 use crate::lock_http::{self, Route};
 use crate::http_guard::{check_origin, host_allowed, secret_eq, OriginCheck, DEFAULT_SHOP_ORIGIN};
 use crate::http_parse::{self, header, Request};
-use crate::{catalog_json, find_listing, labelers, listing_value, mail_drop, pairing, vendor_labels, wallet_http, Node, OrderError};
+use crate::{find_listing, labelers, listing_value, mail_drop, pairing, vendor_labels, wallet_http, Node, OrderError};
 
 const PAIR_HEADER: &str = "X-Ob-Pair";
 /// Every response: never cached, never sniffed or framed, no referrer, and
@@ -151,13 +151,8 @@ fn route(node: &Node, request: &Request<'_>, client: Client, origin: Option<&str
     let (method, path, head, body) = (request.method, request.path, request.head, request.body);
     let client = &client;
     match (method, path) {
-        ("GET", "/catalog") | ("GET", "/") => match catalog_json(&node.catalog()) {
-            Ok(json) => http_response_cors("200 OK", "application/json", json.as_bytes(), origin),
-            Err(err) => {
-                eprintln!("ob-node: {err}");
-                json_error("500 Internal Server Error", "The catalog could not be read.", origin)
-            }
-        },
+        ("GET", "/catalog") | ("GET", "/") => crate::xmr::catalog_response(node, origin),
+        (_, path) if path.starts_with("/xmr/") => crate::xmr::response(node, client, head, method, path, body, origin),
         ("POST", "/pair") => pairing::response(node, body, origin),
         ("GET", "/rates") => json_body("200 OK", &node.rates_value(), origin),
         ("GET", "/addresses") => addresses_list(node, client, head, origin),

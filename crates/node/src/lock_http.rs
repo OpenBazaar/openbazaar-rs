@@ -60,7 +60,7 @@ pub(crate) fn locked_response(state: &str, origin: Option<&str>) -> Vec<u8> {
     )
 }
 
-fn lock_error(err: LockError, origin: Option<&str>) -> Vec<u8> {
+pub(crate) fn lock_error(err: LockError, origin: Option<&str>) -> Vec<u8> {
     match err {
         LockError::Locked(state) => locked_response(state.as_str(), origin),
         LockError::Wrong { retry_after } => json_body(
@@ -85,7 +85,7 @@ fn lock_error(err: LockError, origin: Option<&str>) -> Vec<u8> {
     }
 }
 
-fn pay_error(err: PayError, origin: Option<&str>) -> Vec<u8> {
+pub(crate) fn pay_error(err: PayError, origin: Option<&str>) -> Vec<u8> {
     match err {
         PayError::NotFound => json_error("404 Not Found", "That order is not on this node.", origin),
         PayError::Invalid(message) => json_error("400 Bad Request", &message, origin),

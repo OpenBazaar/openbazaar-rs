@@ -188,6 +188,8 @@ pub(crate) struct WalletLock {
     cost: Cost,
     inner: Mutex<Inner>,
     pub(crate) tickets: SpendTickets,
+    /// Monero spend tickets ([`crate::xmr`]), dropped on lock with the rest.
+    pub(crate) xmr_tickets: SpendTickets<crate::xmr::XmrTerms>,
 }
 
 impl WalletLock {
@@ -221,6 +223,7 @@ impl WalletLock {
                 skew_wall: Duration::ZERO,
             }),
             tickets: SpendTickets::default(),
+            xmr_tickets: SpendTickets::default(),
         })
     }
 
@@ -259,6 +262,7 @@ impl WalletLock {
     fn close(&self, inner: &mut Inner) {
         inner.session = None;
         self.tickets.clear();
+        self.xmr_tickets.clear();
     }
 
     fn state_of(inner: &Inner) -> State {

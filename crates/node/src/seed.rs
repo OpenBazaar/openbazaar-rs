@@ -9,6 +9,7 @@
 //! | store signing | `m/1984'/coin'/0'/0'`        |
 //! | escrow keys   | `m/1984'/coin'/1'/index'`    |
 //! | escrow mail   | `m/1984'/coin'/2'/0'`        |
+//! | Monero        | `m/1984'/coin'/5'/0'` (secret for `openbazaar_xmr::SpendKey`) |
 //! | BIP 352 scan  | `m/352'/coin'/0'/1'/0`       |
 //! | BIP 352 spend | `m/352'/coin'/0'/0'/0`       |
 //!
@@ -83,6 +84,11 @@ impl Seed {
         self.derive(&format!("m/1984'/{}'/2'/0'", self.network.coin_type()))
     }
 
+    /// The secret the Monero spend and view keys are derived from (see `openbazaar_xmr::keys`).
+    pub(crate) fn monero_secret(&self) -> zeroize::Zeroizing<[u8; 32]> {
+        zeroize::Zeroizing::new(self.derive(&format!("m/1984'/{}'/5'/0'", self.network.coin_type())).secret_bytes())
+    }
+
     pub(crate) fn scan_key(&self) -> SecretKey {
         self.derive(&format!("m/352'/{}'/0'/1'/0", self.network.coin_type()))
     }
@@ -118,6 +124,7 @@ mod tests {
                 seed.mail_key(),
                 seed.scan_key(),
                 seed.silent_spend_key(),
+                SecretKey::from_slice(&seed.monero_secret()[..]).unwrap(),
             ]
         };
         let mut all = roles(&test);

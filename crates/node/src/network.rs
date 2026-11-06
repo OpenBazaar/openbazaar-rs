@@ -66,6 +66,15 @@ impl NetworkMode {
         }
     }
 
+    /// The Monero network paid on this network. Monero has no testnet4, so
+    /// testnet4 pays on stagenet; mainnet pays on mainnet.
+    pub fn monero(self) -> openbazaar_xmr::XmrNetwork {
+        match self {
+            NetworkMode::Testnet4 => openbazaar_xmr::XmrNetwork::Stagenet,
+            NetworkMode::Mainnet => openbazaar_xmr::XmrNetwork::Mainnet,
+        }
+    }
+
     pub fn default_confirmations(self) -> u32 {
         match self {
             NetworkMode::Testnet4 => 1,
@@ -120,6 +129,8 @@ pub struct ServeOptions {
     pub proxy: Option<String>,
     /// False with `--no-rates`.
     pub live_rates: bool,
+    /// `--xmr-daemon URL`: monerod RPC for Monero direct pay. Empty turns Monero off.
+    pub xmr_daemons: Vec<String>,
 }
 
 impl ServeOptions {
@@ -143,6 +154,7 @@ impl ServeOptions {
         let mut pair_codes = true;
         let mut proxy = None;
         let mut live_rates = true;
+        let mut xmr_daemons: Vec<String> = Vec::new();
         let mut iter = args.iter();
         while let Some(arg) = iter.next() {
             let mut value = |name: &str| {
@@ -211,6 +223,10 @@ impl ServeOptions {
                 "--no-pair-codes" => pair_codes = false,
                 "--proxy" => proxy = Some(crate::egress::Egress::parse_proxy(&value("--proxy")?)?),
                 "--no-rates" => live_rates = false,
+                "--xmr-daemon" => {
+                    let text = value("--xmr-daemon")?;
+                    xmr_daemons.extend(text.split(',').map(str::trim).filter(|url| !url.is_empty()).map(String::from));
+                }
                 other if !other.starts_with('-') => {
                     port = other
                         .parse()
@@ -229,6 +245,9 @@ impl ServeOptions {
             None => network == NetworkMode::Testnet4 && peers.is_empty(),
         };
         crate::chain_backend::ChainPlan::choose(network, &peers, &esplora, public_fallback)?;
+        if !xmr_daemons.is_empty() {
+            openbazaar_xmr::DaemonConfig::new(network.monero(), &xmr_daemons, proxy.clone())?;
+        }
         Ok(Self {
             port,
             network,
@@ -246,6 +265,15 @@ impl ServeOptions {
             pair_codes,
             proxy,
             live_rates,
+            xmr_daemons,
+        })
+    }
+
+    /// The Monero daemons these flags select, or `None` when Monero is off.
+    pub fn xmr_config(&self) -> Option<openbazaar_xmr::DaemonConfig> {
+        (!self.xmr_daemons.is_empty()).then(|| {
+            openbazaar_xmr::DaemonConfig::new(self.network.monero(), &self.xmr_daemons, self.proxy.clone())
+                .expect("parse already checked --xmr-daemon")
         })
     }
 
@@ -477,6 +505,21 @@ mod tests {
         ] {
             assert!(ServeOptions::parse(&args(bad)).is_err(), "{bad:?}");
         }
+    }
+
+    #[test]
+    fn monero_is_off_by_default_and_never_public_without_tor_on_mainnet() {
+        use openbazaar_xmr::XmrNetwork;
+        assert_eq!(NetworkMode::Testnet4.monero(), XmrNetwork::Stagenet);
+        assert_eq!(NetworkMode::Mainnet.monero(), XmrNetwork::Mainnet);
+        assert!(ServeOptions::parse(&[]).unwrap().xmr_config().is_none(), "no default Monero node");
+        let own = ServeOptions::parse(&args(&["--xmr-daemon", "http://127.0.0.1"])).unwrap();
+        let config = own.xmr_config().unwrap();
+        assert_eq!((config.network, config.nodes[0].url.as_str()), (XmrNetwork::Stagenet, "http://127.0.0.1:38081"));
+        let main = ["--network", "mainnet", "--xmr-daemon", "http://node.example.org:18089"];
+        assert!(ServeOptions::parse(&args(&main)).unwrap_err().contains("Tor"));
+        let tor = ServeOptions::parse(&args(&[&main[..], &["--proxy", "socks5h://127.0.0.1:9050"]].concat())).unwrap();
+        assert_eq!(tor.xmr_config().unwrap().privacy(), "remote-tor");
     }
 
     #[test]

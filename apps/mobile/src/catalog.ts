@@ -272,7 +272,7 @@ export async function placeCheckout(order: {
   addressLabel?: string;
   shipTo?: ShipTo & { street2?: string; country?: string };
   deliveryNote?: string;
-  packages: { settlement: "direct" | "escrow"; lines: CheckoutLine[] }[];
+  packages: { settlement: "direct" | "escrow"; rail?: "btc" | "xmr"; lines: CheckoutLine[] }[];
 }): Promise<CheckoutReceipt> {
   const token = await pairingToken();
   const response = await request("/checkout", {

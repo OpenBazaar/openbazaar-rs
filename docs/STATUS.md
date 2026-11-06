@@ -14,6 +14,7 @@ Last checked against `main` at `b1eb18b` (escrow, payments, and transport code u
 | `aa9db48` | PR #3 (squashed from `3d5af42`): two-party escrow, verifiable moderator shares, review fixes, node integration, three-node test harness |
 | `92b2e2e` | PR #5: content ratings and tags, client safe mode, subscribable labelers |
 | `chain-privacy` | BIP 157/158 compact block filters as the default chain backend, own-node mode, public Esplora only as an opt-in fallback |
+| `monero-direct` | Monero for direct pay only: `crates/xmr` on monero-oxide, per-store opt-in, fresh subaddress per order, pay from the node wallet with a spend ticket or from an external wallet by `monero:` URI |
 
 ## Mechanisms
 
@@ -45,7 +46,7 @@ Labels: **tested** = code on main with automated tests; **demo** = code runs, bu
 | Phone pairs with a desktop or Android node | specified | The client dials only 127.0.0.1. |
 | Addresses, orders, seed, wallet, labeler follows encrypted at rest | tested | ChaCha20-Poly1305. Key in the OS keystore by default (macOS Keychain, Windows Credential Manager, Linux Secret Service); `--vault passphrase` wraps it with Argon2id (64 MiB, 3 passes) in `vault.lock`; `--vault file` keeps `vault.key` for headless runs and tests. An old `vault.key` is moved and deleted on first start in another mode. Startup refuses a group- or world-readable key, lock, or token, and tightens `.obv` files (earlier nodes wrote `addresses.obv` and `orders.obv` with the umask). |
 | Wallet lock on the node | tested | Seeds sealed a second time under a random spend key, wrapped with Argon2id (256 MiB, 3 passes) of a wallet passphrase in `wallet.lock`. Starts locked; spends, escrow signing, seed reveal, and lock settings answer `423` while locked or before setup. Receive tier (xpubs, mail key) stays open for the watcher, addresses, and incoming mail; signing letters wait for an unlock. Auto-lock 1 to 60 min (15 default) and on sleep; persisted backoff. Each payment needs a 60 s one-time ticket bound to order, amount, fee cap, and recipient. Biometric step-up and OS screen-lock events are not wired. See [wallet-lock.md](wallet-lock.md). |
-| BIP 39 seed with role paths | tested | Spend, store, escrow (`m/1984'/c'/1'/i'`), escrow mail (`m/1984'/c'/2'/0'`), scan. |
+| BIP 39 seed with role paths | tested | Spend, store, escrow (`m/1984'/c'/1'/i'`), escrow mail (`m/1984'/c'/2'/0'`), scan, Monero (`m/1984'/c'/5'/0'`). |
 | Catalog signed with the seed's store key | not yet | Catalog, BOLT 12 offer, and BIP 352 code use fixture keys. |
 | Vendor mailbox key bound to the signed store record | specified | Mailbox keys come from a fixture table; one fixture seller reuses the store scalar. |
 
@@ -78,7 +79,22 @@ Labels: **tested** = code on main with automated tests; **demo** = code runs, bu
 | Payjoin v2 | library only | Checkout does not start a session. |
 | Chain queries over Tor | demo | `--proxy` also carries filter peer connections and broadcasts through SOCKS5 (P2P v1 only; peers see a Tor exit). No Arti, no onion peers. Without `--proxy`, filter peers see the IP address and which whole blocks it fetches, not which scripts it follows. |
 | Compact filter limits | tested | Filters cannot find a transaction by txid: the escrow moderator's funding check needs the funding script followed, or `--esplora` with an own server. No mempool view: incoming payments appear once confirmed. Fees come from recent block averages. A newly followed script is rescanned 144 blocks back. First sync starts at a checkpoint (testnet4 159000, mainnet 974000); testnet4 took 7.5 minutes to reach the tip from one peer. |
-| Exchange rates | tested | Coinbase. Over clearnet unless `--proxy socks5h://HOST:PORT` (names resolved by the proxy); `--no-rates` makes no request. `GET /network` reports `clearnet` and a `privacyWarning`. |
+| Exchange rates | tested | Coinbase. Over clearnet unless `--proxy socks5h://HOST:PORT` (names resolved by the proxy); `--no-rates` makes no request. `GET /network` reports `clearnet` and a `privacyWarning`. XMR comes from Kraken's XMR/BTC ticker (Coinbase does not list XMR) on the same proxy and switch, as integer sats per XMR in `GET /rates` `xmr`. |
+
+### Monero (direct pay only)
+
+| Mechanism | Status | Notes |
+|---|---|---|
+| Wallet library | tested | `crates/xmr` on monero-oxide (`monero-wallet` 0.2, `monero-daemon-rpc` 0.2; pure Rust, audited by Cypher Stack in 2025). No `monero-wallet-rpc`, no second key store. |
+| Keys | tested | `m/1984'/c'/5'/0'` gives a 32-byte secret; spend key `b` = HMAC-SHA512("OpenBazaar Monero spend key v1", secret) reduced mod l; view key `a` = Hs(b) as in Monero wallets. View key and public spend key in `xmr-watch.obv` (receive tier); the spend key is derived from `spend.obv` for one signature. |
+| Store opt-in | demo | `PUT /xmr/stores`, kept in `xmr-stores.obv` on this node; `GET /catalog` adds `acceptsXmr` per listing. Not in the signed store record yet (store v3). |
+| Fresh subaddress per order, status | tested | Seller's subaddress per order, never reused across restarts. Awaiting payment (shows `receivedPiconero`, `remainingPiconero`) → Payment seen (all of it) → Paid at 10 confirmations; overpayment is Paid with `overpaidPiconero`. Works while locked. No mempool view: a payment is seen from its first confirmation. |
+| Pay from the node | tested | Quote (amount, destination subaddress, fee cap 150 % of the quoted fee), passphrase step-up to a one-time ticket, `POST /xmr/orders/{id}/pay` (202), signed on the node's Monero thread: ring 16, CLSAG, Bulletproofs+, one payment plus change, never batched across sellers. Mainnet needs `"confirm": true`. |
+| External wallet | tested | `monero:` URI with `tx_amount` on the order; the client draws the QR. |
+| Escrow | refused | `"rail": "xmr"` with escrow is refused at checkout and at pay. |
+| Chain access | tested (mocked) | `--xmr-daemon URL[,URL]`, no default. Loopback or LAN = own monerod, direct; `.onion` needs `--proxy`; any other remote node needs `--proxy` on mainnet. Per-connection SOCKS username (own circuit), no redirects, genesis check, the broadcast goes to a different node when more than one is listed. Only monerod's block, output, fee, and broadcast routes are allowed; light-wallet routes are refused in the transport. `GET /network` `xmrBackend` reports `backend`, `privacy`, `reveals`. Testnet4 nodes use stagenet. |
+| Spend detection | tested | Only spends made by this node: without the spend key the receive tier cannot compute key images. Restoring a seed elsewhere and spending there leaves this balance too high. |
+| Remote sellers | specified | Order status comes from the seller wallet on this node, as with the fixture sellers. |
 
 ### Escrow
 
@@ -114,6 +130,7 @@ Labels: **tested** = code on main with automated tests; **demo** = code runs, bu
 - The crate supports per-order keys tweaked by an order secret; the node derives per-order keys from the seed instead.
 - Exchange rates come from Coinbase over clearnet unless `--proxy` is set. Chain data comes from compact filters; public Esplora is asked only with `--esplora` or `--public-fallback`. The desktop app has no proxy, peer, or fallback setting yet.
 - Presigned escrow spends use a fixed 1,000-sat fee in the node.
+- The paper describes bitcoin payments only. Monero direct pay is an addition of this implementation; escrow stays bitcoin-only.
 
 ## Escrow review
 
@@ -143,5 +160,6 @@ Remaining blockers before any mainnet escrow: durable sessions and claims, durab
 | `dc7bc42` (reviewed escrow) | — | 26 + 3 doc | — | 12 | — | 41 passed |
 | `aa9db48` | 46 (+1) | 38 + 5 doc | 13 | 12 | 10 (+1) | 124 passed, 2 ignored |
 | `chain-privacy` | 112 (+3) | 38 + 5 doc | 13 | 33 | 10 (+1) | 211 passed, 4 ignored |
+| `monero-direct` | 122 (+4) | 38 + 5 doc | 13 | 33 | 10 (+1) | 239 passed (xmr 10 + 8), 5 ignored |
 
-The ignored tests need the live network: an Arti onion dial, a real testnet4 payment and send, and a testnet4 compact filter sync.
+The ignored tests need the live network: an Arti onion dial, a real testnet4 payment and send, a testnet4 compact filter sync, and a stagenet Monero payment (`live_stagenet`).

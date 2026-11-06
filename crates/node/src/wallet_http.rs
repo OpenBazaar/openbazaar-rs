@@ -14,6 +14,7 @@ pub(crate) fn network_response(node: &Node, origin: Option<&str>) -> Vec<u8> {
         "confirmations": node.settings.confirmations,
         "publicChainServer": chain.public_server(),
         "chainBackend": chain.to_json(),
+        "xmrBackend": node.xmr.backend_value(),
         "lightning": "offer-only",
         "silentPayments": "code-only",
     });
