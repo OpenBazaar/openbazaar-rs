@@ -17,6 +17,7 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use serde_json::{json, Value};
 
 use crate::escrow_http::{self, Action};
+use crate::lock_http::{self, Route};
 use crate::http_guard::{check_origin, host_allowed, secret_eq, OriginCheck, DEFAULT_SHOP_ORIGIN};
 use crate::http_parse::{self, header, Request};
 use crate::{catalog_json, find_listing, labelers, listing_value, mail_drop, pairing, vendor_labels, wallet_http, Node, OrderError};
@@ -170,6 +171,20 @@ fn route(node: &Node, request: &Request<'_>, client: Client, origin: Option<&str
         ("GET", "/network") => wallet_http::network_response(node, origin),
         ("GET", "/wallet") => wallet_http::wallet_response(node, client, head, origin),
         ("POST", "/wallet/address") => wallet_http::wallet_address_response(node, client, head, origin),
+        ("GET", "/lock") => lock_http::response(node, client, head, Route::Status, body, origin),
+        ("POST", "/lock") => lock_http::response(node, client, head, Route::Lock, body, origin),
+        ("POST", "/lock/activity") => lock_http::response(node, client, head, Route::Activity, body, origin),
+        ("PUT", "/lock/settings") => lock_http::response(node, client, head, Route::Settings, body, origin),
+        ("POST", "/lock/passphrase") => lock_http::response(node, client, head, Route::Passphrase, body, origin),
+        ("POST", "/unlock") => lock_http::response(node, client, head, Route::Unlock, body, origin),
+        ("POST", "/setup") => lock_http::response(node, client, head, Route::Setup, body, origin),
+        ("POST", "/setup/confirm") => lock_http::response(node, client, head, Route::ConfirmBackup, body, origin),
+        ("POST", "/wallet/phrase") => lock_http::response(node, client, head, Route::Phrase, body, origin),
+        ("POST", "/spend-tickets") => lock_http::response(node, client, head, Route::Ticket, body, origin),
+        ("POST", path) if between(path, "/orders/", "/pay/quote").is_some() => {
+            let id = between(path, "/orders/", "/pay/quote").unwrap_or_default();
+            lock_http::response(node, client, head, Route::Quote(id), body, origin)
+        }
         ("POST", path) if between(path, "/orders/", "/pay").is_some() => {
             let id = between(path, "/orders/", "/pay").unwrap_or_default();
             wallet_http::pay_response(node, client, head, id, body, origin)
@@ -246,6 +261,7 @@ fn order_response(node: &Node, head: &str, body: &[u8], origin: Option<&str>) ->
             json_error("404 Not Found", "That listing is not in this shop.", origin)
         }
         Err(OrderError::Invalid(message)) => json_error("400 Bad Request", message, origin),
+        Err(OrderError::Locked(state)) => lock_http::locked_response(state, origin),
         Err(OrderError::Failed(detail)) => {
             eprintln!("ob-node: {detail}");
             json_error(
@@ -274,6 +290,7 @@ fn checkout_response(node: &Node, client: &Client, head: &str, body: &[u8], orig
             json_error("404 Not Found", "That listing is not in this shop.", origin)
         }
         Err(OrderError::Invalid(message)) => json_error("400 Bad Request", message, origin),
+        Err(OrderError::Locked(state)) => lock_http::locked_response(state, origin),
         Err(OrderError::Failed(detail)) => {
             eprintln!("ob-node: {detail}");
             json_error(

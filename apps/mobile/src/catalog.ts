@@ -467,7 +467,16 @@ function parseRates(value: unknown): RateTable {
 }
 
 export class NodeApiError extends Error {
-  constructor(public readonly status: number, message: string) { super(message); this.name = "NodeApiError"; }
+  readonly status: number;
+  readonly code?: string;
+  readonly retryAfterSecs?: number;
+  constructor(status: number, message: string, code?: string, retryAfterSecs?: number) {
+    super(message);
+    this.name = "NodeApiError";
+    this.status = status;
+    this.code = code;
+    this.retryAfterSecs = retryAfterSecs;
+  }
 }
 
 async function request(path: string, init?: RequestInit): Promise<Response> {
@@ -481,7 +490,8 @@ async function request(path: string, init?: RequestInit): Promise<Response> {
     if (response.status === 401 || response.status === 403) {
       forgetToken();
     }
-    throw new NodeApiError(response.status, await errorMessage(response));
+    const { message, code, retryAfterSecs } = await errorDetail(response);
+    throw new NodeApiError(response.status, message, code, retryAfterSecs);
   }
   return response;
 }
@@ -494,19 +504,23 @@ async function readJson(response: Response): Promise<unknown> {
   }
 }
 
-async function errorMessage(response: Response): Promise<string> {
+async function errorDetail(response: Response): Promise<{ message: string; code?: string; retryAfterSecs?: number }> {
+  let body: { error?: unknown; code?: unknown; retryAfterSecs?: unknown } = {};
   try {
-    const body = (await response.json()) as { error?: unknown };
-    if (typeof body.error === "string" && body.error.trim()) {
-      return body.error;
-    }
+    body = (await response.json()) as typeof body;
   } catch {
     // The status line is enough when the body is not JSON.
   }
-  if (response.status === 404) {
-    return "That listing is not in this shop.";
+  const code = typeof body.code === "string" ? body.code : undefined;
+  const retryAfterSecs =
+    typeof body.retryAfterSecs === "number" && Number.isFinite(body.retryAfterSecs) ? body.retryAfterSecs : undefined;
+  if (typeof body.error === "string" && body.error.trim()) {
+    return { message: body.error, code, retryAfterSecs };
   }
-  return "The shop can't be reached. The node returned an error.";
+  if (response.status === 404) {
+    return { message: "That listing is not in this shop.", code };
+  }
+  return { message: "The shop can't be reached. The node returned an error.", code };
 }
 
 function parseCatalog(value: unknown): ShopCatalog {

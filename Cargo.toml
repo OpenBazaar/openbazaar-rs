@@ -13,3 +13,10 @@ edition = "2021"
 license = "MIT"
 version = "0.0.0"
 publish = false
+
+# The wallet lock runs Argon2id at 256 MiB; unoptimized that takes tens of seconds.
+[profile.dev.package.argon2]
+opt-level = 3
+
+[profile.dev.package.blake2]
+opt-level = 3

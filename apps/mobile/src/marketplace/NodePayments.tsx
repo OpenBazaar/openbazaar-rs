@@ -26,11 +26,14 @@ import {
 } from '../nodeWallet'
 import { paymentStatusView } from '../paymentStatus'
 import { useNodeResource } from '../useNodeResource'
+import { isLocked, quotePayment, type LockStatus, type Quote, type Ticket } from '../walletLock'
+import { SpendConfirmDialog, UnlockDialog, WalletLockPanel, useLockState } from './WalletLock'
 
 function usePaymentState(activeWallet: boolean, onWallet: () => void) {
   const network = useNodeResource(fetchNetwork, 30000)
   const wallet = useNodeResource(fetchWallet, 15000, activeWallet)
-  return { network, wallet, onWallet }
+  const lock = useLockState()
+  return { network, wallet, lock, onWallet }
 }
 type PaymentState = ReturnType<typeof usePaymentState>
 const NodeContext = createContext<PaymentState | null>(null)
@@ -178,7 +181,7 @@ export function WalletPanel({
   rates: RateTable
   currency: CurrencyCode
 }) {
-  const { wallet, network } = usePairedNode()
+  const { wallet, network, lock } = usePairedNode()
   const [busy, setBusy] = useState(false),
     [error, setError] = useState('')
   const [freshAddress, setFreshAddress] = useState<{
@@ -220,6 +223,7 @@ export function WalletPanel({
         Your node holds this bitcoin and pays each seller order from it.
         Balances refresh every 15 seconds.
       </p>
+      <WalletLockPanel lock={lock} />
       {(error || wallet.error || network.error) && (
         <p className='ob-form-error' role='alert'>
           {error || wallet.error || network.error}
@@ -305,59 +309,6 @@ export function WalletPanel({
     </section>
   )
 }
-function MainnetConfirmation({
-  amount,
-  seller,
-  address,
-  onCancel,
-  onConfirm
-}: {
-  amount: number
-  seller: string
-  address: string
-  onCancel: () => void
-  onConfirm: () => void
-}) {
-  const dialog = useRef<HTMLDialogElement>(null)
-  useEffect(() => {
-    const previous = document.activeElement as HTMLElement | null
-    dialog.current?.showModal()
-    return () => {
-      dialog.current?.close()
-      previous?.focus()
-    }
-  }, [])
-  return (
-    <dialog
-      ref={dialog}
-      className='ob-pay-confirm'
-      aria-labelledby='ob-pay-confirm-title'
-      onCancel={e => {
-        e.preventDefault()
-        onCancel()
-      }}
-    >
-      <h2 id='ob-pay-confirm-title'>Send real bitcoin?</h2>
-      <p>
-        This is a mainnet payment of{' '}
-        <strong>
-          {amount.toLocaleString()} sats ({bitcoinAmount(amount)} BTC)
-        </strong>{' '}
-        to {seller}, plus the network fee chosen by your node. Bitcoin payments
-        cannot be reversed.
-      </p>
-      <code>{address}</code>
-      <div className='ob-form-actions'>
-        <button className='ob-secondary' autoFocus onClick={onCancel}>
-          Cancel
-        </button>
-        <button className='ob-primary' onClick={onConfirm}>
-          Confirm mainnet payment
-        </button>
-      </div>
-    </dialog>
-  )
-}
 export function OrderPayment({
   id,
   initial
@@ -365,10 +316,12 @@ export function OrderPayment({
   id: string
   initial: BuyerOrder | SellerOrder
 }) {
-  const { network, wallet, onWallet } = usePairedNode()
+  const { network, wallet, lock, onWallet } = usePairedNode()
   const [error, setError] = useState(''),
     [sending, setSending] = useState(false),
-    [confirming, setConfirming] = useState(false)
+    [step, setStep] = useState<
+      { kind: 'unlock' } | { kind: 'confirm'; quote: Quote } | null
+    >(null)
   const submitting = useRef(false)
   const resource = useNodeResource(
     () => fetchOrder(id),
@@ -417,22 +370,42 @@ export function OrderPayment({
     !!order.payTxid ||
     due === 0 ||
     order.status !== 'Awaiting payment'
-  async function send(confirmed = false) {
-    if (submitting.current || blocked || !net) {
-      setConfirming(false)
-      return
-    }
-    if (net === 'mainnet' && !confirmed) {
-      setConfirming(true)
+  // Unlock if needed, then ask the node for the exact terms and step up.
+  async function start(status = lock.data) {
+    if (submitting.current || blocked || !net) return
+    setError('')
+    if (status?.state !== 'unlocked') {
+      setStep({ kind: 'unlock' })
       return
     }
     submitting.current = true
+    try {
+      setStep({ kind: 'confirm', quote: await quotePayment(id) })
+    } catch (e) {
+      if (isLocked(e)) {
+        await lock.refresh()
+        setStep({ kind: 'unlock' })
+      } else
+        setError(e instanceof Error ? e.message : 'Payment could not be quoted.')
+    } finally {
+      submitting.current = false
+    }
+  }
+  function unlocked(status: LockStatus) {
+    lock.update(status)
+    setStep(null)
+    if (status.state === 'unlocked') void start(status)
+  }
+  async function send(ticket: Ticket) {
+    setStep(null)
+    if (submitting.current || blocked || !net) return
+    submitting.current = true
     setSending(true)
-    setConfirming(false)
     setError('')
     try {
-      resource.update(await payOrder(id, net, confirmed))
+      resource.update(await payOrder(id, net, ticket.ticket))
     } catch (e) {
+      if (isLocked(e)) void lock.refresh()
       setError(e instanceof Error ? e.message : 'Payment could not be started.')
     } finally {
       await resource.refresh()
@@ -507,7 +480,7 @@ export function OrderPayment({
                 <button
                   className='ob-primary'
                   disabled={blocked}
-                  onClick={() => void send()}
+                  onClick={() => void start()}
                 >
                   Pay from your node wallet
                 </button>
@@ -567,13 +540,19 @@ export function OrderPayment({
           )}
         </>
       )}
-      {confirming && net === 'mainnet' && (
-        <MainnetConfirmation
-          amount={due}
+      {step?.kind === 'unlock' && lock.data && (
+        <UnlockDialog
+          status={lock.data}
+          onCancel={() => setStep(null)}
+          onUnlocked={unlocked}
+        />
+      )}
+      {step?.kind === 'confirm' && (
+        <SpendConfirmDialog
+          quote={step.quote}
           seller={order.seller}
-          address={order.payment?.address ?? ''}
-          onCancel={() => setConfirming(false)}
-          onConfirm={() => void send(true)}
+          onCancel={() => setStep(null)}
+          onTicket={ticket => void send(ticket)}
         />
       )}
     </section>

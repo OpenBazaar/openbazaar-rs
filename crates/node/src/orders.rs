@@ -24,6 +24,8 @@ use crate::{accepts_moderator, find_listing, Node};
 pub enum OrderError {
     UnknownListing,
     Invalid(&'static str),
+    /// 423: this step needs the spend tier, and the wallet is in this state.
+    Locked(&'static str),
     Failed(String),
 }
 
@@ -32,6 +34,7 @@ impl fmt::Display for OrderError {
         match self {
             OrderError::UnknownListing => f.write_str("That listing is not in this shop."),
             OrderError::Invalid(message) => f.write_str(message),
+            OrderError::Locked(_) => f.write_str(crate::lock_http::LOCKED_MESSAGE),
             OrderError::Failed(detail) => write!(f, "The order could not be sealed. {detail}"),
         }
     }

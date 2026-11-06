@@ -1,6 +1,6 @@
 // Disposable real node + same-origin static/proxy server. No existing app/node is touched.
 import { createServer, request } from 'node:http'
-import { spawn, spawnSync } from 'node:child_process'
+import { spawn } from 'node:child_process'
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { resolve, dirname, extname, join } from 'node:path'
@@ -19,13 +19,6 @@ if (
 const data = await mkdtemp(join(tmpdir(), 'ob-ui-e2e-'))
 const binary =
   process.env.OB_NODE_BIN || resolve(app, '../../target/debug/ob-node')
-// A node that keeps its vault key in the OS keystore by default takes
-// `--vault file`, so test runs leave no keychain entries and work on CI without
-// one. Older nodes reject the flag, so it is passed only when the usage lists it.
-const usage = spawnSync(binary, ['help'], { encoding: 'utf8' })
-const vaultArgs = `${usage.stdout}${usage.stderr}`.includes('--vault')
-  ? ['--vault', 'file']
-  : []
 // Fail chain calls quickly and locally. E2E covers the client, not chain integration.
 const node = spawn(
   binary,
@@ -40,7 +33,9 @@ const node = spawn(
     process.env.OB_E2E_CHAIN_URL || `http://127.0.0.1:${uiPort}/chain`,
     '--poll-secs',
     '60',
-    ...vaultArgs
+    // A disposable node must not write to the user's OS keychain.
+    '--vault',
+    'file'
   ],
   { stdio: ['ignore', 'ignore', 'pipe'] }
 )
@@ -74,7 +69,7 @@ const server = createServer(async (req, res) => {
     return
   }
   if (
-    /^\/(catalog|rates|network|wallet|pair|orders|checkout|addresses|labelers|vendor-labels|listings)(\/|$)/.test(
+    /^\/(catalog|rates|network|wallet|pair|orders|checkout|addresses|labelers|vendor-labels|listings|lock|unlock|setup|spend-tickets)(\/|$)/.test(
       path
     )
   ) {
@@ -130,8 +125,8 @@ const server = createServer(async (req, res) => {
     res.end()
   }
 })
-// Hand the page the node's token the way the desktop app does. A node without
-// GET /pair gives a browser the token only for a code typed at a prompt.
+// Hand the page the node's token the way the desktop app does. A browser shop
+// would have to type a code from the node's terminal.
 async function pairTokenScript() {
   try {
     const token = (

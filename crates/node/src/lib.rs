@@ -2,7 +2,9 @@
 //! a node wallet, and a chain watcher.
 //!
 //! The HTTP server is loopback-only. It does not dial Tor. It broadcasts a
-//! transaction only when `POST /orders/{id}/pay` asks it to.
+//! transaction only when `POST /orders/{id}/pay` asks it to, with a spend
+//! ticket the user confirmed, while the wallet is unlocked
+//! ([`wallet_lock`], [`spend_tickets`]).
 
 #![forbid(unsafe_code)]
 
@@ -27,18 +29,27 @@ mod orders;
 mod pairing;
 mod pay_order;
 mod rates;
+mod lock_http;
 mod seed;
+mod spend_tickets;
 mod vault;
 mod vault_key;
 mod vendor_labels;
 mod wallet;
 mod wallet_http;
+mod wallet_keys;
+mod wallet_lock;
+mod wallet_session;
 mod watch;
 
 #[cfg(test)]
 mod checkout_tests;
 #[cfg(test)]
 mod harness;
+#[cfg(test)]
+mod lock_tests;
+#[cfg(test)]
+mod lock_receive_tests;
 #[cfg(test)]
 mod multinode_tests;
 #[cfg(test)]
@@ -199,6 +210,8 @@ pub struct Node {
     /// One wallet per fixture store, keyed by seller name. The node plays these vendors.
     pub(crate) store_wallets: BTreeMap<String, Mutex<NodeWallet>>,
     pub(crate) pay_jobs: pay_order::PayJobs,
+    /// The spend tier: closed until `POST /unlock`, and again on lock.
+    pub(crate) lock: wallet_lock::WalletLock,
 }
 
 impl Node {
@@ -249,7 +262,8 @@ impl Node {
             let wallet = NodeWallet::open(&wallets, &name, &vault, network)?;
             store_wallets.insert(listing.seller.clone(), Mutex::new(wallet));
         }
-        Ok(Self {
+        let lock = wallet_lock::WalletLock::open(&dir, vault.clone(), &local.vault)?;
+        let node = Self {
             catalog: RwLock::new(catalog),
             vendor_labels: Mutex::new(vendor_labels),
             mailbox,
@@ -272,7 +286,10 @@ impl Node {
             buyer_wallet: Mutex::new(buyer_wallet),
             store_wallets,
             pay_jobs: pay_order::PayJobs::new(),
-        })
+            lock,
+        };
+        node.drop_uncommitted_spend()?;
+        Ok(node)
     }
 
     pub fn network(&self) -> NetworkMode {
@@ -323,14 +340,15 @@ impl Node {
     }
 
     /// Serve HTTP on this thread. The chain watcher (every `poll`), the pay
-    /// worker, and the escrow mail loop each run on their own thread, so
-    /// chain and peer calls never block HTTP.
+    /// worker, the escrow mail loop, and the auto-lock each run on their own
+    /// thread, so chain and peer calls never block HTTP.
     pub fn serve(&self, port: u16, poll: Duration) -> std::io::Result<()> {
         let stop = AtomicBool::new(false);
         std::thread::scope(|scope| {
             scope.spawn(|| self.run_watcher(poll, &stop));
             scope.spawn(|| self.run_pay_worker(&stop));
             scope.spawn(|| self.run_escrow_mail(&stop));
+            scope.spawn(|| self.run_auto_lock(&stop));
             let result = http::serve(self, port);
             stop.store(true, Ordering::Relaxed);
             result

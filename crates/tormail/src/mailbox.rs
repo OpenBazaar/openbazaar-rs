@@ -124,18 +124,27 @@ impl Mailbox {
         Ok(ids)
     }
 
+    /// Read one letter and leave it stored.
+    pub fn read(&self, id: &LetterId) -> Result<SealedLetter, Error> {
+        let _guard = self.lock()?;
+        self.read_unlocked(id)
+    }
+
     /// Read and delete one letter.
     pub fn take(&self, id: &LetterId) -> Result<SealedLetter, Error> {
         let _guard = self.lock()?;
-        let path = self.letter_path(id);
-        let bytes = match fs::read(&path) {
+        let letter = self.read_unlocked(id)?;
+        fs::remove_file(self.letter_path(id))?;
+        Ok(letter)
+    }
+
+    fn read_unlocked(&self, id: &LetterId) -> Result<SealedLetter, Error> {
+        let bytes = match fs::read(self.letter_path(id)) {
             Ok(bytes) => bytes,
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Err(Error::Missing),
             Err(err) => return Err(err.into()),
         };
-        let letter = SealedLetter::from_bytes(&bytes)?;
-        fs::remove_file(&path)?;
-        Ok(letter)
+        SealedLetter::from_bytes(&bytes)
     }
 
     fn letter_path(&self, id: &LetterId) -> PathBuf {

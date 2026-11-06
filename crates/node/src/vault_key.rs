@@ -38,7 +38,7 @@ const LOCK_LEN: usize = LOCK_HEADER + 12 + 32 + 16;
 const KEYRING_SERVICE: &str = "OpenBazaar node vault";
 
 /// Files a node writes that must stay private to its user.
-const SECRET_NAMES: [&str; 3] = [KEY_FILE, LOCK_FILE, "pairing.token"];
+const SECRET_NAMES: [&str; 5] = [KEY_FILE, LOCK_FILE, "pairing.token", "wallet.lock", "wallet.remember"];
 
 #[derive(Clone)]
 pub enum VaultMode {
@@ -76,6 +76,9 @@ pub(crate) const DEFAULT_COST: Cost = Cost {
 pub(crate) trait KeyStore {
     fn get(&self, account: &str) -> Result<Option<[u8; 32]>, String>;
     fn set(&self, account: &str, key: &[u8; 32]) -> Result<(), String>;
+    fn delete(&self, _account: &str) -> Result<(), String> {
+        Err("this keystore cannot delete entries".into())
+    }
 }
 
 pub(crate) struct OsKeyStore;
@@ -94,6 +97,14 @@ impl KeyStore for OsKeyStore {
     fn set(&self, account: &str, key: &[u8; 32]) -> Result<(), String> {
         let entry = keyring::Entry::new(KEYRING_SERVICE, account).map_err(|err| err.to_string())?;
         entry.set_password(&encode_hex(key)).map_err(|err| err.to_string())
+    }
+
+    fn delete(&self, account: &str) -> Result<(), String> {
+        let entry = keyring::Entry::new(KEYRING_SERVICE, account).map_err(|err| err.to_string())?;
+        match entry.delete_credential() {
+            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Err(err) => Err(err.to_string()),
+        }
     }
 }
 
@@ -217,12 +228,18 @@ fn read_marker(path: &Path) -> Result<Option<String>, Error> {
     }
 }
 
-/// Write `bytes` to `path` (mode 0600) through a temporary file.
-fn replace_file(path: &Path, bytes: &[u8]) -> Result<(), Error> {
+/// Write `bytes` to `path` (mode 0600) through a temporary file. The rename
+/// is atomic, and the directory is synced so the rename survives a crash.
+pub(crate) fn replace_file(path: &Path, bytes: &[u8]) -> Result<(), Error> {
     let tmp = path.with_extension("tmp");
     let _ = fs::remove_file(&tmp);
     write_secret(&tmp, bytes)?;
-    fs::rename(&tmp, path).map_err(|err| Error::Detail(err.to_string()))
+    fs::rename(&tmp, path).map_err(|err| Error::Detail(err.to_string()))?;
+    #[cfg(unix)]
+    if let Some(parent) = path.parent() {
+        let _ = fs::File::open(parent).and_then(|dir| dir.sync_all());
+    }
+    Ok(())
 }
 
 /// Overwrite and delete the old key file once the key is safe elsewhere.
@@ -248,13 +265,32 @@ fn argon2(passphrase: &str, salt: &[u8], cost: Cost) -> Result<Key, Error> {
     Ok(out)
 }
 
-/// `OBP1 | memory | passes | lanes | salt[16] | nonce[12] | sealed key`.
-/// The header is the AEAD associated data, so its costs cannot be lowered.
 fn lock_key(key: &[u8; 32], passphrase: &str, cost: Cost) -> Result<Vec<u8>, Error> {
+    wrap_key(LOCK_MAGIC, key, passphrase, cost)
+}
+
+fn unlock(blob: &[u8], passphrase: &str) -> Result<[u8; 32], Error> {
+    unwrap_key(LOCK_MAGIC, blob, passphrase).map_err(|err| match err {
+        Unwrap::Wrong => detail("The vault passphrase is wrong."),
+        Unwrap::Unreadable => detail("vault.lock could not be read."),
+    })
+}
+
+/// Why [`unwrap_key`] failed.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Unwrap {
+    Wrong,
+    Unreadable,
+}
+
+/// `MAGIC | memory | passes | lanes | salt[16] | nonce[12] | sealed key`.
+/// The header is the AEAD associated data, so its costs cannot be lowered.
+/// `magic` keeps a vault lock and a wallet lock from standing in for each other.
+pub(crate) fn wrap_key(magic: &[u8; 4], key: &[u8; 32], passphrase: &str, cost: Cost) -> Result<Vec<u8>, Error> {
     let salt = random_bytes::<16>();
     let nonce = random_bytes::<12>();
     let mut blob = Vec::with_capacity(LOCK_LEN);
-    blob.extend_from_slice(LOCK_MAGIC);
+    blob.extend_from_slice(magic);
     for value in [cost.memory_kib, cost.passes, cost.lanes] {
         blob.extend_from_slice(&value.to_le_bytes());
     }
@@ -268,9 +304,9 @@ fn lock_key(key: &[u8; 32], passphrase: &str, cost: Cost) -> Result<Vec<u8>, Err
     Ok(blob)
 }
 
-fn unlock(blob: &[u8], passphrase: &str) -> Result<[u8; 32], Error> {
-    let unreadable = || detail("vault.lock could not be read.");
-    if blob.len() != LOCK_LEN || &blob[..4] != LOCK_MAGIC {
+pub(crate) fn unwrap_key(magic: &[u8; 4], blob: &[u8], passphrase: &str) -> Result<[u8; 32], Unwrap> {
+    let unreadable = || Unwrap::Unreadable;
+    if blob.len() != LOCK_LEN || &blob[..4] != magic {
         return Err(unreadable());
     }
     let word = |at: usize| u32::from_le_bytes([blob[at], blob[at + 1], blob[at + 2], blob[at + 3]]);
@@ -283,14 +319,14 @@ fn unlock(blob: &[u8], passphrase: &str) -> Result<[u8; 32], Error> {
         return Err(unreadable());
     }
     let (header, rest) = blob.split_at(LOCK_HEADER);
-    let wrap = argon2(passphrase, &header[16..], cost)?;
+    let wrap = argon2(passphrase, &header[16..], cost).map_err(|_| unreadable())?;
     let key = ChaCha20Poly1305::new(&wrap)
         .decrypt(Nonce::from_slice(&rest[..12]), Payload { msg: &rest[12..], aad: header })
-        .map_err(|_| detail("The vault passphrase is wrong."))?;
+        .map_err(|_| Unwrap::Wrong)?;
     key.try_into().map_err(|_| unreadable())
 }
 
-fn random_bytes<const N: usize>() -> [u8; N] {
+pub(crate) fn random_bytes<const N: usize>() -> [u8; N] {
     let mut bytes = [0u8; N];
     StdRng::from_os_rng().fill_bytes(&mut bytes);
     bytes
@@ -300,7 +336,7 @@ fn random_key() -> [u8; 32] {
     random_bytes()
 }
 
-fn encode_hex(bytes: &[u8]) -> String {
+pub(crate) fn encode_hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 

@@ -223,6 +223,11 @@ fn moderated_order_records_the_buyer_side_and_asks_the_vendor_node() {
     let node = Node::open_with(&dir.0, load_catalog(NetworkMode::Testnet4).unwrap(), config).unwrap();
     let response = dispatch(&node, &post(&node, &order.to_string()));
     let (status, body) = status_and_body(&response);
+    assert!(status.contains("423"), "escrow checkout derives a signing key: {body}");
+    assert!(node.mailbox.list().unwrap().is_empty(), "nothing is sealed while locked");
+    crate::harness::unlock(&node);
+    let response = dispatch(&node, &post(&node, &order.to_string()));
+    let (status, body) = status_and_body(&response);
     assert!(status.contains("200"), "{body}");
     let receipt: Value = serde_json::from_str(&body).unwrap();
     assert_eq!(receipt["sealed"], true);

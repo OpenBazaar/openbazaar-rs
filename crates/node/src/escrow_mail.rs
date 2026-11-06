@@ -245,7 +245,7 @@ impl Node {
 
     /// Opens escrow mail sent to this node as buyer.
     pub(crate) fn buyer_mail_secret(&self) -> StoreSecret {
-        let secret = self.buyer_wallet().seed.mail_key().secret_bytes();
+        let secret = *self.buyer_wallet().watch.mail_key;
         StoreSecret::from_bytes(secret).expect("any 32 bytes are an X25519 secret")
     }
 
@@ -264,7 +264,9 @@ impl Node {
     }
 
     /// Open and handle every letter waiting in the escrow inbox. Returns how
-    /// many were handled; a letter that fails is logged and dropped.
+    /// many were handled; a letter that fails is logged and dropped. A letter
+    /// whose step needs the spend tier stays in the inbox while the wallet is
+    /// locked and is handled after the next unlock.
     pub fn process_escrow_mail(&self) -> usize {
         if self.network != NetworkMode::Testnet4 {
             return 0;
@@ -281,11 +283,17 @@ impl Node {
             let result = self
                 .escrow
                 .inbox
-                .take(&id)
+                .read(&id)
                 .map_err(|err| err.to_string())
                 .and_then(|letter| self.handle_letter(&letter));
+            if matches!(result, Ok(Handled::Deferred)) {
+                continue;
+            }
+            if let Err(err) = self.escrow.inbox.take(&id) {
+                eprintln!("ob-node: escrow letter {}: {err}", id.as_str());
+            }
             match result {
-                Ok(()) => handled += 1,
+                Ok(_) => handled += 1,
                 Err(err) => eprintln!("ob-node: escrow letter {}: {err}", id.as_str()),
             }
         }
@@ -300,25 +308,48 @@ impl Node {
         }
     }
 
-    fn handle_letter(&self, letter: &SealedLetter) -> Result<(), String> {
+    /// Open a letter with the receive tier, then handle it, or defer it
+    /// when its step signs with a spend-tier key and the wallet is locked.
+    fn handle_letter(&self, letter: &SealedLetter) -> Result<Handled, String> {
+        let unlocked = self.lock.state() == crate::wallet_lock::State::Unlocked;
         if let Ok(body) = open_message(letter, &self.buyer_mail_secret()) {
-            return self.buyer_mail(Mail::decode(&body)?);
+            let mail = Mail::decode(&body)?;
+            if !unlocked && buyer_step_signs(mail.kind) {
+                return Ok(Handled::Deferred);
+            }
+            return self.buyer_mail(mail).map(|()| Handled::Done);
         }
         for seller in self.store_wallets.keys() {
             let Some(secret) = vendor_mail_secret(seller) else {
                 continue;
             };
             if let Ok(body) = open_message(letter, &secret) {
-                return self.vendor_mail(seller, Mail::decode(&body)?);
+                let mail = Mail::decode(&body)?;
+                // Every vendor round uses the sale's per-order key.
+                if !unlocked {
+                    return Ok(Handled::Deferred);
+                }
+                return self.vendor_mail(seller, mail).map(|()| Handled::Done);
             }
         }
         if self.escrow.config.moderates {
             if let Ok(body) = open_message(letter, &moderator_mail_secret()) {
-                return self.moderator_mail(Mail::decode(&body)?);
+                return self.moderator_mail(Mail::decode(&body)?).map(|()| Handled::Done);
             }
         }
         Err("no key on this node opens it".into())
     }
+}
+
+enum Handled {
+    Done,
+    Deferred,
+}
+
+/// Buyer rounds that sign or broadcast: countersigning terms, signing the
+/// funding, and settling a ruling. A release nonce is only stored.
+fn buyer_step_signs(kind: Kind) -> bool {
+    matches!(kind, Kind::Offer | Kind::Reply | Kind::Ruling)
 }
 
 #[cfg(test)]

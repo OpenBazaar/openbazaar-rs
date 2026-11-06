@@ -98,6 +98,7 @@ pub(crate) fn action_response(
         Err(PayError::Invalid(message)) => json_error("400 Bad Request", &message, origin),
         Err(PayError::Conflict(message)) => json_error("409 Conflict", &message, origin),
         Err(PayError::Chain(message)) => json_error("502 Bad Gateway", &message, origin),
+        Err(PayError::Locked(state)) => crate::lock_http::locked_response(state, origin),
         Err(PayError::Failed(detail)) => {
             eprintln!("ob-node: escrow: {detail}");
             json_error("500 Internal Server Error", "The escrow step failed. Details are in the node log.", origin)

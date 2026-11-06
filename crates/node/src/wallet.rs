@@ -1,9 +1,11 @@
-//! A BDK descriptor wallet backed by one [`Seed`].
+//! A BDK descriptor wallet over one wallet's public descriptors.
 //!
 //! The wallet's chain state (BDK change set) and the next escrow key index
-//! are sealed in `state.obv` beside `seed.obv`. Both files are 0600. The
-//! state holds public descriptors and transactions; private keys come from
-//! the seed at load time and never touch the state file.
+//! are sealed in `state.obv` under the vault key. The wallet itself is
+//! watch-only: it is opened from the receive tier ([`crate::wallet_keys`]),
+//! so it can sync, show balances, and derive addresses while the node is
+//! locked. [`NodeWallet::sign`] takes a [`Seed`] from the spend tier for one
+//! signature and builds its signers then; no private key stays in the wallet.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -19,12 +21,15 @@ use crate::chain::WalletRequest;
 use crate::network::NetworkMode;
 use crate::seed::Seed;
 use crate::vault::Vault;
+use crate::wallet_keys::{self, WatchKeys};
 use crate::Error;
 
 pub(crate) struct NodeWallet {
-    pub(crate) seed: Seed,
+    pub(crate) watch: WatchKeys,
     pub(crate) wallet: Wallet,
-    signers: [SignersContainer; 2],
+    /// `wallets/<name>/`: `watch.obv`, `spend.obv`, `state.obv`.
+    pub(crate) dir: PathBuf,
+    network: NetworkMode,
     changeset: ChangeSet,
     escrow_next: u32,
     state_path: PathBuf,
@@ -37,8 +42,8 @@ impl NodeWallet {
     pub(crate) fn open(dir: &Path, name: &str, vault: &Vault, network: NetworkMode) -> Result<Self, Error> {
         let dir = dir.join(name);
         fs::create_dir_all(&dir).map_err(|err| Error::Detail(err.to_string()))?;
-        let seed = Seed::load_or_create(&dir.join("seed.obv"), vault, network)?;
-        let (external, internal) = seed.wallet_descriptors();
+        let watch = wallet_keys::open_watch(&dir, vault, network)?;
+        let (external, internal) = (watch.external.clone(), watch.internal.clone());
         let state_path = dir.join("state.obv");
         let (changeset, escrow_next) = match vault.read_sealed(&state_path)? {
             Some(bytes) => decode_state(&bytes)?,
@@ -57,18 +62,15 @@ impl NodeWallet {
                 .create_wallet_no_persist()
                 .map_err(|err| Error::Detail(format!("wallet {name}: {err}")))?,
         };
-        let signers = [
-            signers_for(&wallet, KeychainKind::External, &external, network)?,
-            signers_for(&wallet, KeychainKind::Internal, &internal, network)?,
-        ];
         let mut changeset = changeset;
         if let Some(staged) = wallet.take_staged() {
             changeset.merge(staged);
         }
         let mut opened = Self {
-            seed,
+            watch,
             wallet,
-            signers,
+            dir,
+            network,
             changeset,
             escrow_next,
             state_path,
@@ -134,9 +136,15 @@ impl NodeWallet {
         self.persist()
     }
 
-    /// Sign every input this wallet owns. Returns `true` when the PSBT is final.
-    pub(crate) fn sign(&self, psbt: &mut Psbt) -> Result<bool, Error> {
-        let signers: Vec<&SignersContainer> = self.signers.iter().collect();
+    /// Sign every input this wallet owns with keys from `seed` (the spend
+    /// tier). Returns `true` when the PSBT is final.
+    pub(crate) fn sign(&self, psbt: &mut Psbt, seed: &Seed) -> Result<bool, Error> {
+        let (external, internal) = seed.wallet_descriptors();
+        let signers = [
+            signers_for(&self.wallet, KeychainKind::External, &external, self.network)?,
+            signers_for(&self.wallet, KeychainKind::Internal, &internal, self.network)?,
+        ];
+        let signers: Vec<&SignersContainer> = signers.iter().collect();
         self.wallet
             .sign_with_signers(psbt, &signers, SignOptions::default())
             .map_err(|err| Error::Detail(err.to_string()))

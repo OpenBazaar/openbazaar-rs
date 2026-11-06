@@ -8,7 +8,8 @@ use bitcoin::Address;
 use serde_json::{json, Value};
 
 use crate::harness::{
-    checkout, fund_node_wallet, hash_of, open_node, order, pay, request, ship_to, unreachable_escrow, MockChain, TempDir,
+    checkout, fund_node_wallet, hash_of, open_node, order, pay, request, ship_to, ticket, unreachable_escrow, MockChain,
+    TempDir,
 };
 use crate::http::dispatch;
 use crate::network::{address_for, NetworkMode, ServeOptions};
@@ -173,7 +174,7 @@ fn paying_twice_is_refused_and_the_fee_rate_has_a_floor() {
     *chain.0.fee_rate.lock().unwrap() = 0.1;
     let placed = checkout(&node, &[("Paperback novel", "Marlow Goods", "direct")]);
     let id = placed[0]["orderId"].as_str().unwrap();
-    let paid = node.pay_order(id, &json!({})).unwrap();
+    let paid = node.pay_order(id, &json!({"ticket": ticket(&node, id).unwrap()})).unwrap();
     assert_eq!(paid["feeRateSatVb"], 1.0);
     assert_eq!(paid["payjoin"], false);
     assert_eq!(order(&node, id)["payTxid"], paid["txid"]);
@@ -181,7 +182,7 @@ fn paying_twice_is_refused_and_the_fee_rate_has_a_floor() {
     let fee = paid["feeSats"].as_u64().unwrap();
     assert!(fee as f64 >= tx.vsize() as f64, "fee {fee} for {} vB", tx.vsize());
 
-    let (status, again) = request(&node, "POST", &format!("/orders/{id}/pay"), "{}");
+    let (status, again) = ticket(&node, id).unwrap_err();
     assert!(status.contains("409"), "{status} {again}");
     assert_eq!(node.run_pay_jobs(), 0);
     assert_eq!(chain.broadcasts().len(), 1);
@@ -189,9 +190,10 @@ fn paying_twice_is_refused_and_the_fee_rate_has_a_floor() {
     *chain.0.fee_rate.lock().unwrap() = 5_000.0;
     let other = checkout(&node, &[("Letterpress cards", "Hale Paper", "direct")]);
     let other_id = other[0]["orderId"].as_str().unwrap();
-    let (_, after) = pay(&node, other_id, "{}");
-    assert!(after["payError"].as_str().unwrap().contains("above 500"), "{after}");
-    assert!(after.get("payTxid").is_none());
+    let (status, quote) = pay(&node, other_id, "{}");
+    assert!(status.contains("502"), "the quote is refused: {status}");
+    assert!(quote["error"].as_str().unwrap().contains("above 500"), "{quote}");
+    assert!(order(&node, other_id).get("payTxid").is_none());
     assert_eq!(chain.broadcasts().len(), 1);
 }
 
@@ -201,12 +203,13 @@ fn pay_answers_at_once_and_the_worker_sends_it_once() {
     fund_node_wallet(&node, &chain, 100_000);
     let placed = checkout(&node, &[("Paperback novel", "Marlow Goods", "direct")]);
     let id = placed[0]["orderId"].as_str().unwrap();
-    let (status, queued) = request(&node, "POST", &format!("/orders/{id}/pay"), "{}");
+    let body = json!({"ticket": ticket(&node, id).unwrap()}).to_string();
+    let (status, queued) = request(&node, "POST", &format!("/orders/{id}/pay"), &body);
     assert!(status.contains("202"), "{status} {queued}");
     assert_eq!(queued["status"], "Awaiting payment");
     assert_eq!(queued["paying"], true);
     assert!(chain.broadcasts().is_empty(), "nothing is sent on the request thread");
-    let (status, again) = request(&node, "POST", &format!("/orders/{id}/pay"), "{}");
+    let (status, again) = ticket(&node, id).unwrap_err();
     assert!(status.contains("409"), "{status}");
     assert!(again["error"].as_str().unwrap().contains("already being sent"));
 
@@ -229,8 +232,9 @@ fn unconfirmed_coins_from_others_are_not_spent_but_own_change_is() {
     assert_eq!(wallet["balance"]["spendableSats"], 0);
     let placed = checkout(&node, &[("Paperback novel", "Marlow Goods", "direct")]);
     let id = placed[0]["orderId"].as_str().unwrap();
-    let (_, after) = pay(&node, id, "{}");
-    assert!(after["payError"].as_str().unwrap().contains("cannot pay"), "{after}");
+    let (status, quote) = pay(&node, id, "{}");
+    assert!(status.contains("400"), "{status}");
+    assert!(quote["error"].as_str().unwrap().contains("cannot pay"), "{quote}");
     assert!(chain.broadcasts().is_empty());
 
     chain.0.wallet_txs.lock().unwrap()[0].1 = true;
@@ -251,10 +255,11 @@ fn an_empty_wallet_cannot_pay_and_nothing_is_sent() {
     let (_dir, chain, node) = testnet();
     let placed = checkout(&node, &[("Paperback novel", "Marlow Goods", "direct")]);
     let id = placed[0]["orderId"].as_str().unwrap();
-    let (_, after) = pay(&node, id, "{}");
-    assert!(after["payError"].as_str().unwrap().contains("cannot pay"), "{after}");
+    let (status, quote) = pay(&node, id, "{}");
+    assert!(status.contains("400"), "the quote is refused: {status}");
+    assert!(quote["error"].as_str().unwrap().contains("cannot pay"), "{quote}");
     assert!(chain.broadcasts().is_empty());
-    assert_eq!(after["status"], "Awaiting payment");
+    assert_eq!(order(&node, id)["status"], "Awaiting payment");
 }
 
 #[test]
@@ -315,7 +320,7 @@ fn mainnet_refuses_escrow_and_testnet4_labels_it_an_unsafe_demo() {
     assert_eq!(terms["fundingSats"], placed[0]["totalSats"].as_u64().unwrap() + ESCROW_SPEND_FEE_SATS);
     assert!(terms["error"].as_str().unwrap().contains("127.0.0.1:9"), "the unreachable vendor is reported: {terms}");
     assert_eq!(placed[0]["status"], crate::AWAITING_TERMS);
-    let (status, value) = request(&test, "POST", &format!("/orders/{}/pay", placed[0]["orderId"].as_str().unwrap()), "{}");
+    let (status, value) = ticket(&test, placed[0]["orderId"].as_str().unwrap()).unwrap_err();
     assert!(status.contains("409"), "no terms, nothing to fund: {status} {value}");
 }
 
@@ -396,7 +401,7 @@ fn wrong_network_strings_are_refused() {
             order.payment.as_mut().unwrap()["address"] = json!("bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4");
         })
         .unwrap();
-    let (status, value) = request(&node, "POST", &format!("/orders/{id}/pay"), "{}");
+    let (status, value) = ticket(&node, id).unwrap_err();
     assert!(status.contains("400"), "{status}");
     assert!(value["error"].as_str().unwrap().contains("testnet4"));
     assert!(chain.broadcasts().is_empty());
@@ -428,9 +433,10 @@ fn each_network_has_its_own_data_dir_and_never_shows_the_other() {
     assert_eq!(main_orders["orders"].as_array().unwrap().len(), 0);
     assert_ne!(test.pairing_token(), main.pairing_token());
     for dir in [&test_dir, &main_dir] {
-        for file in ["vault.key", "pairing.token", "wallets/node/seed.obv", "wallets/store-marlow-goods/seed.obv"] {
+        for file in ["vault.key", "pairing.token", "wallet.lock", "wallets/node/spend.obv", "wallets/node/watch.obv", "wallets/store-marlow-goods/spend.obv"] {
             assert!(dir.join(file).exists(), "{}", dir.join(file).display());
         }
+        assert!(!dir.join("wallets/node/seed.obv").exists(), "setup moved the seed to the spend tier");
     }
     assert_ne!(
         fs::read(test_dir.join("vault.key")).unwrap(),
@@ -439,7 +445,7 @@ fn each_network_has_its_own_data_dir_and_never_shows_the_other() {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        for file in ["wallets/node/seed.obv", "wallets/node/state.obv"] {
+        for file in ["wallet.lock", "wallets/node/spend.obv", "wallets/node/watch.obv", "wallets/node/state.obv"] {
             let mode = fs::metadata(test_dir.join(file)).unwrap().permissions().mode();
             assert_eq!(mode & 0o777, 0o600, "{file}");
         }
@@ -459,7 +465,7 @@ fn each_network_has_its_own_data_dir_and_never_shows_the_other() {
     assert!(test.orders().get(&id).is_none());
     let (_, list) = request(&test, "GET", "/orders", "");
     assert_eq!(list["orders"].as_array().unwrap().len(), 0);
-    let (status, _) = request(&test, "POST", &format!("/orders/{id}/pay"), "{}");
+    let (status, _) = ticket(&test, &id).unwrap_err();
     assert!(status.contains("404"));
 }
 
