@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OpenBazaar: Signed Catalogs, Sealed Orders, and Scriptless Two-Party Escrow for a Non-Custodial Marketplace</title>
+  <meta name="description" content="OpenBazaar is a peer-to-peer marketplace for ordinary physical and digital goods paid in bitcoin. The original system (developed from 2014, with its last substantial releases in 2020) published stores over IPFS, carried orders over libp2p, and protected buyers with a 2-of-3…">
+  <link rel="canonical" href="https://openbazaar.github.io/openbazaar-rs/paper/">
+  <meta property="og:type" content="article">
+  <meta property="og:url" content="https://openbazaar.github.io/openbazaar-rs/paper/">
+  <meta property="og:title" content="OpenBazaar: Signed Catalogs, Sealed Orders, and Scriptless Two-Party Escrow for a Non-Custodial Marketplace">
+  <meta property="og:description" content="OpenBazaar is a peer-to-peer marketplace for ordinary physical and digital goods paid in bitcoin. The original system (developed from 2014, with its last substantial releases in 2020) published stores over IPFS, carried orders over libp2p, and protected buyers with a 2-of-3…">
+  <meta property="og:image" content="https://openbazaar.github.io/openbazaar-rs/paper/preview.png?v=78b6108">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="628">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="OpenBazaar: Signed Catalogs, Sealed Orders, and Scriptless Two-Party Escrow for a Non-Custodial Marketplace">
+  <meta name="twitter:description" content="OpenBazaar is a peer-to-peer marketplace for ordinary physical and digital goods paid in bitcoin. The original system (developed from 2014, with its last substantial releases in 2020) published stores over IPFS, carried orders over libp2p, and protected buyers with a 2-of-3…">
+  <meta name="twitter:image" content="https://openbazaar.github.io/openbazaar-rs/paper/preview.png?v=78b6108">
+  <style>
+    body { max-width: 42rem; margin: 3rem auto; padding: 0 1.25rem; font: 1.05rem/1.6 Georgia, "Times New Roman", serif; color: #1a1a1a; }
+    h1 { font-size: 1.6rem; line-height: 1.3; font-weight: normal; }
+    h2 { font-size: 1rem; text-transform: uppercase; letter-spacing: .08em; margin-top: 2rem; }
+    .author { color: #555; }
+    .download { display: inline-block; margin: 1rem 0; padding: .6rem 1.1rem; background: #1a1a1a; color: #fff; text-decoration: none; border-radius: 4px; font-family: system-ui, sans-serif; }
+    footer { margin-top: 3rem; color: #666; font-size: .85rem; font-family: system-ui, sans-serif; }
+    a { color: inherit; }
+  </style>
+</head>
+<body>
+  <h1>OpenBazaar: Signed Catalogs, Sealed Orders, and Scriptless Two-Party Escrow for a Non-Custodial Marketplace</h1>
+  <p class="author">Brian Hoffman · OpenBazaar project</p>
+  <a class="download" href="openbazaar.pdf">Download PDF</a>
+  <h2>Abstract</h2>
+    <p>OpenBazaar is a peer-to-peer marketplace for ordinary physical and digital goods paid in bitcoin. The original system (developed from 2014, with its last substantial releases in 2020) published stores over IPFS, carried orders over libp2p, and protected buyers with a 2-of-3 multisignature escrow whose script and moderator key appeared on chain when it was spent. This paper describes a redesign and argues which of its security and privacy properties hold, under which assumptions, and how much of each is implemented today.</p>
+    <p>Stores and listings are public, content-addressed records signed with BIP 340 Schnorr signatures over a canonical encoding. Orders are private letters sealed with HPKE to a single vendor and addressed to that vendor's onion-service mailbox; a client device talks only to its owner's node. Payments go directly to the vendor, one transaction per seller. Moderated purchases use a scriptless escrow: a MuSig2 Taproot key-path output whose timeout and dispute spends are all presigned before funding. A dispute is settled by an adaptor signature whose completing secret is split between the favored party and a moderator half that the losing party verifiably encrypts to the moderator. The moderator never holds a signing key over the funds and cannot change any payout.</p>
+    <p>We state the threat model, give the escrow protocol and its timeline precisely, tabulate what every observer learns, and label each mechanism as implemented and tested, implemented as a demonstration, specified but not implemented, or future work. At the time of writing, live Tor delivery, catalog replication, publishing costs, and integration of the two-party escrow into the node are not implemented, and the paper's analysis of those parts is a design argument rather than a description of running code.</p>
+  <footer>
+    Built from <a href="https://github.com/OpenBazaar/openbazaar-rs/commit/78b6108b8016d62e9a12333af2ebf9b8ad2c3e43"><code>78b6108</code></a> (2026-11-06) of
+    <a href="https://github.com/OpenBazaar/openbazaar-rs">OpenBazaar/openbazaar-rs</a>.
+  </footer>
+</body>
+</html>
