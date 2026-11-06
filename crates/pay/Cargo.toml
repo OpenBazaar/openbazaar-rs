@@ -1,0 +1,18 @@
+[package]
+name = "openbazaar-pay"
+description = "Direct Bitcoin payment rails for OpenBazaar: BOLT 12, BIP 352, and Payjoin v2."
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+license = "MIT"
+publish = false
+readme = false
+
+[dependencies]
+bitcoin = { version = "0.32.102", features = ["base64"] }
+lightning = "0.2.7"
+payjoin = { version = "1.2.0", features = ["v1"] }
+silentpayments = "0.8.1"
+
+[dev-dependencies]
+bitcoin-ohttp = "0.7"

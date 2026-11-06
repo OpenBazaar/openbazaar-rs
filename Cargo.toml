@@ -1,6 +1,12 @@
 [workspace]
 resolver = "2"
-members = ["crates/protocol", "crates/node"]
+members = [
+    "crates/protocol",
+    "crates/node",
+    "crates/pay",
+    "crates/tormail",
+    "crates/escrow",
+]
 
 [workspace.package]
 edition = "2021"
