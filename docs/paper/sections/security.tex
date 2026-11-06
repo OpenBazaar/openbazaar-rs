@@ -1,0 +1,73 @@
+\section{Security Analysis}
+\label{sec:security}
+
+We state each property with its assumptions. The arguments are informal; a game-based or machine-checked proof is future work. The escrow properties (P1--P4) refer to the protocol of \S\ref{sec:escrow}.
+
+\begin{assumption}[Escrow]\label{as:escrow}
+(a) MuSig2 with BIP 327 key aggregation is unforgeable~\citep{nick2021musig2}, and adaptor pre-signatures do not let anyone without the adaptor secret produce a valid signature. (b) The proofs of knowledge, the bit proofs, and the DLEQ proof are sound in the random-oracle model. (c) Each party runs the protocol checks before advancing and keeps its own secret key. (d) The funding transaction spends only native segwit inputs that do not signal replace-by-fee and is never replaced, so its transaction id cannot change after the presigned spends are created. (e) A party who needs to broadcast a transaction gets it confirmed within the relevant window (at least 144 blocks) at the presigned fee rate or with a fee bump through the anchor output. (f) Each party durably stores the presigned spends it holds (the buyer's refund, the vendor's claim) before the step that makes them necessary, and the moderator durably stores its rulings.
+\end{assumption}
+
+\begin{property}[No custody]
+No party other than the buyer and the vendor holds a key sufficient to spend the escrow output.
+\end{property}
+\noindent\emph{Argument.} The output key $Q$ is a tweak of $\mathsf{KeyAgg}(B,V)$; the moderator's key $K$ is not aggregated. Under Assumption~\ref{as:escrow}(a), producing any valid signature under $Q$ requires partial signatures from both $b$ and $v$. Every spend that can exist was either presigned by both parties before funding or is signed by both cooperatively (the release).
+
+\begin{property}[Bounded moderator]
+A moderator, alone or with any outside party, cannot move the funds, and cannot cause any payout other than one of the two dispute outcomes whose outputs both parties signed.
+\end{property}
+\noindent\emph{Argument.} The moderator learns $u_X$ for at most the branch it rules on. A completed signature on $\tx{X}$ needs $t_X+u_X$ and the pre-signature $\hat\sigma_X$. The moderator does not know $t_X$, and by the proof of knowledge (Assumption~\ref{as:escrow}(b)) $X$ could not have chosen $T_X$ to cancel $U_X$. The outputs of $\tx{X}$, including the moderator fee and payout scripts, are fixed by the signed terms and committed in its signature hash, so the moderator cannot redirect funds or change amounts. The terms carry exactly the moderator record each party already trusts, so a counterparty cannot substitute a different moderator, payout, or fee.
+
+\emph{What the moderator can do:} rule for the wrong party; refuse to rule, which leaves the parties to the claim and refund; or rule for both parties, which lets both broadcast and makes the outcome a race. The last is provable from two signed rulings over the same terms digest and outpoint, but not preventable by the parties; an honest moderator's ruling store refuses a second branch. A moderator colluding with one party (A5) can make that party win the dispute, which is the same economic trust as in a 2-of-3 escrow.
+
+\begin{property}[Buyer exit]
+If the vendor disappears after funding, the buyer recovers $F-f$ at height $h_R+1$ without anyone's cooperation. If the vendor stays but does not deliver, the buyer recovers $F-f-\varphi$ provided it sends a dispute letter by $h_D$, the moderator rules for it, and the outcome confirms by $h_C$.
+\end{property}
+\noindent\emph{Argument.} The buyer holds a complete refund signature before it signs the funding transaction (refund before funding), and the refund needs nothing but height $h_R+1$. If the vendor never broadcasts the claim, nothing else can spend the output before then except the release (which the buyer must sign) and the dispute outcomes (which need a ruling). For the second case, the buyer holds the pre-signature for $\tx{B}$ and the moderator can reveal $u_B$ because the buyer verified its encryption in round 3. \emph{Limits:} against a vendor who stays online and does not deliver, the buyer depends on the moderator ruling in time; if the moderator does not, the vendor claims at $h_C+1$. Both parties require $h_D$ to lie at least a delivery window above the tip at funding, so a vendor cannot propose heights that are already past.
+
+\begin{property}[Vendor protection against a stalling buyer]
+If the buyer stops responding after funding, the vendor collects $F-f$ at height $h_C+1$ without anyone's cooperation.
+\end{property}
+\noindent\emph{Argument.} The vendor holds a complete claim signature from round 3 with \code{nLockTime} $h_C<h_R$. The buyer's only competing unilateral spend is the refund, which is not valid until $h_R+1$, and a buyer dispute needs a ruling. \emph{Assumptions:} the vendor kept the claim (Assumption~\ref{as:escrow}(f)) and confirms it inside the claim window (Assumption~\ref{as:escrow}(e)). A vendor that loses the claim lets the buyer take the refund at $h_R+1$.
+
+\begin{property}[Catalog integrity]
+A party that does not hold a store's secret key cannot produce a store record or listing that verifies under that store's key, and cannot alter a listing, or its content label, without changing its address. The same holds for a labeler's sets under the labeler's key.
+\end{property}
+\noindent\emph{Argument.} BIP 340 signatures are existentially unforgeable under the discrete-log assumption in the random-oracle model. The tagged hash separates record types. The canonical encoding is injective and rejects trailing bytes, so two different records cannot share a signed body. The listing address is SHA-256 of the body, so changing any field changes the address under collision resistance. \emph{Limits:} no freshness and no completeness (\S\ref{sec:catalog}).
+
+\begin{property}[Letter confidentiality]
+Only the holder of the vendor's mailbox secret can read an order letter, and only the holder of the buyer's per-order reply secret can read a reply.
+\end{property}
+\noindent\emph{Argument.} HPKE base mode is IND-CCA2 secure for the recipient under the Gap Diffie--Hellman assumption on X25519 and AEAD security of ChaCha20-Poly1305~\citep{rfc9180}. Distinct \code{info} strings separate orders, replies, and escrow messages. \emph{Assumption:} the buyer seals to the key in the vendor's signed store record (\S\ref{sec:identity}); a buyer who takes the key from anywhere else gives whoever supplied it the ability to read the letter.
+
+\subsection{Attacks the escrow checks stop}
+\label{sec:attacks}
+
+Each check in \S\ref{sec:escrow-checks} exists because a protocol without it is attackable. We list the attacks.
+
+\paragraph{Past or near heights.} If a party accepted any $h_D<h_C<h_R$, a vendor could propose heights at or below the current tip: the buyer's dispute window would already be closed and the vendor's claim already valid, so the vendor could take the funds immediately after funding. Requiring $h_D \ge \mathit{tip}+1008$ at funding, checked by both parties against their own view of the chain, and bounding $h_R$ by a maximum lock time, prevents this.
+
+\paragraph{Unspendable or substituted moderator payout.} If the dispute outputs paid the moderator fee to any script the terms named, a vendor could name a non-standard script or a dust amount, making both dispute outcomes non-relayable, so that no ruling could ever be broadcast and the buyer's only exit became the refund after $h_R$; or the vendor could name its own script as the ``moderator'' payout and collect the fee on a buyer win. Every payout must be a standard type above dust, the three payout scripts must differ, and the moderator's script and fee must equal those in its published record. The moderator itself refuses letters whose terms name a different payout or fee.
+
+\paragraph{Replayed rulings.} If a ruling only named a branch, a ruling for the buyer in one escrow could be presented as the moderator's statement in another with the same moderator. Rulings sign the terms digest, the output key, the funding outpoint, the branch, and the adaptor point, and the moderator checks on its own chain view that the outpoint exists and pays the terms' output key and amount before ruling.
+
+\paragraph{Ruling both ways.} A stateless moderator that receives a dispute letter from each party could reveal both $u_B$ and $u_V$, turning the escrow into a broadcast race. The moderator keeps a durable ruling store keyed by terms digest and outpoint and refuses a second branch; two signed rulings over the same digest and outpoint are a transferable proof of equivocation.
+
+\paragraph{Fee pinning and stale fee rates.} Presigned spends pay a fee fixed at funding time. If fee rates rise, a dispute outcome or refund could be stuck below the relay floor until the window closes. Every spend except the cooperative release carries a small pay-to-anchor output that either party can spend to attach a child paying more (CPFP); the presigned fee is bounded below by a floor and above by a cap so that neither party can burn the other's funds to fees.
+
+\paragraph{Funding replacement.} A replaced funding transaction would have a new transaction id and strand every presigned spend, including the buyer's refund. Funding inputs that signal replace-by-fee are rejected, and the buyer must not double-spend its own funding inputs.
+
+\paragraph{Secret moderator policy.} If the moderator's acceptance rules (minimum amount, minimum windows, fee) were private, a moderator could refuse a dispute on grounds neither party could check beforehand. The policy is part of the moderator record inside the signed terms, and both parties check the terms against it before funding.
+
+\subsection{Other attacks considered}
+
+\paragraph{Rogue keys.} BIP 327 key aggregation weights each key with a coefficient that depends on all keys, which prevents a party from choosing its key to cancel the other's~\citep{maxwell2019musig}. The party halves $T_X$ are protected by proofs of knowledge, as above.
+
+\paragraph{Nonce reuse.} MuSig2 secret nonces are single-use: a party's state is consumed when it advances and cannot be copied, and the release draws new nonces, distinct from those of the dispute outcome that pays the same party the same amount.
+
+\paragraph{Garbage moderator share.} A losing party that encrypts a value not matching $U_X$ is caught by the favored party's check before that party signs anything leading to funding.
+
+\paragraph{Late dispute letters.} The moderator refuses letters received after $h_D$, so a ruling always has the full ruling window before the vendor claim becomes valid. The moderator's notion of ``received'' is its own view of the chain height, and it applies that check even to letters it has verified before.
+
+\paragraph{Denial of service on the moderator.} Each letter carries a 50~KB share whose verification costs about 50~ms (\S\ref{sec:evaluation}). The moderator caches letters it has verified and does not repeat the verification on decryption, but an attacker can still send many distinct letters; rate limits per source and batched verification (\S\ref{sec:future}) bound the cost.
+
+\paragraph{Client impersonation on the same machine.} A local process that can read the pairing token can act as the client (\S\ref{sec:architecture}). This is out of scope (A6).

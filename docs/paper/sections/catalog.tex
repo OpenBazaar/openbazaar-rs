@@ -1,0 +1,43 @@
+\section{Catalog and Replication}
+\label{sec:catalog}
+
+\subsection{Records}
+
+A \emph{store record} contains a display name, a region, two direct-payment strings (a BOLT 12 offer and a BIP 352 code), a content rating for the whole store, and the store's 32-byte x-only public key $S$, which is the store identifier. A \emph{listing} contains $S$, a title, a category, a price in satoshis, a ship-from region, a description, a seller display name, a stock count, the date it was signed, whether it accepts a moderator, a kind (physical or digital), an optional shared product key, flat shipping in satoshis, the subtotal above which shipping is waived, and the vendor's content label. Neither record has a field for a legal name, an email address, a phone number, or a street address, and a node should refuse to sign or relay free-text fields that contain them.
+
+\subsection{Canonical encoding}
+
+Each record body is a fixed sequence of fields: a four-byte magic (\code{OBST} for stores, \code{OBLS} for listings, \code{OBLB} for label sets), a one-byte version, then fields in a fixed order. Integers are little-endian of fixed width. Strings are a two-byte little-endian length followed by UTF-8 bytes; blobs are a four-byte length, capped at 8~MiB. The decoder rejects a wrong magic, an unknown version, invalid UTF-8, truncation, and trailing bytes. Because every variable-length field is length-prefixed and the field order is fixed, distinct records have distinct encodings, and a decoded record re-encodes to the same bytes. Appendix~\ref{app:formats} gives the layouts. A new version adds fields at the end of the body; older versions remain decodable, so records signed before a field existed keep verifying.
+
+\subsection{Signatures and addresses}
+
+The signature is a BIP 340 Schnorr signature~\citep{bip340} over a tagged hash of the body:
+\[
+  \sigma = \mathsf{Sign}_{s}\bigl(\Hash_{\mathrm{tag}}(\mathit{body})\bigr),\quad \Hash_{\mathrm{tag}}(m)=\mathrm{SHA256}\bigl(\mathrm{SHA256}(\mathrm{tag})\,\|\,\mathrm{SHA256}(\mathrm{tag})\,\|\,m\bigr),
+\]
+with tags \code{ob/store/v1}, \code{ob/listing/v1}, and \code{ob/labels/v1}, so a signature over one record type is not valid for another. Signing uses BIP 340's deterministic nonce derivation without auxiliary randomness. The signature is appended to the body. A listing can only be signed by the secret key of the store it names, and verification checks the signature against the $S$ inside the listing body.
+
+A listing's address is $\mathrm{SHA256}(\mathit{body})$, computed over the body without the signature. An order commits to this address, so a vendor who later edits a listing (for example, raising the price) produces a new address and cannot claim that the buyer agreed to the new terms. A node refuses an order for an address that it has not verified.
+
+\subsection{Content labels and labelers}
+\label{sec:labels}
+
+The network carries ordinary goods, but ``ordinary'' differs by buyer: some do not want to see weapons, alcohol, or adult material, and some jurisdictions restrict them. The design answers this with labels and filtering on the buyer's own device, not with a central moderator of the catalog.
+
+\paragraph{Self-labels.} Each listing carries a content rating (\emph{general}, \emph{sensitive}, or \emph{adult}) and a 16-bit set of tags (nudity, violence, drugs, weapons, gambling; the other bits are reserved). The store record carries a rating that applies to everything the store sells. Both are inside the signed body, so a replica cannot strip or soften a label without breaking the signature, and a vendor who wants a different label must sign a new record (for a listing, at a new address).
+
+\paragraph{Labelers.} A \emph{labeler} is a BIP 340 key that publishes numbered \emph{label sets}. Each entry in a set names a target (a listing address or a store key) and either gives it a rating, a tag set, and a short reason code, or retracts the labeler's earlier label on that target. For each labeler and target, the entry in the highest-numbered set that names the target is the current one, so a later set may carry only changes, and a retraction leaves no label. Entries are sorted by target with no repeats, so one set has one encoding; a set is addressed by the hash of its body like a listing. A reason is a short code from a fixed alphabet, not free text, so a label set cannot be used to publish arbitrary statements about a vendor.
+
+\paragraph{Filtering.} A buyer chooses which labelers to follow; the follow list is private to the buyer's node. The client combines the store rating, the listing's self-label, the labels from followed labelers, and the buyer's own blocked words and hidden stores and listings, and decides to show, cover (show a placeholder the buyer can open), or hide each listing. When several rules apply, the strictest wins, and the client shows which source caused it. Safe mode is on by default and hides sensitive and adult listings; the buyer can relax each rule.
+
+\paragraph{What labels do not do.} A label changes only what one device shows. It does not remove a record from any replica, block an order, or bind other buyers. A vendor can mislabel its own goods; a labeler can label wrongly or selectively; and a buyer who follows no labeler relies only on self-labels and its own lists. The design accepts this: it gives buyers tools to filter without giving any party the power to delete. Fetching a labeler's sets reveals to whoever serves them that the node follows that labeler, so sets should be fetched through the same transport as catalog records.
+
+\subsection{What the signature does not give}
+
+A valid signature proves that the store key holder signed those bytes at some time. It does not prove that the listing is current or that a set of listings is complete. A replica can serve an older, validly signed version of a listing (an old price or stock count), and it can omit listings entirely, without either being detectable by signature checks alone. Addressing a listing by content hash makes an order unambiguous about which version it bought, but does not tell a buyer whether a newer version exists. A per-store sequence number or a signed index of current listings would address freshness and completeness (\S\ref{sec:future}).
+
+\subsection{Replication}
+
+Every node stores the signed headers of the catalog it has seen, so that a store remains browsable while its publisher is offline, and images and files must be held by at least one replica before a listing counts as published. Because records are self-authenticating, a replica needs no trust for integrity: a client or node that receives a record from anyone checks the signature and the content hash. Replicas are trusted only for availability and see who fetches what (\S\ref{sec:privacy}).
+
+An open catalog invites spam. Each published header should carry a cost that receiving nodes check, such as a small bitcoin fee; the mechanism is open (\S\ref{sec:future}). Without one, replication is limited to stores a node has chosen to follow or has received through a pasted link.

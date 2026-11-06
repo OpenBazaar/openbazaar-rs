@@ -1,0 +1,142 @@
+\section{Scriptless Escrow}
+\label{sec:escrow}
+
+A moderated purchase protects the buyer against non-delivery and the vendor against a buyer who will not release payment, with a moderator to decide disputes. The original OpenBazaar used a 2-of-3 multisignature script for this. The redesign keeps the economic model (a moderator together with one party can decide the outcome) and changes three things: the moderator holds no key over the funds; every outcome looks like an ordinary single-key Taproot spend; and the moderator can choose only between two payouts that buyer and vendor both signed before funding.
+
+This section specifies the two-party protocol: the parties' messages, the checks each party and the moderator run, the transactions, and the timeline.
+
+\subsection{Notation}
+\label{sec:escrow-notation}
+
+$G$ generates the secp256k1 group of prime order $n$. Lowercase letters are scalars and uppercase letters are points. $\Hash_{\mathrm{tag}}$ is a BIP 340 tagged hash.
+
+\begin{itemize}
+  \item Long-term keys: buyer $(\bar b,\bar B)$, vendor $(\bar v,\bar V)$. Moderator: a signing key $(k_s,K_s)$ for rulings and a separate encryption key $(k,K)$ for shares.
+  \item Per-order keys $(b,B)$ and $(v,V)$, fresh for every order: each party derives its key from its own seed at a fresh hardened BIP 32 index (\S\ref{sec:identity}). Alternatively, $b=\bar b+\Hash_{\mathrm{ord}}(\bar B,s)$ for an order secret $s$ that travels inside the sealed order letter.
+  \item Aggregate key: $P=\mathsf{KeyAgg}(B,V)$ under BIP 327~\citep{bip327} with the two keys sorted; output key $Q=P+\Hash_{\mathrm{TapTweak}}(P)\,G$, the BIP 341~\citep{bip341} tweak with no script tree. The funding output is P2TR with output key $Q$ and value $F$.
+  \item Moderator record $\mathcal{M}=(K_s,K,S_M,\varphi,\Pi_M)$: the moderator's two keys, payout script, fee, and acceptance policy, signed and published by the moderator.
+  \item Terms $\tau=(B,V,\mathcal{M},F,f,h_D,h_C,h_R,S_B,S_V)$: funding value $F$, network fee $f$, dispute deadline $h_D$, vendor claim height $h_C$, refund height $h_R$, and payout scripts for buyer and vendor. Both parties sign $\tau$; the signed terms are $\tau^\ast$.
+  \item Outpoint $o$ of the funding output.
+  \item For a dispute branch favoring party $X\in\{B,V\}$, with $\bar X$ the other party: the \emph{party half} $t_X$, $T_X=t_XG$, derived by $X$ from its per-order secret key and the branch; the \emph{moderator half} $u_X$, $U_X=u_XG$, sampled by $\bar X$; the adaptor point $Y_X=T_X+U_X$.
+  \item $\mathsf{VEnc}_K(u;\mathit{ctx})$: verifiable encryption of $u$ to $K$, bound to context $\mathit{ctx}$ (\S\ref{sec:vencrypt}). $\pi^{\mathrm{pok}}(t)$: Schnorr proof of knowledge of $t$.
+\end{itemize}
+
+\input{figures/escrow}
+
+\subsection{Terms and transactions}
+
+Before any funding round, the parties agree on $\tau$. The vendor proposes it, typically with a delivery window of about two weeks ($h_D$ around 2{,}016 blocks above the tip) and ruling and claim windows of 144 blocks each.
+
+\subsection{Checks on the terms}
+\label{sec:escrow-checks}
+
+Each party checks $\tau$ twice before round 1, under its own policy and under the moderator's policy $\Pi_M$ carried in $\tau$, and again at funding against its own view of the chain tip. A party that finds any check false aborts; nothing has been signed that could move funds. The attack each check stops is in \S\ref{sec:attacks}.
+\begin{enumerate}[label=(C\arabic*),leftmargin=2.6em]
+  \item \emph{Moderator.} $\mathcal{M}$ equals, byte for byte, the moderator record the party already trusts, so its keys, payout script $S_M$, fee $\varphi$, and policy cannot be substituted by the counterparty.
+  \item \emph{Keys.} The four keys $B,V,K_s,K$ are distinct, and the moderator's ruling key differs from its encryption key.
+  \item \emph{Heights in the future.} $0<h_D<h_C<h_R$ are block heights; $h_C-h_D$ and $h_R-h_C$ are each at least 144 blocks; and, relative to the party's current tip, $h_D$ is at least 1{,}008 blocks away and $h_R$ at most 12{,}960 blocks away. Both bounds are checked again when funding is signed.
+  \item \emph{Payouts.} The three payout scripts $S_B,S_V,S_M$ are distinct, each is a standard type (P2WPKH, P2WSH, P2TR, P2PKH, or P2SH), and each output in every spend is above that type's dust limit. The moderator payout is exactly $(S_M,\varphi)$ from $\mathcal{M}$.
+  \item \emph{Fees.} $f$ is non-zero and below a cap (50{,}000 satoshis), and every presigned spend meets a fee floor (4~sat/vB) on its signed size. Every spend except the release carries an anchor output (below).
+  \item \emph{Policy.} $\tau$ satisfies $\Pi_M$: the moderator's minimum funding value and minimum windows.
+  \item \emph{Funding.} The funding transaction spends only native segwit inputs, none of which signals replace-by-fee, so its transaction id is final before anything is presigned; it creates exactly one output with key $Q$ and value $F$ at $o$.
+\end{enumerate}
+
+From $\tau$ and $o$, each party derives the same five spends (Figure~\ref{fig:escrow-graph}). Each has one input spending $o$ with sequence \code{0xfffffffe} (so \code{nLockTime} is enforced) and is signed as a BIP 341 key-path spend with \code{SIGHASH\_DEFAULT}:
+\begin{center}\small\setlength{\tabcolsep}{5pt}
+\begin{tabular}{@{}llll@{}}
+\toprule
+\textbf{Spend} & \code{nLockTime} & \textbf{Outputs} & \textbf{When signed} \\
+\midrule
+$\tx{rel}$ (release) & 0 & $F-f\to S_V$ & cooperatively, after delivery \\
+$\tx{clm}$ (vendor claim) & $h_C$ & $F-f-a\to S_V$, $a\to\mathsf{A}$ & presigned (buyer, round 3) \\
+$\tx{ref}$ (buyer refund) & $h_R$ & $F-f-a\to S_B$, $a\to\mathsf{A}$ & presigned (vendor, round 2) \\
+$\tx{B}$ (buyer wins) & 0 & $F-f-a-\varphi\to S_B$, $\varphi\to S_M$, $a\to\mathsf{A}$ & adaptor $Y_B$ (vendor, round 2) \\
+$\tx{V}$ (vendor wins) & 0 & $F-f-a-\varphi\to S_V$, $\varphi\to S_M$, $a\to\mathsf{A}$ & adaptor $Y_V$ (buyer, round 3) \\
+\bottomrule
+\end{tabular}
+\end{center}
+Here $\mathsf{A}$ is a keyless pay-to-anchor output and $a=240$ satoshis; anyone can spend it to bump the parent's fee by child-pays-for-parent. The release is re-signed cooperatively whenever needed, so it has no anchor. All five are version-2 transactions. A transaction with \code{nLockTime} $h$ can first be mined in block $h+1$.
+
+\subsection{Funding rounds}
+
+Let $\mathsf{N}$ denote a party's MuSig2 public nonces for the four presigned spends and $\mathsf{ps}(\cdot)$ a MuSig2 partial signature~\citep{nick2021musig2} (or partial adaptor signature, for $\tx{B}$ and $\tx{V}$).
+
+\begin{description}[leftmargin=1.2em]
+  \item[Round 0.] Both parties sign $\tau$.
+  \item[Round 1, buyer $\to$ vendor.] The buyer prepares, but does not sign or broadcast, a funding transaction from native segwit inputs that do not signal replace-by-fee, so its transaction id is fixed before signing and cannot change afterwards. It sends
+  $\bigl(o,\ \mathsf{N}_B,\ T_B,\ \pi^{\mathrm{pok}}(t_B),\ \mathsf{VEnc}_K(u_V;\mathit{ctx}_V)\bigr)$.
+  The buyer samples $u_V$ because the buyer loses branch $V$.
+  \item[Round 2, vendor $\to$ buyer.] The vendor checks $\pi^{\mathrm{pok}}(t_B)$ and the encryption proof for $U_V$ (it is the favored party in branch $V$, so it must be sure the moderator can reveal $u_V$). It replies
+  $\bigl(\mathsf{N}_V,\ T_V,\ \pi^{\mathrm{pok}}(t_V),\ \mathsf{VEnc}_K(u_B;\mathit{ctx}_B),\ \mathsf{ps}_V(\tx{ref}),\ \mathsf{ps}_V(\tx{B};Y_B)\bigr)$.
+  \item[Round 3, buyer $\to$ vendor.] The buyer checks $\pi^{\mathrm{pok}}(t_V)$ and the encryption proof for $U_B$, adds its own partial signatures, and verifies that the completed refund is a valid signature under $Q$ for the exact outpoint and value, and that the buyer-wins pre-signature is valid for $Y_B$. Only after these checks may the buyer sign the funding transaction, and only after it has durably stored the refund. The buyer sends
+  $\bigl(\mathsf{ps}_B(\tx{clm}),\ \mathsf{ps}_B(\tx{V};Y_V)\bigr)$.
+  The vendor completes the claim, verifies the vendor-wins pre-signature, and durably stores both.
+  \item[Funding.] The buyer signs and broadcasts the funding transaction. The vendor checks that a transaction creates exactly the agreed output at $o$, and ships only after it confirms.
+\end{description}
+
+Each party's state is consumed when it advances and cannot be copied, and secret nonces live only inside those states, so a nonce cannot be reused for two messages. The release uses fresh nonces generated later.
+
+\paragraph{Why each piece is there.}
+\begin{itemize}
+  \item \emph{Refund before funding.} The buyer never signs the funding transaction until it holds a refund that verifies against the aggregate key. A vendor who aborts after round 1 costs the buyer nothing.
+  \item \emph{Claim before refund.} The buyer presigns a claim at $h_C<h_R$, so a buyer who received the goods and stops responding loses at $h_C+1$.
+  \item \emph{Proof of knowledge on $T_X$.} Without it, $X$ could choose $T_X=T'-U_X$ for a $T'$ whose discrete log it knows, making $Y_X=T'$ and letting $X$ complete its own winning branch without the moderator.
+  \item \emph{Verifiable encryption of $u_X$.} Without it, the losing party $\bar X$ could encrypt a value that does not match $U_X$, and the moderator would be unable to rule for $X$.
+  \item \emph{Per-order keys.} A fresh key per order gives a different $Q$ for every order between the same two parties, so funding outputs between repeat trading partners are not linkable by address.
+\end{itemize}
+
+\subsection{Release}
+
+When the buyer is satisfied, the vendor sends a fresh public nonce for $\tx{rel}$, and the buyer returns its nonce and partial signature. The vendor aggregates them into a 64-byte signature and broadcasts. If the vendor loses its nonce, the buyer can sign again until the release confirms; once the buyer has signed a release, its own refund and dispute paths are closed. The moderator is not involved.
+
+\subsection{Disputes}
+
+Before $h_D$, either party $X$ can ask the moderator to rule for it by sending a \emph{dispute letter}, sealed to $K$ and carried to the moderator's mailbox:
+\[
+  L_X = \bigl(\tau^\ast,\ o,\ F,\ \mathit{script}(Q),\ Q,\ X,\ \tx{X}\ \text{(unsigned)},\ T_X,\ \mathsf{VEnc}_K(u_X),\ \hat\sigma_X,\ \mathit{memo}\bigr)\ \text{signed by } X.
+\]
+Here $\hat\sigma_X$ is the aggregated adaptor pre-signature on $\tx{X}$ for $Y_X$. The letter is self-verifying: the moderator checks that the signed terms carry exactly its own published record and satisfy its published policy, checks the funding output at $o$ against its own chain view, recomputes $P$, $Q$, the funding script, and $\tx{X}$ from the terms and outpoint, checks that $\hat\sigma_X$ is a valid pre-signature on $\tx{X}$ for $T_X+U_X$, checks the encryption proof, and checks $X$'s signature over the letter. It refuses a letter that arrives after $h_D$ by its own chain view. It then durably records the branch $X$ for $(\Hash(\tau^\ast),o)$ and refuses any later letter for the other branch of the same escrow. Only then does it decrypt $u_X$. A letter whose exact bytes it has already verified skips the proof checks but not the deadline and chain checks.
+
+If it rules for $X$, the moderator returns a \emph{ruling} $(\Hash(\tau^\ast), Q, o, X, Y_X, u_X)$ signed with $k_s$. $X$ computes $t_X+u_X$, completes $\hat\sigma_X$ into a valid BIP 340 signature, and broadcasts $\tx{X}$, which pays $X$ and the moderator's fee.
+
+A ruling for $X$ is useless to $\bar X$, because $\bar X$ does not know $t_X$. A moderator that signs rulings for both branches of the same terms and outpoint produces two signed rulings that together are transferable proof of equivocation. An honest moderator's ruling store prevents this by accident. Deliberate equivocation is detectable, not preventable: both dispute outcomes are valid from height 0, so if both parties receive a ruling, the first to confirm wins.
+
+\subsection{Timeline}
+
+Figure~\ref{fig:escrow-timeline} shows the heights.
+\begin{itemize}
+  \item From funding until $h_D$, the vendor ships, the buyer receives, and either party may send a dispute letter.
+  \item Between $h_D$ and $h_C$, the moderator rules and the winner must confirm its outcome. A buyer who wins must confirm $\tx{B}$ before $h_C+1$, when $\tx{clm}$ also becomes valid.
+  \item At $h_C+1$, the vendor can claim. A vendor who never claims leaves the funds in the output until $h_R+1$, when the buyer's refund becomes valid. If the vendor's claim is not confirmed by then, both are valid and the first to confirm wins.
+\end{itemize}
+
+The default outcome is therefore the vendor's. We considered and rejected a design in which the default flips to the buyer until the vendor posts a shipping attestation: without a trusted third party that observes shipping, such an attestation is not a cryptographic event, and a buyer who wants to cheat would decline to countersign it. The consequence is that a buyer who did not receive the goods must open a dispute before $h_D$.
+
+\subsection{Moderator fee}
+\label{sec:modfee}
+The moderator fee is an output of each dispute outcome and of nothing else, and it is fixed in the signed terms. It is collected only when the winner broadcasts the dispute outcome. A vendor who wins a ruling close to $h_C$ can skip the fee by waiting for the fee-free claim; a buyer who wins cannot. This biases the moderator's income toward rulings for the buyer. \S\ref{sec:limitations} discusses two remedies.
+
+\subsection{Verifiable encryption of the moderator half}
+\label{sec:vencrypt}
+
+The moderator half $u$ with $U=uG$ is encrypted bit by bit with exponential ElGamal under $K$. For each bit $\beta_i$ of $u$ ($i=0,\dots,255$), the encryptor picks $r_i$ and publishes $(A_i,C_i)=(r_iG,\ r_iK+\beta_iG)$ with a Cramer--Damg{\aa}rd--Schoenmakers OR proof~\citep{cramer1994} of two Chaum--Pedersen statements~\citep{chaum1992} showing that $\beta_i\in\{0,1\}$. A Chaum--Pedersen proof then shows
+\[
+  \log_G\Bigl(\textstyle\sum_i 2^iA_i\Bigr)=\log_K\Bigl(\textstyle\sum_i 2^iC_i-U\Bigr),
+\]
+which holds exactly when $\sum_i 2^i\beta_i\equiv u \pmod n$. Anyone with $K$ and $U$ can check the ciphertext; only the holder of $k$ can decrypt, since $C_i-kA_i$ is either the identity or $G$. All challenges are tagged hashes over length-prefixed inputs and a 32-byte context that binds the proof to one escrow branch. This is the bitwise approach to verifiable encryption of a discrete logarithm~\citep{stadler1996pvss,camenisch2003}. Its cost is size: one encrypted share is 49{,}761 bytes (\S\ref{sec:evaluation}).
+
+\subsection{What the chain shows}
+\label{sec:escrow-privacy}
+
+Every spend is a single-input Taproot key-path spend with one 64-byte signature. No script, no moderator key, and no multisignature structure appears on chain in any outcome, including a dispute. This is the main privacy improvement over the original 2-of-3 design. What remains visible:
+\begin{itemize}
+  \item The funding amount $F$ (price plus shipping plus fees), which can point to a listing with a distinctive price.
+  \item The 240-satoshi pay-to-anchor output on the refund, claim, and dispute outcomes is distinctive: few ordinary wallet payments carry one, so these spends are recognizable as presigned contract spends. A cooperative release has no anchor and looks like an ordinary one-output Taproot spend.
+  \item Dispute outcomes have three outputs, one of which is the fixed moderator fee $\varphi$. If a moderator reuses its payout script $S_M$, every dispute it rules on is linked on chain to it and to the others. The moderator record fixes $S_M$, so a moderator reuses its payout script across all escrows under one record; a moderator that wants its fees unlinked must publish new records.
+  \item The claim and refund carry non-zero \code{nLockTime} values at specific heights, and all spends signal no replace-by-fee. These are weak fingerprints, since many wallets set \code{nLockTime} near the current height.
+  \item Timing: a spend shortly after funding versus one after $h_C$.
+\end{itemize}
+
+\subsection{Fees and message size}
+
+Presigned transactions have fees fixed at funding, at or above the floor of (C5). If fee rates rise, the recipient of a refund, claim, or dispute outcome bumps it through the anchor output by child-pays-for-parent. The transactions are version 2 rather than TRUC (version 3)~\citep{bip431}, so they do not get TRUC's protection against pinning; a third party who attaches a large low-fee child to the anchor can delay a bump. Each verifiable share is about 50~KB, so a dispute letter is close to the 64~KiB letter limit. A dispute letter carries the escrow terms and the claimant's memo, not the order plaintext: the moderator learns the ship-to only if the claimant chooses to include it.

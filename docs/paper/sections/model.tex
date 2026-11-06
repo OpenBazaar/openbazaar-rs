@@ -1,0 +1,20 @@
+\section{System Model and Actors}
+\label{sec:model}
+
+\paragraph{Devices.} A \emph{client} is the user-facing application: an installed web app on a phone, or the same screens inside a desktop shell. A \emph{node} is a long-running process the user controls, on a desktop computer or an Android device, that holds keys, stores records, talks to the network, and watches the Bitcoin chain. A client is paired with exactly one node. The phone has no Tor client and never dials the peer-to-peer network; it talks only to its paired node and stops working when that node is unreachable.
+
+\paragraph{Roles.}
+\begin{description}[leftmargin=1.2em]
+  \item[Buyer.] Browses the catalog, sends a sealed order, and pays. For moderated purchases, funds the escrow output and holds a presigned refund.
+  \item[Vendor.] Publishes a signed store and listings, runs a node with an onion-service mailbox, opens letters, ships, and collects payment. For moderated purchases, holds a presigned claim.
+  \item[Moderator.] Publishes a record of its keys, fee, payout script, and acceptance policy, and is named in a listing and in the signed escrow terms. Receives nothing unless a party opens a dispute. On a dispute, verifies a self-contained letter and reveals one secret scalar to the party it rules for. Paid a fixed fee by the dispute outcome.
+  \item[Labeler.] Publishes signed sets of content labels about stores and listings. Buyers choose which labelers to follow; a labeler cannot change or remove anyone's records.
+  \item[Replica.] A node that stores and serves catalog records it did not create, so that a store remains readable while its publisher is offline.
+  \item[Seed.] A node whose address ships with the software or is pasted by the user, used only to find other nodes. Seeds are untrusted for content: every record is verified against its signature.
+\end{description}
+
+\paragraph{External parties.} The Bitcoin network and chain; a source of chain data for the node (its own Bitcoin node, compact block filters, or a block-explorer API); Tor relays; Lightning routing nodes; an exchange-rate source for fiat estimates; and, for physical goods, a parcel carrier.
+
+\paragraph{Records and messages.} A \emph{store record} names a store key, a display name, a region, direct-payment strings, and the store's content rating. A \emph{listing} names its store key, describes one offer, and carries the vendor's content label. A \emph{label set} is a labeler's signed statement about stores and listings. An \emph{order letter} is an HPKE ciphertext addressed to one vendor. \emph{Escrow messages} are the three funding rounds and the release exchange between buyer and vendor. A \emph{dispute letter} goes from one party to the moderator, and a \emph{ruling} comes back.
+
+\paragraph{Network assumptions.} We assume the Bitcoin chain makes progress and that a transaction paying a sufficient fee rate is confirmed within a bounded number of blocks; the escrow windows in \S\ref{sec:escrow} are sized against this assumption. We do not assume synchronous delivery between buyer and vendor nodes.

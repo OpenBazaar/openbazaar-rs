@@ -1,0 +1,41 @@
+\section{Privacy Analysis}
+\label{sec:privacy}
+
+Table~\ref{tab:learns} lists, for each party or observer, what it learns, what it does not, and which mechanism the second column relies on. We assume the deployment of \S\ref{sec:architecture}: nodes talk to each other only over Tor, and the node gets chain data from its own Bitcoin node or compact block filters unless stated otherwise.
+
+{\small
+\setlength{\tabcolsep}{4pt}
+\renewcommand{\arraystretch}{1.15}
+\begin{longtable}{@{}p{0.15\textwidth}p{0.36\textwidth}p{0.22\textwidth}p{0.2\textwidth}@{}}
+\caption{Who learns what.}\label{tab:learns}\\
+\toprule
+\textbf{Observer} & \textbf{Learns} & \textbf{Does not learn} & \textbf{Relies on} \\
+\midrule
+\endfirsthead
+\toprule
+\textbf{Observer} & \textbf{Learns} & \textbf{Does not learn} & \textbf{Relies on} \\
+\midrule
+\endhead
+\bottomrule
+\endfoot
+Seller & Items, quantities, and options in its own package; the ship-to for physical goods or the delivery note for digital goods; the payment and its amount; with Payjoin, the buyer's inputs. & The buyer's IP address; the buyer's orders with other sellers; any long-term buyer identity (none is sent). & Tor delivery; one letter and one payment per seller; coin selection without shared ancestry. \\
+Carrier & Ship-to, parcel, and delivery timing. & Price paid, payment method, other orders. & Nothing: this is the ceiling for physical goods. \\
+Moderator, no dispute & That it is named in public listings. & That a given order used it; its key is not on chain. & Key-path escrow; the moderator is contacted only on a dispute. \\
+Moderator, dispute & Signed terms (per-order keys, amounts, heights, payout scripts), the outpoint and therefore the on-chain funding and spends, and whatever the claimant puts in its memo. & The order contents and ship-to, unless the claimant includes them; other orders of either party. & Dispute letters carry no order plaintext; fresh per-order keys and payout scripts. \\
+Labeler & That some node fetched its sets, and when. & Which buyers follow it, if sets are fetched over Tor; what they bought. & Tor; the private follow list. \\
+Replica & Which records a node fetches or publishes, and when. & The node's IP; orders; search terms (search is on the device). & Tor; PIR for record fetches (future). \\
+Seed & That a node speaks the protocol, when, and which peers it asks for. & The node's IP; records fetched elsewhere; orders. & Tor. \\
+Chain observer & Amounts and timing of every payment; for escrow, a single-key-looking Taproot output and spend; a dispute outcome with a fixed moderator fee; a pay-to-anchor output marking refund, claim, and dispute spends as contract spends; links through shared inputs or change. Prices are public, so a distinctive amount can identify a listing. & Moderator keys, escrow scripts, that a dispute occurred (beyond output pattern), ship-to. & Key-path escrow; Payjoin, where used. \\
+Block explorer, if used & Every address the node watches, with timing; without Tor, the node's IP. This links all of a user's orders together. & Order contents. & Not using one: own node or compact block filters. \\
+Tor relays & Guard: the node's IP and that it uses Tor. Rendezvous and middle relays: neither endpoint. Approximate message sizes. & Letter contents; the vendor's IP; with one relay, who talks to whom. & Onion services on both ends. \\
+Lightning hops & Forwarded amounts, timing, and adjacent channels. Without a blinded path, the payer learns the recipient's node key. & Order contents. & Blinded paths. \\
+Exchange-rate source & That a node asks for rates, and when. & What was bought; the node's IP, if asked over Tor. & Tor. \\
+Local network or ISP & That the user runs Tor. & Client--node traffic, which stays on the device or inside the pairing channel. & Tor; loopback client boundary. \\
+Global passive adversary & Can correlate a buyer node's Tor circuit timing with a vendor onion service, and both with chain timing, linking buyer to vendor. & Letter contents. & Out of scope; a mixnet for letters (future). \\
+Same-machine process & The pairing token, then everything the client can see. & --- & Out of scope (A6). \\
+\end{longtable}
+}
+
+\paragraph{The ship-to ceiling.} For physical goods, the seller and the carrier learn where the buyer receives parcels. No protocol mechanism removes this, and we do not claim to. What the design does is keep the ship-to out of every other place: it is not in the catalog, not in any public record, not in the buyer's own order history on disk (which stores a label), not in a dispute letter unless the buyer puts it there, and, because delivery runs over Tor, not exposed to network observers.
+
+\paragraph{Linking a buyer's orders.} Separate letters and separate transactions are necessary for unlinkability across sellers, not sufficient. Three channels can still link one buyer's orders: a block explorer, if the node uses one, which sees all watched addresses together; the chain, if payments share inputs or change; and timing, if a buyer places several orders at once and an observer sees them confirm together. The first is removed by using one's own chain data, the second by coin selection (\S\ref{sec:payments}), and the third only partly, by spacing payments.

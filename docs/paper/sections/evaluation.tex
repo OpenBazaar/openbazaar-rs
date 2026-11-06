@@ -1,0 +1,36 @@
+\section{Evaluation}
+\label{sec:evaluation}
+
+We measured the operations whose cost determines whether the design is practical on ordinary hardware, using the reference implementation. All numbers are from one machine (Apple M2 Max laptop, 32~GB, macOS 26.7, Rust 1.94 release builds, Node.js 24.6), averaged over the stated number of repetitions after a warm-up. They are microbenchmarks of local computation; we did not measure anything over a network, Tor, or a phone. Table~\ref{tab:measure} lists them.
+
+\begin{table}[ht]
+\centering\small
+\begin{tabularx}{\textwidth}{@{}Xrl@{}}
+\toprule
+\textbf{Operation} & \textbf{Result} & \textbf{Repetitions} \\
+\midrule
+Encoded listing (a paperback) & 268 bytes & --- \\
+Encoded sample catalog (1 store, 38 listings) & 9{,}940 bytes & --- \\
+Sign one listing (BIP 340) & 101~$\mu$s & 2{,}000 \\
+Verify one listing & 48~$\mu$s & 2{,}000 \\
+Verify the whole sample catalog & 1.9~ms & 200 \\
+Order plaintext with a four-line US ship-to & 173 bytes & --- \\
+Sealed letter for that order & 230 bytes & --- \\
+HPKE seal one order & 115~$\mu$s & 2{,}000 \\
+HPKE open one order & 75~$\mu$s & 2{,}000 \\
+Verifiable moderator share, size (by the serialization format) & 49{,}761 bytes & --- \\
+Encrypt one share & 44--50~ms & 20, two runs \\
+Verify one share & 48--50~ms & 20, two runs \\
+Decrypt one already-verified share & 5--8~ms & 20, two runs \\
+On-device search, 1{,}000 headers & 0.2~ms/query & 100 \\
+On-device search, 10{,}000 headers & 5~ms/query & 100 \\
+On-device search, 100{,}000 headers & 49--67~ms/query & 100, two runs \\
+\bottomrule
+\end{tabularx}
+\caption{Measured costs. Search headers were synthesized by repeating the sample headers with distinct titles; queries were a mix of matching and non-matching terms.}
+\label{tab:measure}
+\end{table}
+
+The share size follows from the format: one 33-byte point, 256 ciphertext pairs of two 33-byte points each, 256 OR-proofs of four 32-byte scalars each, and a 64-byte DLEQ proof: $33+256\cdot(66+128)+64=49{,}761$. An escrow funding exchange carries two shares (one per dispute branch), so about 100~KB, and a dispute letter carries one. Decryption tests each of the 256 bits against the identity and $G$; because the moderator verifies a letter once and caches the result, decryption costs a few milliseconds rather than a second full verification.
+
+These numbers support three conclusions. Signing and verifying the catalog and sealing orders cost well under a millisecond each, so they are not a bottleneck. On-device search over tens of thousands of headers is interactive on a laptop; we have not measured it on a phone. The verifiable share dominates the escrow's cost in both bytes and time, which is why smaller proofs are the first item of future work (\S\ref{sec:future}).

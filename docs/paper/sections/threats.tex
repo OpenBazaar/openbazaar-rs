@@ -1,0 +1,27 @@
+\section{Threat Model}
+\label{sec:threats}
+
+We consider the adversaries in Table~\ref{tab:adversaries}. For each, we state what it controls and whether defending against it is in scope. ``In scope'' means the design claims a property against that adversary under stated assumptions; ``characterized'' means we describe what the adversary achieves without claiming to prevent it.
+
+\begin{table}[ht]
+\centering\small
+\begin{tabularx}{\textwidth}{@{}p{0.2\textwidth}Xp{0.14\textwidth}@{}}
+\toprule
+\textbf{Adversary} & \textbf{Capabilities} & \textbf{Scope} \\
+\midrule
+A1 Network observer & Sees, delays, and drops traffic on some links (a local network, an ISP, a single Tor relay). & In scope \\
+A2 Malicious replica or seed & Serves, withholds, or reorders catalog records; lies about other nodes; logs who fetches what. & In scope for integrity; availability characterized \\
+A3 Malicious counterparty & A buyer or vendor who deviates arbitrarily from the protocol, including going silent. & In scope \\
+A4 Malicious moderator & Rules dishonestly, rules for both sides, refuses to rule, or logs disputes. & In scope for funds; ruling quality characterized \\
+A5 Moderator colluding with one party & The moderator and either the buyer or the vendor act together. & Characterized \\
+A6 Compromised device & Reads files or memory on a user's node or client. & Characterized \\
+A7 Global passive adversary & Observes most network links and the chain. & Out of scope; characterized \\
+\bottomrule
+\end{tabularx}
+\caption{Adversaries considered.}
+\label{tab:adversaries}
+\end{table}
+
+A5 is inherent to any escrow with a third-party arbiter: if the arbiter and one party agree, the arbiter can rule for that party. The protocol limits A5 to choosing the presigned outcome that favors the colluding party; it cannot pay a third party or change amounts (\S\ref{sec:security}). A6 is out of scope except for the at-rest encryption described in \S\ref{sec:identity}, whose limits we state. A7 is out of scope for anonymity, but \S\ref{sec:privacy} lists what it learns.
+
+\paragraph{Cryptographic assumptions.} Discrete logarithm hardness in the secp256k1 group, with hash functions modeled as random oracles for the Schnorr, MuSig2, and sigma-protocol arguments; collision resistance of SHA-256; IND-CCA2 security of HPKE base mode with the X25519/HKDF-SHA256/ChaCha20-Poly1305 suite~\citep{rfc9180}; and AEAD security of ChaCha20-Poly1305~\citep{rfc8439}. The reference implementation uses established libraries (\code{libsecp256k1} through the \code{bitcoin} and \code{musig2} crates, the \code{hpke} crate, Arti for Tor). We assume these are correct; we did not audit them.

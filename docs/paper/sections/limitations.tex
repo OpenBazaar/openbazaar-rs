@@ -1,0 +1,40 @@
+\section{Limitations and Future Work}
+\label{sec:limitations}
+
+\subsection{Limitations}
+
+We collect the limitations of the design, ordered roughly by how much they matter to a user.
+
+\begin{enumerate}
+  \item \textbf{The moderator is trusted to rule, and to rule in time.} A moderator that does not rule leaves a non-delivered buyer to lose at $h_C+1$. Equivocation is provable, not preventable.
+  \item \textbf{Moderator and party collusion.} A moderator colluding with one party decides the dispute for that party. This is the same economic trust as a 2-of-3 multisignature escrow, and the protocol does not reduce it; it only removes the moderator's ability to take funds for itself or redirect them. Reputation, published equivocation proofs, and moderator panels (below) are the only counterweights.
+  \item \textbf{Moderator fee bias.} The fee is paid only from a dispute outcome. A vendor who wins a ruling near $h_C$ can wait for the fee-free claim, while a buyer who wins must broadcast $\tx{B}$ and pay. In expectation the moderator is paid more for buyer wins than for vendor wins, an incentive toward ruling for the buyer. Two remedies preserve the rest of the protocol: put the moderator fee into the claim $\tx{clm}$ as well, at the cost of charging it on undisputed escrows that end by claim; or lock a separate fee bond at funding, paid to the moderator by any dispute outcome and refunded to its owner otherwise, at the cost of a second output and its own presigned spends. Neither is part of the protocol above.
+  \item \textbf{The buyer must act before $h_D$.} The default outcome after $h_C$ is the vendor's, so a buyer who does not dispute non-delivery in time loses the payment.
+  \item \textbf{Proof size and verification cost.} Each verifiable share is about 50~KB and costs about 50~ms to verify. Funding carries two shares, and an attacker can make a moderator verify many letters. The cost is tolerable on a laptop and heavy on a phone.
+  \item \textbf{Presigned fees and pinning.} Presigned escrow spends have fees fixed at funding and rely on a child-pays-for-parent bump through the anchor. As version-2 transactions they lack TRUC's pinning protection, and a fee spike near $h_C$ can let the vendor's claim race the buyer's dispute outcome.
+  \item \textbf{Escrow outcomes are recognizable.} The anchor output marks refund, claim, and dispute spends as contract spends, and a moderator that reuses its payout script links its disputes.
+  \item \textbf{No catalog freshness or completeness.} A replica can serve stale listings or omit them without detection.
+  \item \textbf{Amounts can identify listings.} Public prices let a chain observer guess what was bought from the payment amount.
+  \item \textbf{Letter sizes leak.} Letters are not padded, so their sizes leak approximate content length.
+  \item \textbf{Timing correlation.} Tor does not resist an adversary who can watch both a buyer's node and a vendor's onion service, or who correlates letter timing with chain timing.
+  \item \textbf{Labels are only advice.} Self-labels are only as honest as the vendor, and labelers only as good as the buyer's choice of them; nothing in the design removes content from the network.
+  \item \textbf{The device is trusted.} A process on the same machine can act as the client, and at-rest encryption is only as strong as the protection of its key.
+  \item \textbf{Informal analysis.} The security arguments in \S\ref{sec:security} are informal, and the protocol has had no external cryptographic review.
+\end{enumerate}
+
+\subsection{Future work}
+\label{sec:future}
+
+\paragraph{Smaller verifiable encryption.} Bitwise ElGamal is simple and relies only on the discrete-log setting of secp256k1, but it is large. Batch verification of the 256 bit proofs would cut the moderator's verification cost substantially without changing the format. Verifiable encryption in a group with an easy discrete-log subgroup, such as the class-group or Paillier-based constructions used for two-party ECDSA and scriptless swaps~\citep{shlomovits2020juggling}, could reduce the share to a few kilobytes, at the cost of a second hardness assumption.
+
+\paragraph{Moderator panels.} Replacing the single moderator with a $t$-of-$n$ panel that shares the decryption key with FROST-style key generation~\citep{komlo2020frost} would require collusion between a party and $t$ moderators rather than one.
+
+\paragraph{Fee neutrality.} Choosing between the two fee remedies above, or finding one that charges the moderator fee exactly when a dispute was opened, is open.
+
+\paragraph{Pinning-resistant presigned spends.} Moving the presigned spends to TRUC transactions with an ephemeral anchor would give them the pinning protection that version-2 transactions lack.
+
+\paragraph{Catalog freshness and spam.} A per-store sequence number and a signed index of current listings would let a buyer detect stale and withheld records. A publishing cost that replicas check would make open replication safe against spam; its form (a small payment, a proof of a funded output, or a rate limit tied to store age) is not designed.
+
+\paragraph{Private retrieval and transport.} Private information retrieval for catalog records at scale; padding letters to fixed size buckets; carrying letters over a mix network; and a pairing transport that lets a phone reach its owner's node on another machine with mutual authentication.
+
+\paragraph{Formal analysis.} A game-based proof of the escrow properties, and a machine-checked model of the message rounds and timeline.

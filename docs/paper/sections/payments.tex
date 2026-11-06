@@ -1,0 +1,32 @@
+\section{Payments}
+\label{sec:payments}
+
+All payments are in bitcoin. There is no swap service, mixer, ecash mint, or second asset in the design. Direct payment goes from the buyer to the vendor with no intermediary; moderated payment goes through the escrow of \S\ref{sec:escrow}.
+
+\subsection{One payment per seller}
+
+A multi-seller checkout produces one order per seller, and each order is paid by its own transaction with exactly one recipient output and, if needed, one change output back to the buyer's own wallet. Two sellers are never paid in one transaction, because a transaction with outputs to two vendors would tell anyone watching the chain that the same person bought from both.
+
+Separate transactions are necessary for unlinkability, not sufficient. If the wallet funds the second payment with the change from the first, the common-input-ownership and change heuristics~\citep{meiklejohn2013fistful} link the two payments. The wallet must therefore choose inputs so that the payments of one checkout do not share ancestry; when the wallet has no such coins, it should say so rather than chain one payment onto another's change.
+
+\subsection{On-chain direct payment}
+
+Each direct order receives a fresh receive address from the vendor's descriptor wallet (BIP 86 Taproot) and a BIP 21~\citep{bip21} URI for the exact amount. The vendor's node watches that address and marks the order as payment seen, then paid once a configured number of confirmations is reached. The buyer can pay from its node's wallet or from any external wallet.
+
+\paragraph{Chain data.} Every query to a block explorer such as an Esplora server~\citep{esplora} names a specific address. Whoever answers learns the full set of addresses the node watches, their timing, and, without Tor, the node's IP address, which together link a user's orders to each other and to a network location. Routing such queries over Tor hides the IP address but not the address set. Running one's own Bitcoin node, or using compact block filters~\citep{bip157,bip158}, hides both, and is the recommended configuration; a node using a public explorer should warn its user.
+
+\subsection{Lightning: BOLT 12}
+
+A store record carries a BOLT 12 offer~\citep{bolt12}, and direct checkout can return an offer for the order's exact amount, answered by a Lightning node the vendor runs. An offer without a blinded path names the issuer's node key, so the offer links the store to a Lightning node; offers should use a blinded path and an issuer key distinct from the store signing key, so that the catalog identity and the Lightning identity are not trivially linked. On a payment, every routing hop sees the amount it forwards and its neighbors; the recipient's position is hidden from the payer only to the extent that a blinded path of more than one hop is used~\citep{kappos2021lightning}.
+
+\subsection{Silent payments: BIP 352}
+
+The store record also carries a BIP 352 silent-payment code~\citep{bip352}. A silent-payment code lets a payer derive a fresh output for each payment from a static public code, so a single published code does not lead to address reuse, and a buyer can pay without first asking the vendor for an address. The vendor's node scans the chain for outputs to its code with the watch-only scan key, which stays on the node so that scanning does not hand the key to a public indexer. Scanning is expensive without a full node, which is part of why the recommended configuration runs one.
+
+\subsection{Payjoin: BIP 77}
+
+Payjoin v2~\citep{bip77} lets a receiver add an input to the buyer's transaction through an asynchronous directory reached over Oblivious HTTP~\citep{rfc9458}, which breaks the assumption that all inputs belong to the payer. Payment terms can carry a \code{pj=} endpoint for this. When Payjoin is used, the vendor learns which coins the buyer spent, and the buyer learns one of the vendor's coins.
+
+\subsection{What the chain shows}
+
+For an on-chain direct payment, a chain observer sees an ordinary transaction with one or two outputs. The amount is the listing price times quantity plus shipping. Prices are public, so an amount that matches a distinctive price can identify the listing that was bought, even though nothing else in the transaction refers to OpenBazaar. Round prices reduce this and do not remove it. For escrow, see \S\ref{sec:escrow-privacy}.
