@@ -28,39 +28,75 @@ function listing(overrides: Partial<ListingHeader> = {}): ListingHeader {
   };
 }
 
-const SAFE: SafetySettings = { safeMode: true, blockedKeywords: [] };
-const OPEN: SafetySettings = { safeMode: false, blockedKeywords: [] };
+const SAFE: SafetySettings = DEFAULT_SAFETY;
+const OPEN: SafetySettings = { ...DEFAULT_SAFETY, safeMode: false };
+const action = (item: ListingHeader, settings: SafetySettings, store: ListingHeader["contentRating"] = "general") => safetyVerdict(item, store, settings).action;
 
 test("safe mode is on for a new user and when storage is unreadable", () => {
   assert.equal(DEFAULT_SAFETY.safeMode, true);
   assert.deepEqual(parseSafety(null), DEFAULT_SAFETY);
   assert.deepEqual(parseSafety("not json"), DEFAULT_SAFETY);
+  assert.deepEqual(parseSafety("null"), DEFAULT_SAFETY);
   assert.equal(parseSafety("{}").safeMode, true);
   assert.equal(parseSafety(JSON.stringify({ safeMode: false })).safeMode, false);
-  assert.deepEqual(parseSafety(JSON.stringify({ safeMode: true, blockedKeywords: ["Knife", 4, "knife"] })).blockedKeywords, ["knife"]);
 });
 
-test("safe mode hides adult and sensitive listings and shows general and unrated ones", () => {
-  assert.equal(safetyVerdict(listing({ contentRating: "adult" }), "general", SAFE).hidden, true);
-  assert.equal(safetyVerdict(listing({ contentRating: "sensitive" }), "general", SAFE).hidden, true);
-  assert.equal(safetyVerdict(listing({ contentRating: "general" }), "general", SAFE).hidden, false);
-  assert.equal(safetyVerdict(listing({ contentRating: "unrated" }), "unrated", SAFE).hidden, false);
+test("first-version settings migrate with the new switches at their defaults", () => {
+  const migrated = parseSafety(JSON.stringify({ safeMode: false, blockedKeywords: ["Knife", 4, "knife"] }));
+  assert.deepEqual(migrated, { ...DEFAULT_SAFETY, safeMode: false, blockedKeywords: ["knife"] });
 });
 
-test("with safe mode off, ratings do not hide anything", () => {
-  assert.equal(safetyVerdict(listing({ contentRating: "adult" }), "adult", OPEN).hidden, false);
-  assert.equal(safetyVerdict(listing({ title: "XXX DVD" }), "general", OPEN).hidden, false);
+test("unknown switch values fall back to defaults", () => {
+  const parsed = parseSafety(JSON.stringify({ sensitive: "blur", adult: "cover", tags: { drugs: "hide", weapons: "maybe", lasers: "hide" } }));
+  assert.equal(parsed.sensitive, "hide");
+  assert.equal(parsed.adult, "hide");
+  assert.equal(parsed.tags.drugs, "hide");
+  assert.equal(parsed.tags.weapons, "show");
+  assert.equal("lasers" in parsed.tags, false);
+});
+
+test("default safe mode hides adult and sensitive listings and shows general and unrated ones", () => {
+  assert.equal(action(listing({ contentRating: "adult" }), SAFE), "hide");
+  assert.equal(action(listing({ contentRating: "sensitive" }), SAFE), "hide");
+  assert.equal(action(listing({ contentRating: "general" }), SAFE), "show");
+  assert.equal(action(listing({ contentRating: "unrated" }), SAFE, "unrated"), "show");
+});
+
+test("sensitive can be shown, covered, or hidden", () => {
+  const sensitive = listing({ contentRating: "sensitive" });
+  assert.equal(action(sensitive, { ...SAFE, sensitive: "show" }), "show");
+  assert.deepEqual(safetyVerdict(sensitive, "general", { ...SAFE, sensitive: "cover" }), { action: "cover", reason: "The seller rated it sensitive." });
+  assert.equal(action(sensitive, { ...SAFE, sensitive: "hide" }), "hide");
+});
+
+test("adult can be shown or hidden", () => {
+  assert.equal(action(listing({ contentRating: "adult" }), { ...SAFE, adult: "show" }), "show");
+  assert.equal(action(listing({ contentRating: "adult" }), { ...SAFE, adult: "hide" }), "hide");
+});
+
+test("each tag hides on its own and beats a softer rating", () => {
+  const knife = listing({ contentRating: "general", contentTags: ["weapons"] });
+  assert.equal(action(knife, SAFE), "show");
+  assert.deepEqual(safetyVerdict(knife, "general", { ...SAFE, tags: { ...SAFE.tags, weapons: "hide" } }), { action: "hide", reason: "It is tagged weapons, which you hide." });
+  assert.equal(action(knife, { ...SAFE, tags: { ...SAFE.tags, drugs: "hide" } }), "show");
+  const covered = listing({ contentRating: "sensitive", contentTags: ["weapons"] });
+  assert.equal(action(covered, { ...SAFE, sensitive: "cover", tags: { ...SAFE.tags, weapons: "hide" } }), "hide");
+});
+
+test("with safe mode off, ratings and tags do not hide anything", () => {
+  const all: SafetySettings = { ...OPEN, sensitive: "hide", adult: "hide", tags: { ...SAFE.tags, nudity: "hide" } };
+  assert.equal(action(listing({ contentRating: "adult", contentTags: ["nudity"] }), all, "adult"), "show");
+  assert.equal(action(listing({ title: "XXX DVD" }), all), "show");
 });
 
 test("an adult store hides its general listings in safe mode", () => {
-  const verdict = safetyVerdict(listing(), "adult", SAFE);
-  assert.deepEqual(verdict, { hidden: true, reason: "The store rated it adult." });
-  assert.equal(safetyVerdict(listing(), "adult", OPEN).hidden, false);
+  assert.deepEqual(safetyVerdict(listing(), "adult", SAFE), { action: "hide", reason: "The store rated it adult." });
+  assert.equal(action(listing(), OPEN, "adult"), "show");
 });
 
 test("the buyer's blocklist applies even with safe mode off", () => {
-  const settings = { safeMode: false, blockedKeywords: ["mug"] };
-  assert.deepEqual(safetyVerdict(listing(), "general", settings), { hidden: true, reason: "It matches your blocked word “mug”." });
+  const settings = { ...OPEN, blockedKeywords: ["mug"] };
+  assert.deepEqual(safetyVerdict(listing(), "general", settings), { action: "hide", reason: "It matches your blocked word “mug”." });
 });
 
 test("blocked words match title, category, description, and tags, ignoring case", () => {
@@ -82,17 +118,19 @@ test("a blocked phrase matches across punctuation but not split apart", () => {
   assert.equal(matchedKeyword(listing({ title: "Toy for sex ed" }), ["sex toy"]), null);
 });
 
-test("the built-in list catches unlabeled listings in safe mode only", () => {
+test("the built-in list follows the sensitive switch in safe mode", () => {
   const dvd = listing({ title: "XXX DVD", contentRating: "unrated" });
   const verdict = safetyVerdict(dvd, "unrated", SAFE);
-  assert.equal(verdict.hidden, true);
-  assert.match(verdict.hidden ? verdict.reason : "", /xxx/);
-  assert.equal(safetyVerdict(listing({ description: "Smells of cocaine." }), "general", SAFE).hidden, true);
+  assert.equal(verdict.action, "hide");
+  assert.match(verdict.action === "show" ? "" : verdict.reason, /xxx/);
+  assert.equal(action(dvd, { ...SAFE, sensitive: "cover" }, "unrated"), "cover");
+  assert.equal(action(dvd, { ...SAFE, sensitive: "show" }, "unrated"), "show");
+  assert.equal(action(listing({ description: "Smells of cocaine." }), SAFE), "hide");
 });
 
 test("the built-in list leaves ordinary goods alone", () => {
   for (const title of ["XXXL work shirt", "The Heroine's Journey", "Glue gun", "Adult wool socks", "Kitchen knife", "Wine glass", "Poker chips"]) {
-    assert.equal(safetyVerdict(listing({ title }), "general", SAFE).hidden, false, title);
+    assert.equal(action(listing({ title }), SAFE), "show", title);
   }
 });
 

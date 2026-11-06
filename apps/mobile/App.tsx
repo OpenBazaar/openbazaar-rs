@@ -39,7 +39,7 @@ import {
 import { alsoSoldBy, cartPackages, type CartLine } from "./src/cart";
 import { photosFor } from "./src/goods";
 import { filterListings } from "./src/search";
-import { parseKeywords, safetyVerdict, visibleListings, type SafetySettings } from "./src/safety/filter";
+import { CONTENT_TAGS, parseKeywords, safetyVerdict, visibleListings, type SafetySettings } from "./src/safety/filter";
 import { readSafety, writeSafety } from "./src/safety/storage";
 
 type SortKey = "relevance" | "price-asc" | "price-desc" | "newest";
@@ -296,12 +296,18 @@ export default function App() {
         onOpen={(hash) => setRoute({ name: "detail", hash })}
         onToggleSave={(hash) => rememberSaved(saved.includes(hash) ? saved.filter((item) => item !== hash) : [...saved, hash])}
         onClearQuery={() => setQuery("")}
+        coverReason={(listing) => {
+          if (revealed.includes(listing.hash)) return null;
+          const verdict = safetyVerdict(listing, catalog.store.contentRating, safety);
+          return verdict.action === "cover" ? verdict.reason : null;
+        }}
+        onReveal={(hash) => setRevealed([...revealed, hash])}
       />
     );
   } else if (route.name === "detail") {
     const listing = listingByHash(route.hash);
     const verdict = listing ? safetyVerdict(listing, catalog.store.contentRating, safety) : null;
-    body = listing && verdict?.hidden && !revealed.includes(listing.hash) ? (
+    body = listing && verdict && verdict.action !== "show" && !revealed.includes(listing.hash) ? (
       <View style={styles.sheetPad}>
         <Text style={styles.pageTitle}>This listing is hidden on this device.</Text>
         <Text style={styles.body}>{verdict.reason} You can change this in Content filters.</Text>
@@ -459,6 +465,8 @@ function Shop({
   onOpen,
   onToggleSave,
   onClearQuery,
+  coverReason,
+  onReveal,
 }: {
   catalog: ShopCatalog;
   query: string;
@@ -478,6 +486,8 @@ function Shop({
   onOpen: (hash: string) => void;
   onToggleSave: (hash: string) => void;
   onClearQuery: () => void;
+  coverReason: (listing: ListingHeader) => string | null;
+  onReveal: (hash: string) => void;
 }) {
   const { width } = useWindowDimensions();
   const columns = width >= 1280 ? 3 : width >= 900 ? 2 : 1;
@@ -561,7 +571,12 @@ function Shop({
           </View>
         ) : (
           <View style={view === "grid" ? styles.grid : styles.list}>
-            {visible.map((listing) => (
+            {visible.map((listing) => coverReason(listing) ? (
+              <View key={listing.hash} style={[styles.card, styles.cardBody]}>
+                <Text style={styles.meta}>Covered by your content filters. {coverReason(listing)}</Text>
+                <TextButton label="Show" onPress={() => onReveal(listing.hash)} />
+              </View>
+            ) : (
               <ListingCard
                 key={listing.hash}
                 listing={listing}
@@ -1141,7 +1156,12 @@ function SafetyScreen({ settings, onChange }: { settings: SafetySettings; onChan
         <View style={[styles.check, settings.safeMode && styles.checkOn]} />
         <Text style={styles.body}>Safe mode</Text>
       </Pressable>
-      <Text style={styles.meta}>Hides listings the seller rated sensitive or adult, every listing from a store rated adult, and unlabeled listings that use a short list of explicit words.</Text>
+      <Text style={styles.meta}>Safe mode applies the rating and tag choices below, and treats unlabeled listings that use a short list of explicit words as sensitive.</Text>
+      <Options label="Sensitive listings" value={settings.sensitive} options={["hide", "cover", "show"]} onChange={(sensitive) => onChange({ ...settings, sensitive })} />
+      <Options label="Adult listings" value={settings.adult} options={["hide", "show"]} onChange={(adult) => onChange({ ...settings, adult })} />
+      {CONTENT_TAGS.map((tag) => (
+        <Options key={tag} label={`Tagged ${tag}`} value={settings.tags[tag]} options={["show", "hide"]} onChange={(mode) => onChange({ ...settings, tags: { ...settings.tags, [tag]: mode } })} />
+      ))}
       <Field
         label="Blocked words, one per line"
         value={text}
@@ -1153,6 +1173,19 @@ function SafetyScreen({ settings, onChange }: { settings: SafetySettings; onChan
       />
       <Text style={styles.meta}>Listings whose title, category, description, or tags contain one of these whole words are hidden, even with safe mode off.</Text>
     </ScrollView>
+  );
+}
+
+function Options<T extends string>({ label, value, options, onChange }: { label: string; value: T; options: readonly T[]; onChange: (value: T) => void }) {
+  return (
+    <View style={styles.row}>
+      <Text style={styles.label}>{label}</Text>
+      {options.map((option) => (
+        <Pressable key={option} accessibilityRole="button" accessibilityState={{ selected: value === option }} onPress={() => onChange(option)} style={[styles.sort, value === option && styles.sortOn]}>
+          <Text style={[styles.sortText, value === option && styles.sortTextOn]}>{option}</Text>
+        </Pressable>
+      ))}
+    </View>
   );
 }
 

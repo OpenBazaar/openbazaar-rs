@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { parseKeywords, type SafetySettings } from "../safety/filter";
+import { CONTENT_TAGS, parseKeywords, type AdultMode, type SafetySettings, type SensitiveMode, type TagMode } from "../safety/filter";
 
 export function SafetySettingsPanel({ settings, onChange }: { settings: SafetySettings; onChange: (settings: SafetySettings) => void }) {
   const [text, setText] = useState(() => settings.blockedKeywords.join("\n"));
@@ -7,7 +7,10 @@ export function SafetySettingsPanel({ settings, onChange }: { settings: SafetySe
     <div className="ob-section-heading"><div><h1 id="ob-safety-title">Content filters</h1></div></div>
     <p className="ob-page-intro">These filters run on this device. They are not sent to your node or anyone else, and they do not remove anything from the network.</p>
     <label><input type="checkbox" checked={settings.safeMode} onChange={e => onChange({ ...settings, safeMode: e.target.checked })}/> Safe mode</label>
-    <p className="ob-page-intro">Hides listings the seller rated sensitive or adult, every listing from a store rated adult, and unlabeled listings that use a short list of explicit words.</p>
+    <p className="ob-page-intro">Safe mode applies the rating and tag choices below, and treats unlabeled listings that use a short list of explicit words as sensitive.</p>
+    <label className="ob-field">Sensitive listings<select aria-label="Sensitive listings" value={settings.sensitive} disabled={!settings.safeMode} onChange={e => onChange({ ...settings, sensitive: e.target.value as SensitiveMode })}><option value="hide">Hide</option><option value="cover">Cover, tap to show</option><option value="show">Show</option></select></label>
+    <label className="ob-field">Adult listings<select aria-label="Adult listings" value={settings.adult} disabled={!settings.safeMode} onChange={e => onChange({ ...settings, adult: e.target.value as AdultMode })}><option value="hide">Hide</option><option value="show">Show</option></select></label>
+    {CONTENT_TAGS.map(tag => <label key={tag} className="ob-field">Tagged {tag}<select aria-label={`Tagged ${tag}`} value={settings.tags[tag]} disabled={!settings.safeMode} onChange={e => onChange({ ...settings, tags: { ...settings.tags, [tag]: e.target.value as TagMode } })}><option value="show">Show</option><option value="hide">Hide</option></select></label>)}
     <label className="ob-field">Blocked words<textarea aria-label="Blocked words" rows={5} value={text} placeholder="One word or phrase per line" onChange={e => { setText(e.target.value); onChange({ ...settings, blockedKeywords: parseKeywords(e.target.value) }); }}/></label>
     <p className="ob-page-intro">Listings whose title, category, description, or tags contain one of these whole words are hidden, even with safe mode off.</p>
   </section>;
@@ -20,4 +23,11 @@ export function SafetyInterstitial({ reason, onShow, onBack }: { reason: string;
     <button className="ob-secondary" onClick={onShow}>Show it anyway</button>
     <button className="ob-primary" onClick={onBack}>Back to the goods</button>
   </div>;
+}
+
+export function CoveredCard({ reason, onShow }: { reason: string; onShow: () => void }) {
+  return <article className="ob-product-card ob-covered-card">
+    <p>Covered by your content filters. {reason}</p>
+    <button className="ob-secondary" onClick={onShow}>Show</button>
+  </article>;
 }

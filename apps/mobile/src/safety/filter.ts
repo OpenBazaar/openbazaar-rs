@@ -3,19 +3,37 @@
 import type { ContentRating, ListingHeader } from "../catalog";
 import { SENSITIVE_KEYWORDS } from "./sensitiveKeywords.ts";
 
+export const CONTENT_TAGS = ["nudity", "violence", "drugs", "weapons", "gambling"] as const;
+export type ContentTag = (typeof CONTENT_TAGS)[number];
+export type SensitiveMode = "show" | "cover" | "hide";
+export type AdultMode = "show" | "hide";
+export type TagMode = "show" | "hide";
+
 export type SafetySettings = {
-  /** Hide listings rated sensitive or adult, and unlabeled ones that match the built-in list. */
+  /** Master switch for ratings, tags, and the built-in word list. */
   safeMode: boolean;
+  /** What safe mode does with a sensitive listing. "cover" keeps a placeholder the buyer can open. */
+  sensitive: SensitiveMode;
+  adult: AdultMode;
+  /** Each tag on its own, on top of the rating. */
+  tags: Record<ContentTag, TagMode>;
   /** The buyer's own words. Matching listings are hidden whether or not safe mode is on. */
   blockedKeywords: string[];
 };
 
-export const DEFAULT_SAFETY: SafetySettings = { safeMode: true, blockedKeywords: [] };
+export const DEFAULT_SAFETY: SafetySettings = {
+  safeMode: true,
+  sensitive: "hide",
+  adult: "hide",
+  tags: { nudity: "show", violence: "show", drugs: "show", weapons: "show", gambling: "show" },
+  blockedKeywords: [],
+};
 
-export type Verdict = { hidden: false } | { hidden: true; reason: string };
+export type Verdict = { action: "show" } | { action: "cover" | "hide"; reason: string };
 
-const SHOWN: Verdict = { hidden: false };
+const SHOWN: Verdict = { action: "show" };
 const RANK: Record<ContentRating, number> = { unrated: 0, general: 0, sensitive: 1, adult: 2 };
+const STRENGTH: Record<Verdict["action"], number> = { show: 0, cover: 1, hide: 2 };
 
 /** Split text into lowercase words. Anything that is not a letter or digit separates words. */
 export function words(text: string): string[] {
@@ -49,11 +67,19 @@ function containsRun(field: readonly string[], needle: readonly string[]): boole
   return false;
 }
 
+function strictest(verdicts: readonly Verdict[]): Verdict {
+  return verdicts.reduce((worst, next) => (STRENGTH[next.action] > STRENGTH[worst.action] ? next : worst), SHOWN);
+}
+
+function forSensitive(mode: SensitiveMode, reason: string): Verdict {
+  return mode === "show" ? SHOWN : { action: mode, reason };
+}
+
 /**
- * Decide whether this device shows a listing.
+ * Decide whether this device shows, covers, or hides a listing.
  *
- * A store rating raises every listing in it: an adult store hides all of its
- * listings in safe mode, whatever each listing says.
+ * A store rating raises every listing in it. When several rules apply, the
+ * strictest one wins and its reason is the one shown.
  */
 export function safetyVerdict(
   listing: ListingHeader,
@@ -62,16 +88,19 @@ export function safetyVerdict(
   builtIn: readonly string[] = SENSITIVE_KEYWORDS,
 ): Verdict {
   const blocked = matchedKeyword(listing, settings.blockedKeywords);
-  if (blocked) return { hidden: true, reason: `It matches your blocked word “${blocked}”.` };
+  if (blocked) return { action: "hide", reason: `It matches your blocked word “${blocked}”.` };
   if (!settings.safeMode) return SHOWN;
+  const verdicts: Verdict[] = [];
   const rating = RANK[storeRating] > RANK[listing.contentRating] ? storeRating : listing.contentRating;
-  if (rating === "adult" || rating === "sensitive") {
-    const who = rating === storeRating && rating !== listing.contentRating ? "store" : "seller";
-    return { hidden: true, reason: `The ${who} rated it ${rating}.` };
+  const who = rating === storeRating && rating !== listing.contentRating ? "store" : "seller";
+  if (rating === "adult" && settings.adult === "hide") verdicts.push({ action: "hide", reason: `The ${who} rated it adult.` });
+  if (rating === "sensitive") verdicts.push(forSensitive(settings.sensitive, `The ${who} rated it sensitive.`));
+  for (const tag of listing.contentTags) {
+    if (settings.tags[tag as ContentTag] === "hide") verdicts.push({ action: "hide", reason: `It is tagged ${tag}, which you hide.` });
   }
   const flagged = matchedKeyword(listing, builtIn);
-  if (flagged) return { hidden: true, reason: `It mentions “${flagged}”, which safe mode treats as sensitive.` };
-  return SHOWN;
+  if (flagged) verdicts.push(forSensitive(settings.sensitive, `It mentions “${flagged}”, which safe mode treats as sensitive.`));
+  return strictest(verdicts);
 }
 
 export function visibleListings(
@@ -79,21 +108,38 @@ export function visibleListings(
   storeRating: ContentRating,
   settings: SafetySettings,
 ): ListingHeader[] {
-  return listings.filter((listing) => !safetyVerdict(listing, storeRating, settings).hidden);
+  return listings.filter((listing) => safetyVerdict(listing, storeRating, settings).action !== "hide");
 }
 
-/** Read stored settings. Anything missing or unreadable falls back to safe mode on. */
+function pick<T extends string>(value: unknown, allowed: readonly T[], fallback: T): T {
+  return allowed.includes(value as T) ? (value as T) : fallback;
+}
+
+/**
+ * Read stored settings. Anything missing or unreadable falls back to the
+ * default, so the first version's `{ safeMode, blockedKeywords }` reads as-is
+ * with the new switches at their defaults.
+ */
 export function parseSafety(raw: string | null): SafetySettings {
   if (!raw) return DEFAULT_SAFETY;
+  let value: Record<string, unknown>;
   try {
-    const value = JSON.parse(raw) as { safeMode?: unknown; blockedKeywords?: unknown };
-    return {
-      safeMode: value.safeMode !== false,
-      blockedKeywords: Array.isArray(value.blockedKeywords)
-        ? parseKeywords(value.blockedKeywords.filter((term): term is string => typeof term === "string").join("\n"))
-        : [],
-    };
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return DEFAULT_SAFETY;
+    value = parsed as Record<string, unknown>;
   } catch {
     return DEFAULT_SAFETY;
   }
+  const tags = (value.tags && typeof value.tags === "object" ? value.tags : {}) as Record<string, unknown>;
+  return {
+    safeMode: value.safeMode !== false,
+    sensitive: pick(value.sensitive, ["show", "cover", "hide"], DEFAULT_SAFETY.sensitive),
+    adult: pick(value.adult, ["show", "hide"], DEFAULT_SAFETY.adult),
+    tags: Object.fromEntries(CONTENT_TAGS.map((tag) => [tag, pick(tags[tag], ["show", "hide"], DEFAULT_SAFETY.tags[tag])])) as Record<ContentTag, TagMode>,
+    blockedKeywords: strings(value.blockedKeywords, (list) => parseKeywords(list.join("\n"))),
+  };
+}
+
+function strings(value: unknown, clean: (list: string[]) => string[] = (list) => [...new Set(list)]): string[] {
+  return Array.isArray(value) ? clean(value.filter((item): item is string => typeof item === "string")) : [];
 }
