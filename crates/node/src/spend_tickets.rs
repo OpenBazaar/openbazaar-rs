@@ -50,6 +50,17 @@ impl SpendTerms {
     }
 }
 
+/// What a quote or ticket allows: one spend, bound to one order.
+pub(crate) trait OrderTerms: Clone {
+    fn order_id(&self) -> &str;
+}
+
+impl OrderTerms for SpendTerms {
+    fn order_id(&self) -> &str {
+        &self.order_id
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum TicketError {
     /// Unknown, used, expired, or dropped by a lock.
@@ -58,22 +69,27 @@ pub(crate) enum TicketError {
     OtherOrder,
 }
 
-struct Open {
-    terms: SpendTerms,
+struct Open<T> {
+    terms: T,
     expires: Instant,
 }
 
-#[derive(Default)]
-pub(crate) struct SpendTickets {
-    quotes: Mutex<HashMap<String, Open>>,
-    tickets: Mutex<HashMap<String, Open>>,
+pub(crate) struct SpendTickets<T = SpendTerms> {
+    quotes: Mutex<HashMap<String, Open<T>>>,
+    tickets: Mutex<HashMap<String, Open<T>>>,
+}
+
+impl<T> Default for SpendTickets<T> {
+    fn default() -> Self {
+        Self { quotes: Mutex::default(), tickets: Mutex::default() }
+    }
 }
 
 fn guard<T>(map: &Mutex<T>) -> MutexGuard<'_, T> {
     map.lock().unwrap_or_else(|err| err.into_inner())
 }
 
-fn insert(map: &Mutex<HashMap<String, Open>>, terms: SpendTerms, now: Instant) -> String {
+fn insert<T>(map: &Mutex<HashMap<String, Open<T>>>, terms: T, now: Instant) -> String {
     let mut map = guard(map);
     map.retain(|_, open| open.expires > now);
     if map.len() >= MAX_OPEN {
@@ -87,27 +103,27 @@ fn insert(map: &Mutex<HashMap<String, Open>>, terms: SpendTerms, now: Instant) -
 }
 
 /// Remove `id` from `map`: it is good for one use whether or not that use succeeds.
-fn take(map: &Mutex<HashMap<String, Open>>, id: &str, now: Instant) -> Option<SpendTerms> {
+fn take<T>(map: &Mutex<HashMap<String, Open<T>>>, id: &str, now: Instant) -> Option<T> {
     let open = guard(map).remove(id)?;
     (open.expires > now).then_some(open.terms)
 }
 
-impl SpendTickets {
-    pub(crate) fn quote(&self, terms: SpendTerms, now: Instant) -> String {
+impl<T: OrderTerms> SpendTickets<T> {
+    pub(crate) fn quote(&self, terms: T, now: Instant) -> String {
         insert(&self.quotes, terms, now)
     }
 
     /// The user confirmed `quote`. Returns the ticket and its terms.
-    pub(crate) fn issue(&self, quote: &str, now: Instant) -> Result<(String, SpendTerms), TicketError> {
+    pub(crate) fn issue(&self, quote: &str, now: Instant) -> Result<(String, T), TicketError> {
         let terms = take(&self.quotes, quote, now).ok_or(TicketError::Unknown)?;
         Ok((insert(&self.tickets, terms.clone(), now), terms))
     }
 
     /// Spend `ticket` on `order_id`. A ticket is gone after this call, even
     /// when it named another order.
-    pub(crate) fn redeem(&self, ticket: &str, order_id: &str, now: Instant) -> Result<SpendTerms, TicketError> {
+    pub(crate) fn redeem(&self, ticket: &str, order_id: &str, now: Instant) -> Result<T, TicketError> {
         let terms = take(&self.tickets, ticket, now).ok_or(TicketError::Unknown)?;
-        if terms.order_id != order_id {
+        if terms.order_id() != order_id {
             return Err(TicketError::OtherOrder);
         }
         Ok(terms)

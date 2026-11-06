@@ -43,6 +43,7 @@ mod wallet_keys;
 mod wallet_lock;
 mod wallet_session;
 mod watch;
+mod xmr;
 
 #[cfg(test)]
 mod checkout_tests;
@@ -216,6 +217,8 @@ pub struct Node {
     pub(crate) pay_jobs: pay_order::PayJobs,
     /// The spend tier: closed until `POST /unlock`, and again on lock.
     pub(crate) lock: wallet_lock::WalletLock,
+    /// Monero direct pay, off until [`Node::set_xmr_chain`].
+    pub(crate) xmr: xmr::XmrNode,
 }
 
 impl Node {
@@ -267,6 +270,9 @@ impl Node {
             store_wallets.insert(listing.seller.clone(), Mutex::new(wallet));
         }
         let lock = wallet_lock::WalletLock::open(&dir, vault.clone(), &local.vault)?;
+        let xmr_stores: Vec<(String, String)> =
+            store_wallets.keys().map(|seller| (seller.clone(), format!("store-{}", slug(seller)))).collect();
+        let xmr = xmr::XmrNode::open(&dir, &vault, network, &xmr_stores, local.egress.clone())?;
         let wallet_tip = buyer_wallet.wallet.latest_checkpoint().block_id();
         config
             .chain
@@ -295,6 +301,7 @@ impl Node {
             store_wallets,
             pay_jobs: pay_order::PayJobs::new(),
             lock,
+            xmr,
         };
         node.drop_uncommitted_spend()?;
         Ok(node)
@@ -328,7 +335,9 @@ impl Node {
     }
 
     pub(crate) fn rates_value(&self) -> Value {
-        self.rates.value()
+        let mut value = self.rates.value();
+        value["xmr"] = self.xmr.rate.value(&value);
+        value
     }
 
     pub fn mailbox_path(&self) -> &Path {
@@ -357,6 +366,7 @@ impl Node {
             scope.spawn(|| self.run_pay_worker(&stop));
             scope.spawn(|| self.run_escrow_mail(&stop));
             scope.spawn(|| self.run_auto_lock(&stop));
+            scope.spawn(|| self.run_xmr(poll, &stop));
             let result = http::serve(self, port);
             stop.store(true, Ordering::Relaxed);
             result

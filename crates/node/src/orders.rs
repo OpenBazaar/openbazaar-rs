@@ -189,6 +189,9 @@ impl Node {
         let packages = checkout_packages(&catalog, body)?;
         for package in &packages {
             self.allow_settlement(package.settlement, &package.lines[0].0.seller)?;
+            if package.xmr {
+                self.xmr_ready(&package.lines[0].0.seller)?;
+            }
         }
         let needs_address = packages.iter().any(|package| {
             package.lines.iter().any(|(listing, _)| listing.kind == ListingKind::Physical)
@@ -244,7 +247,11 @@ impl Node {
                 .checked_add(package.shipping)
                 .ok_or(OrderError::Invalid("Enter a quantity of at most 99."))?;
             let lines = line_values(&package.lines)?;
-            let (payment, mut escrow) = self.payment_for(package.settlement, total, &seller)?;
+            let (payment, mut escrow) = if package.xmr {
+                (Some(self.xmr_payment(total, &seller)?), None)
+            } else {
+                self.payment_for(package.settlement, total, &seller)?
+            };
             self.remember(
                 checkout_id.clone(),
                 id.clone(),
@@ -419,6 +426,8 @@ impl Node {
 struct PackagePlan<'a> {
     lines: Vec<(&'a Listing, u32)>,
     settlement: Settlement,
+    /// Paid in Monero (direct pay only).
+    xmr: bool,
     items: u64,
     shipping: u64,
 }
@@ -431,7 +440,7 @@ const CHECKOUT_FIELDS: &[&str] = &[
     "packages",
 ];
 
-const PACKAGE_FIELDS: &[&str] = &["settlement", "lines"];
+const PACKAGE_FIELDS: &[&str] = &["settlement", "rail", "lines"];
 
 fn checkout_packages<'a>(catalog: &'a Catalog, body: &Value) -> Result<Vec<PackagePlan<'a>>, OrderError> {
     let Some(list) = body.get("packages").and_then(Value::as_array) else {
@@ -468,10 +477,12 @@ fn checkout_packages<'a>(catalog: &'a Catalog, body: &Value) -> Result<Vec<Packa
                 "This listing does not accept a moderator.",
             ));
         }
+        let xmr = crate::xmr::rail_of(package.get("rail"), settlement == Settlement::Escrow)?;
         let (items, shipping) = package_shipping(&lines)?;
         plans.push(PackagePlan {
             lines,
             settlement,
+            xmr,
             items,
             shipping,
         });

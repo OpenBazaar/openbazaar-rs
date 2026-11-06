@@ -188,7 +188,10 @@ pub(crate) fn response(node: &Node, client: &Client, head: &str, body: &[u8], or
             .and_then(|hash| Ok((hash, catalog_value(&catalog).map_err(|err| LabelError::Failed(err.to_string()))?)))
     };
     match result {
-        Ok((hash, catalog)) => json_body("200 OK", &json!({ "hash": hash, "catalog": catalog }), origin),
+        Ok((hash, mut catalog)) => {
+            crate::xmr::add_xmr_flags(node, &mut catalog);
+            json_body("200 OK", &json!({ "hash": hash, "catalog": catalog }), origin)
+        }
         Err(LabelError::Invalid(message)) => json_error("400 Bad Request", message, origin),
         Err(LabelError::UnknownListing) => json_error("404 Not Found", "That listing is not in this shop.", origin),
         Err(LabelError::NotOurs) => json_error("403 Forbidden", "This node does not hold that store's key.", origin),

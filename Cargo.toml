@@ -6,6 +6,7 @@ members = [
     "crates/pay",
     "crates/tormail",
     "crates/escrow",
+    "crates/xmr",
 ]
 
 [workspace.package]
@@ -19,4 +20,8 @@ publish = false
 opt-level = 3
 
 [profile.dev.package.blake2]
+opt-level = 3
+
+# Monero tests sign real CLSAG and Bulletproofs+ transactions.
+[profile.dev.package.curve25519-dalek]
 opt-level = 3

@@ -6,13 +6,14 @@ use std::time::Duration;
 
 use ob_node::{LocalConfig, NetworkMode, NodeConfig, ServeOptions, VaultChoice, VaultMode};
 
-const USAGE: &str = "ob-node [print | serve [port] [--network testnet4|mainnet] [--data-dir DIR] [--peer HOST:PORT[,...] | --esplora URL[,URL...]] [--public-fallback | --no-public-fallback] [--confirmations N] [--poll-secs S] [--escrow-vendor SELLER=URL] [--moderator URL] [--moderate] [--vault keystore|passphrase|file] [--shop-origin URL] [--no-pair-codes] [--proxy socks5h://HOST:PORT] [--no-rates]]
+const USAGE: &str = "ob-node [print | serve [port] [--network testnet4|mainnet] [--data-dir DIR] [--peer HOST:PORT[,...] | --esplora URL[,URL...]] [--public-fallback | --no-public-fallback] [--confirmations N] [--poll-secs S] [--escrow-vendor SELLER=URL] [--moderator URL] [--moderate] [--vault keystore|passphrase|file] [--shop-origin URL] [--no-pair-codes] [--proxy socks5h://HOST:PORT] [--no-rates] [--xmr-daemon URL[,URL...]]]
 
 Chain data comes from BIP 157/158 compact block filters by default.
 --peer uses only your own node (bitcoind with blockfilterindex=1 and peerblockfilters=1).
 --esplora uses exactly the Esplora servers you name.
 --public-fallback asks public Esplora servers while no filter peer answers (default on testnet4 only).
 --proxy also carries filter peer connections and broadcasts, and gives each Esplora query its own Tor circuit.
+--xmr-daemon turns on Monero direct pay through monerod RPC: your own node (loopback or LAN, direct), or a remote node through --proxy (required for .onion, and on mainnet). There is no default node. Testnet4 pays on Monero stagenet.
 --vault passphrase reads OB_VAULT_PASSPHRASE, or asks on the terminal.
 --vault file keeps the key in the data dir; use it only on headless machines and in tests.";
 const PASSPHRASE_ENV: &str = "OB_VAULT_PASSPHRASE";
@@ -80,6 +81,17 @@ fn serve(args: &[String]) -> ExitCode {
         ),
         None => {}
     }
+    let xmr = options.xmr_config();
+    match &xmr {
+        Some(config) => eprintln!(
+            "ob-node: Monero {} direct pay via {} ({}). {}",
+            config.network,
+            config.nodes.iter().map(|node| node.url.as_str()).collect::<Vec<_>>().join(", "),
+            config.privacy(),
+            config.reveals()
+        ),
+        None => eprintln!("ob-node: Monero is off (no --xmr-daemon)"),
+    }
     let vault = match vault_mode(&options) {
         Ok(vault) => vault,
         Err(err) => {
@@ -121,6 +133,19 @@ fn serve(args: &[String]) -> ExitCode {
             return ExitCode::from(1);
         }
     };
+    if let Some(config) = xmr {
+        let chain = match openbazaar_xmr::DaemonChain::new(config) {
+            Ok(chain) => chain,
+            Err(err) => {
+                eprintln!("ob-node: Monero client: {err}");
+                return ExitCode::from(1);
+            }
+        };
+        if let Err(err) = node.set_xmr_chain(std::sync::Arc::new(chain)) {
+            eprintln!("ob-node: {err}");
+            return ExitCode::from(1);
+        }
+    }
     // First boot only. The token file in the data dir is kept, and a
     // later start does not print it again.
     if let Some(token) = node.fresh_pairing_token() {
