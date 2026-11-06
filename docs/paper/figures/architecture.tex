@@ -1,0 +1,37 @@
+\begin{figure}[t]
+\centering
+\resizebox{\textwidth}{!}{%
+\begin{tikzpicture}[
+  font=\small,
+  box/.style={draw, rounded corners=2pt, align=center, minimum height=1.05cm, text width=2.5cm, fill=white},
+  ext/.style={box, fill=black!5},
+  impl/.style={-{Stealth[length=2mm]}, thick},
+  spec/.style={-{Stealth[length=2mm]}, thick, dashed},
+  lbl/.style={font=\scriptsize, align=center, fill=white, inner sep=1pt}
+]
+\node[box] (client) at (0,0) {Buyer client\\\scriptsize web app, desktop shell};
+\node[box] (bnode) at (0,-2.6) {Buyer node\\\scriptsize keys, vault, wallet};
+\node[box] (vnode) at (9.0,-2.6) {Vendor node\\\scriptsize onion mailbox, wallet};
+\node[box] (vapp) at (9.0,0) {Vendor client\\\scriptsize opens letters};
+\node[ext] (tor) at (4.5,-2.6) {Tor network};
+\node[ext] (rep) at (4.5,-0.3) {Replicas and seeds};
+\node[ext] (mod) at (13.6,0.4) {Moderator\\\scriptsize dispute only};
+\node[ext] (esplora) at (0,-5.0) {Esplora server};
+\node[ext] (chain) at (4.5,-5.0) {Bitcoin network};
+\node[ext] (rates) at (-4.5,-2.6) {Exchange-rate\\endpoint};
+
+\draw[impl] (client) -- node[lbl, left, xshift=-2pt]{loopback HTTP\\pairing token} (bnode);
+\draw[spec] (bnode) -- node[lbl, above=3pt]{sealed\\letter} (tor);
+\draw[spec] (tor) -- node[lbl, above=3pt]{onion\\service} (vnode);
+\draw[impl] (vnode) -- node[lbl, right]{loopback} (vapp);
+\draw[spec] (bnode.north east) -- node[lbl, sloped, above]{catalog} (rep.south west);
+\draw[spec] (vnode.north west) -- node[lbl, sloped, above]{publish} (rep.south east);
+\draw[impl] (bnode) -- node[lbl, left]{addresses, txs} (esplora);
+\draw[impl] (bnode.south east) -- node[lbl, sloped, above]{broadcast} (chain);
+\draw[impl] (vnode.south west) -- node[lbl, sloped, above]{payments} (chain);
+\draw[spec] (vnode) -- node[lbl, sloped, above]{dispute letter} (mod);
+\draw[impl] (bnode) -- node[lbl, above=3pt]{clear-\\net} (rates);
+\end{tikzpicture}}
+\caption{Components and data paths. Solid arrows exist in code on main or an open pull request; dashed arrows are specified but not implemented. In today's demonstration the buyer node and vendor node are the same process, and the sealed letter is written to that process's own mailbox directory. The phone-to-node pairing is not drawn; the client currently reaches only a node on the same machine.}
+\label{fig:architecture}
+\end{figure}

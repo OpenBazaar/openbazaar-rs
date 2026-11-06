@@ -1,0 +1,32 @@
+\section{Catalog and Replication}
+\label{sec:catalog}
+
+\subsection{Records}
+
+A \emph{store record} \IT{} contains a display name, a region, two direct-payment strings (a BOLT 12 offer and a BIP 352 code), and the store's 32-byte x-only public key $S$, which is the store identifier. A \emph{listing} \IT{} contains $S$, a title, a category, a price in satoshis, a ship-from region, a description, a seller display name, a stock count, the date it was signed, whether it accepts a moderator, a kind (physical or digital), an optional shared product key, flat shipping in satoshis, and the subtotal above which shipping is waived. Neither record has a field for a legal name, an email address, a phone number, or a street address. The free-text fields are not checked for such content; rejecting it at encoding time is specified but not implemented \SP.
+
+\subsection{Canonical encoding}
+
+Each record body is a fixed sequence of fields \IT: a four-byte magic (\code{OBST} for stores, \code{OBLS} for listings), a one-byte version, then fields in a fixed order. Integers are little-endian of fixed width. Strings are a two-byte little-endian length followed by UTF-8 bytes; blobs are a four-byte length, capped at 8~MiB. The decoder rejects a wrong magic, a wrong version, invalid UTF-8, truncation, and trailing bytes. Because every variable-length field is length-prefixed and the field order is fixed, distinct records have distinct encodings, and a decoded record re-encodes to the same bytes (a property the tests check).
+
+\subsection{Signatures and addresses}
+
+The signature is a BIP 340 Schnorr signature~\citep{bip340} over a tagged hash of the body:
+\[
+  \sigma = \mathsf{Sign}_{s}\bigl(\Hash_{\mathrm{tag}}(\mathit{body})\bigr),\quad \Hash_{\mathrm{tag}}(m)=\mathrm{SHA256}\bigl(\mathrm{SHA256}(\mathrm{tag})\,\|\,\mathrm{SHA256}(\mathrm{tag})\,\|\,m\bigr),
+\]
+with tags \code{ob/store/v1} and \code{ob/listing/v1}, so a signature over one record type is not valid for another. Signing uses BIP 340's deterministic nonce derivation without auxiliary randomness. The signature is appended to the body. A listing can only be signed by the secret key of the store it names: the signing function refuses otherwise, and verification checks the signature against the $S$ inside the listing body.
+
+A listing's address is $\mathrm{SHA256}(\mathit{body})$, computed over the body without the signature \IT. An order commits to this address, so a vendor who later edits a listing (for example, raising the price) produces a new address and cannot claim that the buyer agreed to the new terms. The node refuses an order for an address that is not in its verified catalog.
+
+\subsection{What the signature does not give}
+
+A valid signature proves that the store key holder signed those bytes at some time. It does not prove that the listing is current or that a set of listings is complete. A replica can serve an older, validly signed version of a listing (an old price or stock count), and it can omit listings entirely, without either being detectable by signature checks alone. Addressing a listing by content hash makes an order unambiguous about which version it bought, but does not tell a buyer whether a newer version exists. A per-store sequence number or a signed index of current listings would address freshness and completeness; neither is designed in detail \FW.
+
+\subsection{Replication}
+
+The intended design \SP{} has every node store the signed headers of the catalog it has seen, so that a store remains browsable while its publisher is offline, and requires images and files to be held by at least one replica before a listing counts as published. Because records are self-authenticating, a replica needs no trust for integrity: a client or node that receives a record from anyone checks the signature and the content hash. Replicas are trusted only for availability and see who fetches what (\S\ref{sec:privacy}).
+
+An open catalog invites spam. The design calls for each published header to carry a cost that receiving nodes check, such as a small bitcoin fee \SP; no fee mechanism is designed in detail, and none is implemented. Until one exists, replication would be limited to stores a node has chosen to follow or has received through a pasted link.
+
+On main, the catalog is a fixture of one store and 38 listings across three sellers, signed at startup with fixture keys and verified before it is served \ID. In the fixture, the three sellers are display names on listings under a single store key; the protocol itself assigns one store key per vendor.

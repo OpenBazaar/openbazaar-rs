@@ -1,0 +1,80 @@
+\section{Implementation and Evaluation}
+\label{sec:evaluation}
+
+\subsection{Code}
+
+Table~\ref{tab:loc} gives the size of each crate in lines of Rust, including tests, at each commit we cite. The client in \code{apps/mobile} is about 2{,}400 lines of TypeScript.
+
+\begin{table}[ht]
+\centering\small
+\begin{tabular}{@{}lrrr@{}}
+\toprule
+\textbf{Crate} & \textbf{main \code{b015bff}} & \textbf{PR \#2 \paycommit} & \textbf{PR \#3 \reviewcommit} \\
+\midrule
+\code{protocol} & 1{,}475 & 1{,}475 & 1{,}534 \\
+\code{tormail} & 1{,}498 & 1{,}498 & 1{,}498 \\
+\code{pay} & 1{,}051 & \payLOCpay & 1{,}051 \\
+\code{escrow} & 1{,}760 & 1{,}760 & 4{,}472 \\
+\code{node} & 3{,}030 & \payLOCnode & 3{,}030 \\
+\bottomrule
+\end{tabular}
+\caption{Lines of Rust per crate, including unit tests.}
+\label{tab:loc}
+\end{table}
+
+\subsection{Tests}
+
+We ran \code{cargo test} on each commit (Table~\ref{tab:tests}). Two tests are ignored by default because they need the live network: one bootstraps Arti and dials an onion address, and one (PR~\#2) pays real testnet4 coins. We did not run either. The PR~\#3 count is for the escrow and protocol crates, built in release mode; the node at that commit is unchanged from main.
+
+\begin{table}[ht]
+\centering\small
+\begin{tabular}{@{}lrrrrrl@{}}
+\toprule
+\textbf{Commit} & \code{node} & \code{escrow} & \code{pay} & \code{protocol} & \code{tormail} & \textbf{Total} \\
+\midrule
+main \code{b015bff} & 17 & 6 & 11 & 12 & 9 (+1 ign.) & 55 passed, 1 ignored \\
+PR \#2 \paycommit & \payTestsNode & 6 & \payTestsPay & 12 & 9 (+1 ign.) & \payTestsTotal \\
+PR \#3 \reviewcommit & --- & 26 + 3 doc & --- & 12 & --- & 41 passed \\
+\bottomrule
+\end{tabular}
+\caption{Automated tests we ran. All passed.}
+\label{tab:tests}
+\end{table}
+
+The tests that matter most for the claims in this paper are, by name: \code{seals\_\allowbreak{}the\_\allowbreak{}ship\_\allowbreak{}to\_\allowbreak{}into\_\allowbreak{}the\_\allowbreak{}mailbox\_\allowbreak{}and\_\allowbreak{}keeps\_\allowbreak{}it\_\allowbreak{}out\_\allowbreak{}of\_\allowbreak{}the\_\allowbreak{}catalog}, \code{multi\_\allowbreak{}seller\_\allowbreak{}checkout\_\allowbreak{}seals\_\allowbreak{}one\_\allowbreak{}letter\_\allowbreak{}per\_\allowbreak{}vendor}, \code{rejects\_\allowbreak{}a\_\allowbreak{}client\_\allowbreak{}supplied\_\allowbreak{}destination}, \code{pairing\_\allowbreak{}token\_\allowbreak{}is\_\allowbreak{}stable\_\allowbreak{}and\_\allowbreak{}orders\_\allowbreak{}require\_\allowbreak{}it}, \code{address\_\allowbreak{}book\_\allowbreak{}is\_\allowbreak{}encrypted\_\allowbreak{}and\_\allowbreak{}stays\_\allowbreak{}off\_\allowbreak{}the\_\allowbreak{}catalog}, and \code{wrong\_\allowbreak{}key\_\allowbreak{}cannot\_\allowbreak{}open} on main; and, in PR~\#3, \code{two\_\allowbreak{}parties\_\allowbreak{}fund\_\allowbreak{}by\_\allowbreak{}exchanging\_\allowbreak{}only\_\allowbreak{}messages}, \code{each\_\allowbreak{}party\_\allowbreak{}session\_\allowbreak{}takes\_\allowbreak{}only\_\allowbreak{}its\_\allowbreak{}own\_\allowbreak{}key}, \code{funding\_\allowbreak{}psbt\_\allowbreak{}is\_\allowbreak{}only\_\allowbreak{}released\_\allowbreak{}after\_\allowbreak{}a\_\allowbreak{}verified\_\allowbreak{}refund}, \code{stalling\_\allowbreak{}buyer\_\allowbreak{}loses\_\allowbreak{}at\_\allowbreak{}the\_\allowbreak{}vendor\_\allowbreak{}claim\_\allowbreak{}height}, \code{buyer\_\allowbreak{}who\_\allowbreak{}disputes\_\allowbreak{}in\_\allowbreak{}time\_\allowbreak{}wins}, \code{moderator\_\allowbreak{}share\_\allowbreak{}alone\_\allowbreak{}does\_\allowbreak{}not\_\allowbreak{}finish\_\allowbreak{}a\_\allowbreak{}branch}, \code{rulings\_\allowbreak{}are\_\allowbreak{}signed\_\allowbreak{}and\_\allowbreak{}equivocation\_\allowbreak{}is\_\allowbreak{}provable}, \code{per\_\allowbreak{}order\_\allowbreak{}keys\_\allowbreak{}make\_\allowbreak{}orders\_\allowbreak{}between\_\allowbreak{}the\_\allowbreak{}same\_\allowbreak{}pair\_\allowbreak{}unlinkable}, and \code{buyer\_\allowbreak{}rejects\_\allowbreak{}a\_\allowbreak{}garbage\_\allowbreak{}buyer\_\allowbreak{}wins\_\allowbreak{}share\_\allowbreak{}and\_\allowbreak{}never\_\allowbreak{}sees\_\allowbreak{}the\_\allowbreak{}psbt}.
+
+\subsection{Measurements}
+
+We measured the operations whose cost determines whether the design is practical on ordinary hardware. All numbers are from one machine (Apple M2 Max laptop, 32~GB, macOS 26.7, Rust 1.94 release builds, Node.js 24.6), averaged over the stated number of repetitions after a warm-up. They are microbenchmarks of local computation; we did not measure anything over a network, Tor, or a phone. Table~\ref{tab:measure} lists them.
+
+\begin{table}[ht]
+\centering\small
+\begin{tabularx}{\textwidth}{@{}Xrl@{}}
+\toprule
+\textbf{Operation} & \textbf{Result} & \textbf{Repetitions} \\
+\midrule
+Encoded listing (fixture paperback) & 268 bytes & --- \\
+Encoded fixture catalog (1 store, 38 listings) & 9{,}940 bytes & --- \\
+Sign one listing (BIP 340) & 101~$\mu$s & 2{,}000 \\
+Verify one listing & 48~$\mu$s & 2{,}000 \\
+Verify the whole fixture catalog & 1.9~ms & 200 \\
+Order plaintext with a four-line US ship-to & 173 bytes & --- \\
+Sealed letter for that order & 230 bytes & --- \\
+HPKE seal one order & 115~$\mu$s & 2{,}000 \\
+HPKE open one order & 75~$\mu$s & 2{,}000 \\
+Verifiable moderator share, size (by the serialization format) & 49{,}761 bytes & --- \\
+Encrypt one share & 44~ms & 20 \\
+Verify one share & 52~ms & 20 \\
+Decrypt one share & 54--57~ms & 20 \\
+On-device search, 1{,}000 headers & 0.2~ms/query & 100 \\
+On-device search, 10{,}000 headers & 5~ms/query & 100 \\
+On-device search, 100{,}000 headers & 49--67~ms/query & 100, two runs \\
+\bottomrule
+\end{tabularx}
+\caption{Measured costs. Search headers were synthesized by repeating the fixture headers with distinct titles; queries were a mix of matching and non-matching terms.}
+\label{tab:measure}
+\end{table}
+
+The share size follows from the format: one 33-byte point, 256 ciphertext pairs of two 33-byte points each, 256 OR-proofs of four 32-byte scalars each, and a 64-byte DLEQ proof: $33+256\cdot(66+128)+64=49{,}761$. An escrow funding exchange carries two shares (one per dispute branch), so about 100~KB, and a dispute letter carries one. Share decryption tests each of 256 bits and is about as costly as verification.
+
+These numbers support three practical conclusions. Signing and verifying the catalog and sealing orders cost well under a millisecond each, so they are not a bottleneck. On-device search over tens of thousands of headers is interactive on a laptop; we have not measured it on a phone. The verifiable share dominates the escrow's cost in both bytes and time, which is why finding M6 and the smaller-proof alternatives in \S\ref{sec:review} matter.

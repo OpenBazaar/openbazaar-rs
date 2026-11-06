@@ -1,0 +1,75 @@
+\documentclass[11pt]{article}
+
+\usepackage{iftex}
+\ifPDFTeX
+  \usepackage[T1]{fontenc}
+  \usepackage[utf8]{inputenc}
+  \usepackage{lmodern}
+\fi
+\usepackage[letterpaper,margin=1in]{geometry}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{booktabs,tabularx,array,longtable}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{tikz}
+\usetikzlibrary{positioning,arrows.meta,fit,calc,shapes.geometric,backgrounds}
+\usepackage[numbers,sort&compress]{natbib}
+\usepackage{xurl}
+\usepackage[hidelinks]{hyperref}
+\usepackage{microtype}
+\usepackage{caption}
+
+\setlist{itemsep=2pt,topsep=4pt}
+\setlength{\emergencystretch}{3em}
+\captionsetup{font=small,labelfont=bf}
+
+\newtheorem{property}{Property}
+\theoremstyle{definition}
+\newtheorem{assumption}{Assumption}
+
+% Implementation status labels. Every mechanism in the paper carries one.
+\newcommand{\status}[1]{\textsf{\small[#1]}}
+\newcommand{\IT}{\status{implemented, tested}}
+\newcommand{\ID}{\status{implemented, demo}}
+\newcommand{\SP}{\status{specified, not implemented}}
+\newcommand{\FW}{\status{future work}}
+
+\newcommand{\code}[1]{\texttt{\small #1}}
+\newcommand{\Hash}{\mathsf{H}}
+\newcommand{\tx}[1]{\mathsf{tx}_{\mathrm{#1}}}
+\input{sections/review-status}
+
+\title{OpenBazaar: Signed Catalogs, Sealed Orders, and\\Scriptless Two-Party Escrow for a Non-Custodial Marketplace}
+\author{Brian Hoffman\\[2pt]\normalsize OpenBazaar project}
+\date{November 2026}
+
+\begin{document}
+\maketitle
+
+\input{sections/abstract}
+\input{sections/introduction}
+\input{sections/status}
+\input{sections/goals}
+\input{sections/model}
+\input{sections/threats}
+\input{sections/architecture}
+\input{sections/catalog}
+\input{sections/identity}
+\input{sections/orders}
+\input{sections/payments}
+\input{sections/escrow}
+\input{sections/discovery}
+\input{sections/security}
+\input{sections/privacy}
+\input{sections/limitations}
+\input{sections/evaluation}
+\input{sections/related}
+\input{sections/conclusion}
+
+\bibliographystyle{plainnat}
+\bibliography{references}
+
+\appendix
+\input{sections/appendix}
+
+\end{document}

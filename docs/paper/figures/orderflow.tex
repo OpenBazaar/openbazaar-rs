@@ -1,0 +1,30 @@
+\begin{figure}[t]
+\centering
+\begin{tikzpicture}[
+  font=\small,
+  head/.style={draw, rounded corners=2pt, fill=black!5, align=center, minimum width=2.3cm, minimum height=0.8cm},
+  msg/.style={-{Stealth[length=2mm]}, thick},
+  smsg/.style={-{Stealth[length=2mm]}, thick, dashed},
+  note/.style={font=\scriptsize, align=left, fill=white, inner sep=1.5pt},
+]
+\def\xc{0} \def\xb{3.5} \def\xv{8.0} \def\xa{11.5}
+\node[head] (hc) at (\xc,0) {Buyer client};
+\node[head] (hb) at (\xb,0) {Buyer node};
+\node[head] (hv) at (\xv,0) {Vendor node\\\scriptsize mailbox};
+\node[head] (ha) at (\xa,0) {Vendor client};
+\foreach \x in {\xc,\xb,\xv,\xa} { \draw[black!40] (\x,-0.45) -- (\x,-8.6); }
+
+\draw[msg] (\xb,-1.0) -- node[note, above]{1. verified catalog} (\xc,-1.0);
+\draw[msg] (\xc,-1.9) -- node[note, above]{2. checkout + pairing token} (\xb,-1.9);
+\node[note, right] at (\xb+0.1,-2.75) {3. check listing hashes; build order;\\\phantom{3. }HPKE-seal to vendor key};
+\draw[smsg] (\xb,-3.7) -- node[note, above]{4. sealed letter over onion service} (\xv,-3.7);
+\node[note, left] at (\xv-0.1,-4.35) {5. store ciphertext;\\\phantom{5. }no store secret needed};
+\draw[msg] (\xb,-5.0) -- node[note, above]{6. payment terms} (\xc,-5.0);
+\draw[msg] (\xa,-5.7) -- node[note, above]{7. take letter} (\xv,-5.7);
+\node[note, left] at (\xa-0.1,-6.4) {8. open with\\\phantom{8. }store secret};
+\draw[smsg] (\xa,-7.2) -- node[note, above]{9. reply sealed to buyer's per-order key} (\xb,-7.2);
+\node[note, right] at (\xb+0.1,-8.1) {10. buyer pays vendor directly;\\\phantom{10. }both nodes watch the chain};
+\end{tikzpicture}
+\caption{Order flow for one seller. Dashed messages are specified but not carried by any transport today; in the demonstration, step~4 writes the letter into the same node's mailbox directory. Steps 7--9 exist as library functions exercised by tests; the node exposes no endpoint for them yet. A multi-seller checkout repeats steps 3--10 independently for each seller.}
+\label{fig:orderflow}
+\end{figure}

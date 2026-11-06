@@ -1,0 +1,25 @@
+\section{Design Goals and Non-Goals}
+\label{sec:goals}
+
+\subsection{Goals}
+
+\begin{description}[leftmargin=1.2em]
+  \item[G1. No custody.] No party other than the buyer and the vendor ever holds a key, or a set of keys, sufficient to move a buyer's payment. The moderator in particular holds no signing key over escrowed funds.
+  \item[G2. Verifiable public catalog.] Anyone can check that a listing was published by the store it names and has not been altered. A listing's address is derived from its content.
+  \item[G3. Private orders.] An order's contents, including any ship-to address, are readable only by the vendor it is addressed to. No public relay or index stores a record that a given buyer wrote to a given vendor.
+  \item[G4. Bounded moderation.] A moderator can choose between two payouts that buyer and vendor already signed. It cannot sign alone, redirect funds, change amounts, or learn about an order unless a party opens a dispute.
+  \item[G5. Liveness without a platform.] A buyer can recover escrowed funds from a vendor who disappears, and a vendor can collect from a buyer who stops responding, without anyone's cooperation beyond broadcasting a presigned transaction.
+  \item[G6. Thin clients.] A phone or browser client does not need to run Tor, hold spend keys, or dial the peer-to-peer network. Those jobs belong to a node the user controls.
+  \item[G7. Honest degradation.] When a privacy mechanism is unavailable (no Tor, no Payjoin partner, no Lightning route), the system says so rather than silently falling back.
+\end{description}
+
+\subsection{Non-goals}
+
+\begin{itemize}
+  \item \textbf{Anonymity against a global passive adversary.} We do not claim unlinkability against an adversary that observes most of the network. Section~\ref{sec:privacy} states what such an adversary learns.
+  \item \textbf{Hiding the catalog.} Listings are public by design. A market that cannot be discovered does not serve its purpose.
+  \item \textbf{Hiding the ship-to address from the seller or the carrier.} A seller of a physical good must learn where to send it, and the carrier must deliver it. This is a ceiling on buyer privacy for physical goods, not a gap to be engineered away.
+  \item \textbf{Deciding factual disputes cryptographically.} Whether a parcel contained the right item is a judgment by a person. The protocol bounds what that person can do with the funds; it does not replace the judgment.
+  \item \textbf{Reputation.} A review or rating system is outside this paper.
+  \item \textbf{Content policy.} The protocol is designed for ordinary goods. Policies for what may be listed, and the obligations of people who operate replicas or seeds, are outside the scope of this paper.
+\end{itemize}

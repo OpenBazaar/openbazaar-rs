@@ -1,0 +1,43 @@
+\begin{figure}[t]
+\centering
+\begin{tikzpicture}[
+  font=\small,
+  txb/.style={draw, rounded corners=2pt, align=left, text width=4.9cm, minimum height=1.0cm, fill=white, inner sep=4pt},
+  fund/.style={draw, rounded corners=2pt, align=center, text width=3.6cm, minimum height=1.6cm, fill=black!5, font=\footnotesize},
+  arr/.style={-{Stealth[length=2mm]}, thick},
+]
+\node[fund] (f) at (0,0) {\textbf{Funding output}\\[2pt] P2TR, key path only\\ $Q = P + \Hash_{\mathrm{TapTweak}}(P)\,G$\\ $P=\mathsf{KeyAgg}(B,V)$\\ value $F$};
+\node[txb] (rel) at (6.8,3.6)  {\textbf{Release} \hfill $\mathsf{lt}=0$\\ $F-f \to$ vendor\\[-1pt]\scriptsize signed after delivery};
+\node[txb] (clm) at (6.8,1.8) {\textbf{Vendor claim} \hfill $\mathsf{lt}=h_C$\\ $F-f \to$ vendor\\[-1pt]\scriptsize buyer partial in round 3};
+\node[txb] (ref) at (6.8,0)    {\textbf{Buyer refund} \hfill $\mathsf{lt}=h_R$\\ $F-f \to$ buyer\\[-1pt]\scriptsize vendor partial in round 2};
+\node[txb] (bw)  at (6.8,-1.8){\textbf{Buyer wins} \hfill $\mathsf{lt}=0$\\ $F-f-\varphi \to$ buyer, $\varphi\to$ mod.\\[-1pt]\scriptsize adaptor $T_B+U_B$, round 2};
+\node[txb] (vw)  at (6.8,-3.6) {\textbf{Vendor wins} \hfill $\mathsf{lt}=0$\\ $F-f-\varphi \to$ vendor, $\varphi\to$ mod.\\[-1pt]\scriptsize adaptor $T_V+U_V$, round 3};
+\foreach \t in {rel,clm,ref,bw,vw} { \draw[arr] (f.east) -- (\t.west); }
+\node[font=\scriptsize, align=center, text width=3.4cm] at (0,-2.0) {witness of every spend:\\one 64-byte BIP~340 signature};
+\end{tikzpicture}
+\caption{Escrow transaction graph in the two-party protocol (PR~\#3). All five spends are key-path spends of the same output under the MuSig2 aggregate of the buyer's and vendor's per-order keys; the moderator's key is not part of $Q$. Four spends are presigned before funding; the release is signed cooperatively later. $f$ is the network fee and $\varphi$ the moderator fee, both fixed in the signed terms; $\mathsf{lt}$ is \code{nLockTime}.}
+\label{fig:escrow-graph}
+\end{figure}
+
+\begin{figure}[t]
+\centering
+\begin{tikzpicture}[font=\small, >={Stealth[length=2mm]}]
+\draw[->, thick] (0,0) -- (14,0) node[right]{height};
+\foreach \x/\l in {0.4/funding, 5.5/$h_D$, 9.0/$h_C$, 12.5/$h_R$} {
+  \draw[thick] (\x,0.15) -- (\x,-0.15);
+  \node[below] at (\x,-0.15) {\l};
+}
+\draw[|-|] (0.4,1.25) -- (5.5,1.25);
+\node[above, align=center, font=\scriptsize] at (2.95,0.4) {ship, deliver;\\dispute letters accepted};
+\node[above, align=center, font=\scriptsize] at (7.25,0.4) {ruling window\\($\ge$144 blocks)};
+\node[above, align=center, font=\scriptsize] at (10.75,0.4) {claim window\\($\ge$144 blocks)};
+\draw[|-|] (5.5,1.25) -- (9.0,1.25);
+\draw[|-|] (9.0,1.25) -- (12.5,1.25);
+\node[below, align=center, font=\scriptsize] at (9.0,-0.65) {vendor claim\\minable at $h_C+1$};
+\node[below, align=center, font=\scriptsize] at (12.5,-0.65) {buyer refund\\minable at $h_R+1$};
+\draw[dashed] (0.4,-1.65) -- (13.6,-1.65);
+\node[font=\scriptsize, align=left, anchor=west] at (0.4,-2.0) {release and both dispute outcomes are valid at every height once their secrets are known};
+\end{tikzpicture}
+\caption{Escrow timeline. The default after $h_C$ is the vendor; the refund at $h_R$ matters only if the vendor never claims. Window sizes are policy minimums checked by each party, 144 blocks each by default.}
+\label{fig:escrow-timeline}
+\end{figure}
