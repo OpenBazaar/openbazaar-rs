@@ -1,11 +1,11 @@
 import { useMemo, useRef, useState } from 'react'
 import {
-  Alert,
   Linking,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   View
 } from 'react-native'
 import * as Clipboard from 'expo-clipboard'
@@ -27,6 +27,14 @@ import {
 } from './nodeWallet'
 import { paymentStatusView } from './paymentStatus'
 import { useNodeResource } from './useNodeResource'
+import {
+  isLocked,
+  issueTicket,
+  passphraseError,
+  quotePayment,
+  unlockWallet,
+  type Quote
+} from './walletLock'
 import { usePairedNode } from './marketplace/NodePayments'
 
 function Action({
@@ -163,7 +171,7 @@ export function NativeWallet({
   rates: RateTable
   currency: CurrencyCode
 }) {
-  const { wallet, network } = usePairedNode()
+  const { wallet, network, lock } = usePairedNode()
   const [error, setError] = useState(''),
     [busy, setBusy] = useState(false),
     [fresh, setFresh] = useState<{ network: string; address: string } | null>(
@@ -193,6 +201,12 @@ export function NativeWallet({
     <ScrollView contentContainerStyle={s.page}>
       <Text style={s.heading}>Node wallet</Text>
       <Action label='Refresh wallet' onPress={() => void wallet.refresh()} />
+      {lock.data?.state === 'setup' && (
+        <Text style={s.error}>
+          Set a wallet passphrase on the desktop or web wallet page. Until then
+          this node will not spend.
+        </Text>
+      )}
       {error || wallet.error || network.error ? (
         <Text accessibilityRole='alert' style={s.error}>
           {error || wallet.error || network.error}
@@ -259,7 +273,7 @@ export function NativeOrderPayment({
   initial: BuyerOrder | SellerOrder
 }) {
   const id = 'id' in initial ? initial.id : initial.orderId
-  const { network, wallet, onWallet } = usePairedNode()
+  const { network, wallet, lock: walletLock, onWallet } = usePairedNode()
   const resource = useNodeResource(
     () => fetchOrder(id),
     12000,
@@ -275,7 +289,9 @@ export function NativeOrderPayment({
       !!order.escrow ||
       order.status === 'Awaiting vendor terms'
   const [busy, setBusy] = useState(false),
-    [error, setError] = useState('')
+    [error, setError] = useState(''),
+    [step, setStep] = useState<'unlock' | Quote | null>(null),
+    [passphrase, setPassphrase] = useState('')
   const lock = useRef(false)
   const view = paymentStatusView({
     network: orderNet ?? net ?? 'testnet4',
@@ -309,38 +325,54 @@ export function NativeOrderPayment({
     escrow
   const current = useRef({ disabled, net })
   current.current = { disabled, net }
-  async function send(confirmed = false) {
-    if (lock.current || current.current.disabled || !current.current.net) return
-    const active = current.current.net
-    if (active === 'mainnet' && !confirmed) {
-      Alert.alert(
-        'Send real bitcoin?',
-        `Send ${due.toLocaleString()} sats (${bitcoinAmount(due)} BTC) to ${order.seller}, plus the node-selected network fee?\n${order.payment?.address ?? ''}\nThis payment cannot be reversed.`,
-        [
-          { text: 'Cancel', style: 'cancel' },
-          {
-            text: 'Confirm mainnet payment',
-            onPress: () => {
-              if (current.current.net === 'mainnet') void send(true)
-            }
-          }
-        ]
-      )
-      return
-    }
+  async function run(task: () => Promise<void>, fallback: string) {
+    if (lock.current) return
     lock.current = true
     setBusy(true)
     setError('')
     try {
-      resource.update(await payOrder(id, active, confirmed))
+      await task()
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Payment failed')
+      if (isLocked(e)) {
+        void walletLock.refresh()
+        setStep('unlock')
+      }
+      setError(passphraseError(e, fallback))
     } finally {
-      await resource.refresh()
-      await wallet.refresh()
       lock.current = false
       setBusy(false)
     }
+  }
+  // Unlock if needed, then show the node's exact terms and ask again.
+  function start() {
+    if (current.current.disabled || !current.current.net) return
+    if (walletLock.data?.state !== 'unlocked') {
+      setStep('unlock')
+      return
+    }
+    void run(async () => setStep(await quotePayment(id)), 'Payment could not be quoted')
+  }
+  function unlock() {
+    void run(async () => {
+      walletLock.update(await unlockWallet(passphrase))
+      setPassphrase('')
+      setStep(await quotePayment(id))
+    }, 'The wallet could not be unlocked')
+  }
+  function confirm(quote: Quote) {
+    const active = current.current.net
+    if (!active) return
+    void run(async () => {
+      const ticket = await issueTicket(quote.quote, passphrase)
+      setPassphrase('')
+      setStep(null)
+      try {
+        resource.update(await payOrder(id, active, ticket.ticket))
+      } finally {
+        await resource.refresh()
+        await wallet.refresh()
+      }
+    }, 'Payment failed')
   }
   const txids = [
     ...new Set([...order.txids, ...(order.payTxid ? [order.payTxid] : [])])
@@ -392,11 +424,74 @@ export function NativeOrderPayment({
           {view.progress && <Text style={s.body}>{view.progress}</Text>}
           {due > 0 && !order.payTxid && order.status === 'Awaiting payment' && (
             <>
-              <Action
-                label='Pay from your node wallet'
-                disabled={disabled}
-                onPress={() => void send()}
-              />
+              {step === 'unlock' ? (
+                <View style={s.copy}>
+                  <Text style={s.section}>Unlock wallet</Text>
+                  {walletLock.data?.state === 'setup' ? (
+                    <Text style={s.body}>
+                      Set a wallet passphrase on the desktop or web wallet page
+                      first.
+                    </Text>
+                  ) : (
+                    <>
+                      <TextInput
+                        accessibilityLabel='Wallet passphrase'
+                        secureTextEntry
+                        autoFocus
+                        value={passphrase}
+                        onChangeText={setPassphrase}
+                        style={s.input}
+                      />
+                      <Action
+                        label={busy ? 'Unlocking…' : 'Unlock wallet'}
+                        disabled={busy || !passphrase}
+                        onPress={unlock}
+                      />
+                    </>
+                  )}
+                  <Action label='Cancel' onPress={() => setStep(null)} />
+                </View>
+              ) : step ? (
+                <View style={s.copy}>
+                  <Text style={s.section}>
+                    {step.network === 'mainnet'
+                      ? 'Send real bitcoin?'
+                      : 'Confirm payment'}
+                  </Text>
+                  <Text style={s.body}>
+                    Pay {step.amountSats.toLocaleString()} sats (
+                    {bitcoinAmount(step.amountSats)} BTC) to {order.seller}.
+                    Network fee at most {step.feeCapSats.toLocaleString()} sats.
+                  </Text>
+                  <Text selectable style={s.code}>
+                    {step.address}
+                  </Text>
+                  <Text style={s.body}>
+                    Your node will refuse to send anything else. This expires in{' '}
+                    {step.expiresInSecs} seconds.
+                  </Text>
+                  <TextInput
+                    accessibilityLabel='Wallet passphrase'
+                    secureTextEntry
+                    autoFocus
+                    value={passphrase}
+                    onChangeText={setPassphrase}
+                    style={s.input}
+                  />
+                  <Action
+                    label={busy ? 'Confirming…' : 'Confirm payment'}
+                    disabled={busy || !passphrase}
+                    onPress={() => confirm(step)}
+                  />
+                  <Action label='Cancel' onPress={() => setStep(null)} />
+                </View>
+              ) : (
+                <Action
+                  label='Pay from your node wallet'
+                  disabled={disabled}
+                  onPress={start}
+                />
+              )}
               {view.balance && (
                 <Text style={s.body}>{view.balance.message}</Text>
               )}
@@ -448,6 +543,14 @@ const s = StyleSheet.create({
   testnet: { color: '#714b0a', backgroundColor: '#fff0c9' },
   error: { color: '#9f2f2f', fontSize: 15, lineHeight: 23, marginVertical: 12 },
   copy: { gap: 8, marginVertical: 12 },
+  input: {
+    borderWidth: 1,
+    borderColor: '#dce4ed',
+    borderRadius: 5,
+    minHeight: 44,
+    paddingHorizontal: 12,
+    color: '#173b58'
+  },
   label: { fontSize: 14, fontWeight: '500', color: '#173b58' },
   code: { fontSize: 13, lineHeight: 21, color: '#536779' },
   payment: {

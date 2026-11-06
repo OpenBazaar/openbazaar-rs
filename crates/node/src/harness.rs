@@ -29,6 +29,7 @@ use crate::network::NetworkMode;
 use crate::{load_catalog, EscrowConfig, Node, NodeConfig};
 
 pub(crate) const SELLERS: [&str; 3] = ["Marlow Goods", "Hale Paper", "North Kitchen"];
+pub(crate) const PASSPHRASE: &str = "correct horse battery";
 
 #[derive(Default)]
 pub(crate) struct Chain {
@@ -249,7 +250,7 @@ pub(crate) fn open_node(
     confirmations: u32,
     escrow: EscrowConfig,
 ) -> Node {
-    Node::open_with(
+    let node = Node::open_with(
         dir,
         load_catalog(network).unwrap(),
         NodeConfig {
@@ -260,7 +261,32 @@ pub(crate) fn open_node(
             escrow,
         },
     )
-    .unwrap()
+    .unwrap();
+    unlock(&node);
+    node
+}
+
+/// Set the test passphrase on a new data dir, or unlock with it.
+pub(crate) fn unlock(node: &Node) {
+    if node.lock.state() == crate::wallet_lock::State::Setup {
+        node.setup_wallet(PASSPHRASE).unwrap();
+    } else {
+        node.unlock_wallet(Some(PASSPHRASE)).unwrap();
+    }
+}
+
+/// Quote `id` and confirm it with the passphrase. Returns the ticket, or the failed step's status and body.
+pub(crate) fn ticket(node: &Node, id: &str) -> Result<String, (String, Value)> {
+    let (status, quote) = request(node, "POST", &format!("/orders/{id}/pay/quote"), "");
+    if !status.contains("200") {
+        return Err((status, quote));
+    }
+    let body = json!({"quote": quote["quote"], "passphrase": PASSPHRASE}).to_string();
+    let (status, ticket) = request(node, "POST", "/spend-tickets", &body);
+    if !status.contains("200") {
+        return Err((status, ticket));
+    }
+    Ok(ticket["ticket"].as_str().unwrap().to_string())
 }
 
 /// Escrow peers that refuse every connection (the discard port). Checkout
@@ -332,7 +358,13 @@ pub(crate) fn order(node: &Node, id: &str) -> Value {
 /// `POST /orders/{id}/pay`, then run the queued payment the way the pay
 /// worker would. Returns the HTTP status and the order afterwards.
 pub(crate) fn pay(node: &Node, id: &str, body: &str) -> (String, Value) {
-    let (status, value) = request(node, "POST", &format!("/orders/{id}/pay"), body);
+    let ticket = match ticket(node, id) {
+        Ok(ticket) => ticket,
+        Err(failed) => return failed,
+    };
+    let mut body: Value = serde_json::from_str(body).unwrap();
+    body["ticket"] = json!(ticket);
+    let (status, value) = request(node, "POST", &format!("/orders/{id}/pay"), &body.to_string());
     if !status.contains("202") {
         return (status, value);
     }

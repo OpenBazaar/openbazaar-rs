@@ -3143,8 +3143,21 @@ svg {
 .ob-pay-confirm h2 { font-size: 25px; line-height: 1.3; margin-top: 0; }
 .ob-pay-confirm code { display: block; overflow-wrap: anywhere; font-size: 13px; }
 .ob-pay-confirm .ob-form-actions { flex-wrap: wrap; }
+.ob-wallet-lock { display: flex; flex-direction: column; gap: 14px; margin: 0 0 28px; padding: 24px; border: 1px solid var(--ob-line); border-radius: 7px; background: var(--ob-surface); }
+.ob-wallet-fund .ob-wallet-lock { margin: 20px 0 0; padding: 20px 0 0; border: 0; border-top: 1px solid var(--ob-line); border-radius: 0; }
+.ob-pay-confirm .ob-wallet-lock { margin: 0; padding: 0; border: 0; }
+.ob-wallet-lock h2 { margin: 0; }
+.ob-wallet-lock>p { color: var(--ob-secondary); font-size: 14px; line-height: 1.8; margin: 0; }
+.ob-wallet-lock .ob-field { max-width: 360px; }
+.ob-wallet-lock .ob-field select { min-height: 43px; padding: 0 12px; border: 1px solid var(--ob-line); border-radius: 4px; background: var(--ob-surface); color: var(--ob-ink); }
+.ob-wallet-lock .ob-form-actions { margin-top: 6px; flex-wrap: wrap; }
+.ob-checkbox { display: flex; gap: 10px; align-items: flex-start; font-size: 14px; line-height: 1.6; }
+.ob-backup-phrase { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 8px 20px; margin: 4px 0; padding: 18px 18px 18px 40px; border: 1px solid var(--ob-line); border-radius: 5px; background: var(--ob-subtle); font: 15px/1.7 ui-monospace,monospace; }
+.ob-spend-terms { display: grid; grid-template-columns: max-content minmax(0,1fr); gap: 6px 18px; margin: 0 0 14px; }
+.ob-spend-terms dt { color: var(--ob-secondary); }
+.ob-spend-terms dd { margin: 0; min-width: 0; }
 @container workspace (max-width:850px) { .ob-payment-options { grid-template-columns: 1fr; } .ob-wallet-receive { flex-wrap: wrap; } }
-@media(max-width:719px) { .ob-network-badge { padding: 8px 20px; } .ob-wallet-balances { grid-template-columns: 1fr; margin-top: 24px; } .ob-wallet-balances article { padding: 20px; } .ob-wallet-balances article+article { border-left: 0; border-top: 1px solid var(--ob-line); padding-top: 16px; padding-bottom: 16px; } .ob-wallet-balances .is-pending { flex-direction: row; align-items: baseline; justify-content: space-between; gap: 12px; } .ob-wallet-balances .is-pending h2 { margin: 0; } .ob-wallet-balances .is-pending .ob-wallet-amount { align-items: flex-end; gap: 0; } .ob-wallet-balances .is-pending .ob-wallet-amount strong { font-size: 17px; line-height: 24px; } .ob-wallet-balances .is-pending .ob-wallet-amount small { font-size: 13px; } .ob-wallet-sync { padding: 12px 20px; } .ob-wallet-fund { padding: 20px; } .ob-wallet-receive { gap: 20px; } .ob-wallet-receive .ob-copy-value { flex-basis: 100%; } .ob-wallet-page .ob-section-heading { align-items: center; } .ob-wallet-page h1 { font-size: 27px; } .ob-wallet-amount strong { font-size: 32px; line-height: 40px; } .ob-payment-options { grid-template-columns: 1fr; } }
+@media(max-width:719px) { .ob-backup-phrase { grid-template-columns: repeat(2,minmax(0,1fr)); } .ob-network-badge { padding: 8px 20px; } .ob-wallet-balances { grid-template-columns: 1fr; margin-top: 24px; } .ob-wallet-balances article { padding: 20px; } .ob-wallet-balances article+article { border-left: 0; border-top: 1px solid var(--ob-line); padding-top: 16px; padding-bottom: 16px; } .ob-wallet-balances .is-pending { flex-direction: row; align-items: baseline; justify-content: space-between; gap: 12px; } .ob-wallet-balances .is-pending h2 { margin: 0; } .ob-wallet-balances .is-pending .ob-wallet-amount { align-items: flex-end; gap: 0; } .ob-wallet-balances .is-pending .ob-wallet-amount strong { font-size: 17px; line-height: 24px; } .ob-wallet-balances .is-pending .ob-wallet-amount small { font-size: 13px; } .ob-wallet-sync { padding: 12px 20px; } .ob-wallet-fund { padding: 20px; } .ob-wallet-receive { gap: 20px; } .ob-wallet-receive .ob-copy-value { flex-basis: 100%; } .ob-wallet-page .ob-section-heading { align-items: center; } .ob-wallet-page h1 { font-size: 27px; } .ob-wallet-amount strong { font-size: 32px; line-height: 40px; } .ob-payment-options { grid-template-columns: 1fr; } }
 
 /* Shopping stays together; account tools stay anchored below it. */
 .ob-sidebar { padding-top: 24px; }

@@ -1,11 +1,16 @@
 //! `POST /orders/{id}/pay`: pay one seller order from the node wallet.
 //!
-//! The route checks the request, marks the order `paying`, and answers 202
-//! with the order. The pay worker thread then syncs, signs, and broadcasts,
+//! The wallet must be unlocked, and the request must carry a spend ticket
+//! for this order (see [`crate::spend_tickets`]): the pairing token alone
+//! never pays. The route redeems the ticket, checks that the order still
+//! owes the ticket's amount to the ticket's recipient, marks the order
+//! `paying`, and answers 202 with the order. The pay worker thread then syncs, signs, and broadcasts,
 //! and writes `payTxid` or `payError` into the order; `GET /orders/{id}`
 //! shows the result and the watcher reports the status from the chain. A
 //! slow chain server never holds up the HTTP accept loop. There is one
 //! worker, so payments run one at a time and an order is never paid twice.
+//! The worker signs only a transaction that pays the ticket's amount to its
+//! recipient with a fee at or under its fee cap.
 //!
 //! One order, one recipient, one transaction. The only other output is the
 //! wallet's own change, so two sellers are never paid in one transaction.
@@ -31,6 +36,7 @@ use bitcoin::{Address, Amount, FeeRate, Psbt, Sequence, Transaction};
 use serde_json::{json, Value};
 
 use crate::buyer_orders::{now_secs, BuyerOrder};
+use crate::spend_tickets::{SpendTerms, TicketError, FEE_CAP_PERCENT};
 use crate::instructions::ESCROW_MAINNET_REFUSAL;
 use crate::network::{address_for, NetworkMode};
 use crate::watch::{AWAITING_FUNDING, AWAITING_PAYMENT};
@@ -41,12 +47,17 @@ pub const MIN_FEE_RATE: f64 = 1.0;
 /// Highest fee rate the node will accept from the chain server, in sat/vB.
 pub const MAX_FEE_RATE: f64 = 500.0;
 
+pub(crate) const TERMS_CHANGED: &str =
+    "This order no longer matches the payment you confirmed. Nothing was sent; confirm it again.";
+
 #[derive(Debug)]
 pub enum PayError {
     NotFound,
     Invalid(String),
     Conflict(String),
     Chain(String),
+    /// 423: the wallet is locked, or has no passphrase yet (the state name).
+    Locked(&'static str),
     Failed(String),
 }
 
@@ -54,6 +65,7 @@ impl PayError {
     fn message(&self) -> String {
         match self {
             PayError::NotFound => "That order is not on this node.".into(),
+            PayError::Locked(_) => crate::lock_http::LOCKED_MESSAGE.into(),
             PayError::Invalid(message)
             | PayError::Conflict(message)
             | PayError::Chain(message)
@@ -62,10 +74,10 @@ impl PayError {
     }
 }
 
-/// Order ids waiting for the pay worker.
+/// Orders waiting for the pay worker, each with the terms its ticket allows.
 pub(crate) struct PayJobs {
-    queue: Sender<String>,
-    pending: Mutex<Receiver<String>>,
+    queue: Sender<(String, SpendTerms)>,
+    pending: Mutex<Receiver<(String, SpendTerms)>>,
 }
 
 impl PayJobs {
@@ -78,20 +90,18 @@ impl PayJobs {
 impl Node {
     /// Check the request and pay the order now, on this thread.
     pub fn pay_order(&self, id: &str, body: &Value) -> Result<Value, PayError> {
-        self.check_pay_request(body)?;
-        self.pay_now(id)
+        let allowed = self.admit_payment(id, body)?;
+        self.pay_now(id, &allowed)
     }
 
     /// Check the request, mark the order `paying`, and queue it for the pay
     /// worker. Returns the order as it is now.
     pub fn queue_payment(&self, id: &str, body: &Value) -> Result<Value, PayError> {
-        self.check_pay_request(body)?;
+        let allowed = self.admit_payment(id, body)?;
         let mut orders = self.orders();
-        let order = orders.get(id).ok_or(PayError::NotFound)?;
-        if order.paying {
+        if orders.get(id).ok_or(PayError::NotFound)?.paying {
             return Err(PayError::Conflict("A payment for this order is already being sent.".into()));
         }
-        self.ready_to_pay(order)?;
         orders
             .update(id, |order| {
                 order.paying = true;
@@ -100,9 +110,94 @@ impl Node {
             .map_err(PayError::Failed)?;
         self.pay_jobs
             .queue
-            .send(id.to_string())
+            .send((id.to_string(), allowed))
             .map_err(|err| PayError::Failed(err.to_string()))?;
         orders.get_value(id).ok_or(PayError::NotFound)
+    }
+
+    /// The request, the lock, and the ticket: the terms this payment may use.
+    /// The ticket is spent by this call whether or not the payment goes ahead.
+    fn admit_payment(&self, id: &str, body: &Value) -> Result<SpendTerms, PayError> {
+        let ticket = self.check_pay_request(body)?;
+        self.lock.spend_key()?;
+        let allowed = self
+            .lock
+            .tickets
+            .redeem(&ticket, id, self.lock.now())
+            .map_err(|err| match err {
+                TicketError::Unknown => PayError::Conflict(
+                    "That spend ticket is used, expired, or unknown. Confirm the payment again.".into(),
+                ),
+                TicketError::OtherOrder => PayError::Conflict("That spend ticket is for another order.".into()),
+            })?;
+        let order = self.orders().get(id).cloned().ok_or(PayError::NotFound)?;
+        if order.paying {
+            return Err(PayError::Conflict("A payment for this order is already being sent.".into()));
+        }
+        self.ready_to_pay(&order)?;
+        let (address, amount) = self.spend_target(&order)?;
+        check_terms(&allowed, &address, amount)?;
+        self.lock.touch();
+        Ok(allowed)
+    }
+
+    /// `POST /orders/{id}/pay/quote`: the exact terms the user is asked to confirm.
+    pub(crate) fn quote_payment(&self, id: &str) -> Result<(String, SpendTerms), PayError> {
+        self.lock.spend_key()?;
+        self.lock.touch();
+        let order = self.orders().get(id).cloned().ok_or(PayError::NotFound)?;
+        if order.paying {
+            return Err(PayError::Conflict("A payment for this order is already being sent.".into()));
+        }
+        self.ready_to_pay(&order)?;
+        let (address, amount) = self.spend_target(&order)?;
+        self.sync_buyer_wallet().map_err(PayError::Chain)?;
+        let fee_rate = self.pay_fee_rate()?;
+        let escrow = order.settlement == "escrow";
+        let fee = match self.signed_funding(&order)? {
+            Some(tx) => self.buyer_wallet().wallet.calculate_fee(&tx).map(|fee| fee.to_sat()).map_err(|err| PayError::Failed(err.to_string()))?,
+            None => psbt_fee(&self.build_payment(&address, amount, fee_rate, escrow)?)?,
+        };
+        let terms = SpendTerms {
+            order_id: order.id.clone(),
+            amount_sats: amount,
+            fee_cap_sats: (fee * FEE_CAP_PERCENT).div_ceil(100),
+            recipient: address.script_pubkey(),
+            address: address.to_string(),
+            fee_rate_sat_vb: fee_rate.to_sat_per_kwu() as f64 / 250.0,
+        };
+        Ok((self.lock.tickets.quote(terms.clone(), self.lock.now()), terms))
+    }
+
+    /// Where this order's payment goes and how much: the amount still due,
+    /// or the escrow funding output.
+    fn spend_target(&self, order: &BuyerOrder) -> Result<(Address, u64), PayError> {
+        if order.settlement == "escrow" {
+            let escrow = order.escrow.as_ref().ok_or_else(|| PayError::Invalid("This order has no escrow terms.".into()))?;
+            let funding = escrow
+                .get("fundingSats")
+                .and_then(Value::as_u64)
+                .ok_or_else(|| PayError::Invalid("This escrow has no funding amount.".into()))?;
+            match escrow.get("stage").and_then(Value::as_str) {
+                Some("offered") | Some("signed") => Ok((self.order_address(Some(escrow), "address")?, funding)),
+                Some(stage) => Err(PayError::Conflict(format!("This escrow is {stage}."))),
+                None => Err(PayError::Invalid("This escrow has no stage.".into())),
+            }
+        } else {
+            let due = order.total_sats.saturating_sub(order.received_sats);
+            Ok((self.order_address(order.payment.as_ref(), "address")?, due))
+        }
+    }
+
+    /// The funding transaction of an escrow that was signed but not broadcast.
+    fn signed_funding(&self, order: &BuyerOrder) -> Result<Option<Transaction>, PayError> {
+        let Some(escrow) = order.escrow.as_ref().filter(|escrow| escrow["stage"] == "signed") else {
+            return Ok(None);
+        };
+        let hex = escrow["fundingTx"].as_str().ok_or_else(|| PayError::Invalid("This escrow has no funding transaction.".into()))?;
+        bitcoin::consensus::encode::deserialize_hex(hex)
+            .map(Some)
+            .map_err(|err| PayError::Failed(err.to_string()))
     }
 
     /// Run every queued payment now. Returns how many ran.
@@ -110,10 +205,10 @@ impl Node {
         let mut ran = 0;
         loop {
             let next = self.pay_jobs.pending.lock().unwrap_or_else(|err| err.into_inner()).try_recv();
-            let Ok(id) = next else {
+            let Ok((id, allowed)) = next else {
                 return ran;
             };
-            self.run_pay_job(&id);
+            self.run_pay_job(&id, &allowed);
             ran += 1;
         }
     }
@@ -128,15 +223,15 @@ impl Node {
                 .unwrap_or_else(|err| err.into_inner())
                 .recv_timeout(Duration::from_millis(250));
             match next {
-                Ok(id) => self.run_pay_job(&id),
+                Ok((id, allowed)) => self.run_pay_job(&id, &allowed),
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => return,
             }
         }
     }
 
-    fn run_pay_job(&self, id: &str) {
-        let result = self.pay_now(id);
+    fn run_pay_job(&self, id: &str, allowed: &SpendTerms) {
+        let result = self.pay_now(id, allowed);
         let error = result.as_ref().err().map(PayError::message);
         match &result {
             Ok(paid) => eprintln!("ob-node: paid order {id} in {}", paid["txid"]),
@@ -151,13 +246,16 @@ impl Node {
         }
     }
 
-    fn pay_now(&self, id: &str) -> Result<Value, PayError> {
+    fn pay_now(&self, id: &str, allowed: &SpendTerms) -> Result<Value, PayError> {
         let order = self.orders().get(id).cloned().ok_or(PayError::NotFound)?;
+        if allowed.order_id != order.id {
+            return Err(PayError::Conflict(TERMS_CHANGED.into()));
+        }
         self.ready_to_pay(&order)?;
         if order.settlement == "escrow" {
-            self.open_escrow(order)
+            self.open_escrow(order, allowed)
         } else {
-            self.pay_direct(order)
+            self.pay_direct(order, allowed)
         }
     }
 
@@ -185,11 +283,12 @@ impl Node {
         Ok(())
     }
 
-    fn check_pay_request(&self, body: &Value) -> Result<(), PayError> {
+    /// The ticket from a pay request.
+    fn check_pay_request(&self, body: &Value) -> Result<String, PayError> {
         let Some(map) = body.as_object() else {
             return Err(PayError::Invalid("The request could not be read.".into()));
         };
-        if map.keys().any(|key| key != "confirm") {
+        if map.keys().any(|key| key != "confirm" && key != "ticket") {
             return Err(PayError::Invalid("That field is not part of a payment.".into()));
         }
         let confirm = match map.get("confirm") {
@@ -202,15 +301,21 @@ impl Node {
                 "This node is on mainnet and pays with real bitcoin. Send \"confirm\": true to pay.".into(),
             ));
         }
-        Ok(())
+        match map.get("ticket") {
+            Some(Value::String(ticket)) if !ticket.is_empty() => Ok(ticket.clone()),
+            _ => Err(PayError::Invalid(
+                "Every payment needs a spend ticket. Quote it, confirm it, then send the ticket.".into(),
+            )),
+        }
     }
 
-    fn pay_direct(&self, order: BuyerOrder) -> Result<Value, PayError> {
+    fn pay_direct(&self, order: BuyerOrder, allowed: &SpendTerms) -> Result<Value, PayError> {
         let address = self.order_address(order.payment.as_ref(), "address")?;
         let due = order.total_sats.saturating_sub(order.received_sats);
+        check_terms(allowed, &address, due)?;
         self.sync_buyer_wallet().map_err(PayError::Chain)?;
         let fee_rate = self.pay_fee_rate()?;
-        let tx = self.sign_payment(&address, due, fee_rate)?;
+        let tx = self.sign_payment(&address, due, fee_rate, allowed)?;
         self.chain.broadcast(&tx).map_err(PayError::Chain)?;
         let txid = tx.compute_txid().to_string();
         self.after_broadcast(&order.id, tx.clone(), &txid)?;
@@ -236,12 +341,14 @@ impl Node {
         Ok(FeeRate::from_sat_per_kwu((rate * 250.0).ceil() as u64))
     }
 
-    /// Build and sign a transaction with exactly one recipient output.
-    fn sign_payment(&self, address: &Address, sats: u64, fee_rate: FeeRate) -> Result<Transaction, PayError> {
+    /// Build and sign a transaction with exactly one recipient output, within `allowed`.
+    fn sign_payment(&self, address: &Address, sats: u64, fee_rate: FeeRate, allowed: &SpendTerms) -> Result<Transaction, PayError> {
         let mut psbt = self.build_payment(address, sats, fee_rate, false)?;
+        check_fee(allowed, psbt_fee(&psbt)?)?;
         let wallet = self.buyer_wallet();
+        let seed = self.spend_seed(&wallet)?;
         let finalized = wallet
-            .sign(&mut psbt)
+            .sign(&mut psbt, &seed)
             .map_err(|err| PayError::Failed(err.to_string()))?;
         if !finalized {
             return Err(PayError::Failed("the payment could not be fully signed".into()));
@@ -312,4 +419,29 @@ impl Node {
             "payjoin": false,
         })
     }
+}
+
+/// Refuse a payment whose recipient or amount differs from the ticket.
+pub(crate) fn check_terms(allowed: &SpendTerms, address: &Address, sats: u64) -> Result<(), PayError> {
+    if allowed.recipient != address.script_pubkey() || allowed.amount_sats != sats {
+        return Err(PayError::Conflict(TERMS_CHANGED.into()));
+    }
+    Ok(())
+}
+
+/// Refuse a transaction whose fee is above the ticket's fee cap.
+pub(crate) fn check_fee(allowed: &SpendTerms, fee_sats: u64) -> Result<(), PayError> {
+    if fee_sats > allowed.fee_cap_sats {
+        return Err(PayError::Conflict(format!(
+            "The network fee is now {fee_sats} sats, above the {} sats you confirmed. Nothing was sent; confirm it again.",
+            allowed.fee_cap_sats
+        )));
+    }
+    Ok(())
+}
+
+pub(crate) fn psbt_fee(psbt: &Psbt) -> Result<u64, PayError> {
+    psbt.fee()
+        .map(|fee| fee.to_sat())
+        .map_err(|err| PayError::Failed(format!("the fee could not be computed: {err}")))
 }

@@ -59,14 +59,87 @@ async function fundedUi(page: Page, network = 'testnet4') {
   })
 }
 
-test('testnet4 wallet, real checkout, and a real per-order pay request', async ({
+const PASSPHRASE = 'e2e wallet passphrase'
+const UNLOCKED = {
+  state: 'unlocked',
+  autoLockMinutes: 15,
+  autoLockRange: [1, 60],
+  lockInSecs: 900,
+  failedAttempts: 0,
+  retryAfterSecs: 0,
+  rememberDevice: false,
+  rememberAvailable: true,
+  backupConfirmed: true,
+  minPassphraseChars: 8
+}
+/** Set the passphrase on the real node (first run), or unlock it. */
+async function protect(page: Page) {
+  await page.getByRole('button', { name: 'Wallet', exact: true }).click()
+  const setup = page.getByRole('heading', { name: 'Protect this wallet' })
+  const locked = page.getByRole('heading', { name: 'Wallet locked' })
+  const unlocked = page.getByRole('heading', { name: 'Wallet unlocked' })
+  await expect(setup.or(locked).or(unlocked)).toBeVisible()
+  if (await setup.isVisible()) {
+    await page.getByLabel('Wallet passphrase', { exact: true }).fill(PASSPHRASE)
+    await page.getByLabel('Repeat passphrase', { exact: true }).fill(PASSPHRASE)
+    await page.getByRole('button', { name: 'Set passphrase', exact: true }).click()
+    await expect(page.locator('.ob-backup-phrase li')).toHaveCount(12)
+    const words = await page.locator('.ob-backup-phrase li').allInnerTexts()
+    await page.getByRole('button', { name: 'I wrote it down', exact: true }).click()
+    for (const label of await page.locator('.ob-wallet-lock .ob-field span').allInnerTexts())
+      await page
+        .getByLabel(label, { exact: true })
+        .fill(words[Number(label.replace('Word ', '')) - 1])
+    await page.getByRole('button', { name: 'Confirm backup', exact: true }).click()
+  } else if (await locked.isVisible()) {
+    await page.getByLabel('Wallet passphrase', { exact: true }).fill(PASSPHRASE)
+    await page.getByRole('button', { name: 'Unlock wallet', exact: true }).click()
+  }
+  await expect(unlocked).toBeVisible()
+}
+/**
+ * An unlocked wallet and a node that quotes and issues tickets. The node's
+ * own lock, quote, and ticket checks are covered by the Rust tests.
+ */
+async function steppedUp(page: Page, network = 'testnet4') {
+  const tickets: { quote: string; passphrase: string }[] = []
+  const terms = (orderId: string) => ({
+    orderId,
+    network,
+    amountSats: 4321,
+    feeCapSats: 300,
+    address: `${network === 'mainnet' ? 'bc1q' : 'tb1q'}quotedbythenode`,
+    recipientScript: '0014',
+    feeRateSatVb: 2,
+    expiresInSecs: 60
+  })
+  for (const path of ['**/lock', '**/lock/activity'])
+    await page.route(path, route => route.fulfill({ json: UNLOCKED }))
+  await page.route('**/orders/*/pay/quote', route => {
+    const id = decodeURIComponent(route.request().url().split('/').at(-3) ?? '')
+    return route.fulfill({ json: { ...terms(id), quote: `q-${id}` } })
+  })
+  await page.route('**/spend-tickets', route => {
+    const body = route.request().postDataJSON()
+    tickets.push(body)
+    const id = String(body.quote).slice(2)
+    return route.fulfill({ json: { ...terms(id), ticket: `t-${id}` } })
+  })
+  return tickets
+}
+async function stepUp(page: Page, confirm = 'Confirm payment') {
+  await page.getByLabel('Wallet passphrase', { exact: true }).fill(PASSPHRASE)
+  await page.getByRole('button', { name: confirm, exact: true }).click()
+}
+
+test('testnet4 wallet, setup, real checkout, and a real quote request', async ({
   page
 }) => {
   await page.goto('/')
   await expect(
     page.getByText('Testnet4 · test coins, no value', { exact: true })
   ).toBeVisible()
-  await page.getByRole('button', { name: 'Wallet', exact: true }).click()
+  await protect(page)
   const receive = page.locator('.ob-wallet-receive code')
   await expect(receive).toHaveText(/^tb1/)
   const original = await receive.innerText()
@@ -100,24 +173,71 @@ test('testnet4 wallet, real checkout, and a real per-order pay request', async (
     .first()
     .click()
   await expect(pay).toBeEnabled()
-  const paid = page.waitForResponse(
+  const pays: string[] = []
+  page.on('request', r => {
+    if (r.url().endsWith(`/orders/${id}/pay`)) pays.push(r.url())
+  })
+  const quoted = page.waitForResponse(
     r =>
-      r.url().endsWith(`/orders/${id}/pay`) && r.request().method() === 'POST'
+      r.url().endsWith(`/orders/${id}/pay/quote`) &&
+      r.request().method() === 'POST'
   )
   await pay.click()
-  const response = await paid
-  expect(response.status()).toBe(202)
-  expect(response.request().postDataJSON()).toEqual({})
+  // The disposable node's chain stub fails, so the real quote cannot sync.
+  const response = await quoted
+  expect(response.status()).toBe(502)
   expect(
     /^[a-f0-9]{64}$/i.test(response.request().headers()['x-ob-pair'] ?? '')
   ).toBeTruthy()
+  await expect(page.getByRole('alert').first()).toBeVisible()
+  await expect(page.getByRole('dialog')).toHaveCount(0)
+  expect(pays).toEqual([])
 })
 
-test('mainnet requires a confirmation dialog before confirm:true', async ({
+test('a locked wallet unlocks before the step-up', async ({ page }) => {
+  const { id } = await checkout(page)
+  await fundedUi(page)
+  const tickets = await steppedUp(page)
+  let state = 'locked'
+  const unlocks: unknown[] = []
+  // Registered after steppedUp, so these answer first.
+  await page.route('**/lock', route =>
+    route.fulfill({ json: { ...UNLOCKED, state } })
+  )
+  await page.route('**/unlock', route => {
+    unlocks.push(route.request().postDataJSON())
+    state = 'unlocked'
+    return route.fulfill({ json: { ...UNLOCKED, state } })
+  })
+  await page.reload()
+  await page.getByRole('button', { name: 'Your orders', exact: true }).click()
+  await page
+    .getByRole('button', { name: 'Order from Marlow Goods', exact: true })
+    .first()
+    .click()
+  await page
+    .getByRole('button', { name: 'Pay from your node wallet', exact: true })
+    .click()
+  const unlock = page.getByRole('dialog', { name: 'Unlock wallet' })
+  await expect(unlock).toBeVisible()
+  await unlock.getByLabel('Wallet passphrase', { exact: true }).fill(PASSPHRASE)
+  await unlock.getByRole('button', { name: 'Unlock wallet', exact: true }).click()
+  expect(unlocks).toEqual([{ passphrase: PASSPHRASE }])
+  const confirm = page.getByRole('dialog', { name: 'Confirm payment' })
+  await expect(confirm).toBeVisible()
+  await expect(confirm).toContainText('4,321 sats')
+  await expect(confirm).toContainText('tb1qquotedbythenode')
+  await expect(confirm).toContainText('At most 300 sats')
+  await expect(confirm).toContainText(id)
+  expect(tickets).toEqual([])
+})
+
+test('mainnet shows the node’s terms and needs the passphrase before confirm:true', async ({
   page
 }) => {
   const { id, order } = await checkout(page)
   await fundedUi(page, 'mainnet')
+  const tickets = await steppedUp(page, 'mainnet')
   await page.route('**/network', async route => {
     const response = await route.fetch()
     await route.fulfill({
@@ -163,17 +283,21 @@ test('mainnet requires a confirmation dialog before confirm:true', async ({
   })
   await expect(pay).toBeEnabled()
   await pay.click()
-  await expect(
-    page.getByRole('dialog', { name: 'Send real bitcoin?' })
-  ).toBeVisible()
+  const dialog = page.getByRole('dialog', { name: 'Send real bitcoin?' })
+  await expect(dialog).toBeVisible()
+  // The node's quoted values, not the order the client already had.
+  await expect(dialog).toContainText('bc1qquotedbythenode')
+  await expect(dialog).toContainText('4,321 sats')
   expect(bodies).toEqual([])
   await page.getByRole('button', { name: 'Cancel', exact: true }).click()
   expect(bodies).toEqual([])
+  expect(tickets).toEqual([])
   await pay.click()
-  await page
-    .getByRole('button', { name: 'Confirm mainnet payment', exact: true })
-    .click()
-  await expect.poll(() => bodies).toEqual([{ confirm: true }])
+  await stepUp(page, 'Confirm mainnet payment')
+  await expect
+    .poll(() => bodies)
+    .toEqual([{ ticket: `t-${id}`, confirm: true }])
+  expect(tickets).toEqual([{ quote: `q-${id}`, passphrase: PASSPHRASE }])
   await expect(pay).toBeDisabled()
 })
 
@@ -280,6 +404,13 @@ test('a multi-seller checkout submits one separate pay request per seller', asyn
   page
 }) => {
   await fundedUi(page)
+  const tickets = await steppedUp(page)
+  const bodies: Record<string, unknown> = {}
+  await page.route('**/orders/*/pay', route => {
+    const id = decodeURIComponent(route.request().url().split('/').at(-2) ?? '')
+    bodies[id] = route.request().postDataJSON()
+    return route.fulfill({ status: 202, json: { error: 'unused' } })
+  })
   await page.goto('/')
   for (const title of ['Field recordings', 'Weeknight recipes']) {
     await page.getByLabel('Search listings', { exact: true }).fill(title)
@@ -308,16 +439,14 @@ test('a multi-seller checkout submits one separate pay request per seller', asyn
       .nth(i)
       .getByRole('button', { name: 'Pay from your node wallet', exact: true })
     await expect(button).toBeEnabled()
-    const response = page.waitForResponse(
-      r =>
-        r.url().endsWith(`/orders/${receipt.orders[i].orderId}/pay`) &&
-        r.request().method() === 'POST'
-    )
+    const id = receipt.orders[i].orderId
     await button.click()
-    const result = await response
-    expect(result.status()).toBe(202)
-    expect(result.request().postDataJSON()).toEqual({})
+    await stepUp(page)
+    await expect.poll(() => bodies[id]).toEqual({ ticket: `t-${id}` })
   }
+  expect(tickets.map(t => t.quote)).toEqual(
+    receipt.orders.map((o: { orderId: string }) => `q-${o.orderId}`)
+  )
 })
 
 test('pending payments disable spending and node failures remain visible', async ({
@@ -325,6 +454,7 @@ test('pending payments disable spending and node failures remain visible', async
 }) => {
   const { id, order } = await checkout(page)
   await fundedUi(page)
+  await steppedUp(page)
   let state = {
     ...order,
     id,
@@ -343,9 +473,12 @@ test('pending payments disable spending and node failures remain visible', async
   await page.clock.install()
   await page.reload()
   await page.getByRole('button', { name: 'Your orders', exact: true }).click()
+  // The first order fetch must finish before the clock jumps, or the poll joins it.
+  const loaded = page.waitForResponse(r => r.url().endsWith(`/orders/${id}`))
   await page
     .getByRole('button', { name: 'Order from Marlow Goods', exact: true })
     .click()
+  await loaded
   const pay = page.getByRole('button', {
     name: 'Pay from your node wallet',
     exact: true
@@ -374,12 +507,14 @@ test('pending payments disable spending and node failures remain visible', async
     })
   )
   await pay.click()
+  await stepUp(page)
   await expect(page.getByRole('alert')).toContainText(
     'This order is already being paid.'
   )
   status = 400
   await expect(pay).toBeEnabled()
   await pay.click()
+  await stepUp(page)
   await expect(page.getByRole('alert')).toContainText(
     'The order address belongs to another network.'
   )

@@ -3375,6 +3375,7 @@ dependencies = [
  "tokio",
  "tormail",
  "ureq",
+ "zeroize",
 ]
 
 [[package]]

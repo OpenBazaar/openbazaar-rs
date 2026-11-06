@@ -86,18 +86,19 @@ export async function newWalletAddress(): Promise<{
     throw new Error('The node did not return a new address.')
   return { network: network(r.network), address: r.address }
 }
+/** Pay with a spend ticket the user confirmed for this order. */
 export async function payOrder(
   id: string,
   activeNetwork: NetworkName,
-  confirmed = false
+  ticket: string
 ): Promise<BuyerOrder> {
-  if (activeNetwork === 'mainnet' && !confirmed)
-    throw new Error('Confirm the mainnet payment first.')
   return parseBuyerOrder(
     await paired(`/orders/${encodeURIComponent(id)}/pay`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(activeNetwork === 'mainnet' ? { confirm: true } : {})
+      body: JSON.stringify(
+        activeNetwork === 'mainnet' ? { ticket, confirm: true } : { ticket }
+      )
     })
   )
 }

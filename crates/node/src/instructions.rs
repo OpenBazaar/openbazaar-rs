@@ -10,7 +10,6 @@
 //! payout; the funding address arrives with the vendor node's terms.
 //! Mainnet refuses escrow.
 
-use bitcoin::secp256k1::{PublicKey, Secp256k1};
 use bitcoin::Amount;
 use openbazaar_pay::{Bolt12Offer, DirectPay, SilentPaymentCode};
 use serde_json::{json, Value};
@@ -31,11 +30,8 @@ impl Node {
         let network = self.network;
         let mut wallet = self.store_wallet(seller)?;
         let address = wallet.fresh_address().map_err(failed)?;
-        let seed = &wallet.seed;
-        let code = SilentPaymentCode::from_keys(&seed.scan_key(), &seed.silent_spend_key(), network.bitcoin())
-            .map_err(failed)?;
-        let signing = PublicKey::from_secret_key(&Secp256k1::new(), &seed.store_signing_key());
-        let offer = Bolt12Offer::create(signing, Amount::from_sat(total), seller, network.bitcoin())
+        let code = SilentPaymentCode::parse(&wallet.watch.silent_payment_code).map_err(failed)?;
+        let offer = Bolt12Offer::create(wallet.watch.store_signing_pubkey, Amount::from_sat(total), seller, network.bitcoin())
             .map_err(failed)?;
         let pay = DirectPay::new(Amount::from_sat(total), offer, code).map_err(failed)?;
         Ok(json!({

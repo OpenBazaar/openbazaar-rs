@@ -24,12 +24,24 @@ pub(crate) struct Vault {
     key: Key,
 }
 
+impl Drop for Vault {
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(self.key.as_mut_slice());
+    }
+}
+
 impl Vault {
     pub(crate) fn open(dir: &Path, mode: &VaultMode) -> Result<Self, Error> {
         let bytes = vault_key::load_key(dir, mode)?;
-        Ok(Self {
-            key: Key::clone_from_slice(&bytes),
-        })
+        Ok(Self::from_key(&bytes))
+    }
+
+    /// A vault over any 256-bit key. The wallet's spend tier uses one per
+    /// operation and drops it right after.
+    pub(crate) fn from_key(bytes: &[u8; 32]) -> Self {
+        Self {
+            key: Key::clone_from_slice(bytes),
+        }
     }
 
     pub(crate) fn seal(&self, plaintext: &[u8]) -> Result<Vec<u8>, Error> {

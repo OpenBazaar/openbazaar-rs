@@ -80,46 +80,13 @@ fn assert_keys_are_split(market: &Market, escrow: &Value) {
     let vendor_index = sale(&market.vendor.node)["vendorKeyIndex"]
         .as_u64()
         .unwrap() as u32;
-    assert_eq!(
-        terms.buyer,
-        public(
-            market
-                .buyer
-                .node
-                .buyer_wallet()
-                .seed
-                .escrow_key(buyer_index)
-        )
-    );
-    assert_eq!(
-        terms.vendor,
-        public(
-            market
-                .vendor
-                .node
-                .store_wallet(SELLER)
-                .unwrap()
-                .seed
-                .escrow_key(vendor_index)
-        )
-    );
+    let buyer_key = |node: &Node, index| node.escrow_secret(&node.buyer_wallet(), index).unwrap();
+    let store_key = |node: &Node, index| node.escrow_secret(&node.store_wallet(SELLER).unwrap(), index).unwrap();
+    assert_eq!(terms.buyer, public(buyer_key(&market.buyer.node, buyer_index)));
+    assert_eq!(terms.vendor, public(store_key(&market.vendor.node, vendor_index)));
     for index in 0..4 {
-        assert_ne!(
-            terms.vendor,
-            public(
-                market
-                    .buyer
-                    .node
-                    .store_wallet(SELLER)
-                    .unwrap()
-                    .seed
-                    .escrow_key(index)
-            )
-        );
-        assert_ne!(
-            terms.buyer,
-            public(market.vendor.node.buyer_wallet().seed.escrow_key(index))
-        );
+        assert_ne!(terms.vendor, public(store_key(&market.buyer.node, index)));
+        assert_ne!(terms.buyer, public(buyer_key(&market.vendor.node, index)));
     }
 }
 

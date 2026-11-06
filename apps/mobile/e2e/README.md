@@ -23,20 +23,29 @@ are cleaned up when the runner stops.
 Optional overrides: `OB_E2E_UI_PORT`, `OB_E2E_NODE_PORT`, and `OB_NODE_BIN`.
 Both ports must be distinct spare ports. Build the web export before running.
 
-The required smoke test uses the actual `/network`, `/wallet`, `/wallet/address`,
-`/checkout`, `/orders`, and `/orders/{id}/pay` node routes. It asserts the testnet4
-badge, receive address/QR, a new receive address, insufficient-balance protection,
-checkout's Awaiting payment status, the real 202 payment response, its empty
-request body, and the pairing header. Because the disposable wallet has no coins,
-the test supplies only a funded **UI wallet response** before pressing Pay. The
-real node still handles the payment request. Its chain calls fail quickly against
-a local Esplora error stub, so no transaction or chain confirmation is claimed.
+The node runs with `--vault file` so it never touches the OS keychain, and the
+server injects the node's `pairing.token` into the page the way the desktop app
+does (a browser shop would otherwise need a code from the node's terminal).
 
-Additional browser scenarios use intercepted responses to cover mainnet's explicit
-confirmation (no mainnet requests reach a real node), partial-payment QR amounts,
-received amounts, transaction explorer links, status polling, paid-button removal,
-network mismatch, and read-only escrow. A two-seller checkout verifies separate
-real `/pay` calls, one per order, never a combined transaction.
+The required smoke test uses the actual `/network`, `/lock`, `/setup`,
+`/setup/confirm`, `/wallet`, `/wallet/address`, `/checkout`, `/orders`, and
+`/orders/{id}/pay/quote` node routes. It sets the wallet passphrase, reads the
+backup phrase once and types back the requested words, then asserts the testnet4
+badge, receive address/QR, a new receive address, insufficient-balance
+protection, checkout's Awaiting payment status, and the pairing header on the
+real quote request. Because the disposable wallet has no coins, the test supplies
+only a funded **UI wallet response** before pressing Pay. The real quote fails
+against a local Esplora error stub, so no dialog opens and no `/pay` request is
+sent; no transaction or chain confirmation is claimed.
+
+Additional browser scenarios intercept the lock, quote, and ticket responses
+(the node's own checks are in the Rust tests) to cover unlocking before the
+step-up, the step-up dialog showing the node's quoted amount, fee cap, and
+address, mainnet's `confirm` flag (no mainnet requests reach a real node),
+partial-payment QR amounts, received amounts, transaction explorer links, status
+polling, paid-button removal, network mismatch, and read-only escrow. A two-seller
+checkout verifies one quote, one ticket, and one `/pay` call per order, never a
+combined transaction.
 
 For manual on-chain verification, run a separate testnet4 node with a fresh data
 directory and its normal chain server, fund its wallet with test coins, purchase a

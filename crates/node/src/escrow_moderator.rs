@@ -147,6 +147,7 @@ impl Node {
 
     /// Rule on a reviewed letter and send the ruling to the party that wrote it.
     pub fn rule_dispute(&self, id: &str, body: &Value) -> Result<Value, PayError> {
+        self.lock.spend_key()?;
         let favor = match body.as_object() {
             Some(map) if map.len() == 1 => map.get("favor").and_then(Value::as_str),
             _ => None,

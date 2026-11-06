@@ -114,12 +114,8 @@ impl Node {
     }
 
     fn vendor_secret(&self, seller: &str, index: u32) -> Result<[u8; 32], String> {
-        Ok(self
-            .store_wallet(seller)
-            .map_err(failed)?
-            .seed
-            .escrow_key(index)
-            .secret_bytes())
+        let wallet = self.store_wallet(seller).map_err(failed)?;
+        Ok(self.escrow_secret(&wallet, index)?.secret_bytes())
     }
 
     pub(crate) fn vendor_mail(&self, seller: &str, mail: Mail) -> Result<(), String> {
@@ -157,7 +153,7 @@ impl Node {
         let (index, secret, payout) = {
             let mut wallet = self.store_wallet(seller).map_err(failed)?;
             let index = wallet.next_escrow_index().map_err(failed)?;
-            let secret = wallet.seed.escrow_key(index);
+            let secret = self.escrow_secret(&wallet, index)?;
             (index, secret, wallet.fresh_address().map_err(failed)?)
         };
         let dispute_deadline = ctx

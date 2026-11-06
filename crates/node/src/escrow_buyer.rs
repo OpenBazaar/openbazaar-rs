@@ -39,7 +39,8 @@ use crate::escrow_mail::{hex, id_hex, parse_id, unhex, EscrowId, Kind, Mail};
 use crate::escrow_vendor::offer_digest;
 use crate::instructions::{ESCROW_DEMO_WARNING, ESCROW_MAINNET_REFUSAL, ESCROW_SPEND_FEE_SATS};
 use crate::network::{address_for, NetworkMode};
-use crate::pay_order::PayError;
+use crate::pay_order::{check_fee, check_terms, psbt_fee, PayError, TERMS_CHANGED};
+use crate::spend_tickets::SpendTerms;
 use crate::watch::{AWAITING_FUNDING, DISPUTED, FUNDED, RELEASED, SETTLED};
 use crate::{Node, OrderError};
 
@@ -121,7 +122,8 @@ impl Node {
                 "No node for this seller is set up to take escrow.",
             ));
         }
-        Ok(())
+        // The request carries a per-order key from the spend tier.
+        self.require_unlocked()
     }
 
     /// The escrow record for a new order: a fresh buyer key and payout. The
@@ -187,7 +189,8 @@ impl Node {
         let escrow = order.escrow.as_ref().ok_or("that order has no escrow")?;
         let id = escrow_id(escrow)?;
         let buyer = {
-            let secret = self.buyer_wallet().seed.escrow_key(key_index(escrow)?);
+            let wallet = self.buyer_wallet();
+            let secret = self.escrow_secret(&wallet, key_index(escrow)?)?;
             PublicKey::from_secret_key(&Secp256k1::new(), &secret).serialize()
         };
         let payout = address_for(text(escrow, "buyerPayout")?, self.network)?;
@@ -294,7 +297,10 @@ impl Node {
         )
         .map_err(|_| "the offer is not signed by the seller's store key")?;
 
-        let secret = self.buyer_wallet().seed.escrow_key(key_index(escrow)?);
+        let secret = {
+            let wallet = self.buyer_wallet();
+            self.escrow_secret(&wallet, key_index(escrow)?)?
+        };
         let payout = address_for(text(escrow, "buyerPayout")?, self.network)?;
         let ctx = self.escrow_context()?;
         if terms.buyer != PublicKey::from_secret_key(&secp, &secret).serialize()
@@ -332,15 +338,16 @@ impl Node {
         )
     }
 
-    /// `POST /orders/{id}/pay` for escrow: round 1 on an unsigned funding PSBT.
-    pub(crate) fn open_escrow(&self, order: BuyerOrder) -> Result<Value, PayError> {
+    /// `POST /orders/{id}/pay` for escrow: round 1 on an unsigned funding PSBT
+    /// that pays exactly what the spend ticket allows.
+    pub(crate) fn open_escrow(&self, order: BuyerOrder, allowed: &SpendTerms) -> Result<Value, PayError> {
         let escrow = order
             .escrow
             .clone()
             .ok_or_else(|| PayError::Invalid("This order has no escrow terms.".into()))?;
         let stage = text(&escrow, "stage").map_err(PayError::Invalid)?;
         if stage == "signed" {
-            return self.rebroadcast_funding(&order, &escrow);
+            return self.rebroadcast_funding(&order, &escrow, allowed);
         }
         if stage != "offered" {
             return Err(PayError::Conflict(format!("This escrow is {stage}.")));
@@ -357,12 +364,15 @@ impl Node {
         self.sync_buyer_wallet().map_err(PayError::Chain)?;
         let fee_rate = self.pay_fee_rate()?;
         let ctx = self.escrow_context().map_err(PayError::Chain)?;
+        check_terms(allowed, &address, funding)?;
         let psbt = self.build_payment(&address, funding, fee_rate, true)?;
-        let secret = self
-            .buyer_wallet()
-            .seed
-            .escrow_key(key_index(&escrow).map_err(PayError::Invalid)?)
-            .secret_bytes();
+        check_fee(allowed, psbt_fee(&psbt)?)?;
+        let secret = {
+            let wallet = self.buyer_wallet();
+            self.escrow_secret(&wallet, key_index(&escrow).map_err(PayError::Invalid)?)
+                .map_err(PayError::Failed)?
+                .secret_bytes()
+        };
         let (waiting, open) =
             BuyerSession::start(signed.clone(), &secret, &ctx, FundingPlan::Psbt(psbt))
                 .map_err(|err| PayError::Failed(err.to_string()))?;
@@ -398,10 +408,19 @@ impl Node {
         }))
     }
 
-    fn rebroadcast_funding(&self, order: &BuyerOrder, escrow: &Value) -> Result<Value, PayError> {
+    fn rebroadcast_funding(&self, order: &BuyerOrder, escrow: &Value, allowed: &SpendTerms) -> Result<Value, PayError> {
         let tx: Transaction =
             deserialize_hex(text(escrow, "fundingTx").map_err(PayError::Invalid)?)
                 .map_err(|err| PayError::Failed(err.to_string()))?;
+        if !tx
+            .output
+            .iter()
+            .any(|out| out.script_pubkey == allowed.recipient && out.value.to_sat() == allowed.amount_sats)
+        {
+            return Err(PayError::Conflict(TERMS_CHANGED.into()));
+        }
+        let fee = self.buyer_wallet().wallet.calculate_fee(&tx).map(|fee| fee.to_sat()).unwrap_or(u64::MAX);
+        check_fee(allowed, fee)?;
         self.broadcast_funding(order, &tx)?;
         Ok(json!({
             "orderId": order.id,
@@ -447,7 +466,8 @@ impl Node {
             .ok_or("the escrow kept no funding PSBT")?;
         let tx = {
             let wallet = self.buyer_wallet();
-            if !wallet.sign(&mut psbt).map_err(failed)? {
+            let seed = self.spend_seed(&wallet).map_err(|err| format!("{err:?}"))?;
+            if !wallet.sign(&mut psbt, &seed).map_err(failed)? {
                 return Err("the funding could not be fully signed".into());
             }
             psbt.extract_tx().map_err(failed)?
@@ -480,6 +500,7 @@ impl Node {
             | PayError::Failed(message)
             | PayError::Invalid(message)
             | PayError::Conflict(message) => message,
+            PayError::Locked(_) => crate::lock_http::LOCKED_MESSAGE.into(),
             PayError::NotFound => "that order is gone".into(),
         })
     }
@@ -516,6 +537,7 @@ impl Node {
 
     /// Sign the happy-path release and send it to the vendor.
     pub fn release_escrow(&self, id: &str) -> Result<Value, PayError> {
+        self.lock.spend_key()?;
         let (order, escrow_id) = self.funded_escrow(id)?;
         let signature = {
             let mut desk = self.buyer_desk();
@@ -557,6 +579,7 @@ impl Node {
                 "Describe the problem in 1 to {MAX_MEMO} characters."
             )));
         }
+        self.lock.spend_key()?;
         let moderator = self.escrow.config.moderator_url.clone().ok_or_else(|| {
             PayError::Invalid("This node has no moderator to send a dispute to.".into())
         })?;
