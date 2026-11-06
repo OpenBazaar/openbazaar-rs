@@ -1,6 +1,6 @@
 // Disposable real node + same-origin static/proxy server. No existing app/node is touched.
 import { createServer, request } from 'node:http'
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { resolve, dirname, extname, join } from 'node:path'
@@ -19,6 +19,13 @@ if (
 const data = await mkdtemp(join(tmpdir(), 'ob-ui-e2e-'))
 const binary =
   process.env.OB_NODE_BIN || resolve(app, '../../target/debug/ob-node')
+// A node that keeps its vault key in the OS keystore by default takes
+// `--vault file`, so test runs leave no keychain entries and work on CI without
+// one. Older nodes reject the flag, so it is passed only when the usage lists it.
+const usage = spawnSync(binary, ['help'], { encoding: 'utf8' })
+const vaultArgs = `${usage.stdout}${usage.stderr}`.includes('--vault')
+  ? ['--vault', 'file']
+  : []
 // Fail chain calls quickly and locally. E2E covers the client, not chain integration.
 const node = spawn(
   binary,
@@ -32,7 +39,8 @@ const node = spawn(
     '--esplora',
     process.env.OB_E2E_CHAIN_URL || `http://127.0.0.1:${uiPort}/chain`,
     '--poll-secs',
-    '60'
+    '60',
+    ...vaultArgs
   ],
   { stdio: ['ignore', 'ignore', 'pipe'] }
 )
@@ -109,7 +117,7 @@ const server = createServer(async (req, res) => {
           .toString()
           .replace(
             '<head>',
-            '<head><script>globalThis.__OB_NODE_ORIGIN__=location.origin;</script>'
+            `<head><script>globalThis.__OB_NODE_ORIGIN__=location.origin;${await pairTokenScript()}</script>`
           )
       )
     res.writeHead(200, {
@@ -122,6 +130,20 @@ const server = createServer(async (req, res) => {
     res.end()
   }
 })
+// Hand the page the node's token the way the desktop app does. A node without
+// GET /pair gives a browser the token only for a code typed at a prompt.
+async function pairTokenScript() {
+  try {
+    const token = (
+      await readFile(join(data, 'testnet4', 'pairing.token'), 'utf8')
+    ).trim()
+    return /^[0-9a-f]{64}$/i.test(token)
+      ? `globalThis.__OB_PAIR_TOKEN__=${JSON.stringify(token)};`
+      : ''
+  } catch {
+    return ''
+  }
+}
 server.listen(uiPort, '127.0.0.1')
 let stopping = false
 async function stop() {

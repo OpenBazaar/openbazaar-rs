@@ -228,9 +228,8 @@ test('partial payment QR, confirmations, tx links, and status polling', async ({
   state = { ...state, status: 'Paid', confirmations: 2 }
   await page.clock.fastForward(13000)
   await expect(page.locator('.ob-payment-progress strong')).toHaveText('Paid')
-  await expect(
-    page.getByText('Confirmations: 2 / 1', { exact: true })
-  ).toBeVisible()
+  await expect(page.getByText('Confirmed', { exact: true })).toBeVisible()
+  await expect(page.getByText(/Waiting for/)).toHaveCount(0)
   await expect(
     page.getByRole('button', { name: 'Pay from your node wallet', exact: true })
   ).toHaveCount(0)
