@@ -19,3 +19,13 @@ apps/desktop/src-tauri/gen/
 .env.*
 *.log
 .DS_Store
+
+# Sealed orders, keys, and vaults written by a local ob-node
+/data/
+**/data/mailbox/
+*.letter
+*.obv
+vault.key
+pairing.token
+*.pem
+*.key
