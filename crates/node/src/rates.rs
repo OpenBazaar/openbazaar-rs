@@ -5,12 +5,17 @@
 //! minutes. The shop never dials an exchange. If Coinbase is down and there
 //! is no cached answer, the response still succeeds with no currencies, and
 //! the page shows the bitcoin amount alone.
+//!
+//! The request goes through the configured proxy (see [`crate::egress`]), and
+//! with `--no-rates` it is never made.
 
 use std::collections::BTreeMap;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
+
+use crate::egress::Egress;
 
 const SOURCE: &str = "https://api.coinbase.com/v2/exchange-rates?currency=BTC";
 const FRESH: Duration = Duration::from_secs(5 * 60);
@@ -23,23 +28,30 @@ struct Cached {
 
 pub(crate) struct Rates {
     cache: Mutex<Option<Cached>>,
+    egress: Egress,
+    source: String,
 }
 
 impl Rates {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(egress: Egress) -> Self {
         Self {
             cache: Mutex::new(None),
+            egress,
+            source: SOURCE.to_string(),
         }
     }
 
     pub(crate) fn value(&self) -> Value {
+        if !self.egress.live_rates {
+            return json!({ "base": "BTC", "currencies": {}, "live": false });
+        }
         let mut guard = self.cache.lock().unwrap_or_else(|err| err.into_inner());
         if let Some(cached) = guard.as_ref() {
             if cached.at.elapsed() < FRESH {
                 return rates_json(&cached.currencies);
             }
         }
-        match fetch_coinbase() {
+        match fetch_coinbase(&self.egress, &self.source) {
             Ok(currencies) => {
                 *guard = Some(Cached {
                     at: Instant::now(),
@@ -65,13 +77,12 @@ fn rates_json(currencies: &BTreeMap<String, f64>) -> Value {
     json!({ "base": "BTC", "currencies": map })
 }
 
-fn fetch_coinbase() -> Result<BTreeMap<String, f64>, ()> {
-    let agent = ureq::AgentBuilder::new()
-        .timeout_connect(Duration::from_secs(3))
-        .timeout_read(Duration::from_secs(4))
-        .build();
+fn fetch_coinbase(egress: &Egress, source: &str) -> Result<BTreeMap<String, f64>, ()> {
+    let agent = egress
+        .ureq_agent(Duration::from_secs(3), Duration::from_secs(4))
+        .map_err(|_| ())?;
     let body = agent
-        .get(SOURCE)
+        .get(source)
         .call()
         .map_err(|_| ())?
         .into_string()
@@ -126,6 +137,25 @@ mod tests {
         assert_eq!(rates.get("GBP"), Some(&78440.25));
         assert_eq!(rates.get("JPY"), Some(&15100000.0));
         assert!(!rates.contains_key("CAD"));
+    }
+
+    #[test]
+    fn rates_go_through_the_proxy_with_the_name_unresolved() {
+        let (proxy, seen) = crate::egress::fake_socks::start();
+        let rates = Rates::new(Egress { proxy: Some(proxy), live_rates: true });
+        assert_eq!(rates.value()["currencies"], json!({}));
+        let (kind, host) = seen.recv_timeout(Duration::from_secs(5)).expect("no request reached the proxy");
+        assert_eq!((kind, host.as_str()), (3, "api.coinbase.com"));
+    }
+
+    #[test]
+    fn no_rates_means_no_request() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let mut rates = Rates::new(Egress { proxy: None, live_rates: false });
+        rates.source = format!("http://{}/", listener.local_addr().unwrap());
+        assert_eq!(rates.value()["live"], false);
+        assert!(listener.accept().is_err(), "the node dialed the rates server");
     }
 
     #[test]

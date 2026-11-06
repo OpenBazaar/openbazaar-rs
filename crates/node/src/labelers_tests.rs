@@ -23,7 +23,7 @@ fn temp_dir(name: &str) -> TempDir {
 }
 
 fn open(dir: &TempDir) -> Labelers {
-    Labelers::open(&dir.0, Vault::open(&dir.0).unwrap()).unwrap()
+    Labelers::open(&dir.0, Vault::open(&dir.0, &crate::VaultMode::File).unwrap()).unwrap()
 }
 
 /// Serve `body` once per connection, `count` times, on a free loopback port.

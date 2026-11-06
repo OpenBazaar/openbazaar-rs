@@ -300,9 +300,10 @@ fn mainnet_refuses_escrow_and_testnet4_labels_it_an_unsafe_demo() {
     let single = json!({"listingHash": hash_of(&main, "Paperback novel", "Marlow Goods"), "quantity": 1, "settlement": "escrow", "shipTo": ship_to()});
     let (status, _) = request(&main, "POST", "/orders", &single.to_string());
     assert!(status.contains("400"));
-    let (status, value) = request(&main, "POST", "/escrow/mail", "sealed");
-    assert!(status.contains("400"), "{status}");
-    assert!(value["error"].as_str().unwrap().contains("not available on mainnet"));
+    let peer = dispatch(&main, b"POST /escrow/mail HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 6\r\n\r\nsealed");
+    let text = String::from_utf8(peer).unwrap();
+    assert!(text.starts_with("HTTP/1.1 400"), "{text}");
+    assert!(text.contains("not available on mainnet"));
     assert!(main.escrow.inbox.list().unwrap().is_empty());
 
     let (_dir, _chain, test) = testnet();

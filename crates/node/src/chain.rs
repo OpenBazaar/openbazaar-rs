@@ -19,6 +19,8 @@ use bdk_wallet::{KeychainKind, Update};
 use bitcoin::constants::genesis_block;
 use bitcoin::{Address, BlockHash, Network, OutPoint, Transaction, TxOut, Txid};
 
+use crate::egress::Egress;
+
 const STOP_GAP: usize = 20;
 const PARALLEL_REQUESTS: usize = 4;
 const FEE_TARGET_BLOCKS: u16 = 6;
@@ -67,7 +69,8 @@ pub trait ChainSource: Send + Sync {
 /// The HTTP client tries every address a host resolves to (IPv6 and IPv4,
 /// raced), so one unreachable address does not stall a query. A server is
 /// used only after its genesis block matches the node's network. The last
-/// server that answered is tried first next time.
+/// server that answered is tried first next time. With a proxy in
+/// [`Egress`], every query goes through it.
 pub struct EsploraChain {
     runtime: tokio::runtime::Runtime,
     servers: Vec<Server>,
@@ -83,10 +86,18 @@ struct Server {
 
 impl EsploraChain {
     pub fn new(urls: &[String], network: Network) -> Result<Self, String> {
+        Self::with_egress(urls, network, &Egress::default())
+    }
+
+    pub fn with_egress(urls: &[String], network: Network, egress: &Egress) -> Result<Self, String> {
         if urls.is_empty() {
             return Err("no chain server is configured".into());
         }
-        let http = reqwest::Client::builder()
+        let mut http = reqwest::Client::builder();
+        if let Some(proxy) = egress.reqwest_proxy()? {
+            http = http.proxy(proxy);
+        }
+        let http = http
             .user_agent(USER_AGENT)
             .connect_timeout(CONNECT_TIMEOUT)
             .timeout(REQUEST_TIMEOUT)
@@ -276,4 +287,23 @@ impl ChainSource for OfflineChain {
 
 fn offline() -> String {
     "this node has no chain source".to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn chain_queries_go_through_the_proxy_with_the_name_unresolved() {
+        let (proxy, seen) = crate::egress::fake_socks::start();
+        let egress = Egress {
+            proxy: Some(proxy),
+            live_rates: false,
+        };
+        let urls = ["https://mempool.space/testnet4/api".to_string()];
+        let chain = EsploraChain::with_egress(&urls, Network::Testnet4, &egress).unwrap();
+        assert!(chain.tip_height().is_err());
+        let (kind, host) = seen.recv_timeout(Duration::from_secs(5)).expect("no query reached the proxy");
+        assert_eq!((kind, host.as_str()), (3, "mempool.space"));
+    }
 }

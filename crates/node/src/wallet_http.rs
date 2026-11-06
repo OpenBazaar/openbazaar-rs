@@ -8,17 +8,17 @@ use crate::pay_order::PayError;
 use crate::Node;
 
 pub(crate) fn network_response(node: &Node, origin: Option<&str>) -> Vec<u8> {
-    json_body(
-        "200 OK",
-        &json!({
-            "network": node.network.as_str(),
-            "confirmations": node.settings.confirmations,
-            "publicChainServer": node.settings.public_server,
-            "lightning": "offer-only",
-            "silentPayments": "code-only",
-        }),
-        origin,
-    )
+    let mut value = json!({
+        "network": node.network.as_str(),
+        "confirmations": node.settings.confirmations,
+        "publicChainServer": node.settings.public_server,
+        "lightning": "offer-only",
+        "silentPayments": "code-only",
+    });
+    if let (Some(map), Value::Object(egress)) = (value.as_object_mut(), node.local.egress.value(node.settings.public_server)) {
+        map.extend(egress);
+    }
+    json_body("200 OK", &value, origin)
 }
 
 pub(crate) fn wallet_response(node: &Node, client: &Client, head: &str, origin: Option<&str>) -> Vec<u8> {
@@ -93,7 +93,7 @@ pub(crate) fn pay_response(
         Err(PayError::Chain(message)) => json_error("502 Bad Gateway", &message, origin),
         Err(PayError::Failed(detail)) => {
             eprintln!("ob-node: pay {id}: {detail}");
-            json_error("500 Internal Server Error", &detail, origin)
+            json_error("500 Internal Server Error", "The payment failed. Details are in the node log.", origin)
         }
     }
 }

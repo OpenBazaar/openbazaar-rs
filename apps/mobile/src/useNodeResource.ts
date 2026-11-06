@@ -19,20 +19,20 @@ export function useNodeResource<T>(
   const active = useRef(false)
   const generation = useRef(0)
   const inFlight = useRef<Promise<void> | null>(null)
-  const completedGeneration = useRef(-1)
+  const queued = useRef<Promise<void> | null>(null)
   const refresh = useCallback(
     async function refreshResource(): Promise<void> {
       if (!enabled || !active.current) return
-      const current = generation.current
+      // The request in flight may predate this call (a payment, a new address,
+      // a poll tick), so callers share one more request after it finishes.
       if (inFlight.current) {
-        await inFlight.current
-        if (
-          generation.current === current &&
-          completedGeneration.current !== current
-        )
-          await refreshResource()
-        return
+        queued.current ??= inFlight.current.then(() => {
+          queued.current = null
+          return refreshResource()
+        })
+        return queued.current
       }
+      const current = generation.current
       const pending = (async () => {
         try {
           const next = await Promise.resolve().then(() => fetchRef.current())
@@ -47,7 +47,6 @@ export function useNodeResource<T>(
               e instanceof Error ? e.message : 'The node could not be reached.'
             )
         } finally {
-          completedGeneration.current = current
           inFlight.current = null
           if (generation.current === current) setLoading(false)
         }

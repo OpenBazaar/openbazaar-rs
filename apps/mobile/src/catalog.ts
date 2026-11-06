@@ -1,10 +1,11 @@
 import type { LabelerLabel } from "./safety/filter";
 
 // The shop dials only this origin. A query parameter, settings field, seed,
-// peer, or vendor address cannot point it anywhere else. GET /pair on this
-// loopback node returns the pairing token; POST /orders sends it back.
-// The desktop app starts its own node on a free loopback port and sets
-// __OB_NODE_ORIGIN__ before this script runs; only a 127.0.0.1 origin is taken.
+// peer, or vendor address cannot point it anywhere else. Paired requests send
+// the node's pairing token as X-Ob-Pair. The desktop app starts its own node
+// on a free loopback port and sets __OB_NODE_ORIGIN__ and __OB_PAIR_TOKEN__
+// before this script runs; only a 127.0.0.1 origin is taken. In a browser the
+// node gives the token only for a one-time code printed in its terminal.
 const DESKTOP_NODE_ORIGIN = (globalThis as { __OB_NODE_ORIGIN__?: unknown }).__OB_NODE_ORIGIN__;
 export const NODE_ORIGIN =
   typeof DESKTOP_NODE_ORIGIN === "string" && /^http:\/\/127\.0\.0\.1:\d{1,5}$/.test(DESKTOP_NODE_ORIGIN)
@@ -15,6 +16,9 @@ export const OFFLINE_MESSAGE =
   "The shop cannot be reached because your node is offline.";
 
 const PAIR_HEADER = "X-Ob-Pair";
+const TOKEN_PATTERN = /^[0-9a-fA-F]{64}$/;
+const DESKTOP_TOKEN = (globalThis as { __OB_PAIR_TOKEN__?: unknown }).__OB_PAIR_TOKEN__;
+const TOKEN_KEY = `ob-pair:${NODE_ORIGIN}`;
 
 export class NodeOfflineError extends Error {
   constructor() {
@@ -353,14 +357,74 @@ function parseLabelers(value: unknown): LabelerState {
   };
 }
 
+let pairing: Promise<string> | null = null;
+
 async function pairingToken(): Promise<string> {
-  const response = await request("/pair");
-  const body = recordOf(await readJson(response), OFFLINE_MESSAGE);
-  const token = body.token;
-  if (typeof token !== "string" || !/^[0-9a-fA-F]{64}$/.test(token)) {
+  if (typeof DESKTOP_TOKEN === "string" && TOKEN_PATTERN.test(DESKTOP_TOKEN)) {
+    return DESKTOP_TOKEN;
+  }
+  const stored = tokenStore()?.getItem(TOKEN_KEY);
+  if (stored && TOKEN_PATTERN.test(stored)) {
+    return stored;
+  }
+  pairing ??= pairWithCode().finally(() => {
+    pairing = null;
+  });
+  return pairing;
+}
+
+function tokenStore(): Storage | null {
+  try {
+    return typeof localStorage === "undefined" ? null : localStorage;
+  } catch {
+    return null;
+  }
+}
+
+function forgetToken(): void {
+  tokenStore()?.removeItem(TOKEN_KEY);
+}
+
+/// Ask the node to print a code, then trade the code the user types for the token.
+async function pairWithCode(): Promise<string> {
+  const asked = await postPair({});
+  if (asked.status === 403) {
+    throw new Error(asked.error ?? "This node does not pair browser shops.");
+  }
+  const ask = (globalThis as { prompt?: (message: string) => string | null }).prompt;
+  if (typeof ask !== "function") {
+    throw new Error("Open the shop in a browser to pair it with your node.");
+  }
+  const code = ask("Type the pairing code shown in your node's terminal.")?.trim();
+  if (!code) {
+    throw new Error("The shop is not paired with this node.");
+  }
+  const traded = await postPair({ code });
+  if (typeof traded.token !== "string" || !TOKEN_PATTERN.test(traded.token)) {
+    throw new Error(traded.error ?? "The shop is not paired with this node.");
+  }
+  tokenStore()?.setItem(TOKEN_KEY, traded.token);
+  return traded.token;
+}
+
+async function postPair(body: { code?: string }): Promise<{ status: number; token?: unknown; error?: string }> {
+  let response: Response;
+  try {
+    response = await fetch(`${NODE_ORIGIN}/pair`, {
+      method: "POST",
+      cache: "no-store",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  } catch {
     throw new NodeOfflineError();
   }
-  return token;
+  const value = recordOf(await readJson(response), OFFLINE_MESSAGE);
+  return {
+    status: response.status,
+    token: value.token,
+    error: typeof value.error === "string" ? value.error : undefined,
+  };
 }
 
 export type CurrencyCode = "USD" | "EUR" | "GBP" | "JPY";
@@ -414,6 +478,9 @@ async function request(path: string, init?: RequestInit): Promise<Response> {
     throw new NodeOfflineError();
   }
   if (!response.ok) {
+    if (response.status === 401 || response.status === 403) {
+      forgetToken();
+    }
     throw new NodeApiError(response.status, await errorMessage(response));
   }
   return response;

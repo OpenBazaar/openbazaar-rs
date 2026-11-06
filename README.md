@@ -17,6 +17,8 @@ cargo run -p ob-node
 cargo run -p ob-node -- serve
 ```
 
+`serve` keeps the vault key in the OS keystore; pass `--vault passphrase`, or `--vault file` on a headless machine. To pair the web shop, open it and type the one-time code the node prints in its terminal. `--proxy socks5h://127.0.0.1:9050` sends rate and chain requests through Tor, and `--no-rates` turns off prices.
+
 ## Web app
 
 ```bash
