@@ -550,3 +550,57 @@ fn live_testnet4() {
         std::thread::sleep(Duration::from_secs(30));
     }
 }
+
+/// Send live testnet4 coins from the node wallet in `OB_LIVE_DIR` to another
+/// address, for example to fund the desktop app's node wallet. Without
+/// `OB_SEND_TO` it only syncs and prints the wallet, so run it once that way
+/// first.
+///
+/// `OB_LIVE_DIR=/tmp/ob-live-testnet4 OB_SEND_TO=tb1... OB_SEND_SATS=12000 cargo test -p ob-node live_testnet4_send -- --ignored --nocapture`
+///
+/// It broadcasts at once. The transaction has one recipient plus change and
+/// uses the node's payment fee rate (the chain estimate, floored at 1 sat/vB).
+/// The address must be a testnet4 address.
+#[test]
+#[ignore]
+fn live_testnet4_send() {
+    let dir = PathBuf::from(std::env::var("OB_LIVE_DIR").unwrap_or_else(|_| "/tmp/ob-live-testnet4".to_string()));
+    let urls: Vec<String> = NetworkMode::Testnet4.default_esplora().iter().map(|url| url.to_string()).collect();
+    let chain = crate::EsploraChain::new(&urls, NetworkMode::Testnet4.bitcoin()).unwrap();
+    let node = Node::open_with(
+        &dir,
+        load_catalog(NetworkMode::Testnet4).unwrap(),
+        NodeConfig {
+            network: NetworkMode::Testnet4,
+            confirmations: 1,
+            public_server: true,
+            chain: Box::new(chain),
+            escrow: EscrowConfig::default(),
+        },
+    )
+    .unwrap();
+    node.sync_buyer_wallet().unwrap();
+    let (_, wallet) = request(&node, "GET", "/wallet", "");
+    println!("source wallet: {wallet:#}");
+    let Ok(to) = std::env::var("OB_SEND_TO") else {
+        return;
+    };
+    let sats: u64 = std::env::var("OB_SEND_SATS").unwrap().parse().unwrap();
+    let address = address_for(&to, NetworkMode::Testnet4).unwrap();
+    let fee_rate = node.pay_fee_rate().unwrap();
+    let mut psbt = node.build_payment(&address, sats, fee_rate, false).unwrap();
+    assert!(node.buyer_wallet().sign(&mut psbt).unwrap(), "not fully signed");
+    let tx = psbt.extract_tx().unwrap();
+    let fee = node.buyer_wallet().wallet.calculate_fee(&tx).unwrap().to_sat();
+    node.chain.broadcast(&tx).unwrap();
+    node.buyer_wallet().wallet.apply_unconfirmed_txs([(tx.clone(), crate::buyer_orders::now_secs())]);
+    node.buyer_wallet().persist().unwrap();
+    println!(
+        "sent {sats} sats to {to} in {} (fee {fee} sats, {} vB, {} sat/vB)",
+        tx.compute_txid(),
+        tx.vsize(),
+        fee_rate.to_sat_per_kwu() as f64 / 250.0
+    );
+    let (_, after) = request(&node, "GET", "/wallet", "");
+    println!("source wallet after: {:#}", after["balance"]);
+}
