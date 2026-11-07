@@ -101,8 +101,8 @@ Status: **have** = on main or in the seller PR (#27); **built** = in the listing
 | Saved searches | n/a | saved searches | saved searches | later | Device-local; matches are counted on refresh. |
 | Similar items | yes | yes | yes | later | Client-side: same category and overlapping specifics. |
 | Notify me when back in stock | yes | n/a | n/a | later | Device-local, same mechanism as price-drop notices. |
-| Reviews tied to completed orders | verified purchase | feedback | ratings | built (records, keys, receipts), next (posting and display) | Pseudonymous per-order review keys; the seller signs a receipt on payment and the buyer's node keeps it. See [Reviews](#reviews). |
-| Seller ratings | seller feedback | feedback score | seller rating | next, with reviews | Aggregated on the client from verified reviews. |
+| Reviews tied to completed orders | verified purchase | feedback | ratings | built | Pseudonymous per-order review keys; the seller signs a receipt on payment; the buyer's node signs and publishes the review, and other nodes keep it. The seller can attach one reply. See [Reviews](#reviews). |
+| Seller ratings | seller feedback | feedback score | seller rating | built | Count, average and star distribution per store and per listing, computed by each node from the reviews it holds. No global score. |
 | Q&A on listings | yes | ask a question | comments | later | Private questions already work through order mail once messaging lands; public Q&A needs a moderation story. |
 
 ### Listing lifecycle
@@ -213,16 +213,33 @@ review_key [u8;32]
 
 The lines are the whole package, so one letter can hold two variants of the same listing; the first line repeats the letter's own listing hash and quantity, and a v2 node still reads the first line. A listing hash may be a superseded version: the seller node resolves it to the current version and prices from that. An order with no terms is still written as v2.
 
-#### Reviews (`OBRC` receipt, `OBRV` review)
+#### Reviews (`OBRC` receipt, `OBRV` review, `OBRY` reply)
 
 A review key is derived per order from the buyer's letter root (`m/1984'/c'/4'/0'`, the same root that gives each order its conversation key, under a separate label), so two reviews by the same buyer don't link. The order letter carries the review public key.
 
-- **Receipt** (seller → buyer in the "paid" reply, or the "shipped" reply if the store key was locked when the payment confirmed): `store_id, listing_id, review_key, paid_on (YYYYMMDD), signature by store key`. It says "this key bought this listing". It names no order id, amount or address.
-- **Review** (buyer → anyone): `receipt bytes, rating 1..5, text ≤ 1,000 (public_text-checked), written_on (YYYYMMDD), signature by review_key`.
+- **Receipt** (seller → buyer in the "paid" reply, or the next status reply once the store key is unlocked if it was locked when the payment confirmed): `store_id, listing_id, review_key, paid_on (YYYYMMDD), signature by store key`. The seller's node writes the first of the month as `paid_on`, so the receipt narrows the payment to a month on chain. It says "this key bought this listing". It names no order id, amount or address.
+- **Review** (buyer → anyone): `receipt bytes, rating 1..5, text ≤ 1,000 (public_text-checked), written_on (YYYYMMDD, not before paid_on), signature by review_key`.
+- **Reply** (seller → anyone, tag `ob/review-reply/v1`): `store_id, review hash, text 1..1,000 (public_text-checked), written_on, signature by store key`. One per review; a newer reply from the store replaces its older one. It cannot change the review, which the review key signs.
 
-A client counts a review as a verified purchase when the receipt verifies under the store key, the review verifies under the receipt's review key, and no other review uses the same key (one review per receipt; a later one by the same key replaces it). Dates are days, not timestamps, and the client waits a random 0 to 3 days before publishing, so the review can't be matched to a payment on chain by time.
+A client counts a review as a verified purchase when the receipt verifies under the store key, the review verifies under the receipt's review key, and no other review uses the same key (one review per receipt; a later one by the same key replaces it). Dates are days, not timestamps. The buyer's node waits a random 0 to 3 days after the buyer saves the review, then signs it dated that day, so the review can't be matched to a payment or to the moment the buyer wrote it.
 
-What this does not stop, stated plainly: the seller learns which of their orders wrote which review (they issued the receipt to that order), which is no more than they already know about their own buyers. A seller can mint receipts for keys they control and review themselves; a client can't tell that apart from real buyers without payment proofs, which would link reviews to the chain. A seller that refuses receipts gets no reviews at all, which the client shows as "no verified reviews" next to the order count. Reviews live with the seller's catalog, and the buyer's node checks each one against its signed receipt (decided; there is no third-party review relay). Until catalog replication lands, a seller could drop reviews it serves; that is the main thing to fix later. Posting and display are the next build.
+**Publication and replication** (built). Every node keeps a review pool (`reviews.obv`, sealed by the vault) and serves all of it at `GET /public/reviews`, mixed, with nothing marking which reviews its own user wrote. When the buyer's node signs a review it adds it to its own pool and `POST`s it to `/public/reviews` on the seller's node and on every node it follows. Each replication round also pulls `/public/reviews` from every followed node. A pool keeps one review per review key and replaces it only with a newer one signed by the same key; it keeps one reply per review, accepted only if the store signed it and the review is in the pool. So a seller can leave a review out of its own pool but not out of the pools that already hold it, and anyone who follows one of those nodes gets it. A node the buyer's node pushes to does learn that the review came from that node, since pushes are first-hand; sending only to the seller and followed nodes limits who learns it. Since anyone can mint receipts for their own store key, a pool holds at most 2,000 reviews per store the node carries and 2,000 in total for stores it doesn't, and takes at most 500 per request. Public review routes refuse browser requests (an `Origin` header).
+
+The buyer writes or changes a review on a paid, shipped or completed order; a change on the day it went out is refused, so two versions don't go out the same day.
+
+What this does not stop, stated plainly: the seller learns which of their orders wrote which review (they issued the receipt to that order), which is no more than they already know about their own buyers. A seller can mint receipts for keys they control and review themselves; a client can't tell that apart from real buyers without payment proofs, which would link reviews to the chain. A seller that refuses receipts gets no reviews at all, which the client shows as "no verified reviews". A review reaches only nodes connected, through follows, to a node that holds it; there is no third-party review relay or global index.
+
+### Reputation plan
+
+Reviews are the first part of a larger plan. Only the first item is built.
+
+1. **Receipt-locked, replicated reviews** (built, above): one review per paid order, a per-order key committed before the outcome, checked by every node from the signed receipt, kept by other nodes so the seller can't drop it, with one signed seller reply.
+2. **Moderator dispute rulings as signed public outcomes** (later): which side the funds were released to, with no addresses or identities, so a store's disputes can be counted.
+3. **Optional seller bond** (later): a time-locked output the buyer can verify on chain before ordering. It is collateral that shows commitment, not a fund a third party can slash.
+4. **New-seller state** (later): no stars until a store has verified sales, and its first sales shown as moderated escrow with the moderator named.
+5. **Self-deals** (later): direct payments between a seller and itself must not count like completed escrow sales once ratings weigh them.
+
+There is no reviewer profile, no third-party review service and no score across stores in any of these.
 
 ### Overselling policy
 
@@ -261,13 +278,13 @@ Building on the seller PR's `own_listings`:
 - `GET/POST /coupons`, `DELETE /coupons/{code}`. (Built.)
 - `POST /checkout` lines take `variant`, packages take `service` (an index or `"pickup"`) and `coupon`. (Built.)
 - Later: `POST /store/listings/{id}/duplicate`, bulk edit, drafts, `GET /offers`, `POST /offers/{id}/answer`.
-- Next, with reviews: `GET /stores/{key}/reviews`; buyer: `POST /orders/{id}/review`.
+- Reviews (built): `GET /stores/{key}/reviews` (count, average, stars, and each review with its listing title, paid month and reply); buyer `POST /orders/{id}/review` (`{rating, text}`); seller `POST /reviews/{id}/reply` (`{text}`). Between nodes, with no pairing: `GET` and `POST /public/reviews` (`{reviews: [hex]}` and `{replies: [hex]}`).
 - Later: vacation mode (a store-level pause).
 
 ### Client
 
 - **Seller editor** (built): condition and condition note, axes and values, a variant grid (SKU, price, stock, image per row) generated from the axes, per-order limit, shipping services (price, extra-item price, delivery days), pickup area. Later: specifics, taxonomy, per-variant weight, package weight and dimensions, handling time, ships-to regions, free-shipping threshold, returns override, compare-at, sale and tiers, availability, lot size, offers toggle, a coupon screen; drafts, duplicate, bulk edit, vacation mode.
-- **Buyer** (built): variant picker that greys out missing combinations and strikes through sold-out values, with price and stock for the chosen variant; quantity selector capped by stock and the per-order limit; bag lines per variant; shipping service or local pickup and a coupon field at checkout; condition, specifics, shipping and returns on the listing page; strikethrough and sale badge; low-stock and sold-out notes "as of the seller's last update"; variant labels, oversold refund notice and kept receipts on orders. Next: reviews and seller rating. Later: variant image swap, make-an-offer sheet, zoom, watching saved items, saved searches, back-in-stock and price-drop notices on the device, similar items, the native app checkout.
+- **Buyer** (built): variant picker that greys out missing combinations and strikes through sold-out values, with price and stock for the chosen variant; quantity selector capped by stock and the per-order limit; bag lines per variant; shipping service or local pickup and a coupon field at checkout; condition, specifics, shipping and returns on the listing page; strikethrough and sale badge; low-stock and sold-out notes "as of the seller's last update"; variant labels and oversold refund notice on orders; stars and a review form on paid orders, showing when the review will publish; reviews with seller replies and the store's rating on the listing page; the store's reviews with a reply box on the seller's own store page. Later: variant image swap, make-an-offer sheet, zoom, watching saved items, saved searches, back-in-stock and price-drop notices on the device, similar items, the native app checkout.
 - **Fiat display**: amounts shown in the listing's currency, converted to the viewer's chosen currency with the node's rates when they differ, and sats only as the payment amount.
 
 ## Build order
@@ -277,12 +294,12 @@ Building on the seller PR's `own_listings`:
 3. **Seller UI**: the editor and listing management additions.
 4. **Buyer UI**: picker, cart, checkout, coupons, offers, watchlist and reviews.
 
-Steps 1 and 2 are in #28 and #30, except sending offers and reviews. Steps 3 and 4 are in #31 as listed under [Client](#client). Reviews are next, once #27 merges and this stack is rebased onto main.
+Steps 1 and 2 are in #28 and #30, except sending offers. Steps 3 and 4 are in #31 as listed under [Client](#client). The paper (`docs/paper`, section "Commerce Terms, Stock, and Reviews") describes what these PRs build.
 
 ## Decisions
 
 1. **Auctions**: later. Best Offer and scheduled sale prices cover what sellers use auctions for. No seller-run auctions, sealed-bid or otherwise, for now.
-2. **Reviews**: they live with the seller's catalog and the buyer's node checks each one against the store-signed receipt. No third-party review relay.
+2. **Reviews**: every node checks each review against its store-signed receipt. The buyer publishes the review like a listing and other nodes keep it, so it stays visible when the seller leaves it out of its own catalog; the seller may attach one signed reply. No third-party review relay. Revised from "reviews live with the seller's catalog" so that a seller can't drop a review.
 3. **Local pickup**: kept, opt-in, as a city or region only. The app never collects a street address for pickup.
 4. **Per-buyer limits**: won't build. `max_per_order` caps each order; a per-buyer limit would need a buyer identity.
 5. **Vacation mode and price-drop notices**: later. Notices sent by the seller to watchers would point at those buyers, so a price-drop notice, when built, comes from the buyer's own client.

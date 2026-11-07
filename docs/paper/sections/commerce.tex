@@ -1,0 +1,49 @@
+\section{Commerce Terms, Stock, and Reviews}
+\label{sec:commerce}
+
+The records of \S\ref{sec:catalog} describe one item at one price. This section adds what a seller needs to sell the same thing in several sizes, ship it several ways, run a discount, and be reviewed, and states what each addition reveals. The seller's node is the only authority on stock and price at order time; every other party works from signed records and says ``as of'' when it shows them.
+
+\subsection{Listing terms}
+
+Version~6 of a listing carries the stable listing identifier, the images, and the optional fiat price of \S\ref{sec:sale}. Version~7 adds a \emph{commerce block} to a fiat-priced listing:
+\begin{itemize}
+  \item a condition grade (new, open box, like new, good, fair, for parts) with an optional note, a top-level category number, and up to 24 key/value specifics, where well-known keys such as a GTIN are checked;
+  \item up to three option axes of up to 16 values each and up to 100 variants, each with a random 8-byte identifier kept across edits, a seller SKU, an optional price override, its own stock, an image index, and a weight;
+  \item a compare-at price, a percentage sale with first and last days, up to four quantity tiers, a per-order maximum, a lot size, and an availability state (in stock, pre-order with a ship day, made to order in $n$ days, or away);
+  \item shipping: package weight and dimensions, handling days, a free-shipping threshold, up to six services each with a name, a price for the first item, a price for each extra item, a delivery estimate, and the regions it ships to; and an optional pickup area;
+  \item a returns override.
+\end{itemize}
+The block is inside the signed body, so a replica cannot change a variant's price or stock. Every free-text field passes the same contact-and-location check as the rest of the record.
+
+\subsection{Order terms and the shared price}
+
+Order letters at version~3 carry \emph{terms}: up to 20 lines, each naming a listing address, a variant identifier, a quantity, and optionally an offer the store signed for that line; one shipping service index (with a reserved value for pickup or digital delivery); a coupon code; and a per-order review key (\S\ref{sec:reviews}). The first line must repeat the letter's listing and quantity, so a version-1 reader still sees a valid order.
+
+Both nodes compute the price of a package with the same function. A line costs the variant price (or the listing price), less the sale percentage if the day falls inside the sale window, less the best quantity tier; an attached offer replaces that price. A coupon then comes off the lines it covers. Shipping uses the chosen service, charging the first item at its price and each further item at the extra-item price across all lines of the package, and is waived above the free-shipping threshold of the discounted subtotal. Every discount rounds down. The implementation's test vectors pin the function so that the client and node agree to the minor unit.
+
+\paragraph{Fiat quotes.} When the seller's node reads a version-3 letter, it prices the lines in the listing's currency with this function, converts the total to satoshis at its own rate, and replies with both. The buyer's node computes its own quote from the signed records, without the coupon, and refuses a seller quote whose fiat total is higher; it also refuses a satoshi amount more than a quarter above its own estimate, which leaves room for rate movement between the two nodes' sources. A seller can therefore lower a price at order time (with a coupon) but not raise it.
+
+\paragraph{Coupons.} A coupon is a record signed by the store key: a code, a percentage or fixed discount, an optional minimum subtotal and list of listings, first and last days, and a maximum number of uses. Coupons are kept on the seller's node and not published. The buyer types the code into checkout, the letter carries it, and the seller's quote shows the discount before anything is paid. A withdrawn or exhausted code is refused when the letter arrives.
+
+\subsection{Stock}
+
+A signed listing can only say how many units the seller had when it was signed, and replicas serve it while the seller is offline. The seller's node keeps a shelf count per variant. When it reads an order, it checks the variant, the per-order maximum, availability, and the shelf, and holds the units for the payment window (one hour); if they are not there it declines before payment. A confirmed payment turns the hold into a sale and takes the units off the shelf; an unpaid hold lapses. Each watch round re-signs every listing whose shelf count no longer matches its signed stock, while the store key is unlocked, so the catalog catches up. If a payment arrives after its hold lapsed and the units were sold to someone else, the sale is marked oversold and the seller's reply says so; for a direct payment the seller refunds by hand. Clients show stock as of the seller's last update, since the record carries no publish time.
+
+\subsection{Local pickup}
+
+Pickup is off by default. A seller who allows it names an area that passes a region check: a short name with no comma, no digits, and at most three words, so that it names a city, state, or country rather than a street, and passes the contact-and-location check. Choosing pickup puts no address in the order; time and place are agreed in the order's sealed messages. Meeting in person shows each party to the other, which no protocol can prevent, and the client says so at checkout.
+
+\subsection{Reviews}
+\label{sec:reviews}
+
+A review should show that the reviewer paid for the item, without naming the reviewer, linking that reviewer's reviews, or letting the seller remove it.
+
+\paragraph{Keys and receipts.} For each order the buyer's node derives a review key from its letter root under a separate label, and puts the public key in the order terms, so the key is committed before the seller knows whether it will be reviewed well. When the payment confirms, the seller's node signs a \emph{receipt} (\code{OBRC}) for each listing in the order: the store key, the listing identifier, the review key, and the month of payment (the first of the month). The receipt goes to the buyer in the seller's ``paid'' reply, or, if the store key was locked, with the next status reply after it is unlocked. The buyer's node keeps a receipt only if it verifies under the order's store key, names this order's review key, and names a listing in the order.
+
+\paragraph{Reviews and replies.} A \emph{review} (\code{OBRV}) contains the receipt, one to five stars, at most 1{,}000 bytes of text that pass the contact-and-location check, and the day it was written, and is signed by the review key. Any node can check it: the receipt under the store key inside it, then the review under the receipt's review key. The buyer's node signs the review after a random wait of up to three days and dates it the day it is signed, so the review's date is not the day the buyer pressed the button. A store may attach one \emph{reply} (\code{OBRY}), signed by the store key, that names the review's hash; a newer reply from the store replaces its older one. The seller cannot change the review's text, because the review key signs it.
+
+\paragraph{Publication.} Every node keeps a pool of reviews and serves the whole pool to other nodes, without marking which reviews its own user wrote. When a review is signed, the buyer's node adds it to its pool and sends it to the seller's node and to every node it follows. In each replication round, a node also pulls the pools of the nodes it follows and keeps what verifies. A pool keeps one review per review key; a review leaves a pool only when the same key signs a newer one. A seller can therefore leave a review out of its own pool, but not out of the pools of nodes that already hold it, and a node that follows any of those nodes receives it. Since receipts can be minted for any store key, a node keeps up to 2{,}000 reviews for each store it carries and 2{,}000 in total for stores it does not.
+
+\paragraph{Ratings.} A buyer's node counts the reviews it holds for a store and for a listing and shows the average and the distribution of stars. There is no score across stores and no reviewer profile.
+
+\paragraph{What this does not stop.} The seller knows which of its orders received each receipt, so it knows which order wrote a review, as it already knew that order's ship-to. A seller can mint receipts for review keys it controls and review itself; nothing short of linking reviews to payments on chain would tell those apart, so a rating shows signed purchases, not independent buyers. A review reaches only the nodes that follow, directly or through others, a node that holds it. The receipt's month narrows the payment to a month on chain, not a day. Reviews travel between nodes the same way as other node-to-node traffic (\S\ref{sec:sale}), and a node only pulls what others already hold, so a node the buyer's node sends a review to learns that it came from that node; sending only to the seller and to followed nodes limits who learns this.
