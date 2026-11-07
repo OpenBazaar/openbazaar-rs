@@ -1,11 +1,12 @@
 import { bytesToHex, hexToBytes, utf8ToBytes } from "@noble/hashes/utils.js";
-import { accessKey, deviceKey, newDeviceKey, pairDigest, parsePairingCode, sign, signedHeaders, type DeviceKey } from "./signing.ts";
+import { deviceKey, signedHeaders, type DeviceKey } from "./signing.ts";
 
 // Where the shop's node requests go. There are three cases:
 //
 // - The page is served by a home node to a remote browser (Tor Browser at the
-//   node's onion). index.html then carries <meta name="ob-home-node">; every
-//   request goes to this origin, signed with this browser's device key.
+//   node's onion, with a browser credential from a paired device). index.html
+//   then carries <meta name="ob-home-node">; every request goes to this
+//   origin, signed with this browser's device key.
 // - The desktop app with its target set to "home": requests go to the app's
 //   own node under /home/proxy, which signs them and carries them over Tor.
 // - Otherwise: the app's own node, as before.
@@ -16,7 +17,7 @@ const DEVICE_KEY = "ob-home-device";
 
 export class HomeSignInRequired extends Error {
   constructor() {
-    super("Pair this browser with your home node, or sign in with its access key.");
+    super("Sign in with this browser's access key.");
     this.name = "HomeSignInRequired";
   }
 }
@@ -129,23 +130,4 @@ export async function restoreSession(): Promise<boolean> {
 export function signOut(): void {
   session = null;
   storage()?.removeItem(DEVICE_KEY);
-}
-
-/** Pair this browser with the node that served it. Returns the access key to save. */
-export async function pairBrowser(code: string, name: string, remember: boolean): Promise<string> {
-  const parsed = parsePairingCode(code);
-  if (!parsed) throw new Error("That is not a pairing code. It starts with obhome:.");
-  const key = newDeviceKey();
-  const response = await fetch("/remote/pair", {
-    method: "POST",
-    cache: "no-store",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ secret: parsed.secret, publicKey: key.publicKey, name, signature: sign(key, pairDigest(parsed.secret, key.publicKey, name)) }),
-  });
-  const body = (await response.json().catch(() => ({}))) as { error?: unknown; deviceId?: unknown };
-  if (!response.ok || body.deviceId !== key.id) {
-    throw new Error(typeof body.error === "string" ? body.error : "The node refused the pairing code.");
-  }
-  await signIn(key.secret, remember);
-  return accessKey(key.secret);
 }
