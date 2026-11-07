@@ -221,6 +221,35 @@ fn a_fiat_price_is_signed_with_its_sats_at_todays_rate() {
 }
 
 #[test]
+fn the_display_name_is_signed_up_to_64_bytes_and_empty_is_refused() {
+    let (_dir, node) = seller();
+    open_store(&node);
+    let name = "N".repeat(64);
+    let (status, saved) = request(&node, "PUT", "/store/profile", &json!({ "name": name }).to_string());
+    assert!(status.contains("200"), "{status} {saved}");
+    assert_eq!(saved["name"], name);
+    let record = node.own_record().unwrap();
+    record.verify().unwrap();
+    assert_eq!(record.name, name);
+    let listing = node.own_listings().entries[0].listing.clone();
+    listing.verify().unwrap();
+    assert_eq!(listing.seller, name, "buyers see the signed display name");
+
+    let wide = "字".repeat(22);
+    assert!(wide.chars().count() <= 64 && wide.len() > 64);
+    for (body, why) in [
+        (json!({ "name": "" }), "empty"),
+        (json!({ "name": "   " }), "blank"),
+        (json!({ "name": "N".repeat(65) }), "65 bytes"),
+        (json!({ "name": wide }), "more than 64 bytes"),
+    ] {
+        let (status, refused) = request(&node, "PUT", "/store/profile", &body.to_string());
+        assert!(status.contains("400"), "{why}: {status} {refused}");
+        assert_eq!(node.own_record().unwrap().name, name, "{why} leaves the signed name");
+    }
+}
+
+#[test]
 fn renaming_the_store_signs_its_listings_again() {
     let (_dir, node) = seller();
     let listing = open_store(&node);

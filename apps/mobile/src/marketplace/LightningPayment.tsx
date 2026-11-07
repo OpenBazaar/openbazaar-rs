@@ -13,6 +13,7 @@ import {
 import { type LockStatus, isLocked } from '../walletLock'
 import { useNodeResource } from '../useNodeResource'
 import { CopyPaymentValue, PaymentQr, usePairedNode, WalletAmount } from './NodePayments'
+import { RailMark } from './RailMark'
 import { Dialog, FormError, Passphrase, UnlockDialog, useSubmit } from './WalletLock'
 
 /** The Lightning part of the wallet page. Nothing while Lightning is off. */
@@ -22,7 +23,7 @@ export function LightningWalletCard({ rates, currency }: { rates: RateTable; cur
   if (!ln?.enabled) return null
   return (
     <section className='ob-wallet-fund' aria-labelledby='ob-ln-wallet'>
-      <h2 id='ob-ln-wallet'>Lightning</h2>
+      <h2 id='ob-ln-wallet' className='ob-rail'><RailMark rail='lightning' /> Lightning</h2>
       <p>{ln.network ? lnNetworkLabel(ln.network) : ''} · {ln.running ? `${ln.channels.length} channel${ln.channels.length === 1 ? '' : 's'}` : 'starting'}</p>
       {ln.balances && (
         <div className='ob-wallet-balances'>
@@ -98,7 +99,7 @@ export function LightningOrderPayment({ id, initial, invoice }: { id: string; in
     <section className='ob-order-payment' aria-label={`Lightning payment for ${order.seller}`}>
       <div className='ob-payment-progress' aria-live='polite'>
         <strong>{order.status}</strong>
-        <span>{ln.amountSats.toLocaleString()} sats over Lightning</span>
+        <span className='ob-rail'><RailMark rail='lightning' size={16} /> {ln.amountSats.toLocaleString()} sats over Lightning</span>
         {paid && ln.lspFeeSats != null && ln.local && <span>The LSP kept {ln.lspFeeSats.toLocaleString()} sats to open the channel</span>}
       </div>
       {(error || order.payError || resource.error) && <p role='alert' className='ob-form-error'>{error || order.payError || resource.error}</p>}

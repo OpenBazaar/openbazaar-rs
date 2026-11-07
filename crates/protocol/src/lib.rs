@@ -60,4 +60,4 @@ pub use signed::{Signed, Terms};
 pub use taxonomy::{taxonomy_name, TAXONOMY};
 pub use variants::{Axis, Variant, VariantId, Variants, MAX_AXES, MAX_AXIS_VALUES, MAX_VARIANTS};
 pub use payment::DirectPay;
-pub use store::{CountryCode, Store, StoreDetails, StoreId, StoreProfile};
+pub use store::{CountryCode, Store, StoreDetails, StoreId, StoreProfile, MAX_NAME};

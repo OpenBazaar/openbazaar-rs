@@ -80,6 +80,8 @@
 .ob-payment-rails li.is-on { border-color: var(--ob-brand); background: var(--ob-selected); }
 .ob-payment-rails li.is-off { opacity: .7; }
 .ob-payment-rails li span { color: var(--ob-secondary); font-size: 13px; }
+.ob-payment-rails strong.ob-rail { font-size: 15px; }
+.ob-saved-name { margin: 8px 0 0; color: var(--ob-secondary); font-size: 13px; }
 
 /* Listing editor */
 .ob-listing-photos { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }

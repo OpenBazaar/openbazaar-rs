@@ -1,10 +1,12 @@
 import { useMemo, useState } from "react";
-import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 
 import { parseCatalog, type ContentRating, type ListingHeader, type ShopCatalog } from "../../catalog.ts";
 import { collectionValue } from "../../homeNode/replica.ts";
+import { displayNameError, updateProfile } from "../../seller.ts";
+import { isLocked, passphraseError, unlockWallet } from "../../walletLock.ts";
 import { ListingPhoto } from "../ListingPhoto.tsx";
-import { dismissRefused, queueEdit, useSession } from "../session.ts";
+import { dismissRefused, queueEdit, sync, useSession } from "../session.ts";
 import { Button, Card, formatBtc, LINE, MUTED, NAVY, Notice, Row, SOFT, ui } from "../ui.tsx";
 import { ListingEdit } from "./ListingEdit.tsx";
 
@@ -56,6 +58,50 @@ function Listing({ listing, queued, canEdit, ownWithoutId, onRate, onEdit }: { l
   );
 }
 
+function DisplayName({ saved }: { saved: string }) {
+  const [name, setName] = useState(saved);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [needsUnlock, setNeedsUnlock] = useState(false);
+  const [passphrase, setPassphrase] = useState("");
+  const refused = displayNameError(name);
+  async function save() {
+    if (refused) {
+      setError(refused);
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      if (needsUnlock) {
+        await unlockWallet(passphrase);
+        setPassphrase("");
+        setNeedsUnlock(false);
+      }
+      const next = await updateProfile({ name: name.trim() });
+      setName(next.name);
+      await sync();
+    } catch (err) {
+      if (isLocked(err)) {
+        setNeedsUnlock(true);
+        setError("Unlock the wallet on your node so it can sign this name.");
+      } else setError(passphraseError(err, "The name was not saved."));
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <Card title="Display name">
+      <Text style={ui.muted}>Buyers see this name on your listings. Saved name: {saved}</Text>
+      <TextInput accessibilityLabel="Display name" value={name} onChangeText={setName} maxLength={64} autoCapitalize="words" style={ui.input} />
+      {refused ? <Notice tone="error" text={refused} /> : null}
+      {needsUnlock ? <TextInput accessibilityLabel="Wallet passphrase" value={passphrase} onChangeText={setPassphrase} secureTextEntry autoCapitalize="none" style={ui.input} /> : null}
+      {error && error !== refused ? <Notice tone="error" text={error} /> : null}
+      <Button label={busy ? "Signing…" : "Save name"} busy={busy} disabled={refused !== null} onPress={() => void save()} />
+    </Card>
+  );
+}
+
 export function StoreScreen({ onRefresh }: { onRefresh: () => void }) {
   const session = useSession();
   const { catalog, error } = useCatalog();
@@ -69,7 +115,7 @@ export function StoreScreen({ onRefresh }: { onRefresh: () => void }) {
   }
   return (
     <ScrollView contentContainerStyle={ui.screen}>
-      <Text style={ui.title}>{catalog?.store.name || "Your store"}</Text>
+      <Text style={ui.title}>{own?.name || catalog?.store.name || "Your store"}</Text>
       {session.lastError ? <Notice tone="error" text={session.lastError} /> : null}
       {error ? <Notice tone="error" text={error} /> : null}
       {session.refused.length ? (
@@ -85,6 +131,7 @@ export function StoreScreen({ onRefresh }: { onRefresh: () => void }) {
       {!catalog && !error ? <Notice text={session.syncing ? "Loading your store from your node…" : "Your store has not synced to this phone yet."} /> : null}
       {catalog ? (
         <>
+          {own ? <DisplayName key={own.key} saved={own.name} /> : null}
           <Card title="Overview">
             <Row label="Stores" value={String(catalog.stores.length)} />
             <Row label="Listings" value={String(catalog.listings.length)} />

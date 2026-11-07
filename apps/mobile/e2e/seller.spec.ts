@@ -46,7 +46,8 @@ test('a new seller protects the wallet, chooses to sell, and opens a store', asy
   await page.getByRole('button', { name: /^Sell/ }).click()
 
   await expect(page.getByRole('heading', { name: 'Set up your store' })).toBeVisible()
-  await page.getByLabel('Store name').fill('Brook and Pine')
+  await page.getByLabel('Display name').fill('Brook and Pine')
+  await expect(page.getByText('Saved name: My store')).toBeVisible()
   await page.getByLabel('Based in').fill('Portland')
   await page.getByLabel('Tagline').fill('Small-batch ceramics')
   await page.getByLabel('Description').fill('Pots and mugs thrown by hand.')
@@ -59,6 +60,13 @@ test('a new seller protects the wallet, chooses to sell, and opens a store', asy
   await page.getByRole('button', { name: 'Open my store' }).click()
 
   await expect(page.getByRole('heading', { name: 'Brook and Pine', level: 1 })).toBeVisible()
+  await page.getByRole('button', { name: 'Edit store' }).click()
+  await expect(page.getByText('Saved name: Brook and Pine')).toBeVisible()
+  await page.getByLabel('Display name').fill('   ')
+  await expect(page.getByText('Give the store a name.')).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Save store' })).toBeDisabled()
+  await page.getByLabel('Display name').fill('Brook and Pine')
+  await page.getByRole('button', { name: 'View your store' }).click()
   await expect(page.getByText('Small-batch ceramics')).toBeVisible()
   await expect(page.getByRole('navigation', { name: 'Your store' })).toBeVisible()
 })

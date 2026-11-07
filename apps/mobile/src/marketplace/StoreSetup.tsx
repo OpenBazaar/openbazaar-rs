@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from "react";
-import { updateProfile, type ProfileChanges, type SellerProfile } from "../seller";
+import { displayNameError, updateProfile, type ProfileChanges, type SellerProfile } from "../seller";
 import { PageHeading } from "./PageHeading";
+import { RailMark } from "./RailMark";
 import { ImageUpload, MediaImage, useLockedAction } from "./SellerKit";
 
 type Fields = Required<Omit<ProfileChanges, "shipsTo">> & { shipsTo: string };
@@ -35,9 +36,11 @@ export function StoreSetup({ profile, onSaved, onViewStore }: { profile: SellerP
   const { run, dialog } = useLockedAction(setError);
   const set = <K extends keyof Fields>(key: K) => (value: Fields[K]) => setFields(f => ({ ...f, [key]: value }));
   const first = !profile.setUp;
+  const nameError = displayNameError(fields.name);
   async function save(e: FormEvent) {
     e.preventDefault();
     if (busy) return;
+    if (nameError) return;
     setBusy(true);
     setError("");
     const shipsTo = fields.shipsTo.split(/[\s,]+/).map(code => code.trim().toUpperCase()).filter(Boolean);
@@ -66,9 +69,17 @@ export function StoreSetup({ profile, onSaved, onViewStore }: { profile: SellerP
         </div>
       </div>
       <fieldset className="ob-store-section">
+        <legend>Display name</legend>
+        <div className="ob-field-grid">
+          <TextField label="Display name" value={fields.name} onChange={set("name")} max={64} placeholder="Brook and Pine"/>
+        </div>
+        <p className="ob-field-hint">Buyers see this name on your listings. It is the store's public name.</p>
+        <p className="ob-saved-name" role="status">Saved name: {profile.name}</p>
+        {nameError && <p className="ob-form-error" role="alert">{nameError}</p>}
+      </fieldset>
+      <fieldset className="ob-store-section">
         <legend>About your store</legend>
         <div className="ob-field-grid">
-          <TextField label="Store name" value={fields.name} onChange={set("name")} max={60} placeholder="Brook and Pine"/>
           <TextField label="Based in" value={fields.region} onChange={set("region")} max={40} placeholder="Region or country"/>
           <TextField label="Tagline" value={fields.tagline} onChange={set("tagline")} max={120} wide placeholder="One line about what you make or sell"/>
           <TextField label="Description" value={fields.about} onChange={set("about")} max={2000} wide multiline/>
@@ -86,14 +97,15 @@ export function StoreSetup({ profile, onSaved, onViewStore }: { profile: SellerP
       <fieldset className="ob-store-section">
         <legend>Payments</legend>
         <ul className="ob-payment-rails">
-          <li className="is-on"><strong>Bitcoin, paid to you directly</strong><span>{profile.network === "testnet4" ? "Testnet4 coins. Each order gets a fresh address from your node's wallet." : "Each order gets a fresh address from your node's wallet."}</span></li>
-          <li className={profile.xmrAvailable ? "" : "is-off"}><strong>Monero</strong><span>{profile.xmrAvailable ? "Buyers can pay in Monero." : "Not available for your own store on this node yet."}</span></li>
+          <li className="is-on"><strong className="ob-rail"><RailMark rail="bitcoin" />Bitcoin, paid to you directly</strong><span>{profile.network === "testnet4" ? "Testnet4 coins. Each order gets a fresh address from your node's wallet." : "Each order gets a fresh address from your node's wallet."}</span></li>
+          <li className={profile.xmrAvailable ? "" : "is-off"}><strong className="ob-rail"><RailMark rail="monero" />Monero</strong><span>{profile.xmrAvailable ? "Buyers can pay in Monero." : "Not available for your own store on this node yet."}</span></li>
+          <li className={profile.acceptsLightning ? "is-on" : "is-off"}><strong className="ob-rail"><RailMark rail="lightning" />Lightning</strong><span>{profile.acceptsLightning ? "Buyers can pay a Lightning invoice. Direct pay only." : "Turn it on in Lightning settings. It stays off on mainnet until connections run over Tor."}</span></li>
           <li className={profile.escrowAvailable ? "" : "is-off"}><strong>Moderated escrow</strong><span>{profile.escrowAvailable ? "Buyers can choose a moderator." : "Not available for your own store on this node yet. Orders are paid directly."}</span></li>
         </ul>
       </fieldset>
       {error && <p className="ob-form-error" role="alert">{error}</p>}
       <div className="ob-form-actions">
-        <button className="ob-primary" disabled={busy || !fields.name.trim()}>{busy ? "Signing…" : first ? "Open my store" : "Save store"}</button>
+        <button className="ob-primary" disabled={busy || nameError !== null}>{busy ? "Signing…" : first ? "Open my store" : "Save store"}</button>
       </div>
     </form>
     {dialog}

@@ -27,6 +27,7 @@ import {
 import { paymentStatusView } from '../paymentStatus'
 import { useNodeResource } from '../useNodeResource'
 import { isLocked, quotePayment, type LockStatus, type Quote, type Ticket } from '../walletLock'
+import { RailMark } from './RailMark'
 import { SpendConfirmDialog, UnlockDialog, WalletLockPanel, useLockState } from './WalletLock'
 import { PageHeading } from './PageHeading'
 import { SpeedUpPayment } from './SpeedUpPayment'
@@ -471,6 +472,7 @@ export function OrderPayment({
           {due > 0 && !order.payTxid && order.status === 'Awaiting payment' && (
             <div className='ob-payment-options'>
               <div className='ob-pay-wallet'>
+                <p className='ob-rail'><RailMark rail='bitcoin' /> Bitcoin on-chain</p>
                 <button
                   className='ob-primary'
                   disabled={blocked}

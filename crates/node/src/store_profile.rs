@@ -6,7 +6,7 @@
 //! listing names its seller). The role the user chose at onboarding, buyer
 //! or seller, lives in the same file; it is not part of any signed record.
 
-use openbazaar_protocol::{public_text, ContentRating, CountryCode};
+use openbazaar_protocol::{public_text, ContentRating, CountryCode, MAX_NAME};
 use serde_json::{json, Map, Value};
 
 use crate::own_listings::{capitalize, StoreError};
@@ -14,7 +14,7 @@ use crate::own_store::{read_profile, write_profile, PROFILE_FILE};
 use crate::Node;
 
 const TEXT_FIELDS: &[(&str, usize)] = &[
-    ("name", 60),
+    ("name", MAX_NAME),
     ("region", 40),
     ("tagline", 120),
     ("about", 2000),
@@ -93,6 +93,7 @@ impl Node {
             "shipsTo": ships_to,
             "contentRating": crate::rating_name(record.as_ref().and_then(|store| store.rating)),
             "acceptsXmr": details.is_some_and(|d| d.accepts_xmr),
+            "acceptsLightning": details.is_some_and(|d| d.accepts_lightning),
             // Monero and escrow sales need the seller's node to run those
             // rails for its own store; it does not yet.
             "xmrAvailable": false,
@@ -138,11 +139,19 @@ fn parse_changes(body: &Value, media_has: impl Fn(&[u8; 32]) -> bool) -> Result<
     for (key, value) in map {
         if let Some((_, max)) = TEXT_FIELDS.iter().find(|(name, _)| name == key) {
             let text = value.as_str().ok_or_else(|| StoreError::Invalid(format!("The {key} must be text.")))?.trim();
-            if text.chars().count() > *max || text.contains('\0') {
+            if text.contains('\0') {
                 return Err(StoreError::Invalid(format!("The {key} is at most {max} characters.")));
             }
-            if key == "name" && text.is_empty() {
-                return Err(StoreError::Invalid("Give the store a name.".into()));
+            // The signed record measures the display name in bytes.
+            if key == "name" {
+                if text.is_empty() {
+                    return Err(StoreError::Invalid("Give the store a name.".into()));
+                }
+                if text.len() > MAX_NAME {
+                    return Err(StoreError::Invalid(format!("The name is at most {MAX_NAME} characters.")));
+                }
+            } else if text.chars().count() > *max {
+                return Err(StoreError::Invalid(format!("The {key} is at most {max} characters.")));
             }
             if key == "region" && !text.is_empty() {
                 public_text::check_region("region", text).map_err(refusal)?;
