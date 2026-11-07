@@ -27,6 +27,8 @@ pub enum Error {
     },
     /// A store profile field is out of range or not canonical.
     BadProfile(&'static str),
+    /// A version 6 listing field is out of range or not canonical.
+    BadListing(&'static str),
 }
 
 impl fmt::Display for Error {
@@ -36,6 +38,9 @@ impl fmt::Display for Error {
         }
         if let Error::BadProfile(what) = self {
             return write!(f, "store profile: {what}");
+        }
+        if let Error::BadListing(what) = self {
+            return write!(f, "listing: {what}");
         }
         let message = match self {
             Error::Truncated => "truncated record",
@@ -52,7 +57,7 @@ impl fmt::Display for Error {
             Error::BadLabel => "label set entry is not canonical",
             Error::FieldTooLong => "field exceeds the canonical length limit",
             Error::Sealed => "sealed envelope is not opened in this phase",
-            Error::PrivateText { .. } | Error::BadProfile(_) => unreachable!("handled above"),
+            Error::PrivateText { .. } | Error::BadProfile(_) | Error::BadListing(_) => unreachable!("handled above"),
         };
         f.write_str(message)
     }

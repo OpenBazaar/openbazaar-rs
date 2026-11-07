@@ -88,6 +88,9 @@ impl Node {
                 "Checkout one seller at a time.",
             ));
         }
+        if self.remote_package(lines[0].0, true, false)?.is_some() {
+            return Err(OrderError::Invalid("Order from this store at checkout."));
+        }
         let settlement = settlement_of(body.get("settlement"))?;
         self.allow_settlement(settlement, &seller)?;
         if settlement == Settlement::Escrow
@@ -161,6 +164,8 @@ impl Node {
             payment,
             escrow,
             address_label,
+            None,
+            settlement.initial_status(),
         )?;
         if settlement == Settlement::Escrow {
             let mut escrow = response.get("escrow").cloned();
@@ -211,8 +216,13 @@ impl Node {
             String::new()
         };
         let checkout_id = random_id();
-        let mut sealed = Vec::with_capacity(packages.len());
+        let mut remotes = Vec::with_capacity(packages.len());
         for package in &packages {
+            remotes.push(self.remote_package(package.lines[0].0, package.settlement == Settlement::Direct, package.xmr)?);
+        }
+        let reply_url = self.own_url().map(str::to_string);
+        let mut sealed = Vec::with_capacity(packages.len());
+        for (package, remote) in packages.iter().zip(&remotes) {
             let letter = self.seal_letter(
                 &catalog,
                 &checkout_id,
@@ -221,6 +231,7 @@ impl Node {
                 letter_ship(&package.lines, &ship_text, &note),
                 package.shipping,
                 &note,
+                remote.as_ref().and(reply_url.as_deref()),
             )?;
             sealed.push(letter);
         }
@@ -228,31 +239,43 @@ impl Node {
         let mut orders = Vec::with_capacity(packages.len());
         let mut items_total = 0u64;
         let mut shipping_total = 0u64;
-        for (package, letter) in packages.iter().zip(sealed) {
+        for ((package, letter), remote) in packages.iter().zip(sealed).zip(&remotes) {
             let seller = package.lines[0].0.seller.clone();
             let listing = package.lines[0].0;
-            let id = self
-                .mailbox
-                .accept(&letter)
-                .map_err(|err| OrderError::Failed(err.to_string()))?
-                .as_str();
-            let total = package
-                .items
-                .checked_add(package.shipping)
+            let (items, shipping) = match remote {
+                Some(_) => self.remote_estimate(&package.lines)?,
+                None => (package.items, package.shipping),
+            };
+            let id = match remote {
+                Some(_) => random_id(),
+                None => self.mailbox.accept(&letter).map_err(|err| OrderError::Failed(err.to_string()))?.as_str(),
+            };
+            let total = items
+                .checked_add(shipping)
                 .ok_or(OrderError::Invalid("Enter a quantity of at most 99."))?;
             items_total = items_total
-                .checked_add(package.items)
+                .checked_add(items)
                 .ok_or(OrderError::Invalid("Enter a quantity of at most 99."))?;
             shipping_total = shipping_total
-                .checked_add(package.shipping)
+                .checked_add(shipping)
                 .ok_or(OrderError::Invalid("Enter a quantity of at most 99."))?;
             let lines = line_values(&package.lines)?;
-            let (payment, mut escrow) = if package.xmr {
+            let (payment, mut escrow) = if remote.is_some() {
+                (None, None)
+            } else if package.xmr {
                 (Some(self.xmr_payment(total, &seller)?), None)
             } else if package.ln {
                 (Some(self.ln_payment(total, &id)?), None)
             } else {
                 self.payment_for(package.settlement, total, &seller)?
+            };
+            let remote_record = match remote {
+                Some(url) => Some(self.remote_record(url, &checkout_id, listing, &package.lines, total)?),
+                None => None,
+            };
+            let status = match remote {
+                Some(_) => crate::watch::AWAITING_SELLER,
+                None => package.settlement.initial_status(),
             };
             self.remember(
                 checkout_id.clone(),
@@ -261,14 +284,19 @@ impl Node {
                 seller.clone(),
                 listing.store_id.to_hex(),
                 lines.clone(),
-                package.items,
-                package.shipping,
+                items,
+                shipping,
                 total,
                 package.settlement,
                 payment.clone(),
                 escrow.clone(),
                 address_label.clone(),
+                remote_record,
+                status,
             )?;
+            if let Some(url) = remote {
+                self.deliver_remote_order(&id, url, &checkout_id, listing, &letter);
+            }
             if package.settlement == Settlement::Escrow {
                 self.request_terms(&id, &mut escrow);
             }
@@ -279,12 +307,12 @@ impl Node {
                 "storeId": listing.store_id.to_hex(),
                 "shipFrom": listing.ship_from,
                 "lines": lines,
-                "itemsSats": package.items,
-                "shippingSats": package.shipping,
+                "itemsSats": items,
+                "shippingSats": shipping,
                 "totalSats": total,
                 "settlement": package.settlement.as_str(),
                 "addressLabel": address_label,
-                "status": package.settlement.initial_status(),
+                "status": status,
                 "network": self.network.as_str(),
             });
             if let Some(payment) = payment {
@@ -318,7 +346,7 @@ impl Node {
         shipping: u64,
     ) -> Result<String, OrderError> {
         let ship_to = letter_ship(lines, ship_text, note);
-        let letter = self.seal_letter(catalog, checkout_id, lines, settlement, ship_to, shipping, note)?;
+        let letter = self.seal_letter(catalog, checkout_id, lines, settlement, ship_to, shipping, note, None)?;
         let id = self
             .mailbox
             .accept(&letter)
@@ -370,6 +398,8 @@ impl Node {
         payment: Option<Value>,
         escrow: Option<Value>,
         address_label: String,
+        remote: Option<Value>,
+        status: &str,
     ) -> Result<(), OrderError> {
         self.buyer_orders
             .lock()
@@ -388,7 +418,7 @@ impl Node {
                 payment,
                 escrow,
                 address_label,
-                status: settlement.initial_status().to_string(),
+                status: status.to_string(),
                 network: self.network.as_str().to_string(),
                 received_sats: 0,
                 confirmations: 0,
@@ -396,6 +426,7 @@ impl Node {
                 pay_txid: None,
                 paying: false,
                 pay_error: None,
+                remote,
             })
             .map_err(OrderError::Failed)
     }
@@ -498,7 +529,7 @@ fn checkout_packages<'a>(catalog: &'a Catalog, body: &Value) -> Result<Vec<Packa
     Ok(plans)
 }
 
-fn package_shipping(lines: &[(&Listing, u32)]) -> Result<(u64, u64), OrderError> {
+pub(crate) fn package_shipping(lines: &[(&Listing, u32)]) -> Result<(u64, u64), OrderError> {
     let mut items = 0u64;
     for (listing, quantity) in lines {
         let line_total = listing
@@ -573,6 +604,7 @@ fn seal_letter(
     ship_to: String,
     shipping: u64,
     note: &str,
+    reply_url: Option<&str>,
 ) -> Result<SealedLetter, OrderError> {
     let store = catalog
         .store_of(lines[0].0)
@@ -586,6 +618,9 @@ fn seal_letter(
     let digital = lines.iter().any(|(listing, _)| listing.kind == ListingKind::Digital);
     if physical && digital && !note.is_empty() {
         options.insert("delivery".to_string(), note.to_string());
+    }
+    if let Some(url) = reply_url {
+        options.insert("replyUrl".to_string(), url.to_string());
     }
     let (first, first_qty) = lines[0];
     let first_hash = first
@@ -621,7 +656,7 @@ fn seal_letter(
 }
 }
 
-fn random_id() -> String {
+pub(crate) fn random_id() -> String {
     let mut bytes = [0u8; 16];
     StdRng::from_os_rng().fill_bytes(&mut bytes);
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()

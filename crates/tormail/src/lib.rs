@@ -49,7 +49,7 @@ pub use letter::{MessageId, Opened, SenderId, SenderKey};
 pub use mailbox::{LetterId, Mailbox};
 pub use onion::{HsIdParseError, OnionAddress, ORDER_PORT};
 pub use order::{ListingHash, Order, PaymentRail};
-pub use reply::{DropId, ReplyDelivery, ReplyPath};
+pub use reply::{reply_frame, DropId, ReplyDelivery, ReplyPath};
 pub use seal::{
     open_message, open_order, open_reply, seal_message, seal_order, seal_reply, ReplyKeypair,
     ReplyPublic, ReplySecret, SealedLetter, SealedReply, StoreKey, StoreKeypair, StoreSecret,

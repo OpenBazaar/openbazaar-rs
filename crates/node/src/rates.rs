@@ -30,6 +30,9 @@ pub(crate) struct Rates {
     cache: Mutex<Option<Cached>>,
     egress: Egress,
     source: String,
+    /// Tests pin the rates instead of asking Coinbase.
+    #[cfg(test)]
+    pub(crate) fixed: Mutex<Option<BTreeMap<String, f64>>>,
 }
 
 impl Rates {
@@ -38,10 +41,21 @@ impl Rates {
             cache: Mutex::new(None),
             egress,
             source: SOURCE.to_string(),
+            #[cfg(test)]
+            fixed: Mutex::new(None),
         }
     }
 
+    /// BTC priced in `currency`, if the node has a rate for it.
+    pub(crate) fn btc_price(&self, currency: &str) -> Option<f64> {
+        self.value()["currencies"][currency].as_f64().filter(|price| price.is_finite() && *price > 0.0)
+    }
+
     pub(crate) fn value(&self) -> Value {
+        #[cfg(test)]
+        if let Some(fixed) = self.fixed.lock().unwrap_or_else(|err| err.into_inner()).as_ref() {
+            return rates_json(fixed);
+        }
         if !self.egress.live_rates {
             return json!({ "base": "BTC", "currencies": {}, "live": false });
         }

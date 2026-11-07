@@ -65,7 +65,14 @@ export type ListingRecord = {
   freeOverSats: number;
   contentRating: ContentRating;
   contentTags: string[];
+  /** Version 6: the stable id, image hashes, and the fiat price the seller set. */
+  listingId: string | null;
+  images: string[];
+  price: FiatPrice | null;
 };
+
+/** A seller's price in a fiat currency, in minor units (cents; yen for JPY). */
+export type FiatPrice = { currency: string; amount: number; shipping: number };
 
 export function hexToBytes(text: string): Uint8Array | null {
   if (text.length % 2 !== 0 || !/^[0-9a-f]*$/.test(text)) return null;
@@ -220,13 +227,24 @@ export function verifyStoreRecord(hex: unknown): StoreRecord | null {
   return result?.record ?? null;
 }
 
-/// A listing record (versions 4 and 5) whose signature checks against its store key.
+function readListingDetails(reader: Reader): { listingId: string; images: string[]; price: FiatPrice | null } {
+  const listingId = reader.hex(16);
+  const count = reader.u8();
+  if (count > 8) throw new Error("images");
+  const images = Array.from({ length: count }, () => reader.hex(32));
+  const tag = reader.u8();
+  if (tag > 1) throw new Error("price");
+  const price = tag === 1 ? { currency: reader.str(), amount: reader.u64(), shipping: reader.u64() } : null;
+  return { listingId, images, price };
+}
+
+/// A listing record (versions 4 to 6) whose signature checks against its store key.
 /// `hash` is SHA-256 of the signed body: the listing's address.
 export function verifyListingRecord(hex: unknown): ListingRecord | null {
   const bytes = typeof hex === "string" ? hexToBytes(hex) : null;
   if (!bytes) return null;
   const result = signed(bytes, LISTING_TAG, (reader) => {
-    const version = reader.magic("OBLS", [4, 5]);
+    const version = reader.magic("OBLS", [4, 5, 6]);
     const storeId = reader.hex(32);
     const title = reader.str();
     const category = reader.str();
@@ -245,12 +263,13 @@ export function verifyListingRecord(hex: unknown): ListingRecord | null {
     const freeOverSats = reader.u64();
     let contentRating: ContentRating = "unrated";
     let contentTags: string[] = [];
-    if (version === 5) {
+    if (version >= 5) {
       contentRating = rating(reader.u8());
       const bits = reader.u16();
       contentTags = TAGS.filter((_, i) => bits & (1 << i));
     }
-    return { version, hash: "", storeId, title, category, priceSats, shipFrom, description, seller, stock, listedOn, moderated, kind, product, shippingSats, freeOverSats, contentRating, contentTags };
+    const details = version === 6 ? readListingDetails(reader) : { listingId: null, images: [], price: null };
+    return { version, hash: "", storeId, title, category, priceSats, shipFrom, description, seller, stock, listedOn, moderated, kind, product, shippingSats, freeOverSats, contentRating, contentTags, ...details };
   });
   if (!result) return null;
   return { ...result.record, hash: sha256Hex(result.body) };
@@ -337,6 +356,9 @@ export function verifiedListing(
     freeOverSats: record.freeOverSats,
     contentRating: record.contentRating,
     contentTags: record.contentTags,
+    listingId: record.listingId,
+    images: record.images,
+    price: record.price,
   };
 }
 

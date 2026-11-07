@@ -46,6 +46,9 @@ pub(crate) struct BuyerOrder {
     pub paying: bool,
     /// Why the last payment attempt sent nothing.
     pub pay_error: Option<String>,
+    /// An order to a store on another node: where it went and what came
+    /// back ([`crate::remote_orders`]). `None` for a store this node plays.
+    pub remote: Option<Value>,
 }
 
 impl BuyerOrder {
@@ -80,6 +83,9 @@ impl BuyerOrder {
         }
         if let Some(escrow) = &self.escrow {
             value["escrow"] = escrow.clone();
+        }
+        if let Some(remote) = &self.remote {
+            value["remote"] = remote.clone();
         }
         value
     }
@@ -215,6 +221,7 @@ fn decode(bytes: &[u8]) -> Result<Vec<BuyerOrder>, Error> {
                 pay_txid: item.get("payTxid").and_then(Value::as_str).map(str::to_string),
                 paying: false,
                 pay_error: item.get("payError").and_then(Value::as_str).map(str::to_string),
+                remote: item.get("remote").cloned().filter(|value| !value.is_null()),
             })
         })
         .collect()

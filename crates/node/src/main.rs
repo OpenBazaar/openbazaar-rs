@@ -186,6 +186,12 @@ fn serve(args: &[String]) -> ExitCode {
             return ExitCode::from(1);
         }
     }
+    for url in &options.follows {
+        if let Err(err) = node.add_follow(url) {
+            eprintln!("ob-node: --follow {url}: {err}");
+            return ExitCode::from(2);
+        }
+    }
     // First boot only. The token file in the data dir is kept, and a
     // later start does not print it again.
     if let Some(token) = node.fresh_pairing_token() {

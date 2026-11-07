@@ -60,6 +60,12 @@ export type ListingHeader = {
   freeOverSats: number;
   contentRating: ContentRating;
   contentTags: string[];
+  /** Set on listings a seller made in the app (signed version 6). */
+  listingId: string | null;
+  /** SHA-256 hashes of the listing's images, served at `/media/{hash}`. */
+  images: string[];
+  /** The seller's fiat price; `priceSats` is that price at the rate the day it was signed. */
+  price: import("./records.ts").FiatPrice | null;
 };
 
 export type Moderator = {
@@ -168,6 +174,19 @@ export type BuyerOrder = OrderTracking & {
   status: string;
   payment: DirectPayment | null;
   escrow: EscrowReceipt | null;
+  /** An order to a store on another node: delivery and the seller's replies. */
+  remote: RemoteOrder | null;
+};
+
+export type Fulfillment = { carrier: string; tracking: string; note: string; content: string };
+
+export type RemoteOrder = {
+  delivered: boolean;
+  error: string | null;
+  reason: string | null;
+  sellerSawPayment: boolean;
+  sellerCompleted: boolean;
+  fulfillment: Fulfillment | null;
 };
 
 export type DirectPayment = {
@@ -668,8 +687,26 @@ export function parseBuyerOrder(value: unknown): BuyerOrder {
     addressLabel: typeof order.addressLabel === "string" ? order.addressLabel : "",
     ...parseTracking(order),
     status: typeof order.status === "string" && order.status.trim() ? order.status : "Awaiting payment",
-    payment: settlement === "direct" ? parsePayment(order.payment) : null,
+    payment: settlement === "direct" && order.payment != null ? parsePayment(order.payment) : null,
     escrow: settlement === "escrow" ? parseEscrow(order.escrow) : null,
+    remote: parseRemote(order.remote),
+  };
+}
+
+function parseRemote(value: unknown): RemoteOrder | null {
+  if (!value || typeof value !== "object") return null;
+  const remote = value as Record<string, unknown>;
+  const text = (v: unknown) => (typeof v === "string" ? v : "");
+  const fulfillment = remote.fulfillment && typeof remote.fulfillment === "object" ? (remote.fulfillment as Record<string, unknown>) : null;
+  return {
+    delivered: remote.delivered === true,
+    error: typeof remote.error === "string" ? remote.error : null,
+    reason: typeof remote.reason === "string" ? remote.reason : null,
+    sellerSawPayment: remote.sellerSawPayment === true,
+    sellerCompleted: remote.sellerCompleted === true,
+    fulfillment: fulfillment
+      ? { carrier: text(fulfillment.carrier), tracking: text(fulfillment.tracking), note: text(fulfillment.note), content: text(fulfillment.content) }
+      : null,
   };
 }
 
@@ -723,7 +760,7 @@ function parseSellerOrder(value: unknown): SellerOrder {
     addressLabel: typeof order.addressLabel === "string" ? order.addressLabel : "",
     ...parseTracking(order),
     status: typeof order.status === "string" && order.status.trim() ? order.status : "Awaiting payment",
-    payment: settlement === "direct" ? parsePayment(order.payment) : null,
+    payment: settlement === "direct" && order.payment != null ? parsePayment(order.payment) : null,
     escrow: settlement === "escrow" ? parseEscrow(order.escrow) : null,
   };
 }

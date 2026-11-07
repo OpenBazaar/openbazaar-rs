@@ -28,6 +28,7 @@ mod escrow_outbox;
 mod escrow_rulings;
 mod escrow_store;
 mod escrow_vendor;
+mod fiat;
 mod http;
 mod http_guard;
 mod http_parse;
@@ -37,15 +38,24 @@ mod letter_auth;
 mod mail_drop;
 mod media;
 mod network;
+mod order_mail;
 mod orders;
+mod own_listings;
 mod own_store;
 mod pairing;
 mod pay_order;
+mod public_http;
 mod rates;
 mod remote;
+mod remote_orders;
+mod replicas;
 mod lock_http;
+mod sales;
+mod sales_http;
 mod seed;
 mod spend_tickets;
+mod store_http;
+mod store_profile;
 mod stores;
 mod vault;
 mod vault_key;
@@ -72,9 +82,13 @@ mod multinode_tests;
 #[cfg(test)]
 mod multinode_durable_tests;
 #[cfg(test)]
+mod multinode_seller_tests;
+#[cfg(test)]
 mod own_store_tests;
 #[cfg(test)]
 mod payment_tests;
+#[cfg(test)]
+mod seller_store_tests;
 #[cfg(test)]
 mod stores_tests;
 #[cfg(test)]
@@ -217,6 +231,14 @@ pub struct Node {
     pub(crate) own_store: StoreId,
     /// The own store's served record is behind its inputs until the next unlock.
     pub(crate) own_pending: AtomicBool,
+    /// The listings the own store signed, current and superseded.
+    pub(crate) own_listings: Mutex<own_listings::OwnListings>,
+    /// Stores followed on other nodes, as signed copies.
+    pub(crate) replicas: Mutex<replicas::Replicas>,
+    /// Sales to buyers on other nodes.
+    pub(crate) sales: Mutex<sales::Sales>,
+    /// Order letters and replies on their way to other nodes.
+    pub(crate) order_outbox: escrow_outbox::Outbox,
     pub(crate) data_dir: PathBuf,
     pub(crate) media: media::Media,
     pub(crate) letter_guard: letter_auth::LetterGuard,
@@ -321,6 +343,13 @@ impl Node {
             let wallet = NodeWallet::open(&wallets, &name, &vault, network)?;
             store_wallets.insert(listing.seller.clone(), Mutex::new(wallet));
         }
+        // After the store wallets, which are only for the demo sellers, and
+        // after the vendor labels, which index the demo listings.
+        let own_listings = own_listings::OwnListings::open(&dir, vault.clone(), &own_store)?;
+        own_listings::serve_at_boot(&mut catalog, &own_listings);
+        let replicas = replicas::Replicas::open(&dir, vault.clone())?;
+        let demo_sellers: Vec<String> = store_wallets.keys().cloned().collect();
+        Self::serve_replicas_at_boot(&replicas, &mut catalog, &own_store, &demo_sellers);
         let lock = wallet_lock::WalletLock::open(&dir, vault.clone(), &local.vault)?;
         let xmr_stores: Vec<(String, String)> =
             store_wallets.keys().map(|seller| (seller.clone(), format!("store-{}", slug(seller)))).collect();
@@ -334,6 +363,10 @@ impl Node {
             catalog: RwLock::new(catalog),
             own_store,
             own_pending: AtomicBool::new(own.pending),
+            own_listings: Mutex::new(own_listings),
+            replicas: Mutex::new(replicas),
+            sales: Mutex::new(sales::Sales::open(&dir, vault.clone())?),
+            order_outbox: order_mail::open_outbox(&dir, vault.clone())?,
             data_dir: dir.clone(),
             media: media::Media::open(dir.join("media"), network)?,
             letter_guard: letter_auth::LetterGuard::open(&dir)?,
@@ -428,6 +461,8 @@ impl Node {
             scope.spawn(|| self.run_xmr(poll, &stop));
             scope.spawn(|| remote::run(self, port, &stop));
             scope.spawn(|| self.run_lightning(&stop));
+            scope.spawn(|| self.run_order_mail(&stop));
+            scope.spawn(|| self.run_replicas(poll.min(Duration::from_secs(30)), &stop));
             let result = http::serve(self, port);
             stop.store(true, Ordering::Relaxed);
             result
@@ -478,7 +513,7 @@ pub fn load_catalog(network: NetworkMode) -> Result<Catalog, Error> {
 }
 
 /// The secret of `store` if it is a demo store, whose key is a public fixture.
-fn demo_secret(store: &openbazaar_protocol::Store) -> Option<bitcoin::secp256k1::SecretKey> {
+pub(crate) fn demo_secret(store: &openbazaar_protocol::Store) -> Option<bitcoin::secp256k1::SecretKey> {
     let secret = fixture_store_keys(&store.name)?.store;
     let id = secret.x_only_public_key(&bitcoin::secp256k1::Secp256k1::new()).0.serialize();
     (id == *store.id.as_bytes()).then_some(secret)
@@ -551,7 +586,7 @@ pub(crate) fn find_listing<'a>(catalog: &'a Catalog, hash: &str) -> Option<&'a L
 }
 
 pub(crate) fn listing_value(catalog: &Catalog, listing: &Listing) -> Result<Value, ProtocolError> {
-    Ok(json!({
+    let mut value = json!({
         "hash": listing.content_hash()?.to_hex(),
         "storeId": listing.store_id.to_hex(),
         "title": listing.title,
@@ -570,7 +605,15 @@ pub(crate) fn listing_value(catalog: &Catalog, listing: &Listing) -> Result<Valu
         "contentRating": rating_name(listing.content.map(|label| label.rating)),
         "contentTags": listing.content.map(|label| label.tags.names()).unwrap_or_default(),
         "record": listing.encode()?.iter().map(|byte| format!("{byte:02x}")).collect::<String>(),
-    }))
+    });
+    if let Some(details) = &listing.details {
+        value["listingId"] = json!(details.id.to_hex());
+        value["images"] = json!(details.images.iter().map(|hash| escrow_mail::hex(hash)).collect::<Vec<_>>());
+        value["price"] = details.price.as_ref().map_or(Value::Null, |price| {
+            json!({ "currency": price.currency, "amount": price.amount, "shipping": price.shipping })
+        });
+    }
+    Ok(value)
 }
 
 /// A record signed before labels existed is "unrated", not "general".

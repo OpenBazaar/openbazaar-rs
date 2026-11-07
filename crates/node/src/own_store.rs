@@ -264,7 +264,7 @@ impl Node {
 }
 
 /// Today as YYYYMMDD in UTC.
-fn today() -> u32 {
+pub(crate) fn today() -> u32 {
     let days = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs() / 86_400) as i64;
     // Civil-from-days (Howard Hinnant).
     let z = days + 719_468;
@@ -280,7 +280,7 @@ fn today() -> u32 {
 }
 
 /// `store-profile.json`, created with a default name and today's date on first boot.
-fn read_profile(dir: &Path) -> Result<Value, Error> {
+pub(crate) fn read_profile(dir: &Path) -> Result<Value, Error> {
     let path = dir.join(PROFILE_FILE);
     match fs::read_to_string(&path) {
         Ok(body) => serde_json::from_str(&body).map_err(|err| Error::Detail(format!("{PROFILE_FILE}: {err}"))),
@@ -292,6 +292,14 @@ fn read_profile(dir: &Path) -> Result<Value, Error> {
         }
         Err(err) => Err(Error::Detail(err.to_string())),
     }
+}
+
+/// Replace `store-profile.json` with `profile`.
+pub(crate) fn write_profile(dir: &Path, profile: &Value) -> Result<(), Error> {
+    let path = dir.join(PROFILE_FILE);
+    let tmp = path.with_extension("json.tmp");
+    let body = serde_json::to_vec_pretty(profile).expect("profile json is finite");
+    fs::write(&tmp, body).and_then(|_| fs::rename(&tmp, &path)).map_err(|err| Error::Detail(err.to_string()))
 }
 
 fn text(profile: &Value, key: &str) -> String {

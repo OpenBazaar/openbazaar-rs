@@ -2,6 +2,7 @@ use bitcoin::secp256k1::SecretKey;
 
 use crate::content::{ContentLabel, ContentRating, ContentTags};
 use crate::encode::{self, Reader, Writer};
+use crate::listing_details::ListingDetails;
 use crate::public_text;
 use crate::sign::{self, SIG_LEN};
 use crate::store::StoreId;
@@ -11,7 +12,9 @@ const TAG: &str = "ob/listing/v1";
 const MAGIC: [u8; 4] = *b"OBLS";
 /// Signed before content labels existed. Still decoded and verified.
 const VERSION_UNLABELED: u8 = 4;
-const VERSION: u8 = 5;
+const VERSION_LABELED: u8 = 5;
+/// Adds [`ListingDetails`]: a stable id, images, and a fiat price.
+const VERSION: u8 = 6;
 
 /// Address of a listing: SHA256 of the canonical body, without the signature.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -84,10 +87,37 @@ pub struct Listing {
     /// The vendor's own label. `None` only for a version 4 record, which
     /// was signed before labels existed and is unrated, not general.
     pub content: Option<ContentLabel>,
+    /// Id, images, and fiat price. `None` for a version 4 or 5 record.
+    pub details: Option<ListingDetails>,
     pub signature: [u8; SIG_LEN],
 }
 
 impl Listing {
+    /// Sign `self` as it is with its store's key: a version 6 record when it
+    /// has details (which needs a label), else version 5 or 4. The free-text
+    /// check runs here.
+    pub fn resign(self, secret: &SecretKey) -> Result<Self, Error> {
+        if sign::xonly(secret) != *self.store_id.as_bytes() {
+            return Err(Error::StoreMismatch);
+        }
+        self.check_public_text()?;
+        let signature = sign::sign(TAG, &self.encode_body()?, secret);
+        Ok(Self { signature, ..self })
+    }
+
+    /// The stable id of a version 6 listing.
+    pub fn id(&self) -> Option<crate::ListingId> {
+        self.details.as_ref().map(|details| details.id)
+    }
+
+    pub fn version(&self) -> u8 {
+        match (&self.content, &self.details) {
+            (_, Some(_)) => VERSION,
+            (Some(_), None) => VERSION_LABELED,
+            (None, None) => VERSION_UNLABELED,
+        }
+    }
+
     pub fn sign(
         store_id: StoreId,
         title: impl Into<String>,
@@ -125,6 +155,7 @@ impl Listing {
             shipping_sats,
             free_over_sats,
             content: Some(content),
+            details: None,
             signature: [0u8; SIG_LEN],
         };
         listing.check_public_text()?;
@@ -209,12 +240,12 @@ impl Listing {
     }
 
     fn encode_body(&self) -> Result<Vec<u8>, Error> {
+        if self.details.is_some() && self.content.is_none() {
+            return Err(Error::BadListing("a version 6 listing carries a content label"));
+        }
         let mut writer = Writer::new();
         writer.bytes(&MAGIC);
-        writer.u8(match self.content {
-            Some(_) => VERSION,
-            None => VERSION_UNLABELED,
-        });
+        writer.u8(self.version());
         writer.bytes(self.store_id.as_bytes());
         writer.str(&self.title)?;
         writer.str(&self.category)?;
@@ -233,11 +264,14 @@ impl Listing {
             writer.u8(content.rating.tag());
             writer.u16(content.tags.bits());
         }
+        if let Some(details) = &self.details {
+            details.encode(&mut writer)?;
+        }
         Ok(writer.finish())
     }
 
     fn decode_body(reader: &mut Reader<'_>) -> Result<Self, Error> {
-        let version = reader.expect_magic_in(&MAGIC, &[VERSION_UNLABELED, VERSION])?;
+        let version = reader.expect_magic_in(&MAGIC, &[VERSION_UNLABELED, VERSION_LABELED, VERSION])?;
         let mut listing = Self {
             store_id: StoreId::from_bytes(reader.array()?),
             title: reader.str()?,
@@ -254,13 +288,17 @@ impl Listing {
             shipping_sats: reader.u64()?,
             free_over_sats: reader.u64()?,
             content: None,
+            details: None,
             signature: [0u8; SIG_LEN],
         };
-        if version == VERSION {
+        if version >= VERSION_LABELED {
             listing.content = Some(ContentLabel {
                 rating: ContentRating::from_tag(reader.u8()?)?,
                 tags: ContentTags::from_bits(reader.u16()?),
             });
+        }
+        if version == VERSION {
+            listing.details = Some(ListingDetails::decode(reader)?);
         }
         Ok(listing)
     }
@@ -364,7 +402,7 @@ mod tests {
     fn label_round_trips_inside_the_signed_body() {
         let listing = sample_with(adult());
         let bytes = listing.encode().unwrap();
-        assert_eq!(bytes[4], VERSION);
+        assert_eq!(bytes[4], VERSION_LABELED);
         let decoded = Listing::decode(&bytes).unwrap();
         assert_eq!(decoded.content, Some(adult()));
         decoded.verify().unwrap();

@@ -15,6 +15,9 @@ mod fixtures;
 mod keys;
 mod labeler;
 mod listing;
+mod listing_details;
+#[cfg(test)]
+mod listing_v6_tests;
 pub mod public_text;
 mod order;
 mod payment;
@@ -33,6 +36,7 @@ pub use fixtures::{
 pub use keys::KeyRole;
 pub use labeler::{resolve_labels, LabelEntry, LabelSet, LabelTarget, ResolvedLabel};
 pub use listing::{Listing, ListingHash, ListingKind};
+pub use listing_details::{FiatPrice, ListingDetails, ListingId, MAX_IMAGES};
 pub use order::{OrderEnvelope, OrderPlaintext};
 pub use payment::DirectPay;
 pub use store::{CountryCode, Store, StoreDetails, StoreId, StoreProfile};
