@@ -400,3 +400,15 @@ fn live_testnet4_filters() {
         println!("{address}: {} transactions after the rescan, {:?} total", txs.len(), started.elapsed());
     }
 }
+
+#[test]
+fn a_scan_that_stops_moving_while_behind_counts_as_unreachable() {
+    let after = Duration::from_secs(120);
+    let start = Instant::now();
+    let mut progress = None;
+    assert!(!super::stalled(&mut progress, 100, false, start, after));
+    assert!(!super::stalled(&mut progress, 100, false, start + Duration::from_secs(60), after));
+    assert!(super::stalled(&mut progress, 100, false, start + Duration::from_secs(121), after), "stuck at 100");
+    assert!(!super::stalled(&mut progress, 101, false, start + Duration::from_secs(122), after), "it moved");
+    assert!(!super::stalled(&mut progress, 101, true, start + Duration::from_secs(900), after), "caught up and waiting for a block");
+}

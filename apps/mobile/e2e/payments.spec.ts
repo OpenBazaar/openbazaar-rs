@@ -531,3 +531,36 @@ test('pending payments disable spending and node failures remain visible', async
     'The order address belongs to another network.'
   )
 })
+
+test('an unconfirmed payment can be sped up with the passphrase and a fee cap', async ({ page }) => {
+  const { id } = await checkout(page)
+  const sent = 'ab'.repeat(32)
+  const seen = (o: Record<string, unknown>) =>
+    o.id === id ? { ...o, status: 'Payment seen', payTxid: sent, txids: [sent], receivedSats: o.totalSats, confirmations: 0 } : o
+  await page.route('**/orders', async route => {
+    const response = await route.fetch()
+    const list = await response.json()
+    await route.fulfill({ response, json: { ...list, orders: list.orders.map(seen) } })
+  })
+  await page.route(`**/orders/${id}`, async route => {
+    const response = await route.fetch()
+    await route.fulfill({ response, json: seen(await response.json()) })
+  })
+  for (const path of ['**/lock', '**/lock/activity'])
+    await page.route(path, route => route.fulfill({ json: UNLOCKED }))
+  const bumps: unknown[] = []
+  await page.route(`**/orders/${id}/pay/bump`, route => {
+    bumps.push(route.request().postDataJSON())
+    return route.fulfill({ json: { orderId: id, replacedTxid: sent, txid: 'cd'.repeat(32), feeSats: 600, feeRateSatVb: 4 } })
+  })
+  await page.getByRole('button', { name: 'Your orders', exact: true }).click()
+  await page.getByRole('button').filter({ hasText: 'Payment seen' }).first().click()
+  await expect(page.getByRole('button', { name: 'Pay from your node wallet', exact: true })).toHaveCount(0)
+  await page.getByText('Speed up payment', { exact: true }).click()
+  const form = page.getByRole('form', { name: 'Speed up payment' })
+  await form.getByLabel('Fee rate (sat/vB)').fill('4')
+  await form.getByLabel('Wallet passphrase').fill(PASSPHRASE)
+  await form.getByRole('button', { name: 'Raise the fee', exact: true }).click()
+  await expect.poll(() => bumps).toEqual([{ feeRateSatVb: 4, maxFeeSats: 1200, passphrase: PASSPHRASE }])
+  await expect(form.getByLabel('Wallet passphrase')).toHaveValue('')
+})

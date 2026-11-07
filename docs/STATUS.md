@@ -2,7 +2,7 @@
 
 This file tracks how much of the design in `docs/paper` the reference implementation in this repository covers. The paper describes the network as a design; status, commit references, and review tracking live here instead.
 
-Last checked against `main` at `984fa1b` plus the `seller-e2e` branch.
+Last checked against `main` at `98da40a` plus the `payment-rbf` branch.
 
 ## History
 
@@ -20,6 +20,7 @@ Last checked against `main` at `984fa1b` plus the `seller-e2e` branch.
 | `sec-identity-letters` | PR #9: seed-derived store keys, store record v3 with a mailbox key, onion, moderators, profile and the signed Monero opt-in, signed letters with replay and sender-pin checks, padded letters and replies, client-side BIP-340 verification, a location/contact text validator, real fixture stores, `/stores` and `/media` |
 | `lightning` | Lightning for direct pay only, on test networks (mainnet refused until it runs over Tor): embedded LDK node in `crates/lightning`, LSPS2 just-in-time channels from an LSP the operator names, per-order BOLT 11 invoices, keys from the seed, sealed state, wallet-lock gating, store opt-in in the rail-flags byte, seller settings and checkout in the web shop; [lightning.md](lightning.md) |
 | `seller-e2e` | Selling from the node: buyer or seller onboarding, storefront editor, listing v6 (stable id, images, fiat price) with create, edit, and delete, following stores on other nodes with signed copies, order mail between nodes with an outbox, sales with fulfillment and buyer confirmation, a stable desktop node port, and separate desktop profiles |
+| `payment-rbf` | Speed up an unconfirmed direct payment (RBF, passphrase and fee cap), a "sent" letter so the seller sees a payment before a block, and the public fallback when the filter scan stalls |
 
 ## Mechanisms
 
@@ -77,7 +78,7 @@ Labels: **tested** = code on main with automated tests; **demo** = code runs, bu
 | Mailbox storage without the store secret | tested | |
 | Arti onion client and listener | library | Arti 0.48 with restricted discovery. Live dial test ignored. The node uses Arti only for the home node's onion services and its client; not for letters. |
 | Order delivery buyer node to vendor node | demo | Loopback HTTP, not Tor. The order letter goes to `POST {store}/mail`, sealed to the mailbox key in the store's signed record; the seller prices it, takes a fresh address, keeps the sale in `sales.obv`, and replies at `POST {buyer}/mail/reply` with the terms, then "paid", "shipped" (tracking or the digital goods), or a decline; the buyer's "complete" goes back to the store. Receive tier, so a locked seller still takes orders. Each side pins the other's per-order key after the first letter; strangers' mail is refused. |
-| Sales and fulfillment | tested | `GET /sales`, `GET /sales/{id}`, `POST /sales/{id}/fulfill`, `POST /orders/{id}/complete`. Awaiting payment, Payment seen, Paid (the seller's watcher), Shipped, Completed. Two-node tests cover a physical and a digital sale, restarts mid-flow, an offline seller, edits, declines, and inflated terms. |
+| Sales and fulfillment | tested | `GET /sales`, `GET /sales/{id}`, `POST /sales/{id}/fulfill`, `POST /orders/{id}/complete`. Awaiting payment, Payment seen, Paid (the seller's watcher), Shipped, Completed. The buyer's node sends a "sent" letter with each payment txid, so a seller on compact filters (no mempool view) shows "Payment sent, waiting for confirmation" before a block; only the chain makes a sale Paid. Two-node tests cover a physical and a digital sale, restarts mid-flow, an offline seller, edits, declines, and inflated terms. |
 | Outbox and retry | tested | Order mail uses the escrow outbox in `order-outbox/`: sealed, an idempotency key per message, retried from 2 s doubling to 15 min, dropped after 24 h. The URLs are fixed when the order is placed. |
 | One letter per seller in a multi-seller checkout | tested | |
 | Padding | tested | Sealed letters are exactly 2 KiB, 8 KiB, or 64 KiB; replies 2 KiB or 8 KiB. Other sizes are refused. |
@@ -91,8 +92,9 @@ Labels: **tested** = code on main with automated tests; **demo** = code runs, bu
 | Fresh per-order vendor address, BIP 21 URI | tested | BDK, BIP 86. |
 | Chain watcher | tested | Wallet sync, order watcher, broadcast, and escrow chain checks all go through one `ChainSource`. Default: BIP 157/158 compact filters (`bip157` 0.8, Kyoto) from DNS-seeded P2P peers; filters are matched on the node and only matching blocks are fetched, each from a random peer; broadcast goes to one random peer. Filter commitments and headers are sealed in `filters/`; a peer that later serves a different filter for a checked block is refused; reorgs move transactions back to unconfirmed. 1 confirmation on testnet4, 3 on mainnet. |
 | Own node | tested | `--peer HOST:PORT` uses only that node's filters (bitcoind with `blockfilterindex=1`, `peerblockfilters=1`); `--esplora URL` uses only the named servers. Neither falls back to anything; a test proves no other host is dialed. Bitcoind RPC and Electrum are not supported. |
-| Public Esplora | tested | Never by default on mainnet. `--public-fallback` (default on testnet4 only) asks mempool.space/blockstream.info while no filter peer has answered for 2 minutes. With `--proxy`, each Esplora connection uses a fresh SOCKS username, so Tor gives it its own circuit. `GET /network` reports `chainBackend` (`backend`, `privacy`, `reveals`, `peers`, `scannedHeight`, `syncing`, `fallback`, `fallbackActive`) and `publicChainServer`. |
+| Public Esplora | tested | Never by default on mainnet. `--public-fallback` (default on testnet4 only) asks mempool.space/blockstream.info while no filter peer has answered, or the filter scan is behind and has not moved, for 2 minutes. With `--proxy`, each Esplora connection uses a fresh SOCKS username, so Tor gives it its own circuit. `GET /network` reports `chainBackend` (`backend`, `privacy`, `reveals`, `peers`, `scannedHeight`, `syncing`, `fallback`, `fallbackActive`) and `publicChainServer`. |
 | Pay from the node | tested | Mainnet needs `--network mainnet` and `"confirm": true`. |
+| Speed up a payment (RBF) | tested | `POST /orders/{id}/pay/bump` replaces an unconfirmed direct payment: the same inputs (more of the wallet's own coins if needed), the same recipient and amount, the extra fee from change. Needs the passphrase again and a `maxFeeSats` cap, not a spend ticket. The web shop shows "Speed up payment" while the payment is unconfirmed. The fee estimate is the median of recent blocks, so a run of empty blocks gives the 1 sat/vB floor. |
 | Coin selection avoiding shared ancestry across one checkout | future | Own unconfirmed change is spendable, so consecutive payments can chain. |
 | BOLT 12 offer | encoding only | No Lightning node answers; issuer key is the store key. Lightning direct pay uses per-order BOLT 11 invoices instead (below). |
 | BIP 352 code | encoding only | No scanning. |
@@ -201,5 +203,6 @@ Remaining blockers before any mainnet escrow: an external cryptographic review (
 | `sec-escrow-durable` | 163 (+4) | 44 + 5 doc | 13 | 42 | 16 (+1) | 301 passed (xmr 10 + 8), 5 ignored; web unchanged |
 | `home-node` | 180 (+4) | 44 + 5 doc | 13 | 42 | 16 (+1) | 318 passed (xmr 10 + 8), 5 ignored; web 61 unit |
 | `seller-e2e` | 225 (+4) | 44 + 5 doc | 13 | 48 | 16 (+1) | 376 passed (xmr 10 + 8, lightning 5 + 1, version CLI 1), 5 ignored; desktop 2; web 73 unit, 18 Playwright |
+| `payment-rbf` | 229 (+4) | 44 + 5 doc | 13 | 48 | 16 (+1) | 380 passed (xmr 10 + 8, lightning 5 + 1, version CLI 1), 6 ignored; desktop 2; web 73 unit, 19 Playwright |
 
 The ignored tests need the live network: an Arti onion dial, a real testnet4 payment and send, a testnet4 compact filter sync, and a stagenet Monero payment (`live_stagenet`).

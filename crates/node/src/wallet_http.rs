@@ -75,6 +75,32 @@ pub(crate) fn pay_response(
     body: &[u8],
     origin: Option<&str>,
 ) -> Vec<u8> {
+    order_action(node, client, head, id, body, origin, "202 Accepted", Node::queue_payment)
+}
+
+/// `POST /orders/{id}/pay/bump` ([`crate::pay_bump`]).
+pub(crate) fn bump_response(
+    node: &Node,
+    client: &Client,
+    head: &str,
+    id: &str,
+    body: &[u8],
+    origin: Option<&str>,
+) -> Vec<u8> {
+    order_action(node, client, head, id, body, origin, "200 OK", Node::bump_payment)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn order_action(
+    node: &Node,
+    client: &Client,
+    head: &str,
+    id: &str,
+    body: &[u8],
+    origin: Option<&str>,
+    ok: &str,
+    action: fn(&Node, &str, &Value) -> Result<Value, PayError>,
+) -> Vec<u8> {
     if let Err(response) = local_guard(node, client, head, origin) {
         return response;
     }
@@ -89,8 +115,8 @@ pub(crate) fn pay_response(
             Err(_) => return json_error("400 Bad Request", "The request could not be read.", origin),
         }
     };
-    match node.queue_payment(id, &parsed) {
-        Ok(value) => json_body("202 Accepted", &value, origin),
+    match action(node, id, &parsed) {
+        Ok(value) => json_body(ok, &value, origin),
         Err(PayError::NotFound) => json_error("404 Not Found", "That order is not on this node.", origin),
         Err(PayError::Invalid(message)) => json_error("400 Bad Request", &message, origin),
         Err(PayError::Conflict(message)) => json_error("409 Conflict", &message, origin),

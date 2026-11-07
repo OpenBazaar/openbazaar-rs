@@ -153,20 +153,9 @@ impl Node {
         if order.status != SHIPPED {
             return Err(OrderError::Invalid("Complete an order once the seller has shipped it."));
         }
-        let store = crate::stores::unhex32(&order.store_id).ok_or(OrderError::Failed("the order names no store key".into()))?;
-        let mail_key_bytes = {
-            let catalog = self.catalog();
-            let record = catalog.stores.iter().find(|store_record| store_record.id.as_bytes() == &store);
-            record.map(crate::stores::mailbox_key).transpose().map_err(OrderError::Failed)?
-        }
-        .ok_or(OrderError::Invalid("This node no longer has the store's record."))?;
-        let from = self.order_letter_key(&order.checkout_id, &store).map_err(OrderError::Failed)?;
-        let body = body_bytes(&json!({ "v": 1, "kind": "complete", "sale": remote["drop"] }));
-        let letter = seal_message(&body, &mail_key_bytes, &from).map_err(|err| OrderError::Failed(err.to_string()))?;
-        let target = format!("{}{STORE_MAIL}", remote["url"].as_str().unwrap_or_default());
-        let conversation = [order.checkout_id.as_bytes(), &store[..]].concat();
+        let (key, target, letter) = self.seller_letter(&order, remote, &json!({ "kind": "complete" }))?;
         self.order_outbox
-            .send(mail_key(&target, &conversation, &body), &target, &letter.to_bytes())
+            .send(key, &target, &letter)
             .map_err(|err| OrderError::Failed(format!("The seller's node refused the message. ({err})")))?;
         self.orders()
             .update(id, |order| {
@@ -177,6 +166,43 @@ impl Node {
             })
             .map_err(OrderError::Failed)?;
         Ok(self.orders().get_value(id).unwrap_or_default())
+    }
+}
+
+impl Node {
+    /// Queue a "sent" letter so the seller sees the payment before a block
+    /// does: compact block filters show a seller nothing unconfirmed.
+    pub(crate) fn tell_seller_sent(&self, id: &str, txid: &str) -> Result<(), OrderError> {
+        let order = self.orders().get(id).cloned().ok_or(OrderError::Invalid("That order is not on this node."))?;
+        let Some(remote) = &order.remote else { return Ok(()) };
+        let (key, target, letter) = self.seller_letter(&order, remote, &json!({ "kind": "sent", "txid": txid }))?;
+        self.order_outbox.queue(key, &target, &letter).map_err(OrderError::Failed)
+    }
+
+    /// `message`, addressed to this order's sale and sealed to the store's mailbox key.
+    fn seller_letter(
+        &self,
+        order: &crate::buyer_orders::BuyerOrder,
+        remote: &Value,
+        message: &Value,
+    ) -> Result<([u8; 32], String, Vec<u8>), OrderError> {
+        let store = crate::stores::unhex32(&order.store_id).ok_or(OrderError::Failed("the order names no store key".into()))?;
+        let mail_key_bytes = {
+            let catalog = self.catalog();
+            let record = catalog.stores.iter().find(|store_record| store_record.id.as_bytes() == &store);
+            record.map(crate::stores::mailbox_key).transpose().map_err(OrderError::Failed)?
+        }
+        .ok_or(OrderError::Invalid("This node no longer has the store's record."))?;
+        let from = self.order_letter_key(&order.checkout_id, &store).map_err(OrderError::Failed)?;
+        let mut full = json!({ "v": 1, "sale": remote["drop"] });
+        if let (Some(map), Some(extra)) = (full.as_object_mut(), message.as_object()) {
+            map.extend(extra.clone());
+        }
+        let body = body_bytes(&full);
+        let letter = seal_message(&body, &mail_key_bytes, &from).map_err(|err| OrderError::Failed(err.to_string()))?;
+        let target = format!("{}{STORE_MAIL}", remote["url"].as_str().unwrap_or_default());
+        let conversation = [order.checkout_id.as_bytes(), &store[..]].concat();
+        Ok((mail_key(&target, &conversation, &body), target, letter.to_bytes()))
     }
 }
 

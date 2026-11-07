@@ -24,6 +24,15 @@ export function useSales(enabled: boolean, onNew: (sale: Sale) => void) {
 }
 export type SalesResource = ReturnType<typeof useSales>;
 
+/** The buyer says it paid, or the chain shows it unconfirmed; not paid until a block. */
+function paymentSent(sale: Sale): boolean {
+  return sale.status === "Payment seen" || (sale.status === "Awaiting payment" && !!sale.sentTxid);
+}
+
+function TxLink({ network, txid }: { network: string; txid: string }) {
+  return network === "testnet4" || network === "mainnet" ? <a className="ob-transaction-link" href={txUrl(network, txid)} target="_blank" rel="noreferrer noopener">{txid}</a> : <code>{txid}</code>;
+}
+
 function Progress({ status }: { status: string }) {
   const at = STEPS.indexOf(status);
   return <ol className="ob-sale-progress" aria-label={`Status: ${status}`}>{STEPS.map((step, i) => <li key={step} className={i < at ? "is-done" : i === at ? "is-current" : ""}>{step}</li>)}</ol>;
@@ -76,10 +85,11 @@ function SaleDetail({ sale, rates, currency, onChange }: { sale: Sale; rates: Ra
       {sale.shipTo && <div><dt>Ship to</dt><dd className="ob-sale-address">{sale.shipTo}</dd></div>}
       {sale.deliveryNote && <div><dt>Buyer's note</dt><dd>{sale.deliveryNote}</dd></div>}
       <div><dt>Payment address</dt><dd><code>{sale.address}</code></dd></div>
-      {sale.txids.map(txid => <div key={txid}><dt>Transaction</dt><dd>{sale.network === "testnet4" || sale.network === "mainnet" ? <a className="ob-transaction-link" href={txUrl(sale.network, txid)} target="_blank" rel="noreferrer noopener">{txid}</a> : <code>{txid}</code>}</dd></div>)}
+      {sale.sentTxid && !sale.txids.includes(sale.sentTxid) && <div><dt>Buyer sent</dt><dd><TxLink network={sale.network} txid={sale.sentTxid}/></dd></div>}
+      {sale.txids.map(txid => <div key={txid}><dt>Transaction</dt><dd><TxLink network={sale.network} txid={txid}/></dd></div>)}
       {sale.fulfillment && <div><dt>Sent</dt><dd>{[sale.fulfillment.carrier, sale.fulfillment.tracking].filter(Boolean).join(" · ") || "Delivered"}{sale.fulfillment.note && <p>{sale.fulfillment.note}</p>}{sale.fulfillment.content && <p className="ob-sale-content">{sale.fulfillment.content}</p>}</dd></div>}
     </dl>
-    {sale.status === "Paid" ? <FulfillForm sale={sale} onDone={onChange}/> : sale.status === "Awaiting payment" || sale.status === "Payment seen" ? <p className="ob-page-intro">Ship once the payment confirms. Your node watches the address and tells the buyer.</p> : sale.status === "Shipped" ? <p className="ob-page-intro">Waiting for the buyer to confirm it arrived.</p> : <p className="ob-page-intro">The buyer confirmed this order. It is complete.</p>}
+    {sale.status === "Paid" ? <FulfillForm sale={sale} onDone={onChange}/> : sale.status === "Awaiting payment" || sale.status === "Payment seen" ? <p className="ob-page-intro">{paymentSent(sale) && "Payment sent, waiting for confirmation. "}Ship once the payment confirms. Your node watches the address and tells the buyer.</p> : sale.status === "Shipped" ? <p className="ob-page-intro">Waiting for the buyer to confirm it arrived.</p> : <p className="ob-page-intro">The buyer confirmed this order. It is complete.</p>}
   </div>;
 }
 
@@ -93,7 +103,7 @@ export function Sales({ sales, rates, currency }: { sales: SalesResource; rates:
       <button className="ob-order-toggle" onClick={() => setExpanded(expanded === sale.id ? null : sale.id)} aria-expanded={expanded === sale.id} aria-label={`Sale ${sale.lines.map(l => l.title).join(", ")}`}>
         <span className="ob-order-icon"><Icon name="paper"/></span>
         <span className="ob-order-name"><strong>{sale.lines.map(l => `${l.quantity > 1 ? `${l.quantity} × ` : ""}${l.title}`).join(", ")}</strong><span>{new Date(sale.created * 1000).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })}</span></span>
-        <span className="ob-order-status">{sale.status === "Paid" ? "Paid · ready to ship" : sale.status}</span>
+        <span className="ob-order-status">{sale.status === "Paid" ? "Paid · ready to ship" : paymentSent(sale) ? "Payment sent, waiting for confirmation" : sale.status}</span>
         <Money sats={sale.totalSats} rates={rates} currency={currency}/>
         <Icon name="chevron" size={16}/>
       </button>
