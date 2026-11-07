@@ -1,5 +1,6 @@
 import { verifiedListings, verifiedStore, type StoreSummary } from "./records.ts";
 import type { LabelerLabel } from "./safety/filter";
+import { servedByHomeNode, signedFetch, targetPrefix } from "./homeNode/transport.ts";
 
 // The shop dials only this origin. A query parameter, settings field, seed,
 // peer, or vendor address cannot point it anywhere else. Paired requests send
@@ -7,9 +8,12 @@ import type { LabelerLabel } from "./safety/filter";
 // on a free loopback port and sets __OB_NODE_ORIGIN__ and __OB_PAIR_TOKEN__
 // before this script runs; only a 127.0.0.1 origin is taken. In a browser the
 // node gives the token only for a one-time code printed in its terminal.
+// A page served by a home node to a remote browser talks only to that origin
+// and signs each request with its device key (src/homeNode/transport.ts).
 const DESKTOP_NODE_ORIGIN = (globalThis as { __OB_NODE_ORIGIN__?: unknown }).__OB_NODE_ORIGIN__;
-export const NODE_ORIGIN =
-  typeof DESKTOP_NODE_ORIGIN === "string" && /^http:\/\/127\.0\.0\.1:\d{1,5}$/.test(DESKTOP_NODE_ORIGIN)
+export const NODE_ORIGIN = servedByHomeNode()
+  ? location.origin
+  : typeof DESKTOP_NODE_ORIGIN === "string" && /^http:\/\/127\.0\.0\.1:\d{1,5}$/.test(DESKTOP_NODE_ORIGIN)
     ? DESKTOP_NODE_ORIGIN
     : "http://127.0.0.1:8787";
 
@@ -243,6 +247,22 @@ export async function pairedResponse(path: string, init?: RequestInit): Promise<
   });
 }
 
+/// A paired request to this app's own node, even while a home node is the target.
+export async function ownNodeJson(path: string, init?: RequestInit): Promise<unknown> {
+  const token = await pairingToken();
+  let response: Response;
+  try {
+    response = await fetch(`${NODE_ORIGIN}${path}`, { cache: "no-store", ...init, headers: { ...(init?.headers ?? {}), [PAIR_HEADER]: token } });
+  } catch {
+    throw new NodeOfflineError();
+  }
+  if (!response.ok) {
+    const { message, code, retryAfterSecs } = await errorDetail(response);
+    throw new NodeApiError(response.status, message, code, retryAfterSecs);
+  }
+  return readJson(response);
+}
+
 /// `GET` a paired JSON endpoint.
 export async function pairedJson(path: string): Promise<unknown> {
   return paired(path);
@@ -381,6 +401,9 @@ function parseLabelers(value: unknown): LabelerState {
 let pairing: Promise<string> | null = null;
 
 async function pairingToken(): Promise<string> {
+  if (servedByHomeNode()) {
+    return "";
+  }
   if (typeof DESKTOP_TOKEN === "string" && TOKEN_PATTERN.test(DESKTOP_TOKEN)) {
     return DESKTOP_TOKEN;
   }
@@ -458,7 +481,7 @@ const CURRENCIES: readonly CurrencyCode[] = ["USD", "EUR", "GBP", "JPY"];
 /// the shop being offline: the bitcoin amount still stands on its own.
 export async function fetchRates(): Promise<RateTable> {
   try {
-    const response = await fetch(`${NODE_ORIGIN}/rates`, { cache: "no-store" });
+    const response = await nodeFetch("/rates", { cache: "no-store" });
     if (!response.ok) {
       return {};
     }
@@ -500,10 +523,20 @@ export class NodeApiError extends Error {
   }
 }
 
+// The proxy to a home node is paired even for endpoints that are open locally.
+async function nodeFetch(path: string, init: RequestInit): Promise<Response> {
+  if (servedByHomeNode()) return signedFetch(path, init);
+  const prefix = targetPrefix();
+  if (!prefix) return fetch(`${NODE_ORIGIN}${path}`, init);
+  const headers = new Headers(init.headers);
+  headers.set(PAIR_HEADER, await pairingToken());
+  return fetch(`${NODE_ORIGIN}${prefix}${path}`, { ...init, headers });
+}
+
 async function request(path: string, init?: RequestInit): Promise<Response> {
   let response: Response;
   try {
-    response = await fetch(`${NODE_ORIGIN}${path}`, { cache: "no-store", ...init });
+    response = await nodeFetch(path, { cache: "no-store", ...init });
   } catch {
     throw new NodeOfflineError();
   }

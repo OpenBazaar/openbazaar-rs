@@ -21,6 +21,7 @@ tor-hscrypto = "0.48"
 tor-hsservice = "0.48"
 tor-proto = { version = "0.48", features = ["hs-service"] }
 tor-rtcompat = "0.48"
+tokio = { version = "1", default-features = false, features = ["net", "io-util", "rt"] }
 zeroize = { version = "1", features = ["derive"] }
 
 [dev-dependencies]

@@ -1,0 +1,31 @@
+# OpenBazaar home node in Docker.
+#
+#   echo 'OB_VAULT_PASSPHRASE=a long passphrase' > .env && chmod 600 .env
+#   docker compose up -d
+#   docker compose logs ob-node                       # onion address and first pairing code
+#   docker compose exec ob-node ob-node pair --data-dir /data
+#
+# No port is published: devices reach the node over its onion service.
+# See docs/home-node.md.
+
+services:
+  ob-node:
+    image: ghcr.io/openbazaar/ob-node:latest
+    build:
+      context: ../..
+    restart: unless-stopped
+    init: true
+    environment:
+      OB_VAULT_PASSPHRASE: ${OB_VAULT_PASSPHRASE:?set OB_VAULT_PASSPHRASE in .env}
+    volumes:
+      - ob-node-data:/data
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+volumes:
+  ob-node-data:
