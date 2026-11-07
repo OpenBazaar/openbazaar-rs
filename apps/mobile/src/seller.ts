@@ -74,6 +74,8 @@ export type Sale = {
   receivedSats: number;
   confirmations: number;
   txids: string[];
+  /** The transaction the buyer's node says it sent, before the chain shows it. */
+  sentTxid: string | null;
   network: string;
   fulfillment: { carrier: string; tracking: string; note: string; content: string; at: number } | null;
 };
@@ -154,6 +156,7 @@ export function parseSale(value: unknown): Sale {
     receivedSats: count(s.receivedSats),
     confirmations: count(s.confirmations),
     txids: Array.isArray(s.txids) ? s.txids.filter((t): t is string => typeof t === "string" && /^[0-9a-f]{64}$/i.test(t)) : [],
+    sentTxid: typeof s.sentTxid === "string" && /^[0-9a-f]{64}$/i.test(s.sentTxid) ? s.sentTxid : null,
     network: text(s.network),
     fulfillment: f ? { carrier: text(f.carrier), tracking: text(f.tracking), note: text(f.note), content: text(f.content), at: count(f.at) } : null,
   };

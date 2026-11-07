@@ -102,6 +102,25 @@ export async function payOrder(
     })
   )
 }
+/** Replace an unconfirmed payment with one at `feeRateSatVb`, paying at most `maxFeeSats` in fees. */
+export async function bumpPayment(
+  id: string,
+  activeNetwork: NetworkName,
+  bump: { feeRateSatVb: number; maxFeeSats: number; passphrase: string }
+): Promise<{ txid: string; replacedTxid: string; feeSats: number }> {
+  const r = record(
+    await paired(`/orders/${encodeURIComponent(id)}/pay/bump`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(
+        activeNetwork === 'mainnet' ? { ...bump, confirm: true } : bump
+      )
+    })
+  )
+  if (typeof r.txid !== 'string' || typeof r.replacedTxid !== 'string')
+    throw new Error('The node did not return the new transaction.')
+  return { txid: r.txid, replacedTxid: r.replacedTxid, feeSats: number(r.feeSats) }
+}
 export function amountDue(totalSats: number, receivedSats: number): number {
   return Math.max(0, totalSats - receivedSats)
 }

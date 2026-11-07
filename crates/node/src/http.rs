@@ -201,6 +201,10 @@ fn route(node: &Node, request: &Request<'_>, client: Client, origin: Option<&str
             let id = between(path, "/orders/", "/pay/quote").unwrap_or_default();
             lock_http::response(node, client, head, Route::Quote(id), body, origin)
         }
+        ("POST", path) if between(path, "/orders/", "/pay/bump").is_some() => {
+            let id = between(path, "/orders/", "/pay/bump").unwrap_or_default();
+            wallet_http::bump_response(node, client, head, id, body, origin)
+        }
         ("POST", path) if between(path, "/orders/", "/pay").is_some() => {
             let id = between(path, "/orders/", "/pay").unwrap_or_default();
             wallet_http::pay_response(node, client, head, id, body, origin)

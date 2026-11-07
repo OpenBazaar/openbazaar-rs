@@ -134,12 +134,25 @@ impl Shared {
     }
 }
 
+/// Whether a scan that is behind has stayed at `height` for longer than `after`.
+fn stalled(progress: &mut Option<(u32, Instant)>, height: u32, caught_up: bool, now: Instant, after: Duration) -> bool {
+    match *progress {
+        Some((seen, since)) if seen == height => !caught_up && now.duration_since(since) > after,
+        _ => {
+            *progress = Some((height, now));
+            false
+        }
+    }
+}
+
 /// The compact block filter backend. Nothing runs until [`ChainSource::open`].
 pub struct FilterChain {
     runtime: tokio::runtime::Runtime,
     config: FilterConfig,
     shared: Arc<Shared>,
     started: Mutex<Option<Instant>>,
+    /// The scanned height last seen, and when it was first seen.
+    progress: Mutex<Option<(u32, Instant)>>,
 }
 
 impl FilterChain {
@@ -165,6 +178,7 @@ impl FilterChain {
             }),
             config,
             started: Mutex::new(None),
+            progress: Mutex::new(None),
         })
     }
 
@@ -172,13 +186,20 @@ impl FilterChain {
         &self.config
     }
 
-    /// No peer has answered for `after` since the client started or last heard from one.
+    /// No peer has answered for `after` since the client started or last
+    /// heard from one, or the scan is behind and has not moved for `after`.
+    /// A peer can answer a handshake and still never serve the filters.
     pub(crate) fn unreachable_for(&self, after: Duration) -> bool {
         let Some(started) = *self.started.lock().unwrap_or_else(|err| err.into_inner()) else {
             return false;
         };
         let last = self.shared.last_contact.lock().unwrap_or_else(|err| err.into_inner()).unwrap_or(started);
-        last.elapsed() > after
+        let (height, caught_up) = {
+            let index = self.shared.index();
+            (index.processed.height, index.caught_up)
+        };
+        let mut progress = self.progress.lock().unwrap_or_else(|err| err.into_inner());
+        last.elapsed() > after || stalled(&mut progress, height, caught_up, Instant::now(), after)
     }
 
     fn ready(&self, scripts: &[ScriptBuf]) -> Result<(), String> {

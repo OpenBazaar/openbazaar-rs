@@ -166,7 +166,12 @@ impl ChainSource for MockChain {
             return Err("mock relay is down".to_string());
         }
         let txid = tx.compute_txid();
+        let spends = |other: &Transaction| other.input.iter().any(|old| tx.input.iter().any(|new| new.previous_output == old.previous_output));
+        let replaced: HashSet<Txid> = self.broadcasts().iter().filter(|other| spends(other)).map(Transaction::compute_txid).collect();
         let mut index = self.0.by_script.lock().unwrap();
+        for txs in index.values_mut() {
+            txs.retain(|seen| seen.height.is_some() || !replaced.contains(&seen.txid));
+        }
         for (vout, out) in tx.output.iter().enumerate() {
             let entry = index.entry(out.script_pubkey.clone()).or_default();
             entry.push(AddressTx {

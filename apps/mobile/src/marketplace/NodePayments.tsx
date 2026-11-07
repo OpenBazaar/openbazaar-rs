@@ -29,6 +29,7 @@ import { useNodeResource } from '../useNodeResource'
 import { isLocked, quotePayment, type LockStatus, type Quote, type Ticket } from '../walletLock'
 import { SpendConfirmDialog, UnlockDialog, WalletLockPanel, useLockState } from './WalletLock'
 import { PageHeading } from './PageHeading'
+import { SpeedUpPayment } from './SpeedUpPayment'
 
 function usePaymentState(activeWallet: boolean, onWallet: () => void) {
   const network = useNodeResource(fetchNetwork, 30000)
@@ -533,6 +534,20 @@ export function OrderPayment({
           )}
         </>
       )}
+      {!escrow &&
+        orderNetwork &&
+        order.payTxid &&
+        order.confirmations === 0 &&
+        (order.status === 'Awaiting payment' ||
+          order.status === 'Payment seen') && (
+          <SpeedUpPayment
+            orderId={id}
+            network={orderNetwork}
+            lock={lock.data ?? null}
+            onLock={status => lock.update(status)}
+            onDone={() => void resource.refresh()}
+          />
+        )}
       {step?.kind === 'unlock' && lock.data && (
         <UnlockDialog
           status={lock.data}

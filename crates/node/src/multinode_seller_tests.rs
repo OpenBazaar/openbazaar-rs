@@ -105,6 +105,10 @@ fn a_sale_goes_from_listing_to_completed_across_two_nodes() {
     fund_node_wallet(&pair.buyer.node, &pair.chain, 200_000);
     let (status, paid) = pay(&pair.buyer.node, &id, "{}");
     assert!(status.contains("202"), "{status} {paid}");
+    pair.deliver();
+    let told = &pair.sales()[0];
+    assert_eq!(told["status"], AWAITING_PAYMENT, "the seller has not watched the chain yet");
+    assert_eq!(told["sentTxid"], order(&pair.buyer.node, &id)["payTxid"], "but the buyer said what it sent");
     pair.seller.node.watch_once().unwrap();
     assert_eq!(pair.sales()[0]["status"], PAYMENT_SEEN);
     pair.mine();

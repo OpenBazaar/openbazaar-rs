@@ -147,7 +147,7 @@ pub(crate) fn parse_peer(text: &str, network: NetworkMode) -> Result<(String, u1
     Ok((host.to_string(), port))
 }
 
-/// Compact filters first; the public Esplora servers only while no peer answers.
+/// Compact filters first; the public Esplora servers only while no peer answers or the scan is stuck.
 struct FallbackChain {
     primary: FilterChain,
     fallback: EsploraChain,
@@ -159,7 +159,7 @@ impl FallbackChain {
         let unreachable = self.primary.unreachable_for(FALLBACK_AFTER);
         if self.active.swap(unreachable, Ordering::Relaxed) != unreachable {
             if unreachable {
-                eprintln!("ob-node: WARNING: no filter peer answered; asking the public Esplora servers, which see the addresses");
+                eprintln!("ob-node: WARNING: no filter peer answered or the filter scan stopped moving; asking the public Esplora servers, which see the addresses");
             } else {
                 eprintln!("ob-node: filter peers answer again; the public Esplora servers are no longer asked");
             }

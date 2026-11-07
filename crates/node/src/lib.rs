@@ -43,6 +43,7 @@ mod orders;
 mod own_listings;
 mod own_store;
 mod pairing;
+mod pay_bump;
 mod pay_order;
 mod public_http;
 mod rates;
@@ -85,6 +86,8 @@ mod multinode_durable_tests;
 mod multinode_seller_tests;
 #[cfg(test)]
 mod own_store_tests;
+#[cfg(test)]
+mod pay_bump_tests;
 #[cfg(test)]
 mod payment_tests;
 #[cfg(test)]
