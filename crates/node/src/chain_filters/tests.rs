@@ -412,6 +412,33 @@ fn live_testnet4_filters() {
 }
 
 #[test]
+fn empty_blocks_do_not_drag_a_live_feerate_down_to_the_floor() {
+    use crate::pay_order::MIN_FEE_RATE;
+
+    // Newest first, the order the estimator walks back from the tip.
+    // Empty blocks average 0. The blocks that included transactions paid
+    // 2 sat/vB. Taking the median of the raw window, zeroes included, is 0,
+    // and the payment floor then pins the spend at 1 sat/vB.
+    let behind_a_run_of_empty = [0.0, 0.0, 0.0, 0.0, 2.0, 0.0, 2.0, 2.0];
+    assert!(super::FEE_LOOKBACK as usize >= behind_a_run_of_empty.len());
+    let estimate = super::fee_rate_from_blocks(&behind_a_run_of_empty, super::FEE_BLOCKS as usize).unwrap();
+    assert_eq!(estimate.max(MIN_FEE_RATE), 2.0);
+
+    // The same rule on the short window the estimator used to median directly.
+    let majority_empty = [0.0, 0.0, 2.0];
+    assert_eq!(
+        super::fee_rate_from_blocks(&majority_empty, super::FEE_BLOCKS as usize).unwrap().max(MIN_FEE_RATE),
+        2.0
+    );
+
+    // No empty blocks: still the median of the paid rates.
+    assert_eq!(super::fee_rate_from_blocks(&[1.0, 5.0, 3.0], 3), Some(3.0));
+    // Nobody paid a fee. The floor is the whole estimate, not a rate miners took.
+    assert_eq!(super::fee_rate_from_blocks(&[0.0, 0.0, 0.0], 3), Some(0.0));
+    assert_eq!(0.0_f64.max(MIN_FEE_RATE), MIN_FEE_RATE);
+}
+
+#[test]
 fn a_scan_that_stops_moving_while_behind_counts_as_unreachable() {
     let after = Duration::from_secs(120);
     let start = Instant::now();
