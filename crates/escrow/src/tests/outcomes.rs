@@ -3,8 +3,8 @@ use bitcoin::Amount;
 use super::support::*;
 use crate::crypto::random_scalar;
 use crate::{
-    is_equivocation, Error, ModeratorRuling, Party, Phase, ReleaseSignature, SignedClaim,
-    SignedRefund, VerifiableShare, ANCHOR_VALUE,
+    is_equivocation, Error, EscrowTerms, ModeratorRuling, Party, Phase, ReleaseSignature,
+    SignedClaim, SignedRefund, SignedTerms, VerifiableShare, ANCHOR_VALUE,
 };
 
 #[test]
@@ -180,6 +180,34 @@ fn m3_claim_and_both_dispute_outcomes_pay_the_moderator_fee() {
     let mut dropped = won;
     dropped.output.truncate(1);
     assert_eq!(buyer.verify_key_spend(&dropped), Err(Error::BadSignature));
+}
+
+#[test]
+fn m3_terms_are_version_3_and_reject_a_version_2_encoding() {
+    let order = order(ORDER_SECRET);
+    let encoded = order.terms.encode();
+    assert_eq!(&encoded[..4], b"OBET");
+    assert_eq!(encoded[4], 3);
+    assert_eq!(
+        order.terms.digest(),
+        crate::proofs::tagged("ob-escrow/terms/v3", &[&encoded])
+    );
+    assert_ne!(
+        order.terms.digest(),
+        crate::proofs::tagged("ob-escrow/terms/v2", &[&encoded])
+    );
+    let mut version_2 = encoded.clone();
+    version_2[4] = 2;
+    assert_eq!(EscrowTerms::decode(&version_2), Err(Error::Malformed));
+    assert_eq!(EscrowTerms::decode(&encoded).unwrap(), order.terms);
+
+    let signed = sign(&order).encode();
+    assert_eq!(&signed[..4], b"OBTS");
+    assert_eq!(signed[4], 3);
+    let mut signed_v2 = signed.clone();
+    signed_v2[4] = 2;
+    assert_eq!(SignedTerms::decode(&signed_v2), Err(Error::Malformed));
+    assert_eq!(SignedTerms::decode(&signed).unwrap().terms(), &order.terms);
 }
 
 #[test]
