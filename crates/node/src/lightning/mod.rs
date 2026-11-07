@@ -22,8 +22,8 @@
 //! one (`PUT /ln/stores`), which signs the store record again with the
 //! Lightning flag; the first opt-in with an LSP needs `acknowledgeLsp`.
 //!
-//! A mainnet node refuses Lightning everywhere ([`MAINNET_BLOCKED`]): LDK
-//! dials peers, the LSP, and chain and gossip servers without `--proxy`.
+//! A mainnet node refuses Lightning ([`MAINNET_BLOCKED`]) unless `--proxy` is
+//! set, so every public peer, Esplora, and gossip dial runs over Tor.
 
 mod checkout;
 mod http;
@@ -206,8 +206,16 @@ impl Node {
     /// goes under `wallets/node/lightning/`; the node starts it in `serve`
     /// once the Lightning secret is in the receive tier.
     pub fn enable_lightning(&self, mut config: LnConfig) -> Result<(), String> {
-        if self.ln_blocked() || config.network == openbazaar_lightning::ldk_node::bitcoin::Network::Bitcoin {
+        if config.proxy.is_none()
+            && (self.network == NetworkMode::Mainnet
+                || config.network == openbazaar_lightning::ldk_node::bitcoin::Network::Bitcoin)
+        {
             return Err(MAINNET_BLOCKED.into());
+        }
+        if let Some(peer) = config.dials_in_the_clear() {
+            return Err(format!(
+                "Lightning would connect to {peer} in the clear, and that host would see this machine's IP"
+            ));
         }
         config.storage_dir = self.ln.wallet_dir.join(STATE_DIR);
         self.ln.config.set(config).map_err(|_| "Lightning is already configured".to_string())
@@ -221,9 +229,9 @@ impl Node {
         self.ln.rail.set(rail).map_err(|_| "the Lightning node is already running".to_string())
     }
 
-    /// `true` on mainnet, where Lightning is refused ([`MAINNET_BLOCKED`]).
+    /// `true` on mainnet until Lightning is configured to dial through `--proxy`.
     pub(crate) fn ln_blocked(&self) -> bool {
-        self.network == NetworkMode::Mainnet
+        self.network == NetworkMode::Mainnet && self.ln.config().is_none_or(|config| config.proxy.is_none())
     }
 
     /// What the store named `seller` signed about Lightning. Always `false`
@@ -488,7 +496,7 @@ fn blocked_value() -> Value {
 }
 
 /// Who learns what when this node uses Lightning.
-fn reveals(config: &LnConfig, _proxy: bool) -> Vec<String> {
+fn reveals(config: &LnConfig, proxy: bool) -> Vec<String> {
     let mut out = Vec::new();
     if let Some(lsp) = &config.lsp {
         out.push(format!(
@@ -496,15 +504,33 @@ fn reveals(config: &LnConfig, _proxy: bool) -> Vec<String> {
             lsp.peer.address
         ));
     }
-    out.push(
-        "Lightning peers on this machine or the LAN see the connection. A public peer is not contacted, because LDK does not use --proxy.".to_string(),
-    );
+    if proxy {
+        out.push(
+            "A public Lightning peer is reached through --proxy, so it does not see this machine's IP. A peer on this machine or the LAN is dialed directly.".to_string(),
+        );
+    } else {
+        out.push(
+            "Lightning peers on this machine or the LAN see the connection. A public peer is not contacted.".to_string(),
+        );
+    }
     if !config.chain.is_local() {
-        out.push(format!("The chain server ({}) sees the Lightning wallet's addresses and channel outputs.", config.chain.describe()));
+        let reach = if proxy {
+            "It is reached through --proxy, so it does not see this machine's IP."
+        } else {
+            "It would see this machine's IP, so it is not contacted without --proxy."
+        };
+        out.push(format!(
+            "The chain server ({}) sees the Lightning wallet's addresses and channel outputs. {reach}",
+            config.chain.describe()
+        ));
     }
     if let openbazaar_lightning::GossipSource::Rgs(url) = &config.gossip {
         if !openbazaar_lightning::config::host_is_local(url) {
-            out.push(format!("The gossip server ({url}) sees this machine's IP address."));
+            if proxy {
+                out.push(format!("The gossip server ({url}) is reached through --proxy, so it does not see this machine's IP."));
+            } else {
+                out.push(format!("The gossip server ({url}) would see this machine's IP, so it is not contacted without --proxy."));
+            }
         }
     }
     out

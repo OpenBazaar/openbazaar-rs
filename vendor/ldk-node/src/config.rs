@@ -184,6 +184,11 @@ pub struct Config {
 	/// **Note:** If unset, default parameters will be used, and you will be able to override the
 	/// parameters on a per-payment basis in the corresponding method calls.
 	pub route_parameters: Option<RouteParametersConfig>,
+	/// `socks5h://HOST:PORT`. Public Lightning peers, Esplora, and Rapid Gossip
+	/// Sync are dialed through it, so the peer resolves the name and does not
+	/// see this machine. Loopback and LAN stay direct. `None` leaves those
+	/// public dials on clearnet TCP, which OpenBazaar refuses before start.
+	pub socks_proxy: Option<String>,
 }
 
 impl Default for Config {
@@ -198,6 +203,7 @@ impl Default for Config {
 			anchor_channels_config: Some(AnchorChannelsConfig::default()),
 			route_parameters: None,
 			node_alias: None,
+			socks_proxy: None,
 		}
 	}
 }

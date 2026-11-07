@@ -56,6 +56,11 @@ impl EsploraChainSource {
 		for (header_name, header_value) in &headers {
 			client_builder = client_builder.header(header_name, header_value);
 		}
+		if let Some(proxy) = config.socks_proxy.as_deref() {
+			if !crate::socks::host_is_local(&server_url) {
+				client_builder = client_builder.proxy(proxy);
+			}
+		}
 
 		let esplora_client = client_builder.build_async().unwrap();
 		let tx_sync =

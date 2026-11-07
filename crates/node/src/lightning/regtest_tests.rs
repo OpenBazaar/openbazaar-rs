@@ -49,7 +49,7 @@ fn a_locked_node_is_paid_over_a_just_in_time_channel_and_marks_the_order_paid() 
     let dir = TempDir::new();
     let btc = MockChain::new();
     let node = open_node(&dir.0, NetworkMode::Testnet4, &btc, 1, unreachable_escrow());
-    node.enable_lightning(flags.plan(NetworkMode::Testnet4).unwrap().unwrap()).unwrap();
+    node.enable_lightning(flags.plan(NetworkMode::Testnet4, None).unwrap().unwrap()).unwrap();
 
     let stop = AtomicBool::new(false);
     std::thread::scope(|scope| {

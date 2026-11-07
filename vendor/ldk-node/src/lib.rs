@@ -82,6 +82,8 @@ mod builder;
 mod chain;
 pub mod config;
 mod connection;
+mod socks;
+pub use socks::connect_via_socks;
 mod data_store;
 mod error;
 mod event;

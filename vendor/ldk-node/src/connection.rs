@@ -26,15 +26,17 @@ where
 		Mutex<HashMap<PublicKey, Vec<tokio::sync::oneshot::Sender<Result<(), Error>>>>>,
 	peer_manager: Arc<PeerManager>,
 	logger: L,
+	/// `socks5h://HOST:PORT` for any peer that is not on this machine or the LAN.
+	socks_proxy: Option<String>,
 }
 
 impl<L: Deref + Clone + Sync + Send> ConnectionManager<L>
 where
 	L::Target: LdkLogger,
 {
-	pub(crate) fn new(peer_manager: Arc<PeerManager>, logger: L) -> Self {
+	pub(crate) fn new(peer_manager: Arc<PeerManager>, logger: L, socks_proxy: Option<String>) -> Self {
 		let pending_connections = Mutex::new(HashMap::new());
-		Self { pending_connections, peer_manager, logger }
+		Self { pending_connections, peer_manager, logger, socks_proxy }
 	}
 
 	pub(crate) async fn connect_peer_if_necessary(
@@ -64,6 +66,47 @@ where
 
 		log_info!(self.logger, "Connecting to peer: {}@{}", node_id, addr);
 
+		let (host, port) = match crate::socks::peer_host(&addr) {
+			Ok(target) => target,
+			Err(err) => {
+				log_error!(self.logger, "Failed to read peer address {}", addr);
+				self.propagate_result_to_subscribers(&node_id, Err(Error::InvalidSocketAddress));
+				return Err(err);
+			},
+		};
+
+		// A public peer goes through the SOCKS proxy and nowhere else. A failed
+		// handshake is a failed dial: it is not retried in the clear.
+		if let Some(proxy) = &self.socks_proxy {
+			if !crate::socks::host_is_local(&host) {
+				let stream = match crate::socks::connect_via_socks(proxy, &host, port) {
+					Ok(stream) => stream,
+					Err(err) => {
+						log_error!(
+							self.logger,
+							"Failed to connect to peer {} through the proxy: {}",
+							addr,
+							err
+						);
+						let res = Err(Error::ConnectionFailed);
+						self.propagate_result_to_subscribers(&node_id, res);
+						return res;
+					},
+				};
+				return self
+					.await_peer(
+						node_id,
+						&addr,
+						lightning_net_tokio::setup_outbound(
+							Arc::clone(&self.peer_manager),
+							node_id,
+							stream,
+						),
+					)
+					.await;
+			}
+		}
+
 		let socket_addr = addr
 			.to_socket_addrs()
 			.map_err(|e| {
@@ -83,33 +126,39 @@ where
 			node_id,
 			socket_addr,
 		);
-
-		let res = match connection_future.await {
+		match connection_future.await {
 			Some(connection_closed_future) => {
-				let mut connection_closed_future = Box::pin(connection_closed_future);
-				loop {
-					tokio::select! {
-						_ = &mut connection_closed_future => {
-							log_info!(self.logger, "Peer connection closed: {}@{}", node_id, addr);
-							break Err(Error::ConnectionFailed);
-						},
-						_ = tokio::time::sleep(Duration::from_millis(10)) => {},
-					};
-
-					match self.peer_manager.peer_by_node_id(&node_id) {
-						Some(_) => break Ok(()),
-						None => continue,
-					}
-				}
+				self.await_peer(node_id, &addr, connection_closed_future).await
 			},
 			None => {
 				log_error!(self.logger, "Failed to connect to peer: {}@{}", node_id, addr);
-				Err(Error::ConnectionFailed)
+				let res = Err(Error::ConnectionFailed);
+				self.propagate_result_to_subscribers(&node_id, res);
+				res
 			},
+		}
+	}
+
+	async fn await_peer(
+		&self, node_id: PublicKey, addr: &SocketAddress,
+		connection_closed_future: impl std::future::Future<Output = ()>,
+	) -> Result<(), Error> {
+		let mut connection_closed_future = std::pin::pin!(connection_closed_future);
+		let res = loop {
+			tokio::select! {
+				_ = &mut connection_closed_future => {
+					log_info!(self.logger, "Peer connection closed: {}@{}", node_id, addr);
+					break Err(Error::ConnectionFailed);
+				},
+				_ = tokio::time::sleep(Duration::from_millis(10)) => {},
+			};
+
+			match self.peer_manager.peer_by_node_id(&node_id) {
+				Some(_) => break Ok(()),
+				None => continue,
+			}
 		};
-
 		self.propagate_result_to_subscribers(&node_id, res);
-
 		res
 	}
 

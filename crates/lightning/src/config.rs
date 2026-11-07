@@ -135,22 +135,39 @@ pub struct LnConfig {
     /// payment in basis points (1/100 of a percent), with a floor in sats.
     pub max_lsp_fee_bps: u64,
     pub min_lsp_fee_cap_sats: u64,
+    /// `socks5h://HOST:PORT`. Public peers, Esplora, and Rapid Gossip Sync use it.
+    /// Electrum, bitcoind, and the listen address stay direct. `None` refuses every public endpoint.
+    pub proxy: Option<String>,
 }
 
 impl LnConfig {
-    /// A public host this config would dial or accept in the clear.
-    /// LDK does not use the node's proxy, so that host would see this machine's IP.
+    /// A public host this config names, whether or not [`Self::proxy`] carries it.
     pub fn clearnet_peer(&self) -> Option<String> {
-        if !self.chain.is_local() {
-            return Some(self.chain.describe());
+        self.public_endpoint(false)
+    }
+
+    /// A host that would be dialed, or listened for, as a direct connection.
+    /// Public peers, Esplora, and Rapid Gossip Sync are not in this list when
+    /// [`Self::proxy`] is set: those go through the proxy. Electrum, bitcoind,
+    /// and a public listen address stay direct either way.
+    pub fn dials_in_the_clear(&self) -> Option<String> {
+        self.public_endpoint(self.proxy.is_some())
+    }
+
+    fn public_endpoint(&self, proxied: bool) -> Option<String> {
+        match &self.chain {
+            ChainSource::Esplora(url) if !host_is_local(url) && !proxied => return Some(self.chain.describe()),
+            ChainSource::Electrum(url) if !host_is_local(url) => return Some(self.chain.describe()),
+            ChainSource::BitcoindRpc { host, .. } if !host_is_local(host) => return Some(self.chain.describe()),
+            _ => {}
         }
         if let GossipSource::Rgs(url) = &self.gossip {
-            if !host_is_local(url) {
+            if !host_is_local(url) && !proxied {
                 return Some(url.clone());
             }
         }
         if let Some(lsp) = &self.lsp {
-            if !host_is_local(&lsp.peer.address) {
+            if !host_is_local(&lsp.peer.address) && !proxied {
                 return Some(lsp.peer.address.clone());
             }
         }
@@ -205,8 +222,19 @@ mod tests {
             listen: None,
             max_lsp_fee_bps: 500,
             min_lsp_fee_cap_sats: 10_000,
+            proxy: None,
         };
         assert!(public.clearnet_peer().unwrap().contains("mutinynet.com"));
+        assert!(public.dials_in_the_clear().unwrap().contains("mutinynet.com"));
+        let mut through_tor = public.clone();
+        through_tor.proxy = Some("socks5h://127.0.0.1:9050".into());
+        assert!(through_tor.clearnet_peer().is_some(), "the public peer is still named");
+        assert!(through_tor.dials_in_the_clear().is_none(), "the proxy carries the peer, Esplora, and gossip");
+        through_tor.chain = ChainSource::Electrum("electrum.example.org:50001".into());
+        assert!(through_tor.dials_in_the_clear().unwrap().contains("electrum"), "Electrum stays a direct dial");
+        through_tor.chain = ChainSource::Esplora("https://mutinynet.com/api".into());
+        through_tor.listen = Some("1.2.3.4:9735".into());
+        assert!(through_tor.dials_in_the_clear().unwrap().contains("1.2.3.4"), "a public listen address stays direct");
         let local = LnConfig {
             network: Network::Regtest,
             storage_dir: PathBuf::new(),
@@ -216,6 +244,7 @@ mod tests {
             listen: Some("127.0.0.1:9736".into()),
             max_lsp_fee_bps: 500,
             min_lsp_fee_cap_sats: 10_000,
+            proxy: None,
         };
         assert!(local.clearnet_peer().is_none());
     }
@@ -231,6 +260,7 @@ mod tests {
             listen: None,
             max_lsp_fee_bps: 500,
             min_lsp_fee_cap_sats: 5_000,
+            proxy: None,
         };
         assert_eq!(config.lsp_fee_cap_msat(1_000_000_000), 50_000_000);
         assert_eq!(config.lsp_fee_cap_msat(10_000_000), 5_000_000);
