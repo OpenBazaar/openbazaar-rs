@@ -1,0 +1,8 @@
+.git
+target
+**/node_modules
+apps/mobile/dist
+apps/mobile/.expo
+apps/desktop/src-tauri/target
+apps/desktop/src-tauri/binaries
+data

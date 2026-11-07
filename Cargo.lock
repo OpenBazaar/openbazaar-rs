@@ -3684,6 +3684,7 @@ name = "ob-node"
 version = "0.1.0-alpha.1"
 dependencies = [
  "argon2",
+ "arti-client",
  "bdk_esplora",
  "bdk_wallet",
  "bip157",
@@ -3696,11 +3697,13 @@ dependencies = [
  "openbazaar-protocol",
  "openbazaar-xmr",
  "proptest",
+ "qrcode",
  "rand 0.9.5",
  "reqwest",
  "rpassword",
  "serde_json",
  "tokio",
+ "tor-rtcompat",
  "tormail",
  "ureq",
  "zeroize",
@@ -4283,6 +4286,12 @@ dependencies = [
  "paste",
  "thiserror 2.0.21",
 ]
+
+[[package]]
+name = "qrcode"
+version = "0.14.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d68782463e408eb1e668cf6152704bd856c78c5b6417adaee3203d8f4c1fc9ec"
 
 [[package]]
 name = "quick-error"

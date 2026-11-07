@@ -16,6 +16,7 @@ Last checked against `main` at `b1eb18b` (escrow, payments, and transport code u
 | `chain-privacy` | BIP 157/158 compact block filters as the default chain backend, own-node mode, public Esplora only as an opt-in fallback |
 | `monero-direct` | Monero for direct pay only: `crates/xmr` on monero-oxide, per-store opt-in in the signed store record, fresh subaddress per order, pay from the node wallet with a spend ticket or from an external wallet by `monero:` URI |
 | `sec-escrow-durable` | Durable escrow on the node: sealed sessions, ruling store, coin locks, outbox with retry, vendor disputes, CPFP bumps, presigned fee from the chain source, M3 fee on the claim, M6 limits, moderator funding check on compact filters; [review packet](escrow-review-packet.md) |
+| `home-node` | Home node: remote management over an Arti onion service, per-device BIP 340 keys with one-time pairing codes, signed replay-protected requests, revocable device list, desktop client mode, the web shop served by the node, systemd/launchd/Docker packaging and release builds; [home-node.md](home-node.md) |
 | `sec-identity-letters` | PR #9: seed-derived store keys, store record v3 with a mailbox key, onion, moderators, profile and the signed Monero opt-in, signed letters with replay and sender-pin checks, padded letters and replies, client-side BIP-340 verification, a location/contact text validator, real fixture stores, `/stores` and `/media` |
 
 ## Mechanisms
@@ -48,7 +49,9 @@ Labels: **tested** = code on main with automated tests; **demo** = code runs, bu
 | Loopback HTTP limits | tested | 8 KiB head, 64 headers, 72 KiB body, exact `Content-Length`, no chunked bodies, 5 s per request; handler panics answer 500; `no-store`, `nosniff`, and `default-src 'none'` CSP on every response; 500 bodies carry no detail. Proptest over the parser and the router. Requests are served one at a time, so a stalled local connection delays others by up to 5 s. |
 | Node rejects client-named destinations | tested | URL, onion, or peer keys in a request are refused. |
 | Desktop app starts its own node | demo | Testnet4. |
-| Phone pairs with a desktop or Android node | specified | The client dials only 127.0.0.1. |
+| Remote management from a phone or laptop (home node) | tested | `--remote` publishes an Arti onion service that forwards to a loopback-only gateway; no LAN or clearnet path. Devices pair with a one-time 160-bit code (15 min, 4 live, pause after 20 misses in 10 min), then sign every request (BIP 340 over node id, device, time, nonce, method, path, body hash; ±120 s; nonces once). Device list sealed in the vault, max 32, cascading revocation. A device cannot reveal the seed, post escrow mail, use a remembered unlock, or reach `/pair` and `/home*`; spends still need the passphrase and a spend ticket. Live Tor run done by hand; CI uses loopback. See [home-node.md](home-node.md). |
+| Desktop app manages a home node | tested | Its own node holds the device key (`home-node.obv`) and proxies `/home/proxy/*` over Tor; the shop switches between the local and the home node. Two-node loopback e2e in CI. |
+| Phone browser manages a home node | demo | Tor Browser or Onion Browser loads the shop from the onion; keys are made and used in JS, saved as an access key. Checked with Playwright on a loopback gateway, not in CI. No native mobile client. |
 | Addresses, orders, seed, wallet, labeler follows encrypted at rest | tested | ChaCha20-Poly1305. Key in the OS keystore by default (macOS Keychain, Windows Credential Manager, Linux Secret Service); `--vault passphrase` wraps it with Argon2id (64 MiB, 3 passes) in `vault.lock`; `--vault file` keeps `vault.key` for headless runs and tests. An old `vault.key` is moved and deleted on first start in another mode. Startup refuses a group- or world-readable key, lock, or token, and tightens `.obv` files (earlier nodes wrote `addresses.obv` and `orders.obv` with the umask). |
 | Wallet lock on the node | tested | Seeds sealed a second time under a random spend key, wrapped with Argon2id (256 MiB, 3 passes) of a wallet passphrase in `wallet.lock`. Starts locked; spends, escrow signing, seed reveal, and lock settings answer `423` while locked or before setup. Receive tier (xpubs, escrow mail key, store mailbox key, letter root) stays open for the watcher, addresses, incoming orders and mail, and signing letters; escrow steps that sign wait for an unlock. Auto-lock 1 to 60 min (15 default) and on sleep; persisted backoff. Each payment needs a 60 s one-time ticket bound to order, amount, fee cap, and recipient. Biometric step-up and OS screen-lock events are not wired. See [wallet-lock.md](wallet-lock.md). |
 | BIP 39 seed with role paths | tested | Spend, store, escrow (`m/1984'/c'/1'/i'`), escrow mail (`m/1984'/c'/2'/0'`), store mailbox (`m/1984'/c'/3'/0'`), letter root (`m/1984'/c'/4'/0'`), scan, Monero (`m/1984'/c'/5'/0'`). |
@@ -64,7 +67,7 @@ Labels: **tested** = code on main with automated tests; **demo** = code runs, bu
 | Replay and sender-continuity checks on escrow mail | tested | `letters-seen` refuses a repeated message id; `letter-pins` refuses a different sender key for an escrow and role once a letter was handled. Vendors do not yet run order letters through it (no inbound order path). |
 | Per-order reply path in the order (`ReplyPath`) | tested | Reply key and drop id derived per order; optional reply onion field; `OBRF` frame for delivery. No transport sends replies. |
 | Mailbox storage without the store secret | tested | |
-| Arti onion client and listener | library | Live dial test ignored; not called by the node. |
+| Arti onion client and listener | library | Live dial test ignored. The node uses Arti only for the home node's admin onion service and its client; not for letters. |
 | Order delivery buyer node to vendor node | specified | The node writes order letters to its own mailbox. |
 | Outbox and retry | specified | |
 | One letter per seller in a multi-seller checkout | tested | |
@@ -172,5 +175,6 @@ Remaining blockers before any mainnet escrow: an external cryptographic review (
 | `monero-direct` | 122 (+4) | 38 + 5 doc | 13 | 33 | 10 (+1) | 239 passed (xmr 10 + 8), 5 ignored |
 | `sec-identity-letters` | 135 (+4) | 38 + 5 doc | 13 | 42 | 16 (+1) | 267 passed (xmr 10 + 8), 5 ignored; web 52 unit, 15 Playwright |
 | `sec-escrow-durable` | 163 (+4) | 44 + 5 doc | 13 | 42 | 16 (+1) | 301 passed (xmr 10 + 8), 5 ignored; web unchanged |
+| `home-node` | 180 (+4) | 44 + 5 doc | 13 | 42 | 16 (+1) | 318 passed (xmr 10 + 8), 5 ignored; web 61 unit |
 
 The ignored tests need the live network: an Arti onion dial, a real testnet4 payment and send, a testnet4 compact filter sync, and a stagenet Monero payment (`live_stagenet`).

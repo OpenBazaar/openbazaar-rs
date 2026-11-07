@@ -20,6 +20,9 @@
 //! * [`OnionAddress::parse`] validates a v3 address with Arti's `HsId`.
 //! * [`ArtiOrderTransport`] dials that address with `TorClient::connect`.
 //! * [`start_onion_listener`] calls `TorClient::launch_onion_service`.
+//! * [`start_onion_forward`] runs an onion service that pipes one port to a
+//!   local TCP address (the node's remote admin gateway), and [`exchange`]
+//!   sends one request to such a service.
 //!
 //! [`MemoryTransport`] is the in-memory fake. Default tests use it and never
 //! open a Tor circuit. The live dial is an ignored test.
@@ -27,6 +30,7 @@
 #![forbid(unsafe_code)]
 
 mod error;
+mod forward;
 mod guard;
 pub mod letter;
 mod listen;
@@ -38,6 +42,7 @@ mod seal;
 mod transport;
 
 pub use error::Error;
+pub use forward::{exchange, start_onion_forward, OnionForward};
 pub use listen::{start_onion_listener, OnionListener};
 pub use guard::{ReplayGuard, SenderPins};
 pub use letter::{MessageId, Opened, SenderId, SenderKey};

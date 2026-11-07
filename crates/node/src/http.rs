@@ -75,34 +75,45 @@ pub fn serve_on(node: &Node, listener: TcpListener) -> std::io::Result<()> {
     eprintln!("ob-node stores at http://127.0.0.1:{port}/stores");
     eprintln!("ob-node labelers at http://127.0.0.1:{port}/labelers");
     eprintln!("ob-node mailbox {}", node.mailbox_path().display());
-    for connection in listener.incoming() {
-        let mut stream = match connection {
-            Ok(stream) => stream,
-            Err(err) => {
-                eprintln!("ob-node: {err}");
-                continue;
+    std::thread::scope(|scope| {
+        for connection in listener.incoming() {
+            let mut stream = match connection {
+                Ok(stream) => stream,
+                Err(err) => {
+                    eprintln!("ob-node: {err}");
+                    continue;
+                }
+            };
+            let loopback = stream
+                .peer_addr()
+                .map(|addr| addr.ip().is_loopback())
+                .unwrap_or(false);
+            let raw = match http_parse::read(&mut stream) {
+                Ok(raw) => raw,
+                Err(err) => {
+                    eprintln!("ob-node: {err}");
+                    continue;
+                }
+            };
+            let answer = move |raw: Vec<u8>, mut stream: std::net::TcpStream| {
+                let response = catch_unwind(AssertUnwindSafe(|| respond(node, &raw, Client { loopback, port })))
+                    .unwrap_or_else(|_| {
+                        eprintln!("ob-node: a request handler panicked");
+                        http_response_cors("500 Internal Server Error", "text/plain", b"internal error", None)
+                    });
+                if let Err(err) = stream.write_all(&response) {
+                    eprintln!("ob-node: {err}");
+                }
+            };
+            // A home node proxy request waits on Tor; it does not hold up the rest.
+            if crate::remote::is_proxy_request(&raw) {
+                scope.spawn(move || answer(raw, stream));
+            } else {
+                let _one = crate::remote::dispatch_lock();
+                answer(raw, stream);
             }
-        };
-        let loopback = stream
-            .peer_addr()
-            .map(|addr| addr.ip().is_loopback())
-            .unwrap_or(false);
-        let raw = match http_parse::read(&mut stream) {
-            Ok(raw) => raw,
-            Err(err) => {
-                eprintln!("ob-node: {err}");
-                continue;
-            }
-        };
-        let response = catch_unwind(AssertUnwindSafe(|| respond(node, &raw, Client { loopback, port })))
-            .unwrap_or_else(|_| {
-                eprintln!("ob-node: a request handler panicked");
-                http_response_cors("500 Internal Server Error", "text/plain", b"internal error", None)
-            });
-        if let Err(err) = stream.write_all(&response) {
-            eprintln!("ob-node: {err}");
         }
-    }
+    });
     Ok(())
 }
 
@@ -228,6 +239,12 @@ fn route(node: &Node, request: &Request<'_>, client: Client, origin: Option<&str
             media::response(node, client, head, &path["/media/".len()..], origin)
         }
         ("POST", "/content-labels") => vendor_labels::response(node, client, head, body, origin),
+        (_, path) if path == "/remote" || path.starts_with("/remote/") => {
+            crate::remote::local_response(node, client, head, method, path, origin)
+        }
+        (_, path) if path == "/home" || path.starts_with("/home/") => {
+            crate::remote::home_response(node, client, head, method, path, body, origin)
+        }
         _ => http_response_cors("404 Not Found", "text/plain", b"not found", origin),
     }
 }

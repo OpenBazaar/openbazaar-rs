@@ -4,9 +4,9 @@ use std::env;
 use std::process::ExitCode;
 use std::time::Duration;
 
-use ob_node::{LocalConfig, NetworkMode, NodeConfig, ServeOptions, VaultChoice, VaultMode};
+use ob_node::{LocalConfig, NetworkMode, NodeConfig, RemoteConfig, ServeOptions, VaultChoice, VaultMode};
 
-const USAGE: &str = "ob-node [print | --version | serve [port] [--network testnet4|mainnet] [--data-dir DIR] [--peer HOST:PORT[,...] | --esplora URL[,URL...]] [--public-fallback | --no-public-fallback] [--confirmations N] [--poll-secs S] [--escrow-vendor SELLER=URL] [--moderator URL] [--moderate] [--vault keystore|passphrase|file] [--shop-origin URL] [--no-pair-codes] [--proxy socks5h://HOST:PORT] [--no-rates] [--xmr-daemon URL[,URL...]]]
+const USAGE: &str = "ob-node [print | --version | pair [port] [--network N] [--data-dir DIR] | serve [port] [--remote] [--remote-listen 127.0.0.1:PORT] [--web-dir DIR] [--network testnet4|mainnet] [--data-dir DIR] [--peer HOST:PORT[,...] | --esplora URL[,URL...]] [--public-fallback | --no-public-fallback] [--confirmations N] [--poll-secs S] [--escrow-vendor SELLER=URL] [--moderator URL] [--moderate] [--vault keystore|passphrase|file] [--shop-origin URL] [--no-pair-codes] [--proxy socks5h://HOST:PORT] [--no-rates] [--xmr-daemon URL[,URL...]]]
 
 Chain data comes from BIP 157/158 compact block filters by default.
 --peer uses only your own node (bitcoind with blockfilterindex=1 and peerblockfilters=1).
@@ -14,6 +14,8 @@ Chain data comes from BIP 157/158 compact block filters by default.
 --public-fallback asks public Esplora servers while no filter peer answers (default on testnet4 only).
 --proxy also carries filter peer connections and broadcasts, and gives each Esplora query its own Tor circuit.
 --xmr-daemon turns on Monero direct pay through monerod RPC: your own node (loopback or LAN, direct), or a remote node through --proxy (required for .onion, and on mainnet). There is no default node. Testnet4 pays on Monero stagenet.
+--remote publishes the node's admin API as a Tor onion service for paired devices (docs/home-node.md); `ob-node pair` prints a one-time pairing code.
+--web-dir serves the web shop export to paired browsers over that onion.
 --vault passphrase reads OB_VAULT_PASSPHRASE, or asks on the terminal.
 --vault file keeps the key in the data dir; use it only on headless machines and in tests.";
 const PASSPHRASE_ENV: &str = "OB_VAULT_PASSPHRASE";
@@ -23,6 +25,7 @@ fn main() -> ExitCode {
     match args.first().map(String::as_str) {
         None | Some("print") => print_catalog(),
         Some("serve") => serve(&args[1..]),
+        Some("pair") => ob_node::pair_command(&args[1..]),
         Some("version") | Some("-V") | Some("--version") => {
             println!("ob-node {}", ob_node::BUILD.summary());
             ExitCode::SUCCESS
@@ -56,7 +59,14 @@ fn print_catalog() -> ExitCode {
 }
 
 fn serve(args: &[String]) -> ExitCode {
-    let options = match ServeOptions::parse(args) {
+    let (remote, args) = match RemoteConfig::extract(args) {
+        Ok(split) => split,
+        Err(err) => {
+            eprintln!("ob-node: {err}");
+            return ExitCode::from(2);
+        }
+    };
+    let options = match ServeOptions::parse(&args) {
         Ok(options) => options,
         Err(err) => {
             eprintln!("ob-node: {err}");
@@ -150,6 +160,10 @@ fn serve(args: &[String]) -> ExitCode {
             eprintln!("ob-node: {err}");
             return ExitCode::from(1);
         }
+    }
+    if let Err(err) = node.set_remote(remote) {
+        eprintln!("ob-node: {err}");
+        return ExitCode::from(1);
     }
     // First boot only. The token file in the data dir is kept, and a
     // later start does not print it again.
