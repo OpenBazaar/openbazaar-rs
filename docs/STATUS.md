@@ -15,6 +15,7 @@ Last checked against `main` at `b1eb18b` (escrow, payments, and transport code u
 | `92b2e2e` | PR #5: content ratings and tags, client safe mode, subscribable labelers |
 | `chain-privacy` | BIP 157/158 compact block filters as the default chain backend, own-node mode, public Esplora only as an opt-in fallback |
 | `monero-direct` | Monero for direct pay only: `crates/xmr` on monero-oxide, per-store opt-in in the signed store record, fresh subaddress per order, pay from the node wallet with a spend ticket or from an external wallet by `monero:` URI |
+| `sec-escrow-durable` | Durable escrow on the node: sealed sessions, ruling store, coin locks, outbox with retry, vendor disputes, CPFP bumps, presigned fee from the chain source, M3 fee on the claim, M6 limits, moderator funding check on compact filters; [review packet](escrow-review-packet.md) |
 | `sec-identity-letters` | PR #9: seed-derived store keys, store record v3 with a mailbox key, onion, moderators, profile and the signed Monero opt-in, signed letters with replay and sender-pin checks, padded letters and replies, client-side BIP-340 verification, a location/contact text validator, real fixture stores, `/stores` and `/media` |
 
 ## Mechanisms
@@ -85,7 +86,7 @@ Labels: **tested** = code on main with automated tests; **demo** = code runs, bu
 | BIP 352 code | encoding only | No scanning. |
 | Payjoin v2 | library only | Checkout does not start a session. |
 | Chain queries over Tor | demo | `--proxy` also carries filter peer connections and broadcasts through SOCKS5 (P2P v1 only; peers see a Tor exit). No Arti, no onion peers. Without `--proxy`, filter peers see the IP address and which whole blocks it fetches, not which scripts it follows. |
-| Compact filter limits | tested | Filters cannot find a transaction by txid: the escrow moderator's funding check needs the funding script followed, or `--esplora` with an own server. No mempool view: incoming payments appear once confirmed. Fees come from recent block averages. A newly followed script is rescanned 144 blocks back. First sync starts at a checkpoint (testnet4 159000, mainnet 974000); testnet4 took 7.5 minutes to reach the tip from one peer. |
+| Compact filter limits | tested | Filters cannot find a transaction by txid, so the escrow moderator follows the funding script from the refund horizon (`refund_height - max_refund_horizon`) and holds the letter while the filters scan. No mempool view: incoming payments appear once confirmed. Fees come from recent block averages. A newly followed address is rescanned 144 blocks back; an escrow funding script from the height the moderator asks for. First sync starts at a checkpoint (testnet4 159000, mainnet 974000); testnet4 took 7.5 minutes to reach the tip from one peer. |
 | Exchange rates | tested | Coinbase. Over clearnet unless `--proxy socks5h://HOST:PORT` (names resolved by the proxy); `--no-rates` makes no request. `GET /network` reports `clearnet` and a `privacyWarning`. XMR comes from Kraken's XMR/BTC ticker (Coinbase does not list XMR) on the same proxy and switch, as integer sats per XMR in `GET /rates` `xmr`. |
 
 ### Monero (direct pay only)
@@ -107,18 +108,20 @@ Labels: **tested** = code on main with automated tests; **demo** = code runs, bu
 
 | Mechanism | Status | Notes |
 |---|---|---|
-| Two-party protocol (rounds, verifiable shares, refund before funding, claim, moderator record and policy checks, anchors, per-order keys, letters, rulings, ruling store) | tested | 38 unit tests and 5 doctests. |
-| Node runs escrow as buyer, vendor, or moderator | demo | Testnet4 only; mainnet refused. Three-node harness tests release, buyer-won dispute, failed broadcast, external funding. |
-| Escrow messages between nodes | demo | Sealed letters POSTed to operator-configured loopback URLs (`--escrow-vendor`, `--moderator`); `POST /escrow/mail` takes no token but refuses any `Origin`, bodies over 64 KiB, more than 64 letters at once or 4/s sustained, and new letters while 256 wait; it only queues. The drop does not authenticate the poster; the mail loop does: each letter carries a BIP 340 signature by the sender's per-escrow letter key inside the ciphertext, and replayed message ids or a changed sender key for an escrow and role are dropped before any desk reads the letter. A letter whose step needs the spend tier waits in the inbox, not yet admitted, until the next unlock. No Tor, no retry. |
-| Durable escrow sessions | not yet | Only the buyer's refund is written to disk; the vendor's claim is in memory. |
-| Durable ruling store | not yet | `InMemoryRulingStore` only. |
-| Coin locking between funding rounds | not yet | |
-| Vendor-initiated dispute in the node | not yet | The crate supports it. |
-| Fee bump through the anchor | not yet | No wallet code spends the anchor. |
+| Two-party protocol (rounds, verifiable shares, refund before funding, claim, moderator record and policy checks, anchors, per-order keys, letters, rulings, ruling store, snapshots) | tested | 44 unit tests and 5 doctests. |
+| Node runs escrow as buyer, vendor, or moderator | demo | Testnet4 only; mainnet refused. Three-node harness tests release, buyer- and vendor-won disputes, failed broadcast, external funding, and every node restarted before every round. |
+| Escrow messages between nodes | demo | Sealed letters POSTed to operator-configured loopback URLs (`--escrow-vendor`, `--moderator`); `POST /escrow/mail` takes no token but refuses any `Origin`, bodies over 64 KiB, more than 64 letters at once or 4/s sustained, and new letters while 256 wait; it only queues. The drop does not authenticate the poster; the mail loop does: each letter carries a BIP 340 signature by the sender's per-escrow letter key inside the ciphertext, and replayed message ids or a changed sender key for an escrow and role are dropped before any desk reads the letter. The replay guard is checked before a step and records the letter only after the step succeeded, so a letter that waits for an unlock or for the chain view, or whose step a crash cut short, runs again. Outgoing letters go through a sealed outbox (`escrow-outbox/`) with an idempotency key per message, retried from 2 s doubling to 15 min and dropped after 24 h; a 4xx is not retried. No Tor. |
+| Durable escrow sessions | tested | Buyer, vendor, and moderator records sealed under the vault key in `escrow/{buyer,vendor,moderator}/`, versioned (`v: 1`). Escrow snapshots hold no secret key and no secret nonce; the per-order key is derived again from the seed, so resuming needs the spend tier (mail waits for an unlock). The vendor's claim is stored before the release nonce is sent. A buyer restarted in round 1 opens again with fresh nonces and the next attempt number; a vendor restarted after funding sends a fresh release nonce. One lock per escrow instead of one per role. |
+| Durable ruling store | tested | One sealed file per (terms digest, outpoint), created with a hard link so exactly one branch wins a race or a crash. |
+| Coin locking between funding rounds | tested | The funding PSBT's inputs are locked from `Open` (24 h, then the open is aborted and the order goes back to offered) and held from the buyer's signatures until broadcast; every payment and bump skips them. Sealed in `coin-locks.obv`. |
+| Vendor-initiated dispute in the node | tested | `POST /escrow/sales/{id}/dispute`; its own mail kind, so it is signed and pinned in the vendor's role. A vendor-won ruling settles on the vendor's node. |
+| Fee bump through the anchor | tested | `POST /escrow/bump` for the buyer's refund or outcome and the vendor's claim or outcome: a CPFP child from the node wallet reaches the asked package rate. Needs the passphrase again and a `maxFeeSats` cap, not a spend ticket (a child pays no recipient). |
 | Moderator and mailbox keys from real records | partly | Vendor mailbox keys and accepted moderators come from signed store records; the buyer refuses terms naming a moderator the store's record does not list. The moderator itself and its mailbox key are still fixtures. |
 | `DisputeEnvelope` without ship-to | specified | The protocol type still embeds the order; the node's dispute path does not use it. |
-| Moderator fee on every post-dispute path | specified | Two options documented in the crate. |
-| Batched share verification | future | |
+| Moderator fee on every post-dispute path | tested | Option (a): the vendor claim pays exactly the vendor-wins outputs, moderator fee included. |
+| Presigned fee | tested | The buyer's chain-source estimate times the largest spend's vsize, clamped to the policy floor and cap, carried in the request and signed into the terms. |
+| Dispute letter limits (M6) | tested | Before the chain lookup and the proofs: 20 letters in a burst, refilled one per 6 s, and 4 distinct letters per escrow per 24 h. |
+| Batched share verification | future | The proofs carry challenges, not commitments, so they cannot be batched without a letter format change. |
 | FROST moderator panels | future | |
 
 ### Discovery
@@ -136,12 +139,11 @@ Labels: **tested** = code on main with automated tests; **demo** = code runs, bu
 - A buyer's first order letter cannot prove who the buyer is: by design the buyer has no identity to prove. Letters are signed by per-conversation keys instead of HPKE Auth mode, which would need the sender's key in the clear.
 - The crate supports per-order keys tweaked by an order secret; the node derives per-order keys from the seed instead.
 - Exchange rates come from Coinbase over clearnet unless `--proxy` is set. Chain data comes from compact filters; public Esplora is asked only with `--esplora` or `--public-fallback`. The desktop app has no proxy, peer, or fallback setting yet.
-- Presigned escrow spends use a fixed 1,000-sat fee in the node.
 - The paper describes bitcoin payments only. Monero direct pay is an addition of this implementation; escrow stays bitcoin-only.
 
 ## Escrow review
 
-An internal adversarial review read the two-party escrow at `dc7bc42`. Its verdict: the cryptographic core holds (bitwise ElGamal verifiable encryption with OR-proofs and a DLEQ link; no rogue-key or cancellation attack; no signature outside the presigned set; fresh single-use nonces; funding withheld until refund and buyer-wins pre-signature verify; 20,000 fuzzed decoder inputs with no panics). Status at `aa9db48`:
+An internal adversarial review read the two-party escrow at `dc7bc42`. Its verdict: the cryptographic core holds (bitwise ElGamal verifiable encryption with OR-proofs and a DLEQ link; no rogue-key or cancellation attack; no signature outside the presigned set; fresh single-use nonces; funding withheld until refund and buyer-wins pre-signature verify; 20,000 fuzzed decoder inputs with no panics). Status at `aa9db48`, updated on `sec-escrow-durable`:
 
 | ID | Finding at `dc7bc42` | Fix at `aa9db48` | Test | Status |
 |---|---|---|---|---|
@@ -149,14 +151,14 @@ An internal adversarial review read the two-party escrow at `dc7bc42`. Its verdi
 | H2 | Moderator payout could be non-standard, dust, or the vendor's script | Standard types above dust, distinct scripts, exact moderator record | `h2_moderator_payout_must_be_standard_published_and_distinct`, `h2_moderator_refuses_letters_with_a_different_payout_or_fee` | fixed |
 | H3 | Node used single-process escrow | Node runs the two-party API; shim deleted | `escrow_released_to_the_vendor_across_three_nodes`, `escrow_dispute_ruled_for_the_buyer` | fixed |
 | M1 | Rulings did not sign the terms | Ruling signs terms digest, output key, outpoint, branch, adaptor point; chain check | `m1_rulings_over_different_terms_are_not_equivocation`, `m1_moderator_checks_the_funding_output_on_chain` | fixed |
-| M2 | Stateless moderator could release both branches | Ruling store keyed by (terms digest, outpoint) | `m2_moderator_refuses_a_second_branch` | fixed (store in memory) |
-| M3 | Fee bias toward buyer-wins rulings | Two options documented | — | proposal only |
+| M2 | Stateless moderator could release both branches | Ruling store keyed by (terms digest, outpoint) | `m2_moderator_refuses_a_second_branch`, `the_vendor_disputes_and_a_vendor_ruling_settles_for_it`, `a_dispute_and_its_ruling_survive_moderator_and_buyer_restarts` | fixed (durable store) |
+| M3 | Fee bias toward buyer-wins rulings | Option (a): the claim pays the moderator fee | `m3_the_vendor_claim_pays_the_moderator_fee_like_a_vendor_ruling` | fixed |
 | M4 | Fixed fees, no anchor | 240-sat P2A on refund, claim, disputes; 4 sat/vB floor; version 2, not TRUC | `m4_presigned_spends_carry_a_pay_to_anchor_output` | fixed |
 | M5 | Private moderator policy | Policy in the moderator record inside the signed terms | `m5_moderator_policy_is_published_and_checked_at_funding` | fixed |
-| M6 | 50 KB shares, costly verification | No re-verify on decrypt; verified-letter cache | `m6_cached_letters_still_get_the_deadline_and_chain_checks` | partly fixed (no batching) |
+| M6 | 50 KB shares, costly verification | No re-verify on decrypt; verified-letter cache; rate limits before the chain lookup and proofs | `m6_cached_letters_still_get_the_deadline_and_chain_checks`, `m6_the_gate_runs_before_proofs_and_only_for_unverified_letters`, `m6_letters_past_the_per_escrow_limit_are_refused_before_review` | fixed (no batching) |
 | L | Clone states, no max fee, release not re-signable, funding RBF, one moderator key | Not Clone; 50,000-sat cap; re-sign; RBF rejected; separate keys | `low_*`, `funding_psbts_that_signal_rbf_are_rejected` | fixed |
 
-Remaining blockers before any mainnet escrow: durable sessions and claims, durable ruling store, real moderator and mailbox keys, delivery over Tor with retry, coin locking, vendor-initiated disputes, M3, batched verification, and an external cryptographic review.
+Remaining blockers before any mainnet escrow: an external cryptographic review ([packet](escrow-review-packet.md)), a real moderator with its own keys and mailbox, delivery over Tor, and TRUC (v3) presigned spends so a CPFP child cannot be pinned.
 
 ## Tests
 
@@ -169,5 +171,6 @@ Remaining blockers before any mainnet escrow: durable sessions and claims, durab
 | `chain-privacy` | 112 (+3) | 38 + 5 doc | 13 | 33 | 10 (+1) | 211 passed, 4 ignored |
 | `monero-direct` | 122 (+4) | 38 + 5 doc | 13 | 33 | 10 (+1) | 239 passed (xmr 10 + 8), 5 ignored |
 | `sec-identity-letters` | 135 (+4) | 38 + 5 doc | 13 | 42 | 16 (+1) | 267 passed (xmr 10 + 8), 5 ignored; web 52 unit, 15 Playwright |
+| `sec-escrow-durable` | 163 (+4) | 44 + 5 doc | 13 | 42 | 16 (+1) | 301 passed (xmr 10 + 8), 5 ignored; web unchanged |
 
 The ignored tests need the live network: an Arti onion dial, a real testnet4 payment and send, a testnet4 compact filter sync, and a stagenet Monero payment (`live_stagenet`).
