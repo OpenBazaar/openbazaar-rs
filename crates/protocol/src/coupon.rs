@@ -1,10 +1,11 @@
 //! A promo code signed by the store key.
 //!
-//! A public coupon is published with the store's catalog; a private one is
-//! handed out as its encoded record. Either way the buyer's client checks the
-//! store signature, the dates and the scope before ordering. How many times
-//! a coupon has been used is known only to the seller's node, which enforces
-//! `max_uses` when it prices an order.
+//! A private coupon stays on the seller's node: the buyer types its code into
+//! the order, and the seller's quote shows the discount before anything is
+//! paid. A public coupon can be published with the store's catalog, where a
+//! buyer's client checks the store signature, dates and scope itself. How
+//! many times a coupon has been used is known only to the seller's node,
+//! which enforces `max_uses` when it prices an order.
 
 use crate::encode::{Reader, Writer};
 use crate::listing_details::ListingId;

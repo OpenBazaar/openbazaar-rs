@@ -66,7 +66,7 @@ Status: **have** = on main or in the seller PR; **now** = this work; **later** =
 | Compare-at / list price | reference price strikethrough | "Was" price (STP) | n/a | now | Signed `compare_at`; must be above the price. The client shows the strikethrough without a percentage claim beyond what is signed. |
 | Scheduled sale price | price discounts up to 30 days | markdown sale | time-limited sale | now | Signed percentage off every variant, with start and end days. The client applies it by date; the seller node applies it by its own clock at order time. |
 | Multi-buy / volume discount | quantity discounts (B2B) | volume pricing | bundle offers | now | Up to 4 signed tiers: buy at least N, get P% off. |
-| Coupons / promo codes | coupons | coded coupons | promo codes | now | `OBCP` record signed by the store key; public or handed out privately. |
+| Coupons / promo codes | coupons | coded coupons | promo codes | now | `OBCP` record signed by the store key and kept on the seller's node; the buyer types the code and sees the discount in the seller's quote before paying. |
 | Make an offer, accept / counter / decline | n/a | Best Offer | Offers | now (records), later (transport polish) | Buyer sends a bid letter; seller answers with a store-signed offer the buyer can check offline. Auto-accept and auto-decline floors stay private on the seller node. |
 | Price drop to watchers | n/a | send offers to watchers | offer to likers, promote | now (price drop), won't (targeted) | Watchlists stay on the buyer's device, so the seller cannot know who watches. The buyer's client notices a lower signed price on refresh and tells its own user. Targeted offers to watchers would need the seller to learn watchers: **won't**. |
 | Smart pricing (automatic drops) | automate pricing | n/a | smart pricing | later | A seller-node schedule that re-signs the listing. Small once republish exists. |
@@ -183,7 +183,7 @@ min_subtotal u64, listings [ListingId] ≤ 32 (empty = whole store), starts_on u
 max_uses u32 (0 = unlimited), signature
 ```
 
-A public coupon is published with the store's catalog; a private one is handed out as its encoded record (a short text token). Either way the buyer's client verifies the store signature, the window and the scope, and shows the discount before ordering. `max_uses` can only be enforced by the seller node; the client says "while uses last".
+A private coupon never leaves the seller's node: the buyer types the code, the order letter carries the code, and the seller's quote shows the discount before anything is paid, so codes can't be listed or scraped from replicas. A public coupon (later) is published with the store's catalog as its signed record, and the buyer's client verifies the store signature, the window and the scope itself. `max_uses` can only be enforced by the seller node; the client says "while uses last".
 
 #### Offer (`OBOF`, version 1, tag `ob/offer/v1`)
 
@@ -204,19 +204,20 @@ amount u64 (per unit), currency, buyer_key [u8;32], expires_at u64 (unix seconds
 v2 plus:
 
 ```
-listing_id [u8;16] (zero for pre-v6 listings), variant_id [u8;8] (zero = none),
-service u8 (index into shipping.services, 0xff = pickup or digital),
-coupon blob (≤ 512, encoded OBCP or empty), offer blob (≤ 512, encoded OBOF or empty),
+line count u8 (≤ 20), then per line:
+  listing_hash [u8;32], variant_id [u8;8] (zero = none), quantity u32, offer blob (≤ 512, encoded OBOF or empty)
+service u8 (index into each listing's shipping.services, 0xff = pickup or digital),
+coupon blob (≤ 512, the code as typed, or empty),
 review_key [u8;32]
 ```
 
-`options` stays as human-readable "Size: M" pairs for the seller's packing slip; the variant id is what the node prices from. One letter per listing line stays as it is; the seller node groups letters that share a checkout id into one package for combined shipping.
+The lines are the whole package, so one letter can hold two variants of the same listing; the first line repeats the letter's own listing hash and quantity, and a v2 node still reads the first line. A listing hash may be a superseded version: the seller node resolves it to the current version and prices from that. An order with no terms is still written as v2.
 
 #### Reviews (`OBRC` receipt, `OBRV` review)
 
 A review key is derived per order from the buyer's letter root (`m/1984'/c'/4'/0'`, the same root that gives each order its conversation key, under a separate label), so two reviews by the same buyer don't link. The order letter carries the review public key.
 
-- **Receipt** (seller → buyer in the reply once the order is paid): `store_id, listing_id, review_key, paid_on (YYYYMMDD), signature by store key`. It says "this key bought this listing". It names no order id, amount or address.
+- **Receipt** (seller → buyer in the "paid" reply, or the "shipped" reply if the store key was locked when the payment confirmed): `store_id, listing_id, review_key, paid_on (YYYYMMDD), signature by store key`. It says "this key bought this listing". It names no order id, amount or address.
 - **Review** (buyer → anyone): `receipt bytes, rating 1..5, text ≤ 1,000 (public_text-checked), written_on (YYYYMMDD), signature by review_key`.
 
 A client counts a review as a verified purchase when the receipt verifies under the store key, the review verifies under the receipt's review key, and no other review uses the same key (one review per receipt; a later one by the same key replaces it). Dates are days, not timestamps, and the client waits a random 0 to 3 days before publishing, so the review can't be matched to a payment on chain by time.
@@ -227,11 +228,11 @@ What this does not stop, stated plainly: the seller learns which of their orders
 
 The catalog is replicated and readable while the seller is offline, so stock shown to buyers is "as of last publish", and the client says so ("8 left as of 3 Nov").
 
-1. **The seller's node is the only authority on stock.** It keeps live stock per variant next to its signed listings.
+1. **The seller's node is the only authority on stock.** It keeps a shelf count per variant (`stock.obv`): what the seller last set, less what has sold. The signed listing publishes the shelf count; units held for unpaid quotes are not taken off it, because a hold lasts an hour.
 2. **Reserve on order receipt.** When the node reads an order letter (in arrival order), it checks the listing id, the variant id, `max_per_order`, availability and live stock. If the units are there, it reserves them for the payment window (the quote's expiry, 1 hour by default) and replies with the quote. If not, it replies "unavailable" before anything is paid.
 3. **Commit on payment, release on expiry.** A confirmed payment turns the reservation into a sale. An unpaid quote releases its units when it expires.
-4. **Late payment for released stock.** If a payment arrives after its reservation was released and the units were sold to someone else, the sale is marked oversold. Direct pay: the node queues a refund to the buyer's refund address for the seller to confirm (it needs the wallet unlocked). Escrow: the node offers the refund branch. The buyer's client shows "seller could not fill: refund pending".
-5. **Republish.** Any change to live stock schedules a re-sign of that listing (debounced to once a minute, and only while the store key is unlocked). A sold-out variant shows as sold out once the new record reaches replicas.
+4. **Late payment for released stock.** If a payment arrives after its reservation was released and the units were sold to someone else, the sale is marked oversold and the "paid" reply says which lines. Direct pay: the seller refunds by hand for now (an automatic refund needs the buyer's refund address in the order and the wallet unlocked; later). Escrow: the node offers the refund branch. The buyer's client shows "seller could not fill: refund pending".
+5. **Republish.** Each watcher round signs again every own listing whose shelf count moved (only while the store key is unlocked; otherwise on a later round). When the seller edits a variant's stock, that count replaces the shelf count; a variant they did not touch keeps the ledger's count. A sold-out variant shows as sold out once the new record reaches replicas.
 6. **Pre-order and made-to-order** listings reserve against their stock the same way; "made to order" with stock 0 means unlimited and is never oversold.
 
 ### Prices
@@ -256,10 +257,10 @@ A sealed-bid (second-price) auction, where bids are commitments revealed after t
 
 Building on the seller PR's `own_listings`:
 
-- `POST /own/listings` and `PUT /own/listings/{id}` take the v7 fields; variants keep their ids across edits; new variants get fresh ids.
-- `POST /own/listings/{id}/duplicate`, `PATCH /own/listings` (bulk: price change, stock set, pause, resume).
-- `PUT /own/listings/{id}/stock` (per variant), drafts under `/own/drafts`.
-- `GET/POST/DELETE /own/coupons`, `GET /own/offers`, `POST /own/offers/{id}/answer`.
+- `POST /store/listings` and `PUT /store/listings/{id}` take the v7 fields under `commerce`; variants keep their ids across edits; new variants get fresh ids. (Built.)
+- `GET/POST /coupons`, `DELETE /coupons/{code}`. (Built.)
+- `POST /checkout` lines take `variant`, packages take `service` (an index or `"pickup"`) and `coupon`. (Built.)
+- Later: `POST /store/listings/{id}/duplicate`, bulk edit, drafts, `GET /offers`, `POST /offers/{id}/answer`.
 - `GET /stores/{key}/reviews`; buyer: `POST /orders/{id}/review`.
 
 ### Client

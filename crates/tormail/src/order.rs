@@ -13,6 +13,7 @@ const VERSION_REPLY: u8 = 2;
 /// written as version 2, so a seller on older code can read it.
 const VERSION: u8 = 3;
 const MAX_TERMS_BLOB: usize = 512;
+const MAX_TERMS_LINES: usize = 20;
 /// [`OrderTerms::service`] when nothing is shipped: pickup or digital.
 pub const NO_SERVICE: u8 = 0xff;
 const MAX_QUANTITY: u32 = 1_000_000;
@@ -23,7 +24,7 @@ const MAX_SHIP_TO: usize = 1024;
 const MAX_ONION: usize = 62;
 
 /// Hash of the public listing the buyer is ordering.
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct ListingHash(pub [u8; 32]);
 
 impl ListingHash {
@@ -85,22 +86,32 @@ pub struct Order {
     pub terms: OrderTerms,
 }
 
-/// What a version 3 order adds: which variant, how it ships, and any coupon
-/// or accepted offer, as encoded signed records the vendor checks itself.
+/// What a version 3 order adds: the package's lines with their variants, how
+/// it ships, a coupon code, and any accepted offers as encoded signed records
+/// the vendor checks itself. When `lines` is set it is the whole order, and its
+/// first line repeats the order's own listing hash and quantity.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct OrderTerms {
-    /// Stable listing id; zeros for a listing without one.
-    pub listing_id: [u8; 16],
-    /// Zeros for a listing without variants.
-    pub variant_id: [u8; 8],
-    /// Index into the listing's shipping services, or [`NO_SERVICE`].
+    pub lines: Vec<TermsLine>,
+    /// Index into each listing's shipping services, or [`NO_SERVICE`].
     pub service: u8,
-    /// An encoded signed coupon, or empty.
+    /// A coupon code as the buyer typed it, or empty. The vendor looks it up
+    /// in its own coupon book, so a private code is never published.
     pub coupon: Vec<u8>,
-    /// An encoded signed offer, or empty.
-    pub offer: Vec<u8>,
     /// The order's review key: a receipt names it, a review is signed by it.
     pub review_key: [u8; 32],
+}
+
+/// One listing and variant in a version 3 order. The same listing may appear
+/// on several lines with different variants.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TermsLine {
+    pub listing_hash: ListingHash,
+    /// Zeros for a listing without variants.
+    pub variant_id: [u8; 8],
+    pub quantity: u32,
+    /// An encoded signed offer for this line, or empty.
+    pub offer: Vec<u8>,
 }
 
 impl OrderTerms {
@@ -155,8 +166,18 @@ impl Order {
         if self.ship_to.trim().is_empty() {
             return Err(Error::InvalidOrder("ship-to is empty"));
         }
-        if self.terms.coupon.len() > MAX_TERMS_BLOB || self.terms.offer.len() > MAX_TERMS_BLOB {
+        let terms = &self.terms;
+        if terms.coupon.len() > MAX_TERMS_BLOB || terms.lines.iter().any(|line| line.offer.len() > MAX_TERMS_BLOB) {
             return Err(Error::InvalidOrder("coupon or offer is too long"));
+        }
+        if terms.lines.len() > MAX_TERMS_LINES {
+            return Err(Error::InvalidOrder("too many lines"));
+        }
+        if terms.lines.iter().any(|line| line.quantity == 0 || line.quantity > MAX_QUANTITY) {
+            return Err(Error::InvalidOrder("quantity out of range"));
+        }
+        if terms.lines.first().is_some_and(|first| first.listing_hash != self.listing_hash || first.quantity != self.quantity) {
+            return Err(Error::InvalidOrder("the first line is not the order's listing"));
         }
         Ok(())
     }
@@ -179,11 +200,15 @@ impl Order {
         out.extend_from_slice(&self.reply.drop.0);
         if !self.terms.is_default() {
             let terms = &self.terms;
-            out.extend_from_slice(&terms.listing_id);
-            out.extend_from_slice(&terms.variant_id);
+            out.push(terms.lines.len() as u8);
+            for line in &terms.lines {
+                out.extend_from_slice(&line.listing_hash.0);
+                out.extend_from_slice(&line.variant_id);
+                out.extend_from_slice(&line.quantity.to_le_bytes());
+                push_blob(&mut out, &line.offer);
+            }
             out.push(terms.service);
             push_blob(&mut out, &terms.coupon);
-            push_blob(&mut out, &terms.offer);
             out.extend_from_slice(&terms.review_key);
         }
         out
@@ -224,11 +249,20 @@ impl Order {
         let drop = DropId(cursor.array()?);
         let mut terms = OrderTerms::default();
         if version == VERSION {
-            terms.listing_id = cursor.array()?;
-            terms.variant_id = cursor.array()?;
+            let count = cursor.u8()? as usize;
+            if count > MAX_TERMS_LINES {
+                return Err(Error::InvalidOrder("too many lines"));
+            }
+            for _ in 0..count {
+                terms.lines.push(TermsLine {
+                    listing_hash: ListingHash(cursor.array()?),
+                    variant_id: cursor.array()?,
+                    quantity: cursor.u32()?,
+                    offer: cursor.blob(MAX_TERMS_BLOB)?,
+                });
+            }
             terms.service = cursor.u8()?;
             terms.coupon = cursor.blob(MAX_TERMS_BLOB)?;
-            terms.offer = cursor.blob(MAX_TERMS_BLOB)?;
             terms.review_key = cursor.array()?;
             if terms.is_default() {
                 return Err(Error::Malformed);
@@ -377,13 +411,18 @@ mod tests {
         .unwrap()
     }
 
+    /// Two variants of the order's listing, one at an accepted offer, and another listing.
     fn terms() -> OrderTerms {
+        let line = |hash: u8, variant: u8, quantity: u32, offer: &[u8]| TermsLine {
+            listing_hash: ListingHash([hash; 32]),
+            variant_id: [variant; 8],
+            quantity,
+            offer: offer.to_vec(),
+        };
         OrderTerms {
-            listing_id: [9; 16],
-            variant_id: [4; 8],
+            lines: vec![line(7, 4, 2, b""), line(7, 5, 1, b"OBOF-bytes"), line(8, 0, 3, b"")],
             service: 1,
-            coupon: b"OBCP-bytes".to_vec(),
-            offer: Vec::new(),
+            coupon: b"FALL-10".to_vec(),
             review_key: [3; 32],
         }
     }
@@ -410,13 +449,26 @@ mod tests {
     fn version_3_with_default_terms_is_not_canonical() {
         let mut bytes = order().encode();
         bytes[4] = VERSION;
-        bytes.extend_from_slice(&[0; 16 + 8 + 1 + 2 + 2 + 32]);
+        bytes.extend_from_slice(&[0; 1 + 1 + 2 + 32]);
         assert!(matches!(Order::decode(&bytes), Err(Error::Malformed)));
     }
 
     #[test]
     fn oversized_blobs_are_refused() {
-        let big = OrderTerms { offer: vec![1; MAX_TERMS_BLOB + 1], ..terms() };
+        let mut big = terms();
+        big.lines[1].offer = vec![1; MAX_TERMS_BLOB + 1];
         assert!(matches!(order().with_terms(big), Err(Error::InvalidOrder(_))));
+        let many = OrderTerms { lines: vec![terms().lines[0].clone(); MAX_TERMS_LINES + 1], ..terms() };
+        assert!(matches!(order().with_terms(many), Err(Error::InvalidOrder("too many lines"))));
+    }
+
+    #[test]
+    fn the_first_line_must_be_the_orders_listing() {
+        let mut other = terms();
+        other.lines.swap(0, 2);
+        assert!(matches!(order().with_terms(other), Err(Error::InvalidOrder(_))));
+        let mut zero = terms();
+        zero.lines[1].quantity = 0;
+        assert!(matches!(order().with_terms(zero), Err(Error::InvalidOrder(_))));
     }
 }
