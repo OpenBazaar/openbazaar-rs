@@ -40,7 +40,9 @@ import {
   type ShopCatalog,
 } from "./src/catalog";
 import { alsoSoldBy, cartPackages, type CartLine } from "./src/cart";
-import { photosFor } from "./src/goods";
+import { bundledPhotoCount } from "./src/native/bundledGoods";
+import { NativeIcon } from "./src/native/icons";
+import { ListingPhoto } from "./src/native/ListingPhoto";
 import { filterListings } from "./src/search";
 import { CONTENT_TAGS, parseKeywords, safetyVerdict, toggleHidden, visibleListings, type SafetySettings } from "./src/safety/filter";
 import { readSafety, writeSafety } from "./src/safety/storage";
@@ -454,8 +456,8 @@ function ShopApp() {
                 </Pressable>
               ))}
             </View>
-            <IconCount label="Saved" icon={saved.length ? "icons/heart-on.svg" : "icons/heart.svg"} count={saved.length} onPress={() => { setMenu(false); setRoute({ name: "saved" }); }} />
-            <IconCount label="Cart" icon="icons/cart.svg" count={cartCount} onPress={() => { setMenu(false); setRoute({ name: "cart" }); }} />
+            <IconCount label="Saved" icon="heart" filled={saved.length > 0} count={saved.length} onPress={() => { setMenu(false); setRoute({ name: "saved" }); }} />
+            <IconCount label="Cart" icon="bag" count={cartCount} onPress={() => { setMenu(false); setRoute({ name: "cart" }); }} />
             <View>
               <Pressable accessibilityRole="button" accessibilityLabel="You" onPress={() => setMenu((open) => !open)} style={styles.you}>
                 <Text style={styles.youText}>You</Text>
@@ -571,7 +573,7 @@ function Shop({
       <ScrollView style={styles.fill} contentContainerStyle={styles.results}>
         {browsing && featured ? (
           <Pressable accessibilityRole="button" accessibilityLabel={featured.title} onPress={() => onOpen(featured.hash)} style={[styles.hero, compact && styles.heroCompact]}>
-            <Image source={{ uri: photosFor(featured.title, featured.category)[0] }} style={[styles.heroImage, compact && styles.heroImageCompact]} />
+            <ListingPhoto hash={featured.images[0]} title={featured.title} style={[styles.heroImage, compact && styles.heroImageCompact]} />
             <View style={styles.heroCopy}>
               <Text style={styles.kicker}>{featured.category}</Text>
               <Text style={[styles.heroTitle, compact && styles.heroTitleCompact]}>{featured.title}</Text>
@@ -712,15 +714,15 @@ function ListingCard({
   return (
     <View style={[styles.card, wide && styles.cardRow, { width }]}>
       <Pressable accessibilityRole="button" accessibilityLabel={`${listing.title}, ${priceLabel(listing.priceSats, rates, currency)}`} onPress={onOpen} style={wide ? styles.cardImageWide : styles.cardImageWrap}>
-        <Image source={{ uri: photosFor(listing.title, listing.category)[0] }} style={styles.cardImage} />
+        <ListingPhoto hash={listing.images[0]} title={listing.title} style={styles.cardImage} />
       </Pressable>
       <View style={styles.cardBody}>
         <View style={styles.badgeRow}>
           {listing.kind === "digital" ? <Text style={styles.badge}>Digital</Text> : null}
           {listing.acceptsModerator ? <Text style={styles.badge}>Escrow available</Text> : null}
           {listing.stock > 0 && listing.stock <= 3 ? <Text style={styles.badge}>Low stock</Text> : null}
-          <Pressable accessibilityRole="button" accessibilityLabel={saved ? "Remove from saved" : "Save"} onPress={onSave} style={styles.heart}>
-            <Image source={{ uri: saved ? "icons/heart-on.svg" : "icons/heart.svg" }} style={styles.heartIcon} />
+          <Pressable accessibilityRole="button" accessibilityLabel={saved ? "Remove from saved" : "Save"} onPress={onSave} hitSlop={8} style={styles.heart}>
+            <NativeIcon name="heart" size={18} color={saved ? NAVY : MUTED} filled={saved} />
           </Pressable>
         </View>
         <Text style={styles.seller}>{listing.seller}</Text>
@@ -750,7 +752,7 @@ function Detail({
   onAdd: (quantity: number) => void;
   onBuy: (quantity: number) => void;
 }) {
-  const photos = photosFor(listing.title, listing.category);
+  const photos = listing.images.length ? listing.images : Array.from({ length: bundledPhotoCount(listing.title) }, (_, index) => String(index));
   const [photo, setPhoto] = useState(0);
   const [quantityText, setQuantityText] = useState("1");
   const quantity = Number(quantityText);
@@ -758,12 +760,12 @@ function Detail({
   return (
     <ScrollView contentContainerStyle={styles.detail}>
       <View style={styles.detailMain}>
-        <Image source={{ uri: photos[photo] ?? photos[0] }} style={styles.detailImage} />
+        <ListingPhoto hash={listing.images[photo]} title={listing.title} index={listing.images.length ? 0 : photo} style={styles.detailImage} />
         {photos.length > 1 ? (
           <View style={styles.thumbs}>
-            {photos.map((uri, index) => (
-              <Pressable key={uri} accessibilityRole="button" accessibilityLabel={`Photo ${index + 1}`} onPress={() => setPhoto(index)}>
-                <Image source={{ uri }} style={[styles.thumb, photo === index && styles.thumbOn]} />
+            {photos.map((item, index) => (
+              <Pressable key={item} accessibilityRole="button" accessibilityLabel={`Photo ${index + 1}`} onPress={() => setPhoto(index)} style={styles.thumbHit}>
+                <ListingPhoto hash={listing.images[index]} title={listing.title} index={listing.images.length ? 0 : index} style={[styles.thumb, photo === index && styles.thumbOn]} />
               </Pressable>
             ))}
           </View>
@@ -837,7 +839,7 @@ function Cart({
             </View>
             {pkg.items.map((item) => (
               <View key={item.listing.hash} style={styles.cartLine}>
-                <Image source={{ uri: photosFor(item.listing.title, item.listing.category)[0] }} style={styles.cartImage} />
+                <ListingPhoto hash={item.listing.images[0]} title={item.listing.title} style={styles.cartImage} />
                 <View style={styles.cardBody}>
                   <Text style={styles.cardTitle}>{item.listing.title}</Text>
                   <Text style={styles.price}>{priceLabel(item.listing.priceSats, rates, currency)}</Text>
@@ -1514,10 +1516,10 @@ function TextButton({ label, name, onPress }: { label: string; name?: string; on
   );
 }
 
-function IconCount({ label, icon, count, onPress }: { label: string; icon: string; count: number; onPress: () => void }) {
+function IconCount({ label, icon, filled = false, count, onPress }: { label: string; icon: "heart" | "bag"; filled?: boolean; count: number; onPress: () => void }) {
   return (
     <Pressable accessibilityRole="button" accessibilityLabel={`${label}, ${count}`} onPress={onPress} style={styles.iconButton}>
-      <Image source={{ uri: icon }} style={styles.icon} />
+      <NativeIcon name={icon} size={20} color={INK} filled={filled} />
       <Text style={styles.iconCount}>{formatNumber(count)}</Text>
     </Pressable>
   );
@@ -1547,7 +1549,7 @@ const styles = StyleSheet.create({
   currencyOn: { backgroundColor: SOFT },
   currencyText: { fontFamily: SANS, fontSize: 12, color: MUTED },
   currencyTextOn: { color: INK, fontWeight: "500" },
-  iconButton: { minHeight: 36, flexDirection: "row", alignItems: "center", gap: 4, paddingHorizontal: 4 },
+  iconButton: { minHeight: 44, flexDirection: "row", alignItems: "center", gap: 4, paddingHorizontal: 8 },
   icon: { width: 20, height: 20 },
   iconCount: { fontFamily: SANS, fontSize: 13, color: INK },
   you: { minHeight: 36, paddingHorizontal: 8, justifyContent: "center" },
@@ -1607,6 +1609,7 @@ const styles = StyleSheet.create({
   detailMain: { flexGrow: 1, flexBasis: 320, gap: 8, maxWidth: 720 },
   detailImage: { width: "100%", aspectRatio: 1, borderRadius: 12, backgroundColor: SOFT, maxWidth: 480 },
   thumbs: { flexDirection: "row", gap: 8 },
+  thumbHit: { minWidth: 44, minHeight: 44 },
   thumb: { width: 64, height: 64, borderRadius: 8, backgroundColor: SOFT },
   thumbOn: { borderWidth: 2, borderColor: BLUE },
   buyBox: { width: 300, maxWidth: "100%", backgroundColor: CARD, borderRadius: 12, padding: 16, borderWidth: 1, borderColor: LINE, gap: 8 },

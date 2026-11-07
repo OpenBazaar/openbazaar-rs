@@ -3,8 +3,10 @@ import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 
 import { parseCatalog, type ContentRating, type ListingHeader, type ShopCatalog } from "../../catalog.ts";
 import { collectionValue } from "../../homeNode/replica.ts";
+import { ListingPhoto } from "../ListingPhoto.tsx";
 import { dismissRefused, queueEdit, useSession } from "../session.ts";
 import { Button, Card, formatBtc, LINE, MUTED, NAVY, Notice, Row, SOFT, ui } from "../ui.tsx";
+import { ListingEdit } from "./ListingEdit.tsx";
 
 const RATINGS: Exclude<ContentRating, "unrated">[] = ["general", "sensitive", "adult"];
 
@@ -21,11 +23,12 @@ function useCatalog(): { catalog: ShopCatalog | null; error: string | null } {
   }, [replica]);
 }
 
-function Listing({ listing, queued, onRate }: { listing: ListingHeader; queued: boolean; onRate: (rating: Exclude<ContentRating, "unrated">) => void }) {
+function Listing({ listing, queued, canEdit, ownWithoutId, onRate, onEdit }: { listing: ListingHeader; queued: boolean; canEdit: boolean; ownWithoutId: boolean; onRate: (rating: Exclude<ContentRating, "unrated">) => void; onEdit: () => void }) {
   const [open, setOpen] = useState(false);
   return (
     <View style={styles.listing}>
       <Pressable accessibilityRole="button" onPress={() => setOpen(!open)} style={styles.listingHead}>
+        <ListingPhoto hash={listing.images[0]} title={listing.title} style={styles.thumb} />
         <View style={styles.listingText}>
           <Text style={styles.listingTitle}>{listing.title}</Text>
           <Text style={ui.muted}>
@@ -45,6 +48,8 @@ function Listing({ listing, queued, onRate }: { listing: ListingHeader; queued: 
               </Pressable>
             ))}
           </View>
+          {canEdit ? <Button label="Edit listing" kind="plain" onPress={onEdit} /> : null}
+          {ownWithoutId ? <Text style={ui.muted}>This listing has no stable id, so the node cannot update it.</Text> : null}
         </View>
       ) : null}
     </View>
@@ -54,8 +59,14 @@ function Listing({ listing, queued, onRate }: { listing: ListingHeader; queued: 
 export function StoreScreen({ onRefresh }: { onRefresh: () => void }) {
   const session = useSession();
   const { catalog, error } = useCatalog();
+  const [editing, setEditing] = useState<ListingHeader | null | "new">(null);
   const queuedTargets = new Set([...session.queue.pending, ...(session.queue.inFlight?.requests ?? [])].map(m => (m.body as { target?: string } | undefined)?.target));
   const collection = session.replica.collections.catalog;
+  const own = catalog?.stores.find((store) => store.own);
+  const categories = [...new Set(catalog?.listings.map((listing) => listing.category) ?? [])];
+  if (editing !== null) {
+    return <ListingEdit listing={editing === "new" ? null : editing} categories={categories} onClose={() => setEditing(null)} />;
+  }
   return (
     <ScrollView contentContainerStyle={ui.screen}>
       <Text style={ui.title}>{catalog?.store.name || "Your store"}</Text>
@@ -82,12 +93,16 @@ export function StoreScreen({ onRefresh }: { onRefresh: () => void }) {
             {collection?.error ? <Row label="Last sync" value={`failed (${collection.error.code})`} /> : null}
           </Card>
           <Card title="Listings">
+            {own ? <Button label="New listing" onPress={() => setEditing("new")} /> : <Text style={ui.muted}>This node has no storefront yet. Set the store up in the web shop, then you can add listings here.</Text>}
             {catalog.listings.length === 0 ? <Text style={ui.muted}>No listings yet.</Text> : null}
             {catalog.listings.map(listing => (
               <Listing
                 key={listing.hash}
                 listing={listing}
                 queued={queuedTargets.has(listing.hash)}
+                canEdit={!!own && listing.storeId === own.key && !!listing.listingId}
+                ownWithoutId={!!own && listing.storeId === own.key && !listing.listingId}
+                onEdit={() => setEditing(listing)}
                 onRate={rating =>
                   void queueEdit({
                     method: "POST",
@@ -108,7 +123,8 @@ export function StoreScreen({ onRefresh }: { onRefresh: () => void }) {
 
 const styles = StyleSheet.create({
   listing: { borderTopWidth: 1, borderTopColor: LINE, paddingTop: 10 },
-  listingHead: { flexDirection: "row", alignItems: "center", gap: 10 },
+  listingHead: { flexDirection: "row", alignItems: "center", gap: 10, minHeight: 44 },
+  thumb: { width: 56, height: 56, borderRadius: 8, backgroundColor: SOFT },
   listingText: { flex: 1, gap: 2 },
   listingTitle: { fontSize: 16, fontWeight: "600", color: NAVY },
   chevron: { fontSize: 22, color: MUTED, width: 22, textAlign: "center" },

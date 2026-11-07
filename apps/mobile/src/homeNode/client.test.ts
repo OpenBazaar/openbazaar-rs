@@ -128,6 +128,18 @@ test("a clock refusal corrects the offset and retries once", async () => {
   assert.equal((await stubborn.request("GET", "/version")).status, 401);
 });
 
+test("an image upload keeps the image content type", async () => {
+  const png = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0xff]);
+  const node = fakeNode(request => {
+    assert.equal(request.headers["content-type"], "image/png");
+    assert.equal(request.headers["content-length"], String(png.length));
+    return answer(200, { hash: "ok" });
+  });
+  const client = new HomeNodeClient(link, signer, node.channels, () => {});
+  const result = await client.request("POST", "/media", png, { contentType: "image/png" });
+  assert.equal(result.status, 200);
+});
+
 test("unknown_device forgets the node", async () => {
   let forgot = false;
   const node = fakeNode(() => answer(401, { code: "unknown_device" }));
