@@ -1,8 +1,9 @@
-//! TESTNET4 ONLY. The published moderator record and the mailbox keys the
-//! escrow demo uses.
+//! TESTNET4 ONLY. The published moderator record and the moderator mailbox
+//! key the escrow demo uses. Vendor mailbox keys come from signed store
+//! records ([`crate::stores`]).
 //!
 //! Every secret here is derived from a public fixture label, so anyone can
-//! rebuild the moderator keys and the vendor mailbox keys from this source.
+//! rebuild the moderator keys from this source.
 //! That is acceptable only for testnet4 coins. [`moderator_record`] refuses
 //! every other network, so a mainnet node cannot build escrow terms with it.
 
@@ -10,7 +11,7 @@ use bitcoin::hashes::{sha256, Hash};
 use bitcoin::secp256k1::{Keypair, Secp256k1};
 use bitcoin::{Amount, ScriptBuf};
 use openbazaar_escrow::{Context, ModeratorKeys, ModeratorRecord, Policy};
-use openbazaar_protocol::{fixture_keys, vendor_mail_key};
+use openbazaar_protocol::fixture_keys;
 use tormail::{StoreKey, StoreSecret};
 
 use crate::network::NetworkMode;
@@ -57,12 +58,6 @@ pub(crate) fn moderator_mail_secret() -> StoreSecret {
 
 pub(crate) fn moderator_mail_key() -> StoreKey {
     moderator_mail_secret().public_key()
-}
-
-/// The mailbox secret a seller's order letters are sealed to.
-pub(crate) fn vendor_mail_secret(seller: &str) -> Option<StoreSecret> {
-    let secret = vendor_mail_key(seller)?;
-    StoreSecret::from_bytes(secret.secret_bytes()).ok()
 }
 
 impl Node {

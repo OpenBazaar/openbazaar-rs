@@ -14,7 +14,8 @@ Last checked against `main` at `b1eb18b` (escrow, payments, and transport code u
 | `aa9db48` | PR #3 (squashed from `3d5af42`): two-party escrow, verifiable moderator shares, review fixes, node integration, three-node test harness |
 | `92b2e2e` | PR #5: content ratings and tags, client safe mode, subscribable labelers |
 | `chain-privacy` | BIP 157/158 compact block filters as the default chain backend, own-node mode, public Esplora only as an opt-in fallback |
-| `monero-direct` | Monero for direct pay only: `crates/xmr` on monero-oxide, per-store opt-in, fresh subaddress per order, pay from the node wallet with a spend ticket or from an external wallet by `monero:` URI |
+| `monero-direct` | Monero for direct pay only: `crates/xmr` on monero-oxide, per-store opt-in in the signed store record, fresh subaddress per order, pay from the node wallet with a spend ticket or from an external wallet by `monero:` URI |
+| `sec-identity-letters` | PR #9: seed-derived store keys, store record v3 with a mailbox key, onion, moderators, profile and the signed Monero opt-in, signed letters with replay and sender-pin checks, padded letters and replies, client-side BIP-340 verification, a location/contact text validator, real fixture stores, `/stores` and `/media` |
 
 ## Mechanisms
 
@@ -27,13 +28,16 @@ Labels: **tested** = code on main with automated tests; **demo** = code runs, bu
 | Signed store and listing records, canonical encoding, BIP 340 signatures | tested | Encode, decode, sign, verify; tamper tests. |
 | Listing address = SHA-256 of body | tested | Order letters commit to it. |
 | Vendor content self-labels (rating, tags) in the signed body | tested | Store v2, listing v5; unlabeled v1/v4 still decode. |
+| Store record v3: mailbox key, onion, accepted moderators, public profile | tested | Tagline, about, avatar and banner as SHA-256 hashes, shipping/returns/processing policies, ships-to country codes, created-on date. v1/v2 still decode; one canonical encoding; every field tamper-tested. |
+| Store pages and store media for the paired client | tested | `GET /stores`, `GET /stores/{key}`, `GET /media/{hash}` (PNG/JPEG/GIF/WebP, 2 MiB cap, served only if the bytes hash to the name). |
+| Client verifies signed records | tested | `@noble/curves` BIP 340 over each store and listing record; headers are built from the signed bytes; a listing that fails, or whose store is not a verified store, is dropped and counted. |
 | Third-party labeler sets (`OBLB`) | tested | Signed, sequenced, retractable. Node fetches only from a built-in sample labeler or a loopback URL; no Tor. |
 | Client safe mode and keyword filter | tested | Runs on the device only. |
-| Catalog served to client | demo | Fixture catalog of 38 listings signed with fixture keys, verified at startup. |
+| Catalog served to client | demo | Testnet4 only: three demo stores (Marlow Goods, Hale Paper, North Kitchen), each with its own fixture key and v3 record, signing its own listings (38 in all), plus the node's own store. Mainnet serves only the node's own store. |
 | Replication by every node | specified | No replication code. |
 | Publishing cost against spam | specified | No fee design in code. |
 | Freshness and completeness | future | No sequence number or signed index. |
-| Rejecting street, email, phone in public records | specified | Free-text fields are not filtered. |
+| Rejecting street, email, phone in public records | tested | Signing refuses store and listing text with an email, phone number, street address, PO box, or coordinates. Heuristic; decoding does not filter. |
 
 ### Client, node, and keys
 
@@ -45,22 +49,25 @@ Labels: **tested** = code on main with automated tests; **demo** = code runs, bu
 | Desktop app starts its own node | demo | Testnet4. |
 | Phone pairs with a desktop or Android node | specified | The client dials only 127.0.0.1. |
 | Addresses, orders, seed, wallet, labeler follows encrypted at rest | tested | ChaCha20-Poly1305. Key in the OS keystore by default (macOS Keychain, Windows Credential Manager, Linux Secret Service); `--vault passphrase` wraps it with Argon2id (64 MiB, 3 passes) in `vault.lock`; `--vault file` keeps `vault.key` for headless runs and tests. An old `vault.key` is moved and deleted on first start in another mode. Startup refuses a group- or world-readable key, lock, or token, and tightens `.obv` files (earlier nodes wrote `addresses.obv` and `orders.obv` with the umask). |
-| Wallet lock on the node | tested | Seeds sealed a second time under a random spend key, wrapped with Argon2id (256 MiB, 3 passes) of a wallet passphrase in `wallet.lock`. Starts locked; spends, escrow signing, seed reveal, and lock settings answer `423` while locked or before setup. Receive tier (xpubs, mail key) stays open for the watcher, addresses, and incoming mail; signing letters wait for an unlock. Auto-lock 1 to 60 min (15 default) and on sleep; persisted backoff. Each payment needs a 60 s one-time ticket bound to order, amount, fee cap, and recipient. Biometric step-up and OS screen-lock events are not wired. See [wallet-lock.md](wallet-lock.md). |
-| BIP 39 seed with role paths | tested | Spend, store, escrow (`m/1984'/c'/1'/i'`), escrow mail (`m/1984'/c'/2'/0'`), scan, Monero (`m/1984'/c'/5'/0'`). |
-| Catalog signed with the seed's store key | not yet | Catalog, BOLT 12 offer, and BIP 352 code use fixture keys. |
-| Vendor mailbox key bound to the signed store record | specified | Mailbox keys come from a fixture table; one fixture seller reuses the store scalar. |
+| Wallet lock on the node | tested | Seeds sealed a second time under a random spend key, wrapped with Argon2id (256 MiB, 3 passes) of a wallet passphrase in `wallet.lock`. Starts locked; spends, escrow signing, seed reveal, and lock settings answer `423` while locked or before setup. Receive tier (xpubs, escrow mail key, store mailbox key, letter root) stays open for the watcher, addresses, incoming orders and mail, and signing letters; escrow steps that sign wait for an unlock. Auto-lock 1 to 60 min (15 default) and on sleep; persisted backoff. Each payment needs a 60 s one-time ticket bound to order, amount, fee cap, and recipient. Biometric step-up and OS screen-lock events are not wired. See [wallet-lock.md](wallet-lock.md). |
+| BIP 39 seed with role paths | tested | Spend, store, escrow (`m/1984'/c'/1'/i'`), escrow mail (`m/1984'/c'/2'/0'`), store mailbox (`m/1984'/c'/3'/0'`), letter root (`m/1984'/c'/4'/0'`), scan, Monero (`m/1984'/c'/5'/0'`). |
+| Own store signed with the seed's store key | tested | Profile from `store-profile.json`; BOLT 12 offer and BIP 352 code from the seed. The store key is spend tier: the last signed record is kept in `store-record.obv` and served while locked, and signed again at the next unlock if its inputs changed. No listing authoring yet, so the own store has no listings. |
+| Vendor mailbox key bound to the signed store record | tested | Orders and escrow mail are sealed to the mailbox key in the seller's signed record. Demo store mailbox secrets are public fixtures, testnet4 only. |
 
 ### Orders
 
 | Mechanism | Status | Notes |
 |---|---|---|
 | HPKE sealing of orders, replies, and escrow messages | tested | Separate `info` strings. |
+| Sender authentication inside the sealed letter (`OBLT`) | tested | BIP 340 signature by a key for one conversation (one order, or one escrow and role), derived from the letter root; never the buyer's long-term key. Recipient, kind, and message id are signed. |
+| Replay and sender-continuity checks on escrow mail | tested | `letters-seen` refuses a repeated message id; `letter-pins` refuses a different sender key for an escrow and role once a letter was handled. Vendors do not yet run order letters through it (no inbound order path). |
+| Per-order reply path in the order (`ReplyPath`) | tested | Reply key and drop id derived per order; optional reply onion field; `OBRF` frame for delivery. No transport sends replies. |
 | Mailbox storage without the store secret | tested | |
 | Arti onion client and listener | library | Live dial test ignored; not called by the node. |
 | Order delivery buyer node to vendor node | specified | The node writes order letters to its own mailbox. |
 | Outbox and retry | specified | |
 | One letter per seller in a multi-seller checkout | tested | |
-| Padding | future | Ciphertext = plaintext + 16 bytes. |
+| Padding | tested | Sealed letters are exactly 2 KiB, 8 KiB, or 64 KiB; replies 2 KiB or 8 KiB. Other sizes are refused. |
 | Mixnet delivery | future | |
 
 ### Payments
@@ -87,7 +94,7 @@ Labels: **tested** = code on main with automated tests; **demo** = code runs, bu
 |---|---|---|
 | Wallet library | tested | `crates/xmr` on monero-oxide (`monero-wallet` 0.2, `monero-daemon-rpc` 0.2; pure Rust, audited by Cypher Stack in 2025). No `monero-wallet-rpc`, no second key store. |
 | Keys | tested | `m/1984'/c'/5'/0'` gives a 32-byte secret; spend key `b` = HMAC-SHA512("OpenBazaar Monero spend key v1", secret) reduced mod l; view key `a` = Hs(b) as in Monero wallets. View key and public spend key in `xmr-watch.obv` (receive tier); the spend key is derived from `spend.obv` for one signature. |
-| Store opt-in | demo | `PUT /xmr/stores`, kept in `xmr-stores.obv` on this node; `GET /catalog` adds `acceptsXmr` per listing. Not in the signed store record yet (store v3). |
+| Store opt-in | tested | `acceptsXmr` in the signed store record v3. `PUT /xmr/stores` signs the store's record again (the node's own store needs an unlocked wallet; `423` otherwise); checkout and `GET /catalog` `acceptsXmr` read the signed flag only. `xmr-stores.obv` keeps the demo stores' choice for the next boot. |
 | Fresh subaddress per order, status | tested | Seller's subaddress per order, never reused across restarts. Awaiting payment (shows `receivedPiconero`, `remainingPiconero`) → Payment seen (all of it) → Paid at 10 confirmations; overpayment is Paid with `overpaidPiconero`. Works while locked. No mempool view: a payment is seen from its first confirmation. |
 | Pay from the node | tested | Quote (amount, destination subaddress, fee cap 150 % of the quoted fee), passphrase step-up to a one-time ticket, `POST /xmr/orders/{id}/pay` (202), signed on the node's Monero thread: ring 16, CLSAG, Bulletproofs+, one payment plus change, never batched across sellers. Mainnet needs `"confirm": true`. |
 | External wallet | tested | `monero:` URI with `tx_amount` on the order; the client draws the QR. |
@@ -102,13 +109,13 @@ Labels: **tested** = code on main with automated tests; **demo** = code runs, bu
 |---|---|---|
 | Two-party protocol (rounds, verifiable shares, refund before funding, claim, moderator record and policy checks, anchors, per-order keys, letters, rulings, ruling store) | tested | 38 unit tests and 5 doctests. |
 | Node runs escrow as buyer, vendor, or moderator | demo | Testnet4 only; mainnet refused. Three-node harness tests release, buyer-won dispute, failed broadcast, external funding. |
-| Escrow messages between nodes | demo | Sealed letters POSTed to operator-configured loopback URLs (`--escrow-vendor`, `--moderator`); `POST /escrow/mail` takes no token but refuses any `Origin`, bodies over 64 KiB, more than 64 letters at once or 4/s sustained, and new letters while 256 wait; it only queues. Sender authentication is not in place; no Tor, no retry. |
+| Escrow messages between nodes | demo | Sealed letters POSTed to operator-configured loopback URLs (`--escrow-vendor`, `--moderator`); `POST /escrow/mail` takes no token but refuses any `Origin`, bodies over 64 KiB, more than 64 letters at once or 4/s sustained, and new letters while 256 wait; it only queues. The drop does not authenticate the poster; the mail loop does: each letter carries a BIP 340 signature by the sender's per-escrow letter key inside the ciphertext, and replayed message ids or a changed sender key for an escrow and role are dropped before any desk reads the letter. A letter whose step needs the spend tier waits in the inbox, not yet admitted, until the next unlock. No Tor, no retry. |
 | Durable escrow sessions | not yet | Only the buyer's refund is written to disk; the vendor's claim is in memory. |
 | Durable ruling store | not yet | `InMemoryRulingStore` only. |
 | Coin locking between funding rounds | not yet | |
 | Vendor-initiated dispute in the node | not yet | The crate supports it. |
 | Fee bump through the anchor | not yet | No wallet code spends the anchor. |
-| Moderator and mailbox keys from real records | not yet | Fixture moderator; anyone can rebuild its secrets. |
+| Moderator and mailbox keys from real records | partly | Vendor mailbox keys and accepted moderators come from signed store records; the buyer refuses terms naming a moderator the store's record does not list. The moderator itself and its mailbox key are still fixtures. |
 | `DisputeEnvelope` without ship-to | specified | The protocol type still embeds the order; the node's dispute path does not use it. |
 | Moderator fee on every post-dispute path | specified | Two options documented in the crate. |
 | Batched share verification | future | |
@@ -125,8 +132,8 @@ Labels: **tested** = code on main with automated tests; **demo** = code runs, bu
 
 ### Code notes the paper leaves out
 
-- The escrow crate's signed-terms wrapper reuses the magic `OBST`. It is never parsed where a store record is, but it should get its own magic.
-- The paper's store record carries the vendor's mailbox key and onion address; `OBST` v2 has neither yet, and no derivation path for the mailbox key is assigned.
+- The escrow crate's signed-terms wrapper uses the magic `OBTS`; `OBST` is only the store record.
+- A buyer's first order letter cannot prove who the buyer is: by design the buyer has no identity to prove. Letters are signed by per-conversation keys instead of HPKE Auth mode, which would need the sender's key in the clear.
 - The crate supports per-order keys tweaked by an order secret; the node derives per-order keys from the seed instead.
 - Exchange rates come from Coinbase over clearnet unless `--proxy` is set. Chain data comes from compact filters; public Esplora is asked only with `--esplora` or `--public-fallback`. The desktop app has no proxy, peer, or fallback setting yet.
 - Presigned escrow spends use a fixed 1,000-sat fee in the node.
@@ -149,7 +156,7 @@ An internal adversarial review read the two-party escrow at `dc7bc42`. Its verdi
 | M6 | 50 KB shares, costly verification | No re-verify on decrypt; verified-letter cache | `m6_cached_letters_still_get_the_deadline_and_chain_checks` | partly fixed (no batching) |
 | L | Clone states, no max fee, release not re-signable, funding RBF, one moderator key | Not Clone; 50,000-sat cap; re-sign; RBF rejected; separate keys | `low_*`, `funding_psbts_that_signal_rbf_are_rejected` | fixed |
 
-Remaining blockers before any mainnet escrow: durable sessions and claims, durable ruling store, real moderator and mailbox keys, authenticated delivery over Tor with retry, coin locking, vendor-initiated disputes, M3, batched verification, and an external cryptographic review.
+Remaining blockers before any mainnet escrow: durable sessions and claims, durable ruling store, real moderator and mailbox keys, delivery over Tor with retry, coin locking, vendor-initiated disputes, M3, batched verification, and an external cryptographic review.
 
 ## Tests
 
@@ -161,5 +168,6 @@ Remaining blockers before any mainnet escrow: durable sessions and claims, durab
 | `aa9db48` | 46 (+1) | 38 + 5 doc | 13 | 12 | 10 (+1) | 124 passed, 2 ignored |
 | `chain-privacy` | 112 (+3) | 38 + 5 doc | 13 | 33 | 10 (+1) | 211 passed, 4 ignored |
 | `monero-direct` | 122 (+4) | 38 + 5 doc | 13 | 33 | 10 (+1) | 239 passed (xmr 10 + 8), 5 ignored |
+| `sec-identity-letters` | 135 (+4) | 38 + 5 doc | 13 | 42 | 16 (+1) | 267 passed (xmr 10 + 8), 5 ignored; web 52 unit, 15 Playwright |
 
 The ignored tests need the live network: an Arti onion dial, a real testnet4 payment and send, a testnet4 compact filter sync, and a stagenet Monero payment (`live_stagenet`).

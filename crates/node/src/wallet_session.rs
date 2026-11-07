@@ -92,6 +92,7 @@ impl Node {
         let words = phrase.split_whitespace().count();
         let confirm = self.lock.finish_setup(&key, passphrase, words)?;
         self.retire_seeds(&dirs, &key);
+        self.refresh_after_unlock();
         Ok(json!({
             "phrase": phrase.as_str(),
             "confirmWords": confirm,
@@ -112,7 +113,15 @@ impl Node {
             }
         }
         self.retire_seeds(&dirs, &key);
+        self.refresh_after_unlock();
         Ok(())
+    }
+
+    /// Sign the own store again if its record fell behind while locked.
+    fn refresh_after_unlock(&self) {
+        if let Err(err) = self.refresh_own_store() {
+            eprintln!("ob-node: own store: {err}");
+        }
     }
 
     fn retire_seeds(&self, dirs: &[PathBuf], key: &Zeroizing<[u8; 32]>) {

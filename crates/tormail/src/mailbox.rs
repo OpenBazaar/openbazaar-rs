@@ -184,6 +184,8 @@ mod tests {
 
     use super::*;
     use crate::order::{ListingHash, Order, PaymentRail};
+    use crate::letter::SenderKey;
+    use crate::reply::{DropId, ReplyPath};
     use crate::seal::{open_order, seal_order, ReplyKeypair, StoreKeypair};
 
     struct TempDir(PathBuf);
@@ -216,10 +218,10 @@ mod tests {
             options,
             "SHIPTO-9f3c1a-buyer-visible-only-after-open",
             PaymentRail::Lightning,
-            reply.public_key().clone(),
+            ReplyPath::sealed_only(*reply.public_key(), DropId::generate()),
         )
         .unwrap();
-        let sealed = seal_order(&order, vendor.public()).unwrap();
+        let sealed = seal_order(&order, vendor.public(), &SenderKey::generate()).unwrap();
         (vendor, sealed, order)
     }
 
@@ -248,7 +250,7 @@ mod tests {
         assert_eq!(mailbox.list().unwrap().len(), 2);
 
         let taken = mailbox.take(&first).unwrap();
-        assert_eq!(open_order(&taken, vendor.secret()).unwrap(), order);
+        assert_eq!(open_order(&taken, vendor.secret()).unwrap().body, order);
         assert!(mailbox.take(&first).is_err());
         assert_eq!(mailbox.list().unwrap(), vec![second]);
     }

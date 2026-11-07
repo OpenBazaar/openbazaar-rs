@@ -20,21 +20,17 @@ use std::collections::HashMap;
 use std::sync::MutexGuard;
 
 use bitcoin::consensus::encode::{deserialize_hex, serialize_hex};
-use bitcoin::secp256k1::{Keypair, PublicKey, Secp256k1};
+use bitcoin::secp256k1::{PublicKey, Secp256k1};
 use bitcoin::{Address, Amount, Transaction};
 use musig2::PubNonce;
 use openbazaar_escrow::{
     BuyerAwaitingReply, BuyerEscrow, BuyerSession, EscrowTerms, FundingPlan, ModeratorRuling,
     SignedTerms, VendorReply,
 };
-use openbazaar_protocol::vendor_mail_key;
 use serde_json::{json, Map, Value};
-use tormail::StoreKey;
 
 use crate::buyer_orders::BuyerOrder;
-use crate::escrow_fixture::{
-    moderator_mail_key, moderator_record, vendor_mail_secret, MODERATOR_FEE_SATS,
-};
+use crate::escrow_fixture::{moderator_mail_key, moderator_record, MODERATOR_FEE_SATS};
 use crate::escrow_mail::{hex, id_hex, parse_id, unhex, EscrowId, Kind, Mail};
 use crate::escrow_vendor::offer_digest;
 use crate::instructions::{ESCROW_DEMO_WARNING, ESCROW_MAINNET_REFUSAL, ESCROW_SPEND_FEE_SATS};
@@ -73,12 +69,6 @@ fn escrow_id(escrow: &Value) -> Result<EscrowId, String> {
 
 fn key_index(escrow: &Value) -> Result<u32, String> {
     u32::try_from(number(escrow, "buyerKeyIndex")?).map_err(|_| "bad key index".to_string())
-}
-
-fn vendor_key(seller: &str) -> Result<StoreKey, String> {
-    vendor_mail_secret(seller)
-        .map(|secret| secret.public_key())
-        .ok_or_else(|| "that seller has no mailbox key".into())
 }
 
 fn failed(err: impl std::fmt::Display) -> String {
@@ -207,7 +197,7 @@ impl Node {
         );
         self.send_mail(
             &self.vendor_url(&order.seller)?,
-            &vendor_key(&order.seller)?,
+            &self.seller_mail_key(&order.seller)?,
             &mail,
         )
     }
@@ -286,10 +276,7 @@ impl Node {
             bitcoin::secp256k1::schnorr::Signature::from_slice(&fields[2]).map_err(failed)?;
 
         let secp = Secp256k1::new();
-        let store = vendor_mail_key(&order.seller).ok_or("that seller has no store key")?;
-        let store_key = Keypair::from_secret_key(&secp, &store)
-            .x_only_public_key()
-            .0;
+        let store_key = self.seller_store_key(&order.seller)?;
         secp.verify_schnorr(
             &store_signature,
             &offer_digest(&mail.escrow, &terms),
@@ -310,6 +297,11 @@ impl Node {
             || terms.moderator != ctx.moderator
         {
             return Err("the vendor's terms are not the ones this node asked for".into());
+        }
+        let moderator: [u8; 32] = terms.moderator.signing_key[1..].try_into().map_err(failed)?;
+        let store = self.seller_store(&order.seller)?;
+        if !store.details.as_ref().is_some_and(|details| details.moderators.contains(&moderator)) {
+            return Err("the seller's signed store record does not accept this moderator".into());
         }
         terms.validate(&ctx.policy).map_err(failed)?;
         terms
@@ -359,7 +351,7 @@ impl Node {
         let address = self.order_address(Some(&escrow), "address")?;
         let funding = signed.terms().funding_value.to_sat();
         let vendor = self.vendor_url(&order.seller).map_err(PayError::Invalid)?;
-        let vendor_key = vendor_key(&order.seller).map_err(PayError::Invalid)?;
+        let vendor_key = self.seller_mail_key(&order.seller).map_err(PayError::Invalid)?;
 
         self.sync_buyer_wallet().map_err(PayError::Chain)?;
         let fee_rate = self.pay_fee_rate()?;
@@ -492,7 +484,7 @@ impl Node {
         let reply = Mail::new(Kind::Signatures, mail.escrow, vec![signatures.to_bytes()]);
         self.send_mail(
             &self.vendor_url(&order.seller)?,
-            &vendor_key(&order.seller)?,
+            &self.seller_mail_key(&order.seller)?,
             &reply,
         )?;
         self.broadcast_funding(order, &tx).map_err(|err| match err {
@@ -550,7 +542,7 @@ impl Node {
                 .map_err(|err| PayError::Failed(err.to_string()))?
         };
         let vendor = self.vendor_url(&order.seller).map_err(PayError::Invalid)?;
-        let key = vendor_key(&order.seller).map_err(PayError::Invalid)?;
+        let key = self.seller_mail_key(&order.seller).map_err(PayError::Invalid)?;
         self.send_mail(
             &vendor,
             &key,

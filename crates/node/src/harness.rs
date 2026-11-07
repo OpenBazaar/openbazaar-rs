@@ -27,6 +27,7 @@ use crate::chain::{AddressTx, ChainSource, WalletRequest};
 use crate::http::dispatch;
 use crate::network::NetworkMode;
 use crate::{load_catalog, EscrowConfig, Node, NodeConfig};
+use openbazaar_protocol::{fixture_catalog, fixture_keys, Catalog, Listing, Store, StoreId};
 
 pub(crate) const SELLERS: [&str; 3] = ["Marlow Goods", "Hale Paper", "North Kitchen"];
 pub(crate) const PASSPHRASE: &str = "correct horse battery";
@@ -243,6 +244,70 @@ impl Drop for TempDir {
     }
 }
 
+/// Stand-in mainnet stores for tests: the demo listings signed again by
+/// keys that are not fixtures, with mainnet payment codes. A real mainnet
+/// node serves only its own store.
+pub(crate) fn mainnet_test_catalog() -> Catalog {
+    let demo = fixture_catalog();
+    let keys = fixture_keys();
+    let mut catalog = Catalog { stores: Vec::new(), moderator: demo.moderator.clone(), listings: Vec::new() };
+    for store in &demo.stores {
+        let label = format!("openbazaar/test/mainnet-store/{}", store.name);
+        let secret = bitcoin::secp256k1::SecretKey::from_slice(
+            bitcoin::hashes::sha256::Hash::hash(label.as_bytes()).as_byte_array(),
+        )
+        .unwrap();
+        let secp = bitcoin::secp256k1::Secp256k1::new();
+        let code = openbazaar_pay::SilentPaymentCode::from_keys(&keys.scan, &keys.spend, NetworkMode::Mainnet.bitcoin()).unwrap();
+        let pubkey = bitcoin::secp256k1::PublicKey::from_secret_key(&secp, &secret);
+        let pay = crate::stores::direct_pay(pubkey, code.to_string(), &store.name, NetworkMode::Mainnet).unwrap();
+        let id = StoreId::from_bytes(secret.x_only_public_key(&bitcoin::secp256k1::Secp256k1::new()).0.serialize());
+        let signed = Store::sign(
+            store.name.clone(),
+            store.region.clone(),
+            pay,
+            store.rating.unwrap(),
+            store.details.clone().unwrap(),
+            &secret,
+        )
+        .unwrap();
+        for listing in demo.listings.iter().filter(|listing| listing.store_id == store.id) {
+            catalog.listings.push(
+                Listing::sign(
+                    id,
+                    listing.title.clone(),
+                    listing.category.clone(),
+                    listing.price_sats,
+                    listing.ship_from.clone(),
+                    listing.description.clone(),
+                    listing.seller.clone(),
+                    listing.stock,
+                    listing.listed_on,
+                    listing.moderated,
+                    listing.kind,
+                    listing.product.clone(),
+                    listing.shipping_sats,
+                    listing.free_over_sats,
+                    listing.content.expect("demo listings are labelled"),
+                    &secret,
+                )
+                .unwrap(),
+            );
+        }
+        catalog.stores.push(signed);
+    }
+    catalog.verify().unwrap();
+    catalog
+}
+
+/// The catalog a test node on `network` serves.
+pub(crate) fn test_catalog(network: NetworkMode) -> Catalog {
+    match network {
+        NetworkMode::Testnet4 => load_catalog(network).unwrap(),
+        NetworkMode::Mainnet => mainnet_test_catalog(),
+    }
+}
+
 pub(crate) fn open_node(
     dir: &Path,
     network: NetworkMode,
@@ -252,7 +317,7 @@ pub(crate) fn open_node(
 ) -> Node {
     let node = Node::open_with(
         dir,
-        load_catalog(network).unwrap(),
+        test_catalog(network),
         NodeConfig {
             network,
             confirmations,

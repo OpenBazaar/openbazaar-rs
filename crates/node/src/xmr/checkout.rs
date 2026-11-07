@@ -52,7 +52,7 @@ pub(crate) fn add_xmr_flags(node: &Node, value: &mut Value) {
     if let Some(listings) = value["listings"].as_array_mut() {
         for listing in listings {
             let seller = listing["seller"].as_str().unwrap_or_default();
-            listing["acceptsXmr"] = json!(enabled && node.xmr.accepts(seller));
+            listing["acceptsXmr"] = json!(enabled && node.accepts_xmr(seller));
         }
     }
     value["xmr"] = json!({ "enabled": enabled, "network": node.xmr.xmr_network().as_str() });
@@ -68,7 +68,7 @@ impl Node {
         if self.xmr.chain().is_none() {
             return Err(OrderError::Invalid("Monero is off on this node. Start it with --xmr-daemon to pay in Monero."));
         }
-        if !self.xmr.accepts(seller) {
+        if !self.accepts_xmr(seller) {
             return Err(OrderError::Invalid("This store does not accept Monero."));
         }
         match self.xmr.store(seller) {

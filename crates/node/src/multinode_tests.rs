@@ -343,3 +343,36 @@ fn escrow_funded_from_elsewhere_is_flagged_without_a_refund() {
     assert_eq!(flagged["status"], FUNDED_WITHOUT_REFUND);
     assert_eq!(flagged["escrow"]["refundHeld"], false);
 }
+
+#[test]
+fn escrow_mail_that_is_replayed_or_from_another_sender_is_dropped() {
+    use crate::escrow_mail::{parse_id, Kind, Mail};
+    use tormail::{seal_message, SenderKey};
+
+    let market = Market::new();
+    let buyer = &market.buyer.node;
+    let vendor = &market.vendor.node;
+    let placed = checkout(buyer, &[("Paperback novel", SELLER, "escrow")]);
+    let id = placed[0]["orderId"].as_str().unwrap().to_string();
+    let waiting = vendor.escrow.inbox.list().unwrap();
+    assert_eq!(waiting.len(), 1, "the buyer's request waits at the vendor");
+    let request = vendor.escrow.inbox.take(&waiting[0]).unwrap();
+    vendor.handle_letter(&request).unwrap();
+    let err = vendor.handle_letter(&request).unwrap_err();
+    assert!(err.contains("already received"), "{err}");
+    assert_eq!(market.deliver(), 1, "only the offer goes back");
+    assert_eq!(order(buyer, &id)["status"], AWAITING_FUNDING);
+
+    let escrow = parse_id(order(buyer, &id)["escrow"]["id"].as_str().unwrap()).unwrap();
+    let stranger = SenderKey::generate();
+    let as_buyer = Mail::new(Kind::Request, escrow, Vec::new());
+    let letter = seal_message(&as_buyer.encode(), &vendor.seller_mail_key(SELLER).unwrap(), &stranger).unwrap();
+    let err = vendor.handle_letter(&letter).unwrap_err();
+    assert!(err.contains("different sender"), "{err}");
+    let as_vendor = Mail::new(Kind::Offer, escrow, Vec::new());
+    let letter = seal_message(&as_vendor.encode(), &buyer.buyer_mail_secret().public_key(), &stranger).unwrap();
+    let err = buyer.handle_letter(&letter).unwrap_err();
+    assert!(err.contains("different sender"), "{err}");
+    assert_eq!(order(buyer, &id)["status"], AWAITING_FUNDING);
+    assert_eq!(sale(vendor)["stage"], "offered");
+}

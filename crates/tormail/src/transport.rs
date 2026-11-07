@@ -182,23 +182,36 @@ mod tests {
     use super::*;
     use crate::onion::TEST_ONION;
     use crate::order::{ListingHash, Order, PaymentRail};
-    use crate::seal::{open_order, open_reply, seal_order, seal_reply, ReplyKeypair, StoreKeypair};
+    use crate::letter::SenderKey;
+    use crate::reply::{DropId, ReplyDelivery, ReplyPath};
+    use crate::seal::{
+        open_order, open_reply, seal_order, seal_reply, ReplyKeypair, StoreKeypair, LETTER_BUCKETS, MAX_REPLY_LEN,
+        REPLY_BUCKETS,
+    };
+
+    fn order_with(ship_to: &str, reply: &ReplyKeypair) -> Order {
+        let mut options = BTreeMap::new();
+        options.insert("size".into(), "m".into());
+        Order::new(
+            ListingHash([9u8; 32]),
+            1,
+            options,
+            ship_to,
+            PaymentRail::OnChain,
+            ReplyPath {
+                key: *reply.public_key(),
+                onion: Some(OnionAddress::parse(TEST_ONION).unwrap()),
+                drop: DropId::generate(),
+            },
+        )
+        .unwrap()
+    }
 
     fn sample() -> (StoreKeypair, ReplyKeypair, Order, SealedLetter) {
         let vendor = StoreKeypair::generate();
         let reply = ReplyKeypair::generate();
-        let mut options = BTreeMap::new();
-        options.insert("size".into(), "m".into());
-        let order = Order::new(
-            ListingHash([9u8; 32]),
-            1,
-            options,
-            "14 Harbor Lane",
-            PaymentRail::OnChain,
-            *reply.public_key(),
-        )
-        .unwrap();
-        let sealed = seal_order(&order, vendor.public()).unwrap();
+        let order = order_with("14 Harbor Lane", &reply);
+        let sealed = seal_order(&order, vendor.public(), &SenderKey::generate()).unwrap();
         (vendor, reply, order, sealed)
     }
 
@@ -206,28 +219,83 @@ mod tests {
     fn messages_are_separate_from_orders_and_fill_one_frame() {
         use crate::seal::{open_message, seal_message, MAX_MESSAGE_LEN};
         let (vendor, _, _, order_letter) = sample();
+        let from = SenderKey::generate();
         let body = vec![0x5a; MAX_MESSAGE_LEN];
-        let sealed = seal_message(&body, vendor.public()).unwrap();
-        assert!(sealed.to_bytes().len() <= MAX_SEALED_LEN);
+        let sealed = seal_message(&body, vendor.public(), &from).unwrap();
+        assert_eq!(sealed.to_bytes().len(), MAX_SEALED_LEN);
         let decoded = SealedLetter::from_bytes(&sealed.to_bytes()).unwrap();
-        assert_eq!(open_message(&decoded, vendor.secret()).unwrap(), body);
+        let opened = open_message(&decoded, vendor.secret()).unwrap();
+        assert_eq!((opened.body, opened.sender), (body, from.id()));
         assert!(open_order(&sealed, vendor.secret()).is_err());
         assert!(open_message(&order_letter, vendor.secret()).is_err());
         assert!(open_message(&sealed, StoreKeypair::generate().secret()).is_err());
-        assert!(seal_message(&vec![0; MAX_MESSAGE_LEN + 1], vendor.public()).is_err());
-        assert!(seal_message(&[], vendor.public()).is_err());
+        assert!(seal_message(&vec![0; MAX_MESSAGE_LEN + 1], vendor.public(), &from).is_err());
+        assert!(seal_message(&[], vendor.public(), &from).is_err());
     }
 
     #[test]
     fn roundtrip_seal_and_reply() {
         let (vendor, reply, order, sealed) = sample();
-        let opened = open_order(&sealed, vendor.secret()).unwrap();
+        let opened = open_order(&sealed, vendor.secret()).unwrap().body;
         assert_eq!(opened, order);
-        assert_eq!(opened.reply_key, *reply.public_key());
+        assert_eq!(opened.reply.key, *reply.public_key());
 
+        let vendor_key = SenderKey::generate();
         let body = b"paid, shipping friday";
-        let sealed_reply = seal_reply(body, &opened.reply_key).unwrap();
-        assert_eq!(open_reply(&sealed_reply, reply.secret()).unwrap(), body);
+        let sealed_reply = seal_reply(body, &opened.reply.key, &vendor_key).unwrap();
+        let read = open_reply(&sealed_reply, reply.secret()).unwrap();
+        assert_eq!((read.body.as_slice(), read.sender), (&body[..], vendor_key.id()));
+        assert!(seal_reply(&vec![1; MAX_REPLY_LEN + 1], &opened.reply.key, &vendor_key).is_err());
+    }
+
+    #[test]
+    fn reply_path_routes_a_reply_without_naming_the_buyer() {
+        let (vendor, reply, _order, sealed) = sample();
+        let path = open_order(&sealed, vendor.secret()).unwrap().body.reply;
+        let sealed_reply = seal_reply(b"shipped", &path.key, &SenderKey::generate()).unwrap();
+        let delivery = path.delivery(sealed_reply).unwrap();
+        assert_eq!(delivery.onion.as_str(), TEST_ONION);
+        let frame = delivery.to_frame();
+        let (drop, received) = ReplyDelivery::from_frame(&frame).unwrap();
+        assert_eq!(drop, path.drop);
+        assert_eq!(open_reply(&received, reply.secret()).unwrap().body, b"shipped");
+        assert!(ReplyDelivery::from_frame(&frame[..frame.len() - 1]).is_err());
+
+        let pending = ReplyPath::sealed_only(path.key, path.drop);
+        let reply_letter = seal_reply(b"shipped", &pending.key, &SenderKey::generate()).unwrap();
+        assert!(pending.delivery(reply_letter).is_none(), "no onion yet: sealed, not delivered");
+    }
+
+    #[test]
+    fn letters_are_padded_to_fixed_buckets() {
+        let vendor = StoreKeypair::generate();
+        let reply = ReplyKeypair::generate();
+        let from = SenderKey::generate();
+        let short = seal_order(&order_with("A", &reply), vendor.public(), &from).unwrap();
+        let long = seal_order(&order_with(&"x".repeat(1000), &reply), vendor.public(), &from).unwrap();
+        assert_eq!(short.to_bytes().len(), LETTER_BUCKETS[0]);
+        assert_eq!(long.to_bytes().len(), LETTER_BUCKETS[0], "ship-to length does not show");
+        let mut options = BTreeMap::new();
+        for i in 0..16 {
+            options.insert(format!("{i:064}"), "9".repeat(200));
+        }
+        let mut big = order_with("A", &reply);
+        big.options = options;
+        assert_eq!(seal_order(&big, vendor.public(), &from).unwrap().to_bytes().len(), LETTER_BUCKETS[1]);
+        for body in [&b"ok"[..], &[7u8; 3000][..]] {
+            let sealed = seal_reply(body, reply.public_key(), &from).unwrap();
+            assert!(REPLY_BUCKETS.contains(&sealed.to_bytes().len()));
+        }
+
+        let mut odd = short.to_bytes();
+        odd.extend_from_slice(&[0; 16]);
+        let len_at = 4 + 1 + 32;
+        let ct_len = (odd.len() - len_at - 4) as u32;
+        odd[len_at..len_at + 4].copy_from_slice(&ct_len.to_le_bytes());
+        assert!(SealedLetter::from_bytes(&odd).is_err(), "a size off the buckets is refused");
+        let mut v1 = short.to_bytes();
+        v1[4] = 1;
+        assert!(SealedLetter::from_bytes(&v1).is_err(), "unauthenticated v1 letters are refused");
     }
 
     #[test]
@@ -244,6 +312,9 @@ mod tests {
         let mut short = sealed.to_bytes();
         short.pop();
         assert!(SealedLetter::from_bytes(&short).is_err());
+        let mut flipped = sealed.to_bytes();
+        flipped[100] ^= 1;
+        assert!(open_order(&SealedLetter::from_bytes(&flipped).unwrap(), vendor.secret()).is_err());
 
         let mut ciphertext = sealed.ciphertext().to_vec();
         ciphertext.pop();
@@ -258,7 +329,7 @@ mod tests {
         futures::executor::block_on(transport.deliver(&sealed)).unwrap();
         let inbox = transport.inbox().unwrap();
         assert_eq!(inbox.len(), 1);
-        assert_eq!(open_order(&inbox[0], vendor.secret()).unwrap(), order);
+        assert_eq!(open_order(&inbox[0], vendor.secret()).unwrap().body, order);
     }
 
     #[test]

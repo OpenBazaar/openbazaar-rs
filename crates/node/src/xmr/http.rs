@@ -5,7 +5,7 @@
 //! | `GET /xmr/wallet` | any | | balance, primary address, sync state |
 //! | `POST /xmr/wallet/subaddress` | any | | a fresh subaddress of the node wallet |
 //! | `GET /xmr/stores` | any | | which stores accept Monero |
-//! | `PUT /xmr/stores` | any | `{seller, accept}` | the same, after the change |
+//! | `PUT /xmr/stores` | any (the node's own store: unlocked) | `{seller, accept}` | the same, after the store's record is signed again |
 //! | `POST /xmr/orders/{id}/pay/quote` | unlocked | | `{quote, ...terms}` |
 //! | `POST /xmr/spend-tickets` | unlocked | `{quote, passphrase}` | `{ticket, ...terms}` |
 //! | `POST /xmr/orders/{id}/pay` | unlocked | `{ticket, confirm?}` | 202, the order with `paying: true` |
@@ -19,6 +19,7 @@ use serde_json::{json, Map, Value};
 use crate::http::{json_body, json_error, local_guard, Client};
 use crate::lock_http::{lock_error, pay_error};
 use crate::spend_tickets::TicketError;
+use crate::xmr::AcceptError;
 use crate::Node;
 
 const MAX_BODY: usize = 4 * 1024;
@@ -47,15 +48,20 @@ pub(crate) fn response(node: &Node, client: &Client, head: &str, method: &str, p
     match (method, rest) {
         ("GET", "/wallet") => wallet(node, origin),
         ("POST", "/wallet/subaddress") => subaddress(node, origin),
-        ("GET", "/stores") => json_body("200 OK", &node.xmr.stores_value(), origin),
+        ("GET", "/stores") => json_body("200 OK", &node.xmr_stores_value(), origin),
         ("PUT", "/stores") => match read_body(body, &["seller", "accept"], origin) {
             Ok(map) => {
                 let (Some(seller), Some(accept)) = (map.get("seller").and_then(Value::as_str), map.get("accept").and_then(Value::as_bool)) else {
                     return json_error("400 Bad Request", "Send {\"seller\": NAME, \"accept\": true or false}.", origin);
                 };
-                match node.xmr.set_accepts(seller, accept) {
-                    Ok(()) => json_body("200 OK", &node.xmr.stores_value(), origin),
-                    Err(message) => json_error("404 Not Found", &message, origin),
+                match node.set_accepts_xmr(seller, accept) {
+                    Ok(()) => json_body("200 OK", &node.xmr_stores_value(), origin),
+                    Err(AcceptError::Unknown(message)) => json_error("404 Not Found", &message, origin),
+                    Err(AcceptError::Locked) => crate::lock_http::locked_response(node.lock.state().as_str(), origin),
+                    Err(AcceptError::Failed(detail)) => {
+                        eprintln!("ob-node: {detail}");
+                        json_error("500 Internal Server Error", "The store could not be signed again.", origin)
+                    }
                 }
             }
             Err(response) => response,

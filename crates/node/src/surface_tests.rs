@@ -6,7 +6,7 @@ use std::time::Instant;
 
 use proptest::prelude::*;
 use serde_json::Value;
-use tormail::{seal_message, StoreKeypair};
+use tormail::{seal_message, SenderKey, StoreKeypair};
 
 use crate::harness::TempDir;
 use crate::http::{respond, Client};
@@ -44,7 +44,7 @@ fn post(path: &str, headers: &str, body: &[u8]) -> Vec<u8> {
 }
 
 fn letter() -> Vec<u8> {
-    seal_message(b"escrow", StoreKeypair::generate().public()).unwrap().to_bytes()
+    seal_message(b"escrow", StoreKeypair::generate().public(), &SenderKey::generate()).unwrap().to_bytes()
 }
 
 #[test]

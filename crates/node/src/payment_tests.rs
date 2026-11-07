@@ -407,7 +407,7 @@ fn wrong_network_strings_are_refused() {
     assert!(chain.broadcasts().is_empty());
 
     let other = TempDir::new();
-    let mainnet_catalog = load_catalog(NetworkMode::Mainnet).unwrap();
+    let mainnet_catalog = crate::harness::mainnet_test_catalog();
     let refused = Node::open_with(&other.0, mainnet_catalog, NodeConfig::offline(NetworkMode::Testnet4));
     assert!(refused.is_err(), "a mainnet catalog on a testnet4 node");
 }

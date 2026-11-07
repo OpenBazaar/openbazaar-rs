@@ -1,7 +1,10 @@
-//! Public fixture keys for the sample shop.
+//! TESTNET4 DEMO DATA: three sample stores and their public fixture keys.
 //!
-//! These secrets are not a wallet. They exist so the catalog signatures are
-//! real. Derivation from a backup phrase is not implemented; see [`KeyRole`](crate::KeyRole).
+//! Every secret here is derived from a public label, so anyone can rebuild
+//! the store and mailbox keys from this source. The stores exist so that the
+//! demo catalog has real signatures and real letters; a node serves them
+//! only on testnet4. A node's own store is signed with the key from its
+//! backup phrase, not with anything in this file.
 
 use bitcoin::secp256k1::SecretKey;
 
@@ -13,9 +16,11 @@ use crate::listing::{Listing, ListingKind};
 use crate::order::{OrderEnvelope, OrderPlaintext};
 use crate::payment::DirectPay;
 use crate::sign;
-use crate::store::Store;
+use crate::store::{CountryCode, Store, StoreDetails, StoreId, StoreProfile};
 use crate::Error;
 
+/// Marlow Goods's store key. The label predates the other stores, so records
+/// signed under it in earlier versions keep their keys.
 const STORE_KEY: &str = "openbazaar/phase0/fixture/store";
 const VENDOR_SPEND_KEY: &str = "openbazaar/phase0/fixture/vendor-spend";
 const SCAN_KEY: &str = "openbazaar/phase0/fixture/scan";
@@ -106,16 +111,135 @@ pub fn package_rate(seller: &str, kind: ListingKind) -> (u64, u64) {
     }
 }
 
-/// Mailbox secret for a fixture seller. Marlow uses the store key.
-pub fn vendor_mail_key(seller: &str) -> Option<SecretKey> {
-    match seller {
-        "Marlow Goods" => Some(sign::secret_from_label(STORE_KEY)),
-        "Hale Paper" => Some(sign::secret_from_label("openbazaar/phase0/fixture/mail/hale")),
-        "North Kitchen" => Some(sign::secret_from_label("openbazaar/phase0/fixture/mail/north")),
-        _ => None,
-    }
+/// One demo store: its keys and its public profile.
+struct FixtureStore {
+    name: &'static str,
+    region: &'static str,
+    slug: &'static str,
+    store_key: &'static str,
+    mail_key: &'static str,
+    tagline: &'static str,
+    about: &'static str,
+    shipping_policy: &'static str,
+    returns_policy: &'static str,
+    processing_time: &'static str,
+    ships_to: &'static [&'static str],
+    created_on: u32,
+    avatar: &'static [u8],
+    banner: &'static [u8],
 }
 
+const STORES: &[FixtureStore] = &[
+    FixtureStore {
+        name: "Marlow Goods",
+        region: "Oregon",
+        slug: "marlow-goods",
+        store_key: STORE_KEY,
+        mail_key: "openbazaar/testnet4/fixture/mail/marlow",
+        tagline: "Books, wool, and kitchen things from the Oregon coast.",
+        about: "A small shop of things we use ourselves: sewn paperbacks, wool socks and blankets, linen, and plain stoneware. Everything is packed flat in paper.",
+        shipping_policy: "Ships in recycled paper. One flat rate per package; free over 30,000 sats.",
+        returns_policy: "Unused goods can come back within 30 days. Digital goods are final.",
+        processing_time: "1 to 3 days",
+        ships_to: &["CA", "US"],
+        created_on: 20260105,
+        avatar: include_bytes!("../fixtures/media/marlow-goods-avatar.png"),
+        banner: include_bytes!("../fixtures/media/marlow-goods-banner.png"),
+    },
+    FixtureStore {
+        name: "Hale Paper",
+        region: "Vermont",
+        slug: "hale-paper",
+        store_key: "openbazaar/testnet4/fixture/store/hale-paper",
+        mail_key: "openbazaar/phase0/fixture/mail/hale",
+        tagline: "Paper, ink, and small tools for people who write by hand.",
+        about: "Cotton paper, walnut ink, dip pens, and binding thread, chosen by a bookbinder. Tools ship sleeved in paper.",
+        shipping_policy: "One flat rate per package; free over 20,000 sats.",
+        returns_policy: "Returns within 14 days if unopened.",
+        processing_time: "2 to 4 days",
+        ships_to: &["US"],
+        created_on: 20260120,
+        avatar: include_bytes!("../fixtures/media/hale-paper-avatar.png"),
+        banner: include_bytes!("../fixtures/media/hale-paper-banner.png"),
+    },
+    FixtureStore {
+        name: "North Kitchen",
+        region: "Maine",
+        slug: "north-kitchen",
+        store_key: "openbazaar/testnet4/fixture/store/north-kitchen",
+        mail_key: "openbazaar/phase0/fixture/mail/north",
+        tagline: "Coffee, honey, oats, and syrup, packed the week they ship.",
+        about: "Pantry goods from small producers. Coffee is roasted weekly, and jars are taped for the trip.",
+        shipping_policy: "One flat rate per package; free over 25,000 sats.",
+        returns_policy: "Food cannot be returned. Tell us if a jar arrives broken.",
+        processing_time: "Ships within a week",
+        ships_to: &["CA", "US"],
+        created_on: 20260201,
+        avatar: include_bytes!("../fixtures/media/north-kitchen-avatar.png"),
+        banner: include_bytes!("../fixtures/media/north-kitchen-banner.png"),
+    },
+];
+
+/// A demo store's secrets. Public; testnet4 only.
+#[derive(Clone)]
+pub struct FixtureStoreKeys {
+    /// Signs the store record and its listings.
+    pub store: SecretKey,
+    /// X25519 mailbox secret, on its own label, not the store scalar.
+    pub mailbox: [u8; 32],
+}
+
+/// The keys of the demo store named `name`.
+pub fn fixture_store_keys(name: &str) -> Option<FixtureStoreKeys> {
+    let store = STORES.iter().find(|store| store.name == name)?;
+    Some(FixtureStoreKeys {
+        store: sign::secret_from_label(store.store_key),
+        mailbox: sign::content_hash(store.mail_key.as_bytes()),
+    })
+}
+
+/// The demo stores' avatar and banner images, as served bytes.
+pub fn fixture_media() -> Vec<&'static [u8]> {
+    STORES.iter().flat_map(|store| [store.avatar, store.banner]).collect()
+}
+
+fn fixture_store(draft: &FixtureStore, moderator: [u8; 32]) -> Store {
+    let keys = fixture_store_keys(draft.name).expect("fixture store has keys");
+    let mailbox_key = x25519_dalek::PublicKey::from(&x25519_dalek::StaticSecret::from(keys.mailbox)).to_bytes();
+    let details = StoreDetails {
+        mailbox_key,
+        onion: String::new(),
+        moderators: vec![moderator],
+        profile: StoreProfile {
+            tagline: draft.tagline.to_string(),
+            about: draft.about.to_string(),
+            avatar: Some(sign::content_hash(draft.avatar)),
+            banner: Some(sign::content_hash(draft.banner)),
+            shipping_policy: draft.shipping_policy.to_string(),
+            returns_policy: draft.returns_policy.to_string(),
+            processing_time: draft.processing_time.to_string(),
+            ships_to: draft
+                .ships_to
+                .iter()
+                .map(|code| CountryCode::parse(code).expect("fixture country code"))
+                .collect(),
+            created_on: draft.created_on,
+        },
+        accepts_xmr: false,
+    };
+    Store::sign(
+        draft.name,
+        draft.region,
+        DirectPay {
+            bolt12_offer: format!("bolt12-offer:fixture:{}", draft.slug),
+            silent_payment_code: format!("bip352-code:fixture:{}", draft.slug),
+        },
+        ContentRating::General,
+        details,
+        &keys.store,
+    )
+    .expect("fixture store signs")
+}
 
 /// Fixture spend, scan, and review keys. These are not a wallet.
 ///
@@ -123,7 +247,6 @@ pub fn vendor_mail_key(seller: &str) -> Option<SecretKey> {
 /// replaces them with BOLT 12 and BIP 352 values and re-signs the store.
 #[derive(Clone)]
 pub struct FixtureKeys {
-    pub store: SecretKey,
     pub spend: SecretKey,
     pub scan: SecretKey,
     pub buyer: SecretKey,
@@ -145,7 +268,6 @@ impl Moderator {
 
 pub fn fixture_keys() -> FixtureKeys {
     FixtureKeys {
-        store: sign::secret_from_label(STORE_KEY),
         spend: sign::secret_from_label(VENDOR_SPEND_KEY),
         scan: sign::secret_from_label(SCAN_KEY),
         buyer: sign::secret_from_label(BUYER_SPEND_KEY),
@@ -153,9 +275,11 @@ pub fn fixture_keys() -> FixtureKeys {
     }
 }
 
+/// Store records and the listings they signed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Catalog {
-    pub store: Store,
+    /// Each listing's `store_id` names one of these. Ids do not repeat.
+    pub stores: Vec<Store>,
     /// Ordinary reviewer for moderated checkout. Every fixture listing accepts them.
     pub moderator: Moderator,
     pub listings: Vec<Listing>,
@@ -163,30 +287,54 @@ pub struct Catalog {
 
 impl Catalog {
     pub fn verify(&self) -> Result<(), Error> {
-        self.store.verify()?;
+        for (i, store) in self.stores.iter().enumerate() {
+            store.verify()?;
+            if self.stores[..i].iter().any(|other| other.id == store.id) {
+                return Err(Error::StoreMismatch);
+            }
+        }
         for listing in &self.listings {
             listing.verify()?;
-            if listing.store_id != self.store.id {
+            if self.store(&listing.store_id).is_none() {
                 return Err(Error::StoreMismatch);
             }
         }
         Ok(())
     }
 
+    pub fn store(&self, id: &StoreId) -> Option<&Store> {
+        self.stores.iter().find(|store| store.id == *id)
+    }
+
+    /// The store that signed `listing`.
+    pub fn store_of(&self, listing: &Listing) -> Option<&Store> {
+        self.store(&listing.store_id)
+    }
+
+    /// Store records first, then listings.
     pub fn encode(&self) -> Result<Vec<u8>, Error> {
-        let mut bytes = self.store.encode()?;
+        let mut bytes = Vec::new();
+        for store in &self.stores {
+            bytes.extend(store.encode()?);
+        }
         for listing in &self.listings {
             bytes.extend(listing.encode()?);
         }
         Ok(bytes)
     }
 
-    /// Decode a store record followed by listing records.
+    /// Decode one or more store records followed by listing records.
     ///
     /// `moderator` is not inside the signed bytes. Call [`Catalog::verify`]
     /// after this; a bad signature returns [`Error::BadSignature`].
     pub fn decode_signed(bytes: &[u8], moderator: Moderator) -> Result<Self, Error> {
-        let (store, mut offset) = crate::store::Store::decode_one(bytes)?;
+        let mut stores = Vec::new();
+        let mut offset = 0;
+        while bytes[offset..].starts_with(b"OBST") || stores.is_empty() {
+            let (store, len) = crate::store::Store::decode_one(&bytes[offset..])?;
+            offset += len;
+            stores.push(store);
+        }
         let mut listings = Vec::new();
         while offset < bytes.len() {
             let (listing, len) = crate::listing::Listing::decode_one(&bytes[offset..])?;
@@ -194,29 +342,26 @@ impl Catalog {
             listings.push(listing);
         }
         Ok(Self {
-            store,
+            stores,
             moderator,
             listings,
         })
     }
 }
 
+/// The three demo stores and their listings, each listing signed by its own store.
 pub fn fixture_catalog() -> Catalog {
-    let store_secret = sign::secret_from_label(STORE_KEY);
-    let store = Store::sign(
-        "Marlow Goods",
-        "Oregon",
-        DirectPay {
-            bolt12_offer: "bolt12-offer:fixture:marlow-goods".to_string(),
-            silent_payment_code: "bip352-code:fixture:marlow-goods".to_string(),
-        },
-        ContentRating::General,
-        &store_secret,
-    )
-    .expect("fixture store signs");
+    let keys = fixture_keys();
+    let moderator = Moderator {
+        name: "June Pell".to_string(),
+        id: sign::xonly(&keys.moderator),
+    };
+    let stores: Vec<Store> = STORES.iter().map(|draft| fixture_store(draft, moderator.id)).collect();
     let listings = LISTINGS
         .iter()
         .map(|draft| {
+            let store = stores.iter().find(|store| store.name == draft.seller).expect("listing names a fixture store");
+            let secret = fixture_store_keys(draft.seller).expect("fixture store has keys").store;
             let (shipping_sats, free_over_sats) = package_rate(draft.seller, draft.kind);
             Listing::sign(
                 store.id,
@@ -234,18 +379,14 @@ pub fn fixture_catalog() -> Catalog {
                 shipping_sats,
                 free_over_sats,
                 ContentLabel::GENERAL,
-                &store_secret,
+                &secret,
             )
-            .expect("fixture listing is signed by the fixture store")
+            .expect("fixture listing is signed by its fixture store")
         })
         .collect();
-    let keys = fixture_keys();
     Catalog {
-        store,
-        moderator: Moderator {
-            name: "June Pell".to_string(),
-            id: sign::xonly(&keys.moderator),
-        },
+        stores,
+        moderator,
         listings,
     }
 }
@@ -330,13 +471,13 @@ mod tests {
         }
         assert!(sellers.len() >= 3);
         assert!(catalog.listings.len() >= 30);
-        assert_eq!(catalog.store.rating, Some(ContentRating::General));
+        assert!(catalog.stores.iter().all(|store| store.rating == Some(ContentRating::General)));
         assert!(catalog
             .listings
             .iter()
             .all(|listing| listing.content == Some(ContentLabel::GENERAL)));
         assert_eq!(catalog.moderator.name, "June Pell");
-        assert_ne!(catalog.moderator.id, *catalog.store.id.as_bytes());
+        assert!(catalog.stores.iter().all(|store| catalog.moderator.id != *store.id.as_bytes()));
 
         let order = fixture_order(&catalog);
         let order_bytes = order.encode().unwrap();
@@ -370,12 +511,58 @@ mod tests {
             dispute.escrow.buyer_wins.adaptor_point,
             dispute.escrow.vendor_wins.adaptor_point
         );
-        assert_ne!(dispute.escrow.buyer, *catalog.store.id.as_bytes());
-        assert_ne!(dispute.escrow.vendor, *catalog.store.id.as_bytes());
+        for store in &catalog.stores {
+            assert_ne!(dispute.escrow.buyer, *store.id.as_bytes());
+            assert_ne!(dispute.escrow.vendor, *store.id.as_bytes());
+        }
         assert_ne!(dispute.escrow.buyer, dispute.escrow.vendor);
         dispute.claim.push('!');
         let tampered = DisputeEnvelope::Plaintext { dispute, signature };
         assert_eq!(tampered.verify(), Err(Error::BadSignature));
+    }
+
+    #[test]
+    fn each_demo_seller_is_its_own_store_with_its_own_keys() {
+        let catalog = fixture_catalog();
+        assert_eq!(catalog.stores.len(), 3);
+        let mut seen = Vec::new();
+        for store in &catalog.stores {
+            let keys = fixture_store_keys(&store.name).unwrap();
+            assert_eq!(sign::xonly(&keys.store), *store.id.as_bytes());
+            assert_ne!(keys.mailbox, keys.store.secret_bytes(), "the mailbox key is not the store scalar");
+            let details = store.details.as_ref().unwrap();
+            assert_eq!(store.version(), 3);
+            assert_eq!(details.moderators, vec![catalog.moderator.id]);
+            assert!(!details.profile.tagline.is_empty() && !details.profile.ships_to.is_empty());
+            let media = fixture_media();
+            for hash in [details.profile.avatar.unwrap(), details.profile.banner.unwrap()] {
+                assert!(media.iter().any(|bytes| sign::content_hash(bytes) == hash));
+            }
+            seen.extend([*store.id.as_bytes(), details.mailbox_key]);
+            let listings: Vec<_> = catalog.listings.iter().filter(|l| l.store_id == store.id).collect();
+            assert!(!listings.is_empty());
+            assert!(listings.iter().all(|listing| listing.seller == store.name));
+        }
+        for (i, key) in seen.iter().enumerate() {
+            assert!(!seen[i + 1..].contains(key), "store and mailbox keys never repeat");
+        }
+        assert!(fixture_store_keys("Someone Else").is_none());
+    }
+
+    #[test]
+    fn a_listing_moved_to_another_store_does_not_verify() {
+        let mut catalog = fixture_catalog();
+        let other = catalog.stores[1].id;
+        let listing = catalog.listings.iter_mut().find(|l| l.store_id != other).unwrap();
+        listing.store_id = other;
+        assert_eq!(catalog.verify(), Err(Error::BadSignature));
+
+        let mut catalog = fixture_catalog();
+        catalog.stores.remove(2);
+        assert_eq!(catalog.verify(), Err(Error::StoreMismatch));
+        let mut catalog = fixture_catalog();
+        catalog.stores.push(catalog.stores[0].clone());
+        assert_eq!(catalog.verify(), Err(Error::StoreMismatch));
     }
 
     #[test]
@@ -406,11 +593,7 @@ mod tests {
         legacy.content = None;
         let encoded = legacy.encode().unwrap();
         let body = &encoded[..encoded.len() - sign::SIG_LEN];
-        legacy.signature = sign::sign("ob/listing/v1", body, &sign::secret_from_label(STORE_KEY));
-        assert_eq!(
-            legacy.content_hash().unwrap().to_hex(),
-            "9344117bf6a09a44e8f193f6ee9bd687602b38b569f5b3239b4a3106bb0e4471"
-        );
+        legacy.signature = sign::sign("ob/listing/v1", body, &fixture_store_keys("Hale Paper").unwrap().store);
         *pen = legacy;
         catalog.verify().unwrap();
         let decoded =

@@ -1,3 +1,4 @@
+import { verifiedListings, verifiedStore, type StoreSummary } from "./records.ts";
 import type { LabelerLabel } from "./safety/filter";
 
 // The shop dials only this origin. A query parameter, settings field, seed,
@@ -41,6 +42,8 @@ export type ListingHeader = {
   shipFrom: string;
   kind: ListingKind;
   acceptsModerator: boolean;
+  /** Monero is on at this node and the store's signed record takes it. */
+  acceptsXmr: boolean;
   description?: string;
   seller: string;
   stock: number;
@@ -58,14 +61,20 @@ export type Moderator = {
 };
 
 export type ShopCatalog = {
+  /** The first store, with the strictest rating of all stores. */
   store: {
     id: string;
     name: string;
     region: string;
     contentRating: ContentRating;
   };
+  /** Every store whose signed record verified. */
+  stores: StoreSummary[];
   moderator: Moderator | null;
+  /** Only listings whose signed record verified and whose store is in `stores`. */
   listings: ListingHeader[];
+  /** Listings dropped because their record was missing, did not verify, or named an unknown store. */
+  rejected: number;
 };
 
 export type ShipTo = {
@@ -215,18 +224,28 @@ export async function fetchCatalog(): Promise<ShopCatalog> {
 }
 
 export async function paired(path: string, init?: RequestInit): Promise<unknown> {
+  const response = await pairedResponse(path, init);
+  if (init?.method === "DELETE") {
+    return readJson(response);
+  }
+  return readJson(response);
+}
+
+/// A request only the paired client may make, as the raw response.
+export async function pairedResponse(path: string, init?: RequestInit): Promise<Response> {
   const token = await pairingToken();
-  const response = await request(path, {
+  return request(path, {
     ...init,
     headers: {
       ...(init?.headers ?? {}),
       [PAIR_HEADER]: token,
     },
   });
-  if (init?.method === "DELETE") {
-    return readJson(response);
-  }
-  return readJson(response);
+}
+
+/// `GET` a paired JSON endpoint.
+export async function pairedJson(path: string): Promise<unknown> {
+  return paired(path);
 }
 
 export async function fetchAddresses(): Promise<SavedAddress[]> {
@@ -299,10 +318,12 @@ export async function placeOrder(order: CheckoutRequest): Promise<OrderReceipt> 
   return parseReceipt(await readJson(response));
 }
 
-/// Sign the store or one of its listings again with a new self-label.
+/// Sign a store or one of its listings again with a new self-label.
 /// A listing gets a new hash; the returned catalog already carries it.
+/// `storeKey` picks the store when `target` is "store"; without it, the first store.
 export async function setContentLabel(label: {
   target: "store" | string;
+  storeKey?: string;
   rating: Exclude<ContentRating, "unrated">;
   tags: string[];
 }): Promise<{ hash: string | null; catalog: ShopCatalog }> {
@@ -523,23 +544,45 @@ async function errorDetail(response: Response): Promise<{ message: string; code?
   return { message: "The shop can't be reached. The node returned an error.", code };
 }
 
-function parseCatalog(value: unknown): ShopCatalog {
+const RATING_RANK: Record<ContentRating, number> = { general: 0, unrated: 1, sensitive: 2, adult: 3 };
+
+/// Every listing and store is checked against its signed record here; the
+/// page never sees a header the store key did not sign.
+export function parseCatalog(value: unknown): ShopCatalog {
   const record = recordOf(value, "The shop sent a catalog the page could not read.");
-  const store = recordOf(record.store, "The shop sent a catalog the page could not read.");
-  const listings = record.listings;
-  if (!Array.isArray(listings)) {
+  if (!Array.isArray(record.listings)) {
     throw new Error("The shop sent a catalog the page could not read.");
   }
+  const stores = (Array.isArray(record.stores) ? record.stores : [])
+    .map(verifiedStore)
+    .filter((store): store is StoreSummary => store !== null);
+  const { listings, rejected } = verifiedListings(
+    record.listings,
+    new Set(stores.map((store) => store.key)),
+    new Set(stores.filter((store) => store.acceptsXmr).map((store) => store.key)),
+  );
+  const first = stores[0];
+  const strictest = stores.reduce<ContentRating>(
+    (rating, store) => (RATING_RANK[store.contentRating] > RATING_RANK[rating] ? store.contentRating : rating),
+    "general",
+  );
   return {
     store: {
-      id: requiredString(store.id),
-      name: requiredString(store.name),
-      region: requiredString(store.region),
-      contentRating: parseRating(store.contentRating),
+      id: first?.key ?? "",
+      name: first?.name ?? "",
+      region: first?.region ?? "",
+      contentRating: first ? strictest : "unrated",
     },
+    stores,
     moderator: parseModerator(record.moderator),
-    listings: listings.map(parseListing),
+    listings,
+    rejected,
   };
+}
+
+/// The signed rating of the store that sold `listing`.
+export function storeRatingOf(catalog: ShopCatalog, listing: ListingHeader): ContentRating {
+  return catalog.stores.find((store) => store.key === listing.storeId)?.contentRating ?? "unrated";
 }
 
 function parseAddress(value: unknown): SavedAddress {
@@ -599,47 +642,6 @@ function parseModerator(value: unknown): Moderator | null {
     return null;
   }
   return { name: name.trim(), id: id.trim() };
-}
-
-function parseListing(value: unknown): ListingHeader {
-  const listing = recordOf(value, "The shop sent a listing the page could not read.");
-  const kind = listing.kind;
-  if (kind !== "physical" && kind !== "digital") {
-    throw new Error("The shop sent a listing the page could not read.");
-  }
-  const description =
-    typeof listing.description === "string" && listing.description.trim()
-      ? listing.description.trim()
-      : undefined;
-  return {
-    hash: requiredString(listing.hash),
-    storeId: requiredString(listing.storeId),
-    title: requiredString(listing.title),
-    category: requiredString(listing.category),
-    priceSats: requiredNumber(listing.priceSats),
-    shipFrom: requiredString(listing.shipFrom),
-    kind,
-    acceptsModerator: listing.acceptsModerator === true,
-    description,
-    seller: requiredString(listing.seller),
-    stock: requiredNumber(listing.stock),
-    listedOn: requiredNumber(listing.listedOn),
-    product: typeof listing.product === "string" ? listing.product : "",
-    shippingSats: listing.shippingSats === undefined ? 0 : requiredNumber(listing.shippingSats),
-    freeOverSats: listing.freeOverSats === undefined ? 0 : requiredNumber(listing.freeOverSats),
-    contentRating: parseRating(listing.contentRating),
-    contentTags: Array.isArray(listing.contentTags)
-      ? listing.contentTags.filter((tag): tag is string => typeof tag === "string")
-      : [],
-  };
-}
-
-// A node that predates labels sends nothing: unrated. A rating this page
-// does not know yet is treated as the most restricted one.
-function parseRating(value: unknown): ContentRating {
-  if (value === undefined || value === null) return "unrated";
-  if (value === "general" || value === "sensitive" || value === "adult" || value === "unrated") return value;
-  return "adult";
 }
 
 function parseCheckout(value: unknown): CheckoutReceipt {

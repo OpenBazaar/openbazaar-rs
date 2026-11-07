@@ -18,7 +18,8 @@ use crate::wire::{Reader, Writer, SCRIPT_MAX};
 use crate::{Error, Party};
 
 const TERMS_MAGIC: &[u8; 4] = b"OBET";
-const SIGNED_MAGIC: &[u8; 4] = b"OBST";
+/// Not `OBST`, which is the catalog store record.
+const SIGNED_MAGIC: &[u8; 4] = b"OBTS";
 const VERSION: u8 = 2;
 
 /// Everything the escrow can pay, agreed before funding.
