@@ -20,10 +20,7 @@ use crate::{Node, OrderError};
 pub const ESCROW_MAINNET_REFUSAL: &str =
     "Moderated escrow is not available on mainnet. It is a testnet4 demo until the two-party escrow protocol is reviewed.";
 
-pub const ESCROW_DEMO_WARNING: &str = "Unsafe demo: testnet4 coins only. The moderator and the demo vendor mailbox keys are public fixtures, escrow messages travel over loopback HTTP without Tor, and a node restart after funding keeps only the presigned refund. Do not send anything of value.";
-
-/// Network fee every presigned escrow spend carries. The buyer adds it to the price.
-pub const ESCROW_SPEND_FEE_SATS: u64 = 1_000;
+pub const ESCROW_DEMO_WARNING: &str = "Unsafe demo: testnet4 coins only. The moderator and the demo vendor mailbox keys are public fixtures, escrow messages travel over loopback HTTP without Tor, and the protocol has not had a cryptographic review. Do not send anything of value.";
 
 impl Node {
     pub(crate) fn direct_payment(&self, total: u64, seller: &str) -> Result<Value, OrderError> {

@@ -17,7 +17,7 @@ use tormail::{StoreKey, StoreSecret};
 use crate::network::NetworkMode;
 use crate::Node;
 
-/// The fixture moderator's fee, paid only by a dispute outcome.
+/// The fixture moderator's fee, paid by a dispute outcome and by the vendor claim.
 pub const MODERATOR_FEE_SATS: u64 = 1_000;
 
 const MODERATOR_MAIL_LABEL: &[u8] = b"openbazaar/testnet4/fixture/moderator-mail";

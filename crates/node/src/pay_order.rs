@@ -374,7 +374,7 @@ impl Node {
         if final_inputs {
             builder.set_exact_sequence(Sequence::ENABLE_LOCKTIME_NO_RBF).only_witness_utxo();
         }
-        for outpoint in untrusted {
+        for outpoint in untrusted.into_iter().chain(self.escrow.coins.outpoints()) {
             builder.add_unspendable(outpoint);
         }
         let psbt = builder.finish().map_err(|err| {
