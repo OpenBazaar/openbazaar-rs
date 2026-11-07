@@ -5,8 +5,8 @@ use bitcoin::secp256k1::SecretKey;
 use crate::sign;
 use crate::{
     Availability, Axis, Bid, Commerce, Condition, ContentLabel, Coupon, CountryCode, Discount, Error, FiatPrice,
-    Listing, ListingDetails, ListingId, ListingKind, Offer, Pricing, Purchase, Receipt, Returns, Review, Sale,
-    Service, Shipping, SignedCoupon, SignedOffer, SignedReceipt, SignedReview, StoreId, Tier, Variant, VariantId,
+    Listing, ListingDetails, ListingId, ListingKind, Offer, Pricing, Purchase, Receipt, Reply, Returns, Review, Sale,
+    Service, Shipping, SignedCoupon, SignedOffer, SignedReceipt, SignedReply, SignedReview, StoreId, Tier, Variant, VariantId,
     Variants,
 };
 
@@ -338,4 +338,27 @@ fn reviews_need_a_receipt_from_the_store() {
 
     let doxxing = SignedReview::sign(Review { receipt, rating: 1, text: "Seller lives at 14 Elm Street".into(), written_on: 20261109 }, &review_secret);
     assert!(matches!(doxxing, Err(Error::PrivateText { field: "review", .. })));
+}
+
+#[test]
+fn a_reply_answers_one_review_and_only_its_store_signs_it() {
+    let review_secret = sign::secret_from_label("order-8-review");
+    let receipt = SignedReceipt::sign(
+        Receipt { store_id: store_id(), listing_id: ListingId([9; 16]), review_key: sign::xonly(&review_secret), paid_on: 20261101 },
+        &store_secret(),
+    )
+    .unwrap();
+    let review = SignedReview::sign(Review { receipt, rating: 2, text: "Arrived late.".into(), written_on: 20261110 }, &review_secret).unwrap();
+    let reply = SignedReply::sign(
+        Reply { store_id: store_id(), review: review.hash().unwrap(), text: "Sorry, the post office lost a week.".into(), written_on: 20261111 },
+        &store_secret(),
+    )
+    .unwrap();
+    let decoded = SignedReply::decode(&reply.encode().unwrap()).unwrap();
+    assert!(decoded.answers(&review));
+
+    let other = SignedReview::sign(Review { rating: 5, ..review.terms.clone() }, &review_secret).unwrap();
+    assert!(!decoded.answers(&other), "a reply names one review's hash");
+    let forged = Reply { store_id: store_id(), review: review.hash().unwrap(), text: "Thanks!".into(), written_on: 20261111 };
+    assert_eq!(SignedReply::sign(forged, &review_secret).err(), Some(Error::BadKey));
 }

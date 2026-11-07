@@ -8,6 +8,10 @@
 //! two reviews by one buyer do not link and a review does not point at a
 //! payment on chain.
 //!
+//! The seller may answer with one [`Reply`], signed by the store key and
+//! naming the review's hash. It sits beside the review; the review's text
+//! is signed by the buyer's key, so the seller cannot change it.
+//!
 //! What this cannot stop: a seller minting receipts for keys it controls.
 //! A client shows the count of verified reviews next to the store's age and
 //! sales, not as proof of independent buyers.
@@ -133,5 +137,60 @@ impl SignedReview {
 
     pub fn listing_id(&self) -> ListingId {
         self.terms.receipt.terms.listing_id
+    }
+}
+
+/// The store's answer to one review.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Reply {
+    pub store_id: StoreId,
+    /// [`Signed::hash`] of the review answered.
+    pub review: [u8; 32],
+    pub text: String,
+    /// YYYYMMDD.
+    pub written_on: u32,
+}
+
+pub type SignedReply = Signed<Reply>;
+
+impl Terms for Reply {
+    const TAG: &'static str = "ob/review-reply/v1";
+    const MAGIC: [u8; 4] = *b"OBRY";
+    const VERSION: u8 = 1;
+
+    fn signer(&self) -> [u8; PUBKEY_LEN] {
+        *self.store_id.as_bytes()
+    }
+
+    fn check(&self) -> Result<(), Error> {
+        if self.text.is_empty() || self.text.len() > MAX_REVIEW_TEXT {
+            return Err(Error::BadTerms("a reply is 1 to 1,000 bytes"));
+        }
+        Ok(())
+    }
+
+    fn check_public_text(&self) -> Result<(), Error> {
+        public_text::check("reply", &self.text)
+    }
+
+    fn write(&self, writer: &mut Writer) -> Result<(), Error> {
+        writer.bytes(self.store_id.as_bytes());
+        writer.bytes(&self.review);
+        writer.str(&self.text)?;
+        writer.u32(self.written_on);
+        Ok(())
+    }
+
+    fn read(reader: &mut Reader<'_>) -> Result<Self, Error> {
+        Ok(Self { store_id: StoreId::from_bytes(reader.array()?), review: reader.array()?, text: reader.str()?, written_on: reader.u32()? })
+    }
+}
+
+impl SignedReply {
+    /// The reply is signed by the store the review is about, and names that review.
+    pub fn answers(&self, review: &SignedReview) -> bool {
+        self.terms.store_id == review.store_id()
+            && review.hash().is_ok_and(|hash| hash == self.terms.review)
+            && self.verify().is_ok()
     }
 }

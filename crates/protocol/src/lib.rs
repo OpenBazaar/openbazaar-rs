@@ -54,7 +54,7 @@ pub use listing_details::{FiatPrice, ListingDetails, ListingId, MAX_IMAGES};
 pub use coupon::{Coupon, Discount, SignedCoupon, MAX_COUPON_LISTINGS};
 pub use offer::{Bid, Offer, SignedOffer};
 pub use order::{OrderEnvelope, OrderPlaintext};
-pub use review::{Receipt, Review, SignedReceipt, SignedReview, MAX_REVIEW_TEXT};
+pub use review::{Receipt, Reply, Review, SignedReceipt, SignedReply, SignedReview, MAX_REVIEW_TEXT};
 pub use shipping::{Service, Shipping, MAX_SERVICES, MAX_SERVICE_REGIONS};
 pub use signed::{Signed, Terms};
 pub use taxonomy::{taxonomy_name, TAXONOMY};
