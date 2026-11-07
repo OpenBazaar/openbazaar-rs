@@ -224,8 +224,8 @@ fn network_warns_while_requests_go_over_clearnet() {
     let (_dir, node) = node();
     let response = send(&node, b"GET /network HTTP/1.1\r\nHost: 127.0.0.1:8787\r\n\r\n");
     let value = body(&response);
-    assert_eq!(value["clearnet"], true);
-    assert!(value["privacyWarning"].as_str().unwrap().contains("--proxy"));
+    assert_eq!(value["clearnet"], false);
+    assert!(value["privacyWarning"].as_str().unwrap().contains("not contacted"));
     assert!(value["proxy"].is_null());
     assert_eq!(value["publicChainServer"], false);
     assert!(value["chainBackend"]["backend"].is_string() && value["chainBackend"]["reveals"].is_string());

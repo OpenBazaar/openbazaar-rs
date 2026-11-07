@@ -2,7 +2,8 @@
 //!
 //! Coinbase (the BTC fiat source) does not list XMR, so this asks Kraken's
 //! public ticker for the last XMR/BTC trade, through the same proxy and
-//! `--no-rates` switch as [`crate::rates`]. The answer is an integer number
+//! `--no-rates` switch as [`crate::rates`]. With no proxy the request is not
+//! made. The answer is an integer number
 //! of sats per XMR; order amounts come from it with integer math
 //! ([`openbazaar_xmr::amount::piconero_for_sats`]). Fiat for XMR is the BTC
 //! fiat price scaled by it, for display only.
@@ -70,6 +71,9 @@ impl XmrRate {
 }
 
 fn fetch(egress: &Egress, source: &str) -> Option<u64> {
+    if egress.proxy.is_none() {
+        return None;
+    }
     let agent = egress.ureq_agent(Duration::from_secs(3), Duration::from_secs(4)).ok()?;
     parse_kraken(&agent.get(source).call().ok()?.into_string().ok()?)
 }
@@ -106,6 +110,12 @@ mod tests {
         assert_eq!((kind, host.as_str()), (3, "api.kraken.com"));
         let off = XmrRate::new(Egress { proxy: None, live_rates: false });
         assert_eq!(off.sats_per_xmr(), None);
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let mut clear = XmrRate::new(Egress { proxy: None, live_rates: true });
+        clear.source = format!("http://{}/", listener.local_addr().unwrap());
+        assert_eq!(clear.sats_per_xmr(), None);
+        assert!(listener.accept().is_err(), "Kraken was dialed without a proxy");
     }
 
     #[test]

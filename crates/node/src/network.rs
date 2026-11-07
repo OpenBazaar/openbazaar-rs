@@ -543,6 +543,8 @@ mod tests {
         assert_eq!((config.network, config.nodes[0].url.as_str()), (XmrNetwork::Stagenet, "http://127.0.0.1:38081"));
         let main = ["--network", "mainnet", "--xmr-daemon", "http://node.example.org:18089"];
         assert!(ServeOptions::parse(&args(&main)).unwrap_err().contains("Tor"));
+        let stagenet = ["--xmr-daemon", "http://node.example.org:38081"];
+        assert!(ServeOptions::parse(&args(&stagenet)).unwrap_err().contains("Tor"));
         let tor = ServeOptions::parse(&args(&[&main[..], &["--proxy", "socks5h://127.0.0.1:9050"]].concat())).unwrap();
         assert_eq!(tor.xmr_config().unwrap().privacy(), "remote-tor");
     }

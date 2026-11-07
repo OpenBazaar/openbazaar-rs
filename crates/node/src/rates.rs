@@ -6,8 +6,9 @@
 //! is no cached answer, the response still succeeds with no currencies, and
 //! the page shows the bitcoin amount alone.
 //!
-//! The request goes through the configured proxy (see [`crate::egress`]), and
-//! with `--no-rates` it is never made.
+//! The request goes through the configured proxy (see [`crate::egress`]).
+//! With `--no-rates`, or with no proxy, it is never made: a direct connection
+//! would show this machine's IP to Coinbase.
 
 use std::collections::BTreeMap;
 use std::sync::Mutex;
@@ -92,6 +93,9 @@ fn rates_json(currencies: &BTreeMap<String, f64>) -> Value {
 }
 
 fn fetch_coinbase(egress: &Egress, source: &str) -> Result<BTreeMap<String, f64>, ()> {
+    if egress.proxy.is_none() {
+        return Err(());
+    }
     let agent = egress
         .ureq_agent(Duration::from_secs(3), Duration::from_secs(4))
         .map_err(|_| ())?;
@@ -160,6 +164,18 @@ mod tests {
         assert_eq!(rates.value()["currencies"], json!({}));
         let (kind, host) = seen.recv_timeout(Duration::from_secs(5)).expect("no request reached the proxy");
         assert_eq!((kind, host.as_str()), (3, "api.coinbase.com"));
+    }
+
+    #[test]
+    fn rates_are_not_fetched_in_the_clear() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let mut rates = Rates::new(Egress { proxy: None, live_rates: true });
+        rates.source = format!("http://{}/", listener.local_addr().unwrap());
+        let started = Instant::now();
+        assert!(rates.value()["currencies"].as_object().unwrap().is_empty());
+        assert!(started.elapsed() < Duration::from_millis(500));
+        assert!(listener.accept().is_err(), "Coinbase was dialed without a proxy");
     }
 
     #[test]

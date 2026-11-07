@@ -11,11 +11,12 @@
 //! | `--ln-rgs URL` / `--ln-p2p-gossip` | where the channel graph comes from |
 //! | `--ln-listen HOST:PORT` | accept inbound peer connections (default: none) |
 //!
-//! Test mode runs Lightning on Mutinynet, a public signet with 30-second
-//! blocks, because no public LSP serves testnet4 (checked November 2026).
-//! The default LSP there is the public "C=" LSPS2 node, and the chain view
-//! and gossip come from mutinynet.com. Testnet4 and regtest have no default
-//! LSP: name one with `--lsp`, or `--no-lsp`. OpenBazaar runs no LSP.
+//! Lightning starts only when every chain source, LSP, gossip server, and
+//! listen address is on this machine or the LAN. LDK does not use `--proxy`,
+//! so a public peer, Esplora server, or gossip server would see this
+//! machine's IP. The public Mutinynet LSP is not used. Testnet4 and regtest
+//! have no default LSP: name one on the LAN with `--lsp`, or `--no-lsp`.
+//! OpenBazaar runs no LSP.
 //!
 //! A mainnet node refuses `--lightning` and every other flag here until
 //! LDK's connections run over Tor, and there is no mainnet LSP default.
@@ -155,7 +156,7 @@ impl LnFlags {
                 return Err("--ln-listen needs HOST:PORT".into());
             }
         }
-        Ok(Some(LnConfig {
+        let config = LnConfig {
             network,
             storage_dir: Path::new("").to_path_buf(),
             chain,
@@ -164,7 +165,13 @@ impl LnFlags {
             listen: self.listen.clone(),
             max_lsp_fee_bps: MAX_LSP_FEE_BPS,
             min_lsp_fee_cap_sats: self.max_fee_sats.unwrap_or(MIN_LSP_FEE_CAP_SATS),
-        }))
+        };
+        if let Some(peer) = config.clearnet_peer() {
+            return Err(format!(
+                "Lightning would connect to {peer} in the clear, and that host would see this machine's IP. LDK does not use --proxy. Point --ln-chain, --lsp, and gossip at this machine or the LAN, or leave Lightning off until its connections run over Tor"
+            ));
+        }
+        Ok(Some(config))
     }
 }
 
@@ -193,19 +200,22 @@ mod tests {
     }
 
     #[test]
-    fn off_by_default_and_test_mode_defaults_to_mutinynet_with_its_lsp() {
+    fn off_by_default_and_a_public_signet_peer_is_refused() {
         assert_eq!(LnFlags::default().plan(NetworkMode::Testnet4).unwrap().map(|c| c.network), None);
         assert!(flags(&["--no-lsp"]).unwrap().plan(NetworkMode::Testnet4).is_err(), "Lightning flags without --lightning");
-        let plan = flags(&["--lightning"]).unwrap().plan(NetworkMode::Testnet4).unwrap().unwrap();
-        assert_eq!(plan.network, Network::Signet);
-        assert_eq!(plan.chain, ChainSource::Esplora(MUTINYNET_ESPLORA.into()));
-        let lsp = plan.lsp.unwrap();
-        assert_eq!(lsp.peer.to_string(), MUTINYNET_LSP);
-        assert_eq!(lsp.token.as_deref(), Some(MUTINYNET_LSP_TOKEN));
-        assert_eq!(plan.min_lsp_fee_cap_sats, MIN_LSP_FEE_CAP_SATS);
-        let manual = flags(&["--lightning", "--no-lsp", "--ln-p2p-gossip"]).unwrap().plan(NetworkMode::Testnet4).unwrap().unwrap();
-        assert!(manual.lsp.is_none());
-        assert_eq!(manual.gossip, GossipSource::P2p);
+        let public = flags(&["--lightning"]).unwrap().plan(NetworkMode::Testnet4).unwrap_err();
+        assert!(public.contains("in the clear"), "{public}");
+        assert!(public.contains("mutinynet.com") || public.contains("44.219.111.31"), "{public}");
+        let local = flags(&["--lightning", "--ln-chain", "bitcoind:u:p@127.0.0.1:18443", "--no-lsp", "--ln-p2p-gossip"])
+            .unwrap()
+            .plan(NetworkMode::Testnet4)
+            .unwrap()
+            .unwrap();
+        assert_eq!(local.network, Network::Signet);
+        assert!(local.chain.is_local());
+        assert!(local.lsp.is_none());
+        assert_eq!(local.gossip, GossipSource::P2p);
+        assert!(local.clearnet_peer().is_none());
     }
 
     #[test]
@@ -214,7 +224,20 @@ mod tests {
         assert!(testnet4.plan(NetworkMode::Testnet4).unwrap_err().contains("no default LSP"));
         let id = "031b301307574bbe9b9ac7b79cbe1700e31e544513eae0b5d7497483083f99e581";
         let lsp = format!("{id}@45.79.192.236:9735");
-        let testnet4 = flags(&["--lightning", "--ln-network", "testnet4", "--lsp", &lsp]).unwrap();
+        let public = flags(&["--lightning", "--ln-network", "testnet4", "--lsp", &lsp]).unwrap();
+        assert!(public.plan(NetworkMode::Testnet4).unwrap_err().contains("in the clear"));
+        let local_lsp = format!("{id}@127.0.0.1:9735");
+        let testnet4 = flags(&[
+            "--lightning",
+            "--ln-network",
+            "testnet4",
+            "--ln-chain",
+            "bitcoind:u:p@127.0.0.1:18443",
+            "--lsp",
+            &local_lsp,
+            "--ln-p2p-gossip",
+        ])
+        .unwrap();
         let plan = testnet4.plan(NetworkMode::Testnet4).unwrap().unwrap();
         assert_eq!(plan.network, Network::Testnet4);
         assert!(plan.lsp.unwrap().token.is_none(), "the Mutinynet token never goes to another LSP");
@@ -250,7 +273,17 @@ mod tests {
         let serve = |args: &[&str]| crate::network::ServeOptions::parse(&args.iter().map(|arg| arg.to_string()).collect::<Vec<_>>()).map(|_| ());
         assert_eq!(serve(&["--network", "mainnet", "--lightning", "--no-lsp"]).unwrap_err(), super::super::MAINNET_BLOCKED);
         assert_eq!(serve(&["--network", "mainnet", "--lsp", &lsp]).unwrap_err(), super::super::MAINNET_BLOCKED);
-        assert!(serve(&["--network", "testnet4", "--lightning"]).is_ok());
+        assert!(serve(&["--network", "testnet4", "--lightning"]).unwrap_err().contains("in the clear"));
+        assert!(serve(&[
+            "--network",
+            "testnet4",
+            "--lightning",
+            "--ln-chain",
+            "bitcoind:u:p@127.0.0.1:18443",
+            "--no-lsp",
+            "--ln-p2p-gossip",
+        ])
+        .is_ok());
         assert!(serve(&["--network", "mainnet"]).is_ok());
     }
 }

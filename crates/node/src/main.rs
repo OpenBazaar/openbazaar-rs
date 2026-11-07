@@ -11,15 +11,15 @@ const USAGE: &str = "ob-node [print | --version | pair [port] [--network N] [--d
 Chain data comes from BIP 157/158 compact block filters by default.
 --peer uses only your own node (bitcoind with blockfilterindex=1 and peerblockfilters=1).
 --esplora uses exactly the Esplora servers you name.
---public-fallback asks public Esplora servers for the tip, fees, and broadcasts while no filter peer answers (default on testnet4 only). Addresses are never sent.
---proxy also carries filter peer connections and broadcasts, and gives each Esplora query its own Tor circuit.
---xmr-daemon turns on Monero direct pay through monerod RPC: your own node (loopback or LAN, direct), or a remote node through --proxy (required for .onion, and on mainnet). There is no default node. Testnet4 pays on Monero stagenet.
+--public-fallback asks public Esplora servers for the tip, fees, and broadcasts while no filter peer answers (default on testnet4 only), and only through --proxy. Addresses are never sent. Without --proxy those servers are not contacted.
+--proxy carries filter peer connections, broadcasts, Esplora queries, and exchange rates, and gives each Esplora query its own Tor circuit. Without it, public peers and rate servers are not contacted.
+--xmr-daemon turns on Monero direct pay through monerod RPC: your own node (loopback or LAN, direct), or a remote node through --proxy (required for .onion and for any public daemon). There is no default node. Testnet4 pays on Monero stagenet.
 --remote publishes the node's admin API as a Tor onion service that only paired devices can find (docs/home-node.md); `ob-node pair` prints a one-time pairing code and approves the device; `ob-node devices` lists and removes devices.
 --local-shop serves the web shop export on the loopback listener for a browser on this machine. It does not mark that page as a remote home-node client, and it does not change who can call the onion service.
 --lan adds the encrypted LAN channel on port 8790, mDNS discovery, and the first-run setup page at http://openbazaar.local:8790/.
 --push-gateway sends content-free wake-ups to devices that turned push on, through that gateway over Tor. Off unless set.
 --web-dir serves the web shop export to paired browsers over that onion.
---lightning runs an LDK Lightning node for direct pay (see docs/lightning.md). On testnet4 it runs on Mutinynet signet with the public Mutinynet LSP; --ln-network testnet4 or regtest needs --lsp or --no-lsp (regtest also --ln-chain). Mainnet refuses Lightning until its connections run over Tor. The LSP sees the amount and time of each payment to you; Lightning peers see your IP address (--proxy does not cover them).
+--lightning runs an LDK Lightning node for direct pay (see docs/lightning.md). It starts only when the chain source, LSP, and gossip server are on this machine or the LAN: LDK does not use --proxy, so a public peer would see this machine's IP. Mainnet refuses Lightning until its connections run over Tor. There is no mainnet LSP default.
 --vault passphrase reads OB_VAULT_PASSPHRASE, or asks on the terminal.
 --vault file keeps the key in the data dir; use it only on headless machines and in tests.";
 const PASSPHRASE_ENV: &str = "OB_VAULT_PASSPHRASE";
@@ -91,12 +91,12 @@ fn serve(args: &[String]) -> ExitCode {
     eprintln!("ob-node: chain data from {}", plan.describe());
     eprintln!("ob-node: paid after {} confirmation(s)", options.confirmations);
     if options.uses_public_server() {
-        eprintln!("ob-node: WARNING: a public Esplora server is not told which addresses this wallet follows. It still sees any transaction broadcast to it, and without --proxy it sees this machine's IP. Pass --peer with your own node to keep broadcasts off public servers.");
+        eprintln!("ob-node: WARNING: a public Esplora server is not told which addresses this wallet follows, and it is not contacted without --proxy. Pass --proxy, or --peer with your own node.");
     }
     match &options.proxy {
         Some(proxy) => eprintln!("ob-node: rates and chain queries go through {proxy}"),
         None if options.uses_public_server() || options.live_rates => eprintln!(
-            "ob-node: WARNING: rates and chain queries go over clearnet and show this machine's IP address; pass --proxy socks5h://127.0.0.1:9050 to use Tor{}.",
+            "ob-node: rates and public chain servers are not contacted without --proxy, so they do not see this machine's IP. Pass --proxy socks5h://127.0.0.1:9050 to use Tor{}.",
             if options.live_rates { ", or --no-rates to skip prices" } else { "" }
         ),
         None => {}

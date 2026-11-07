@@ -80,6 +80,11 @@ fn payment_id(hash: &str) -> Option<PaymentId> {
 impl LdkRail {
     /// Build and start the LDK node. Returns once it runs; chain sync goes on in the background.
     pub fn start(config: LnConfig, secret: &[u8; 32]) -> Result<Self, LnError> {
+        if let Some(peer) = config.clearnet_peer() {
+            return Err(LnError::Invalid(format!(
+                "Lightning is not started: connecting to {peer} in the clear would show this machine's IP, and LDK does not use --proxy"
+            )));
+        }
         std::fs::create_dir_all(&config.storage_dir).map_err(|err| LnError::Failed(err.to_string()))?;
         let mut ldk = Config::default();
         ldk.network = config.network;
@@ -327,5 +332,40 @@ impl LightningRail for LdkRail {
 impl Drop for LdkRail {
     fn drop(&mut self) {
         self.stop();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::LdkRail;
+    use crate::rail::LightningRail;
+    use crate::{ChainSource, GossipSource, LnConfig, LspConfig};
+
+    #[test]
+    fn a_public_lightning_peer_is_not_dialed() {
+        let dir = std::env::temp_dir().join(format!("ob-ln-clear-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let config = LnConfig {
+            network: ldk_node::bitcoin::Network::Signet,
+            storage_dir: dir,
+            chain: ChainSource::Esplora("https://mutinynet.com/api".into()),
+            gossip: GossipSource::Rgs("https://rgs.mutinynet.com/snapshot".into()),
+            lsp: Some(LspConfig {
+                peer: "0371d6fd7d75de2d0372d03ea00e8bacdacb50c27d0eaea0a76a0622eff1f5ef2b@44.219.111.31:39735".parse().unwrap(),
+                token: Some("JZWN9YLW".into()),
+            }),
+            listen: None,
+            max_lsp_fee_bps: 500,
+            min_lsp_fee_cap_sats: 10_000,
+        };
+        let started = std::time::Instant::now();
+        match LdkRail::start(config, &[0x5a; 32]) {
+            Err(err) => assert!(err.to_string().contains("in the clear"), "{err}"),
+            Ok(rail) => {
+                rail.stop();
+                panic!("a public Lightning peer was started");
+            }
+        }
+        assert!(started.elapsed() < std::time::Duration::from_millis(500), "start dialed the public peer");
     }
 }

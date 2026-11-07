@@ -1,12 +1,13 @@
 //! How the node's own outside requests leave the machine.
 //!
-//! Exchange rates (Coinbase) and chain data (filter peers, or Esplora) are
-//! the only requests the node makes to machines it does not run. Without a
-//! proxy they go over clearnet and show the user's IP address. With
-//! `--proxy socks5h://127.0.0.1:9050` (Tor; 9150 for Tor Browser) all of them
-//! go through SOCKS5, and host names are resolved by the proxy, not locally.
-//! `--no-rates` stops the rates request altogether. Escrow mail to loopback
-//! peers never uses the proxy.
+//! Exchange rates (Coinbase, Kraken) and chain data (filter peers, or Esplora)
+//! are the requests the node makes to machines it does not run. Without a
+//! proxy those requests are not made, so a public server does not see this
+//! machine's IP. With `--proxy socks5h://127.0.0.1:9050` (Tor; 9150 for Tor
+//! Browser) they go through SOCKS5, and host names are resolved by the proxy.
+//! `--no-rates` stops the rates request even when a proxy is set. A peer or
+//! server on this machine or the LAN is still reached directly. Escrow mail
+//! to loopback peers never uses the proxy.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -74,26 +75,15 @@ impl Egress {
 
     /// The `/network` fields about outside requests.
     pub(crate) fn value(&self, public_chain_server: bool) -> Value {
-        let mut clearnet = Vec::new();
-        if self.proxy.is_none() {
-            if public_chain_server {
-                clearnet.push("the chain server");
-            }
-            if self.live_rates {
-                clearnet.push("the exchange-rate server (Coinbase)");
-            }
-        }
-        let warning = (!clearnet.is_empty()).then(|| {
-            format!(
-                "This node reaches {} over clearnet, so they see your IP address. Start the node with --proxy socks5h://127.0.0.1:9050 to use Tor{}.",
-                clearnet.join(" and "),
-                if self.live_rates { ", or --no-rates to skip prices" } else { "" },
-            )
+        let skipped = self.proxy.is_none() && (public_chain_server || self.live_rates);
+        let warning = skipped.then(|| {
+            "Rates and public chain servers are not contacted without --proxy, so they do not see this machine's IP. Pass --proxy socks5h://127.0.0.1:9050 to fetch them over Tor."
+                .to_string()
         });
         json!({
             "proxy": self.proxy,
             "liveRates": self.live_rates,
-            "clearnet": !clearnet.is_empty(),
+            "clearnet": false,
             "privacyWarning": warning,
         })
     }
@@ -179,8 +169,8 @@ mod tests {
     #[test]
     fn clearnet_is_flagged_until_a_proxy_is_set() {
         let direct = Egress::default().value(true);
-        assert_eq!(direct["clearnet"], true);
-        assert!(direct["privacyWarning"].as_str().unwrap().contains("IP address"));
+        assert_eq!(direct["clearnet"], false);
+        assert!(direct["privacyWarning"].as_str().unwrap().contains("not contacted"));
         let no_rates = Egress { proxy: None, live_rates: false }.value(false);
         assert_eq!(no_rates["clearnet"], false);
         assert!(no_rates["privacyWarning"].is_null());

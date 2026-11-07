@@ -4,7 +4,7 @@
 //! |---|---|---|
 //! | loopback or LAN | your own node | direct, never through the proxy |
 //! | `.onion` | remote node | through `--proxy` only; refused without one |
-//! | anything else | remote node | through `--proxy`; on mainnet refused without one |
+//! | anything else | remote node | through `--proxy` only; refused without one |
 //!
 //! There is no default node and no light-wallet server: with no
 //! `--xmr-daemon` Monero is off. A remote node sees which blocks are
@@ -56,9 +56,9 @@ impl DaemonConfig {
                 NodeKind::Onion if proxy.is_none() => {
                     return Err(format!("{url} is an onion service; start the node with --proxy socks5h://127.0.0.1:9050"));
                 }
-                NodeKind::Public if proxy.is_none() && network == XmrNetwork::Mainnet => {
+                NodeKind::Public if proxy.is_none() => {
                     return Err(format!(
-                        "{url} is a remote Monero node; on mainnet it is only reached through Tor. Add --proxy socks5h://127.0.0.1:9050, or use your own monerod"
+                        "{url} is a remote Monero node; it is only reached through Tor. Add --proxy socks5h://127.0.0.1:9050, or use your own monerod"
                     ));
                 }
                 _ => {}
@@ -204,13 +204,13 @@ mod tests {
     #[test]
     fn remote_nodes_need_tor_on_mainnet_and_onions_always() {
         assert!(config(XmrNetwork::Mainnet, &["http://node.example.org:18089"], None).unwrap_err().contains("--proxy"));
+        assert!(config(XmrNetwork::Stagenet, &["http://node.example.org:38081"], None).unwrap_err().contains("--proxy"));
         assert!(config(XmrNetwork::Stagenet, &["http://abc.onion:38081"], None).unwrap_err().contains("--proxy"));
         let tor = config(XmrNetwork::Mainnet, &["http://node.example.org:18089", "http://abc.onion"], TOR).unwrap();
         assert_eq!(tor.privacy(), "remote-tor");
         assert!(tor.nodes.iter().all(|node| tor.proxied(node)));
-        let clear = config(XmrNetwork::Stagenet, &["http://node.example.org:38081"], None).unwrap();
-        assert_eq!(clear.privacy(), "public");
-        assert!(clear.reveals().contains("IP address"));
+        let stagenet = config(XmrNetwork::Stagenet, &["http://node.example.org:38081"], TOR).unwrap();
+        assert_eq!(stagenet.privacy(), "remote-tor");
     }
 
     #[test]

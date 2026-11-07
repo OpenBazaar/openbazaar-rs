@@ -488,7 +488,7 @@ fn blocked_value() -> Value {
 }
 
 /// Who learns what when this node uses Lightning.
-fn reveals(config: &LnConfig, proxy: bool) -> Vec<String> {
+fn reveals(config: &LnConfig, _proxy: bool) -> Vec<String> {
     let mut out = Vec::new();
     if let Some(lsp) = &config.lsp {
         out.push(format!(
@@ -496,16 +496,16 @@ fn reveals(config: &LnConfig, proxy: bool) -> Vec<String> {
             lsp.peer.address
         ));
     }
-    out.push(if proxy {
-        "Lightning peers see this machine's IP address: the LDK node does not use --proxy.".to_string()
-    } else {
-        "Lightning peers see this machine's IP address.".to_string()
-    });
+    out.push(
+        "Lightning peers on this machine or the LAN see the connection. A public peer is not contacted, because LDK does not use --proxy.".to_string(),
+    );
     if !config.chain.is_local() {
         out.push(format!("The chain server ({}) sees the Lightning wallet's addresses and channel outputs.", config.chain.describe()));
     }
     if let openbazaar_lightning::GossipSource::Rgs(url) = &config.gossip {
-        out.push(format!("The gossip server ({url}) sees this machine's IP address."));
+        if !openbazaar_lightning::config::host_is_local(url) {
+            out.push(format!("The gossip server ({url}) sees this machine's IP address."));
+        }
     }
     out
 }

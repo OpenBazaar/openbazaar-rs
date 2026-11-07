@@ -49,6 +49,14 @@ enum Failure {
 
 impl DaemonChain {
     pub fn new(config: DaemonConfig) -> Result<Self, String> {
+        for node in &config.nodes {
+            if node.kind != crate::NodeKind::Own && config.proxy.is_none() {
+                return Err(format!(
+                    "{} is not contacted without --proxy; a remote Monero node would see this machine's IP",
+                    node.url
+                ));
+            }
+        }
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(1)
             .thread_name("ob-xmr")
@@ -178,5 +186,28 @@ impl XmrChain for DaemonChain {
                 Err(err) => Err(node(err)),
             }
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::backend::{DaemonConfig, DaemonNode};
+    use crate::{NodeKind, XmrNetwork};
+
+    #[test]
+    fn a_public_stagenet_daemon_is_not_dialed_without_a_proxy() {
+        let config = DaemonConfig {
+            network: XmrNetwork::Stagenet,
+            nodes: vec![DaemonNode { url: "http://203.0.113.9:38081".into(), kind: NodeKind::Public }],
+            proxy: None,
+        };
+        let started = std::time::Instant::now();
+        let err = match DaemonChain::new(config) {
+            Err(err) => err,
+            Ok(_) => panic!("the public daemon was accepted"),
+        };
+        assert!(started.elapsed() < std::time::Duration::from_millis(500), "the daemon was dialed");
+        assert!(err.contains("without --proxy"), "{err}");
     }
 }
