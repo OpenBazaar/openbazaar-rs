@@ -309,7 +309,10 @@ mod tests {
 
     #[test]
     fn a_browser_on_this_machine_gets_a_cookie_instead_of_the_pairing_token() {
-        let (_dir, node) = node();
+        let (dir, mut node) = node();
+        let shop = dir.0.join("shop");
+        std::fs::create_dir(&shop).unwrap();
+        node.local.local_shop = Some(shop);
         let token = node.pairing_token().to_string();
         let refused = call(
             &node,

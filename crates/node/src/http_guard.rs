@@ -6,8 +6,8 @@
 //! A name an attacker controls never matches, whatever it resolves to.
 //!
 //! **Origin.** A browser names the page that sent a request. Only the desktop
-//! webview origins, the configured shop origin, and this listener's own
-//! loopback origin (the shop it serves to a browser on this machine) may
+//! webview origins, the configured shop origin, and — only while this node
+//! is serving its local shop — this listener's own loopback origin may
 //! call. Any other `Origin`, including `null`, is refused before the route
 //! runs, so a page cannot cause side effects even with a request whose
 //! answer it cannot read.

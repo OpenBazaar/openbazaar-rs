@@ -159,12 +159,19 @@ pub(crate) fn respond(node: &Node, raw: &[u8], client: Client) -> Vec<u8> {
     let origin = match check_origin(request.head, &node.local.shop_origin) {
         OriginCheck::Absent => Some(node.local.shop_origin.clone()),
         OriginCheck::Allowed(origin) => Some(origin),
-        OriginCheck::Refused => match header(request.head, "Origin") {
-            Some(origin) if crate::browser::is_own_origin(origin, client.port) => Some(origin.to_string()),
-            _ => {
-                return http_response_cors("403 Forbidden", "text/plain", b"That page may not call this node.", None)
+        OriginCheck::Refused => {
+            // The listener's own origin is a real page only while --local-shop
+            // is serving it. Otherwise that origin is just another foreign page.
+            let serving = node.local.local_shop.is_some();
+            match header(request.head, "Origin") {
+                Some(origin) if serving && crate::browser::is_own_origin(origin, client.port) => {
+                    Some(origin.to_string())
+                }
+                _ => {
+                    return http_response_cors("403 Forbidden", "text/plain", b"That page may not call this node.", None)
+                }
             }
-        },
+        }
     };
     if request.method == "OPTIONS" {
         return http_response_cors("204 No Content", "text/plain", b"", origin.as_deref());

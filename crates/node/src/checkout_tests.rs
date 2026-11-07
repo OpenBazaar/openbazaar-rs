@@ -344,9 +344,9 @@ fn pairing_token_is_stable_and_orders_require_it() {
 
 #[test]
 fn cors_allows_the_shop_and_desktop_origins_only() {
-    let (_dir, node) = node();
+    let (_dir, closed) = node();
     let own = respond(
-        &node,
+        &closed,
         b"GET /catalog HTTP/1.1\r\nHost: 127.0.0.1:8787\r\nOrigin: http://127.0.0.1:8787\r\n\r\n",
         Client {
             loopback: true,
@@ -357,8 +357,37 @@ fn cors_allows_the_shop_and_desktop_origins_only() {
     assert!(text.starts_with("HTTP/1.1 403"), "the node serves no page of its own");
     assert!(!text.contains("Access-Control-Allow-Origin"));
 
+    let (dir, mut serving) = node();
+    let page = dir.0.join("shop");
+    fs::create_dir(&page).unwrap();
+    fs::write(page.join("index.html"), "<html><head></head></html>").unwrap();
+    serving.local.local_shop = Some(page);
+    let served = respond(
+        &serving,
+        b"GET /catalog HTTP/1.1\r\nHost: 127.0.0.1:8787\r\nOrigin: http://127.0.0.1:8787\r\n\r\n",
+        Client { loopback: true, port: 8787 },
+    );
+    let text = String::from_utf8(served).unwrap();
+    assert!(text.starts_with("HTTP/1.1 200"), "the localhost shop page may read the catalog: {text}");
+    assert!(text.contains("Access-Control-Allow-Origin: http://127.0.0.1:8787\r\n"));
+    let wallet = respond(
+        &serving,
+        b"GET /wallet HTTP/1.1\r\nHost: 127.0.0.1:8787\r\nOrigin: http://127.0.0.1:8787\r\n\r\n",
+        Client { loopback: true, port: 8787 },
+    );
+    let text = String::from_utf8(wallet).unwrap();
+    assert!(text.starts_with("HTTP/1.1 403"), "the shop page still needs its cookie for the wallet: {text}");
+    let other = respond(
+        &serving,
+        b"GET /catalog HTTP/1.1\r\nHost: 127.0.0.1:8787\r\nOrigin: https://evil.example\r\n\r\n",
+        Client { loopback: true, port: 8787 },
+    );
+    let text = String::from_utf8(other).unwrap();
+    assert!(text.starts_with("HTTP/1.1 403"), "{text}");
+    assert!(!text.contains("Access-Control-Allow-Origin"));
+
     let foreign = respond(
-        &node,
+        &closed,
         b"GET /catalog HTTP/1.1\r\nHost: evil.example\r\nOrigin: https://evil.example\r\n\r\n",
         Client {
             loopback: false,
@@ -368,7 +397,7 @@ fn cors_allows_the_shop_and_desktop_origins_only() {
     let text = String::from_utf8(foreign).unwrap();
     let header = text.split_once("\r\n\r\n").unwrap().0;
     assert!(!header.contains("Access-Control-Allow-Origin"));
-    assert!(!text.contains(node.pairing_token()));
+    assert!(!text.contains(closed.pairing_token()));
 }
 
 #[test]
