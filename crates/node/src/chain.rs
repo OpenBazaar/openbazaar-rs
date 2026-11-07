@@ -33,6 +33,8 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// Returned before any request when a public server would otherwise be told an address.
 const PUBLIC_ADDRESSES: &str = "a public Esplora server is not asked which addresses this wallet follows";
+/// Returned before any request when a public server would otherwise see this machine's IP.
+const PUBLIC_CLEARNET: &str = "a public Esplora server is not contacted without --proxy; it would see this machine's IP";
 
 /// One transaction that pays an address, with the outputs that pay it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -63,8 +65,8 @@ pub struct ChainStatus {
     pub backend: &'static str,
     /// `private`: no one learns which addresses are the user's.
     /// `own-node`, `own-server`: only a node or server the user runs does.
-    /// `public`: a server someone else runs. It is not asked for addresses;
-    /// it can see a broadcast and, without a proxy, this machine's IP.
+    /// `public`: a server someone else runs. It is not asked for addresses.
+    /// Without a proxy it is not contacted. With a proxy it can see a broadcast.
     pub privacy: &'static str,
     pub reveals: String,
     pub peers: Option<usize>,
@@ -78,9 +80,8 @@ pub struct ChainStatus {
 }
 
 impl ChainStatus {
-    /// A public chain server is in use. It is not asked for addresses. Without
-    /// a proxy it still sees this machine's IP, and it sees any transaction
-    /// broadcast to it.
+    /// A public chain server is configured. It is not asked for addresses, and
+    /// without a proxy it is not contacted.
     pub fn public_server(&self) -> bool {
         self.privacy == "public"
     }
@@ -151,7 +152,10 @@ pub struct EsploraChain {
     servers: Vec<Server>,
     genesis: BlockHash,
     preferred: AtomicUsize,
+    /// A server someone else runs. It is not asked for addresses.
     public: bool,
+    /// The HTTP client uses the configured proxy, so a public server sees an exit, not this machine.
+    proxied: bool,
 }
 
 struct Server {
@@ -205,7 +209,17 @@ impl EsploraChain {
             genesis: genesis_block(network).block_hash(),
             preferred: AtomicUsize::new(0),
             public: urls.iter().any(|url| !crate::network::is_private_url(url)),
+            proxied: egress.proxy.is_some(),
         })
+    }
+
+    /// A public server reached directly would see this machine's address.
+    fn refuse_public_clearnet(&self) -> Result<(), String> {
+        if self.public && !self.proxied {
+            Err(PUBLIC_CLEARNET.into())
+        } else {
+            Ok(())
+        }
     }
 
     /// Server indexes, starting with the one that last answered.
@@ -272,7 +286,7 @@ impl ChainSource for EsploraChain {
             ChainStatus::simple(
                 "esplora",
                 "public",
-                "A public Esplora server is not asked which addresses this wallet follows, so it cannot link one sale to another. It sees the tip, fee estimates, and any transaction broadcast to it. Without --proxy it also sees this machine's IP address.",
+                "A public Esplora server is not asked which addresses this wallet follows. Without --proxy it is not contacted at all, so it does not see this machine's IP. With --proxy it sees the tip, fee estimates, and any transaction broadcast to it.",
             )
         } else {
             ChainStatus::simple("esplora", "own-server", "Only your own Esplora server sees the addresses this node follows.")
@@ -280,6 +294,7 @@ impl ChainSource for EsploraChain {
     }
 
     fn tip_height(&self) -> Result<u32, String> {
+        self.refuse_public_clearnet()?;
         self.each(|client| async move { client.get_height().await.map_err(|err| err.to_string()) })
     }
 
@@ -314,6 +329,7 @@ impl ChainSource for EsploraChain {
     }
 
     fn fee_rate(&self) -> Result<f64, String> {
+        self.refuse_public_clearnet()?;
         self.each(|client| async move {
             let estimates = client.get_fee_estimates().await.map_err(|err| err.to_string())?;
             esplora_client::convert_fee_rate(FEE_TARGET_BLOCKS as usize, estimates)
@@ -323,6 +339,7 @@ impl ChainSource for EsploraChain {
     }
 
     fn broadcast(&self, tx: &Transaction) -> Result<(), String> {
+        self.refuse_public_clearnet()?;
         self.each(|client| async move { client.broadcast(tx).await.map_err(|err| err.to_string()) })
     }
 
@@ -494,6 +511,46 @@ mod tests {
 
         assert!(chain.tip_height().is_err());
         let (kind, host) = seen.recv_timeout(Duration::from_secs(5)).expect("the tip query did not reach the proxy");
+        assert_eq!((kind, host.as_str()), (3, "mempool.space"));
+    }
+
+    fn sample_tx() -> Transaction {
+        use bitcoin::{absolute::LockTime, transaction::Version, Amount, OutPoint, ScriptBuf, Sequence, TxIn, TxOut, Witness};
+        Transaction {
+            version: Version::TWO,
+            lock_time: LockTime::ZERO,
+            input: vec![TxIn {
+                previous_output: OutPoint::null(),
+                script_sig: ScriptBuf::new(),
+                sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
+                witness: Witness::default(),
+            }],
+            output: vec![TxOut { value: Amount::from_sat(1_000), script_pubkey: ScriptBuf::new() }],
+        }
+    }
+
+    #[test]
+    fn a_public_esplora_broadcast_is_not_sent_in_the_clear() {
+        let urls = ["http://203.0.113.9:8332".to_string()];
+        let chain = EsploraChain::with_egress(&urls, Network::Testnet4, &Egress::default()).unwrap();
+        let started = std::time::Instant::now();
+        let broadcast_err = chain.broadcast(&sample_tx()).unwrap_err();
+        let tip_err = chain.tip_height().unwrap_err();
+        let fee_err = chain.fee_rate().unwrap_err();
+        for err in [broadcast_err, tip_err, fee_err] {
+            assert!(err.contains("not contacted without --proxy"), "{err}");
+        }
+        assert!(started.elapsed() < std::time::Duration::from_millis(500), "a clearnet dial was attempted");
+
+        let (proxy, seen) = crate::egress::fake_socks::start();
+        let proxied = EsploraChain::with_egress(
+            &["https://mempool.space/testnet4/api".to_string()],
+            Network::Testnet4,
+            &Egress { proxy: Some(proxy), live_rates: false },
+        )
+        .unwrap();
+        assert!(proxied.broadcast(&sample_tx()).is_err());
+        let (kind, host) = seen.recv_timeout(std::time::Duration::from_secs(5)).expect("the broadcast did not reach the proxy");
         assert_eq!((kind, host.as_str()), (3, "mempool.space"));
     }
 }

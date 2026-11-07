@@ -5,7 +5,7 @@
 //! | none | compact filters from P2P peers | no one |
 //! | `--peer HOST:PORT` | compact filters from the user's own node only | that node |
 //! | `--esplora URL` (LAN, loopback, onion) | the user's Esplora server | that server |
-//! | `--esplora URL` (anything else) | that public Esplora server, for the tip, fees, and broadcasts | no one (addresses are not sent) |
+//! | `--esplora URL` (anything else) | that public Esplora server, for the tip, fees, and broadcasts, and only through `--proxy` | no one (addresses are not sent; without a proxy the server is not contacted) |
 //!
 //! With no flags, `--public-fallback` (on by default on testnet4 only) lets
 //! the node ask the public Esplora servers for the tip, fees, and broadcasts
@@ -79,7 +79,7 @@ impl ChainPlan {
                 "compact block filters from P2P peers; no public server fallback".into()
             }
             ChainPlan::Filters { fallback, .. } => format!(
-                "compact block filters from P2P peers; public Esplora ({}) for the tip, fees, and broadcasts only while no peer answers",
+                "compact block filters from P2P peers; public Esplora ({}) for the tip, fees, and broadcasts only through --proxy while no peer answers",
                 fallback.join(", ")
             ),
             ChainPlan::Esplora { urls } => format!("Esplora at {}", urls.join(", ")),
@@ -161,7 +161,7 @@ impl FallbackChain {
         let unreachable = self.primary.unreachable_for(FALLBACK_AFTER);
         if self.active.swap(unreachable, Ordering::Relaxed) != unreachable {
             if unreachable {
-                eprintln!("ob-node: WARNING: no filter peer answered or the filter scan stopped moving; asking public Esplora for the tip, fees, and broadcasts only. Addresses stay on the filters, so a payment is not seen until a peer answers");
+                eprintln!("ob-node: WARNING: no filter peer answered or the filter scan stopped moving; public Esplora is asked for the tip, fees, and broadcasts only when --proxy is set. Addresses stay on the filters, so a payment is not seen until a peer answers");
             } else {
                 eprintln!("ob-node: filter peers answer again; the public Esplora servers are no longer asked");
             }

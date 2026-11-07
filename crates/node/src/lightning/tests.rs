@@ -24,7 +24,18 @@ struct Setup {
 fn open(dir: &Path, btc: &MockChain, rail: &Arc<MockRail>) -> Node {
     let node = open_node(dir, NetworkMode::Testnet4, btc, 1, unreachable_escrow());
     let mut flags = LnFlags::default();
-    flags.on = true;
+    let args = [
+        "--lightning",
+        "--ln-chain",
+        "bitcoind:u:p@127.0.0.1:18443",
+        "--lsp",
+        "0371d6fd7d75de2d0372d03ea00e8bacdacb50c27d0eaea0a76a0622eff1f5ef2b@127.0.0.1:9735",
+        "--ln-p2p-gossip",
+    ];
+    let mut iter = args.iter();
+    while let Some(flag) = iter.next() {
+        flags.take(flag, |_| iter.next().map(|text| text.to_string()).ok_or_else(|| "needs a value".to_string())).unwrap().unwrap();
+    }
     node.enable_lightning(flags.plan(NetworkMode::Testnet4).unwrap().unwrap()).unwrap();
     node.set_lightning(rail.clone()).unwrap();
     node
@@ -256,7 +267,13 @@ fn mainnet_refuses_lightning_at_every_entry_point() {
     let mut flags = LnFlags::default();
     flags.on = true;
     assert_eq!(flags.plan(NetworkMode::Mainnet).unwrap_err(), blocked);
-    let config = flags.plan(NetworkMode::Testnet4).unwrap().unwrap();
+    let mut local = LnFlags::default();
+    let args = ["--lightning", "--ln-chain", "bitcoind:u:p@127.0.0.1:18443", "--no-lsp", "--ln-p2p-gossip"];
+    let mut iter = args.iter();
+    while let Some(flag) = iter.next() {
+        local.take(flag, |_| iter.next().map(|text| text.to_string()).ok_or_else(|| "needs a value".to_string())).unwrap().unwrap();
+    }
+    let config = local.plan(NetworkMode::Testnet4).unwrap().unwrap();
     assert_eq!(node.enable_lightning(config).unwrap_err(), blocked, "a test-network config does not slip in either");
     assert_eq!(node.set_lightning(Arc::new(MockRail::new(Network::Bitcoin))).unwrap_err(), blocked);
     assert!(node.ln.config().is_none() && node.ln.rail().is_none());
@@ -318,10 +335,7 @@ fn test_networks_still_run_lightning() {
         let dir = TempDir::new();
         let node = open_node(&dir.0, NetworkMode::Testnet4, &MockChain::new(), 1, unreachable_escrow());
         let mut flags = LnFlags::default();
-        let mut args = vec!["--lightning", "--ln-network", network, "--no-lsp"];
-        if network == "regtest" {
-            args.extend(["--ln-chain", "bitcoind:u:p@127.0.0.1:18443"]);
-        }
+        let args = vec!["--lightning", "--ln-network", network, "--ln-chain", "bitcoind:u:p@127.0.0.1:18443", "--no-lsp", "--ln-p2p-gossip"];
         let mut iter = args.into_iter();
         while let Some(flag) = iter.next() {
             flags.take(flag, |_| iter.next().map(String::from).ok_or_else(|| "needs a value".to_string())).unwrap().unwrap();

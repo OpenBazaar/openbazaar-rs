@@ -338,6 +338,13 @@ impl ChainSource for FilterChain {
         *self.shared.index() = index;
         *self.shared.store.lock().unwrap_or_else(|err| err.into_inner()) = Some(store);
         self.shared.save();
+        if !self.config.only_these_peers && self.config.proxy.is_none() {
+            self.shared.set_error(
+                "public filter peers are not contacted without --proxy; they would see this machine's IP".into(),
+            );
+            *started = Some(Instant::now());
+            return Ok(());
+        }
         self.runtime.spawn(driver::run(self.shared.clone(), self.config.clone()));
         *started = Some(Instant::now());
         Ok(())
@@ -354,8 +361,10 @@ impl ChainSource for FilterChain {
             privacy: if own { "own-node" } else { "private" },
             reveals: if own {
                 "Your own Bitcoin node serves headers, filters, and matched blocks. No one else is asked.".into()
+            } else if self.config.proxy.is_none() {
+                "Public filter peers are not contacted without --proxy, so they do not see this machine's IP. Pass --proxy, or --peer with your own node.".into()
             } else {
-                "Peers see this machine's IP address and which whole blocks it downloads, not which addresses are yours. Broadcasts go to one random peer.".into()
+                "Peers see a Tor exit, not this machine's IP. They see which whole blocks this node downloads, not which addresses are yours. Broadcasts go to one random peer.".into()
             },
             peers,
             scanned_height: Some(index.processed.height),
@@ -398,6 +407,9 @@ impl ChainSource for FilterChain {
     }
 
     fn broadcast(&self, tx: &Transaction) -> Result<(), String> {
+        if !self.config.only_these_peers && self.config.proxy.is_none() {
+            return Err("a public filter peer is not sent this transaction without --proxy; it would see this machine's IP".into());
+        }
         let requester = self.shared.requester()?;
         self.wait(BROADCAST_TIMEOUT, requester.submit_package(tx.clone()))
             .ok_or_else(|| "no peer took the transaction in time".to_string())?

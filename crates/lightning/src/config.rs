@@ -85,22 +85,30 @@ impl ChainSource {
 
     /// True when the source is on this machine or the LAN.
     pub fn is_local(&self) -> bool {
-        let host = match self {
-            Self::Esplora(url) | Self::Electrum(url) => url
-                .split("://")
-                .last()
-                .unwrap_or(url)
-                .split(['/', ':'])
-                .next()
-                .unwrap_or_default()
-                .to_string(),
-            Self::BitcoindRpc { host, .. } => host.clone(),
-        };
-        host == "localhost"
-            || host.parse::<std::net::IpAddr>().is_ok_and(|ip| match ip {
-                std::net::IpAddr::V4(v4) => v4.is_loopback() || v4.is_private(),
-                std::net::IpAddr::V6(v6) => v6.is_loopback(),
-            })
+        match self {
+            Self::Esplora(url) | Self::Electrum(url) => host_is_local(url),
+            Self::BitcoindRpc { host, .. } => host_is_local(host),
+        }
+    }
+}
+
+/// True when `text` names a host on this machine or the LAN. A URL, `HOST:PORT`,
+/// or a bare host are all accepted. A public name is not.
+pub fn host_is_local(text: &str) -> bool {
+    let text = text.split("://").last().unwrap_or(text);
+    let text = text.split(['/', '?', '#']).next().unwrap_or(text);
+    let host = if let Some(rest) = text.strip_prefix('[') {
+        rest.split(']').next().unwrap_or("")
+    } else {
+        text.rsplit_once(':').map(|(host, port)| if port.parse::<u16>().is_ok() { host } else { text }).unwrap_or(text)
+    };
+    if host.eq_ignore_ascii_case("localhost") || host.ends_with(".local") {
+        return true;
+    }
+    match host.parse::<std::net::IpAddr>() {
+        Ok(std::net::IpAddr::V4(ip)) => ip.is_loopback() || ip.is_private() || ip.is_link_local(),
+        Ok(std::net::IpAddr::V6(ip)) => ip.is_loopback() || (ip.segments()[0] & 0xfe00) == 0xfc00,
+        Err(_) => false,
     }
 }
 
@@ -130,6 +138,30 @@ pub struct LnConfig {
 }
 
 impl LnConfig {
+    /// A public host this config would dial or accept in the clear.
+    /// LDK does not use the node's proxy, so that host would see this machine's IP.
+    pub fn clearnet_peer(&self) -> Option<String> {
+        if !self.chain.is_local() {
+            return Some(self.chain.describe());
+        }
+        if let GossipSource::Rgs(url) = &self.gossip {
+            if !host_is_local(url) {
+                return Some(url.clone());
+            }
+        }
+        if let Some(lsp) = &self.lsp {
+            if !host_is_local(&lsp.peer.address) {
+                return Some(lsp.peer.address.clone());
+            }
+        }
+        if let Some(listen) = &self.listen {
+            if !host_is_local(listen) {
+                return Some(listen.clone());
+            }
+        }
+        None
+    }
+
     /// The LSP fee cap for a payment of `amount_msat`.
     pub fn lsp_fee_cap_msat(&self, amount_msat: u64) -> u64 {
         let share = amount_msat.saturating_mul(self.max_lsp_fee_bps) / 10_000;
@@ -160,6 +192,32 @@ mod tests {
         assert!(ChainSource::parse("esplora:http://192.168.1.4:3002").unwrap().is_local());
         assert!(ChainSource::parse("esplora:ftp://x").is_err());
         assert!(ChainSource::parse("bitcoind:127.0.0.1:18443").is_err());
+    }
+
+    #[test]
+    fn a_public_peer_is_named_and_a_local_one_is_not() {
+        let public = LnConfig {
+            network: Network::Signet,
+            storage_dir: PathBuf::new(),
+            chain: ChainSource::Esplora("https://mutinynet.com/api".into()),
+            gossip: GossipSource::Rgs("https://rgs.mutinynet.com/snapshot".into()),
+            lsp: Some(LspConfig { peer: format!("{ID}@44.219.111.31:39735").parse().unwrap(), token: None }),
+            listen: None,
+            max_lsp_fee_bps: 500,
+            min_lsp_fee_cap_sats: 10_000,
+        };
+        assert!(public.clearnet_peer().unwrap().contains("mutinynet.com"));
+        let local = LnConfig {
+            network: Network::Regtest,
+            storage_dir: PathBuf::new(),
+            chain: ChainSource::BitcoindRpc { host: "127.0.0.1".into(), port: 18443, user: "ob".into(), password: "x".into() },
+            gossip: GossipSource::P2p,
+            lsp: Some(LspConfig { peer: format!("{ID}@127.0.0.1:9735").parse().unwrap(), token: None }),
+            listen: Some("127.0.0.1:9736".into()),
+            max_lsp_fee_bps: 500,
+            min_lsp_fee_cap_sats: 10_000,
+        };
+        assert!(local.clearnet_peer().is_none());
     }
 
     #[test]

@@ -1,3 +1,4 @@
+use std::net::ToSocketAddrs;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -374,6 +375,20 @@ fn own_node_mode_never_contacts_anyone_else() {
     assert!(peer.connections() >= 1);
 }
 
+#[test]
+fn a_public_filter_peer_is_not_dialed_without_a_proxy() {
+    let filters = FilterChain::new(FilterConfig::public(Network::Testnet4)).unwrap();
+    let dir = TempDir::new();
+    filters.open(store(&dir.0)).unwrap();
+    let started = Instant::now();
+    let err = filters.broadcast(&pay(&script(1), 1_000, 1)).unwrap_err();
+    assert!(started.elapsed() < Duration::from_millis(500), "a public peer was dialed");
+    assert!(err.contains("without --proxy"), "{err}");
+    let status = filters.status();
+    assert!(status.reveals.contains("not contacted"), "{}", status.reveals);
+    assert!(status.peers.is_none(), "the filter client started");
+}
+
 /// Sync testnet4 compact filters from public P2P peers and print how long it
 /// took. Run with
 /// `cargo test -p ob-node live_testnet4_filters -- --ignored --nocapture`.
@@ -382,10 +397,21 @@ fn own_node_mode_never_contacts_anyone_else() {
 #[test]
 #[ignore]
 fn live_testnet4_filters() {
+    let Some(proxy) = std::env::var("OB_PROXY").ok() else {
+        eprintln!("skipped: public filter peers are not dialed without a proxy (set OB_PROXY=socks5h://127.0.0.1:9050)");
+        return;
+    };
+    let authority = proxy.trim_start_matches("socks5h://").trim_start_matches("socks5://");
+    let Some(proxy_addr) = authority.to_socket_addrs().ok().and_then(|mut addrs| addrs.next()) else {
+        eprintln!("skipped: OB_PROXY must be socks5h://HOST:PORT");
+        return;
+    };
     let temp = TempDir::new();
     let dir = std::env::var("OB_LIVE_FILTER_DIR").map(std::path::PathBuf::from).unwrap_or_else(|_| temp.0.clone());
     let started = Instant::now();
-    let filters = FilterChain::new(FilterConfig::public(Network::Testnet4)).unwrap();
+    let mut config = FilterConfig::public(Network::Testnet4);
+    config.proxy = Some(proxy_addr);
+    let filters = FilterChain::new(config).unwrap();
     filters
         .open(store(&dir))
         .unwrap();
