@@ -62,13 +62,15 @@ pub(crate) struct UrlTransport;
 
 impl Transport for UrlTransport {
     fn deliver(&self, url: &str, letter: &[u8]) -> Result<(), Refusal> {
-        check_loopback(url).map_err(Refusal::Refused)?;
-        match ureq::post(url)
-            .timeout(DELIVERY_TIMEOUT)
+        let request = crate::escrow_mail::loopback_request("POST", url, DELIVERY_TIMEOUT).map_err(Refusal::Refused)?;
+        match request
             .set("Content-Type", "application/octet-stream")
             .send_bytes(letter)
         {
-            Ok(_) => Ok(()),
+            // 3xx is not delivery. Following it would open a second connection
+            // and show this machine's IP to whatever host the peer named.
+            Ok(response) if (200..300).contains(&response.status()) => Ok(()),
+            Ok(response) => Err(Refusal::Retry(format!("{url}: {}", response.status()))),
             Err(ureq::Error::Status(code, _)) if (400..500).contains(&code) && code != 429 => {
                 Err(Refusal::Refused(format!("{url}: {code}")))
             }
@@ -366,5 +368,43 @@ mod tests {
     fn http_transport_refuses_non_loopback_peers_without_dialing() {
         assert!(matches!(HttpTransport.deliver("http://10.0.0.1:1", b"x"), Err(Refusal::Refused(_))));
         assert!(matches!(HttpTransport.deliver("http://127.0.0.1:9", b"x"), Err(Refusal::Retry(_))));
+    }
+
+    #[test]
+    fn a_peer_cannot_redirect_order_mail_to_another_host() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        use std::thread;
+
+        let trap = TcpListener::bind("127.0.0.1:0").unwrap();
+        let trap_port = trap.local_addr().unwrap().port();
+        let hits = Arc::new(AtomicUsize::new(0));
+        let counted = hits.clone();
+        thread::spawn(move || {
+            for mut stream in trap.incoming().flatten() {
+                counted.fetch_add(1, Ordering::SeqCst);
+                let mut buf = [0u8; 512];
+                let _ = stream.read(&mut buf);
+                let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+            }
+        });
+        let seller = TcpListener::bind("127.0.0.1:0").unwrap();
+        let seller_port = seller.local_addr().unwrap().port();
+        thread::spawn(move || {
+            for mut stream in seller.incoming().flatten() {
+                let mut buf = [0u8; 1024];
+                let _ = stream.read(&mut buf);
+                let body = format!("HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:{trap_port}/stolen\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                let _ = stream.write_all(body.as_bytes());
+            }
+        });
+
+        let err = UrlTransport.deliver(&format!("http://127.0.0.1:{seller_port}/mail"), b"sealed-letter").unwrap_err();
+        thread::sleep(Duration::from_millis(200));
+        assert_eq!(hits.load(Ordering::SeqCst), 0, "the redirect was followed: {err:?}");
+        let outside = crate::escrow_mail::loopback_request("GET", "http://203.0.113.9/public/store", Duration::from_millis(200)).unwrap_err();
+        assert!(outside.contains("loopback"), "{outside}");
     }
 }

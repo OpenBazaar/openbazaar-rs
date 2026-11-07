@@ -261,6 +261,15 @@ impl FilterChain {
         last.elapsed() > after || stalled(&mut progress, height, caught_up, Instant::now(), after) || frozen
     }
 
+    /// Pretend no peer has answered since `ago`. Tests use this to turn the
+    /// public fallback on without waiting out the real silence.
+    #[cfg(test)]
+    pub(crate) fn test_peer_silent_for(&self, ago: Duration) {
+        let when = Instant::now() - ago;
+        *self.started.lock().unwrap_or_else(|err| err.into_inner()) = Some(when);
+        *self.shared.last_contact.lock().unwrap_or_else(|err| err.into_inner()) = Some(when);
+    }
+
     fn ready(&self, scripts: &[ScriptBuf]) -> Result<(), String> {
         let index = self.shared.index();
         index.tip()?;

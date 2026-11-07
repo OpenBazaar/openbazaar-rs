@@ -4,9 +4,11 @@
 //! pay one address, a fee estimate, broadcast, a BDK wallet update, and one
 //! output by outpoint (for escrow funding checks).
 //! [`crate::FilterChain`] (compact block filters) is the default.
-//! [`EsploraChain`] talks to a list of Esplora servers. Every query names
-//! addresses to that server, so it is used only when the user names a
-//! server or opts in to the public ones. Tests use their own implementation.
+//! [`EsploraChain`] talks to a list of Esplora servers. A public server is
+//! asked for the tip, a fee estimate, and a broadcast. It is not asked which
+//! addresses this wallet follows, or one server could link every sale.
+//! A server on this machine, the LAN, or an onion is the user's own and may
+//! be asked. Tests use their own implementation.
 
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -29,6 +31,8 @@ const USER_AGENT: &str = concat!("ob-node/", env!("CARGO_PKG_VERSION"));
 /// slice of it before the next one is tried.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+/// Returned before any request when a public server would otherwise be told an address.
+const PUBLIC_ADDRESSES: &str = "a public Esplora server is not asked which addresses this wallet follows";
 
 /// One transaction that pays an address, with the outputs that pay it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -59,7 +63,8 @@ pub struct ChainStatus {
     pub backend: &'static str,
     /// `private`: no one learns which addresses are the user's.
     /// `own-node`, `own-server`: only a node or server the user runs does.
-    /// `public`: a server someone else runs sees every address the node follows.
+    /// `public`: a server someone else runs. It is not asked for addresses;
+    /// it can see a broadcast and, without a proxy, this machine's IP.
     pub privacy: &'static str,
     pub reveals: String,
     pub peers: Option<usize>,
@@ -73,7 +78,9 @@ pub struct ChainStatus {
 }
 
 impl ChainStatus {
-    /// Addresses currently go to a server someone else runs.
+    /// A public chain server is in use. It is not asked for addresses. Without
+    /// a proxy it still sees this machine's IP, and it sees any transaction
+    /// broadcast to it.
     pub fn public_server(&self) -> bool {
         self.privacy == "public"
     }
@@ -265,7 +272,7 @@ impl ChainSource for EsploraChain {
             ChainStatus::simple(
                 "esplora",
                 "public",
-                "A public Esplora server sees every address this node follows, when it asks, and can link them into one wallet.",
+                "A public Esplora server is not asked which addresses this wallet follows, so it cannot link one sale to another. It sees the tip, fee estimates, and any transaction broadcast to it. Without --proxy it also sees this machine's IP address.",
             )
         } else {
             ChainStatus::simple("esplora", "own-server", "Only your own Esplora server sees the addresses this node follows.")
@@ -280,8 +287,12 @@ impl ChainSource for EsploraChain {
         self.script_txs(&address.script_pubkey(), 0)
     }
 
-    /// Esplora indexes every script, so `from` is not needed.
+    /// Esplora indexes every script, so `from` is not needed. A public server
+    /// is not asked: the script would tell it an address this wallet follows.
     fn script_txs(&self, script: &Script, _from: u32) -> Result<Vec<AddressTx>, String> {
+        if self.public {
+            return Err(PUBLIC_ADDRESSES.into());
+        }
         let txs = self.each(|client| async move {
             client.scripthash_txs(script, None).await.map_err(|err| err.to_string())
         })?;
@@ -316,6 +327,9 @@ impl ChainSource for EsploraChain {
     }
 
     fn wallet_update(&self, request: WalletRequest) -> Result<Update, String> {
+        if self.public {
+            return Err(PUBLIC_ADDRESSES.into());
+        }
         self.scan(|client| {
             let result = match request {
                 WalletRequest::Full(request) => self
@@ -332,6 +346,9 @@ impl ChainSource for EsploraChain {
     }
 
     fn output(&self, outpoint: &OutPoint) -> Result<Option<(TxOut, Option<u32>)>, String> {
+        if self.public {
+            return Err(PUBLIC_ADDRESSES.into());
+        }
         let txid = outpoint.txid;
         self.each(|client| async move {
             let Some(tx) = client.get_tx(&txid).await.map_err(|err| err.to_string())? else {
@@ -438,5 +455,45 @@ mod tests {
         let first = users.recv_timeout(Duration::from_secs(5)).unwrap();
         let second = users.recv_timeout(Duration::from_secs(5)).unwrap();
         assert_ne!(first, second, "a shared SOCKS username would put both queries on one circuit");
+    }
+
+    #[test]
+    fn a_public_esplora_server_is_not_asked_which_addresses_are_followed() {
+        use bdk_wallet::Wallet;
+        use bitcoin::{Address, OutPoint};
+        use std::str::FromStr;
+
+        let (proxy, seen) = crate::egress::fake_socks::start();
+        let egress = Egress { proxy: Some(proxy), live_rates: false };
+        let urls = ["https://mempool.space/testnet4/api".to_string()];
+        let chain = EsploraChain::with_egress(&urls, Network::Testnet4, &egress).unwrap();
+        assert!(chain.status().reveals.contains("not asked which addresses"));
+        assert!(!chain.status().reveals.contains("sees every address"));
+
+        let address = Address::from_str("tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx")
+            .unwrap()
+            .require_network(Network::Testnet4)
+            .unwrap();
+        let script_err = chain.script_txs(&address.script_pubkey(), 0).unwrap_err();
+        let address_err = chain.address_txs(&address).unwrap_err();
+        let output_err = chain.output(&OutPoint::null()).unwrap_err();
+        for err in [&script_err, &address_err, &output_err] {
+            assert!(err.contains("not asked which addresses"), "{err}");
+        }
+
+        let wallet = Wallet::create(
+            "tr([7d94197e/86'/1'/0']tpubDCyQVJj8KzjiQsFjmb3KwECVXPvMwvAxxZGCP9XmWSopmjW3bCV3wD7TgxrUhiGSueDS1MU5X1Vb1YjYcp8jitXc5fXfdC1z68hDDEyKRNr/0/*)",
+            "tr([7d94197e/86'/1'/0']tpubDCyQVJj8KzjiQsFjmb3KwECVXPvMwvAxxZGCP9XmWSopmjW3bCV3wD7TgxrUhiGSueDS1MU5X1Vb1YjYcp8jitXc5fXfdC1z68hDDEyKRNr/1/*)",
+        )
+        .network(Network::Testnet4)
+        .create_wallet_no_persist()
+        .unwrap();
+        let scan_err = chain.wallet_update(WalletRequest::Full(wallet.start_full_scan().build())).unwrap_err();
+        assert!(scan_err.contains("not asked which addresses"), "{scan_err}");
+        assert!(seen.try_recv().is_err(), "an address query reached the public server");
+
+        assert!(chain.tip_height().is_err());
+        let (kind, host) = seen.recv_timeout(Duration::from_secs(5)).expect("the tip query did not reach the proxy");
+        assert_eq!((kind, host.as_str()), (3, "mempool.space"));
     }
 }

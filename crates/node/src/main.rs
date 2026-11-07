@@ -11,7 +11,7 @@ const USAGE: &str = "ob-node [print | --version | pair [port] [--network N] [--d
 Chain data comes from BIP 157/158 compact block filters by default.
 --peer uses only your own node (bitcoind with blockfilterindex=1 and peerblockfilters=1).
 --esplora uses exactly the Esplora servers you name.
---public-fallback asks public Esplora servers while no filter peer answers (default on testnet4 only).
+--public-fallback asks public Esplora servers for the tip, fees, and broadcasts while no filter peer answers (default on testnet4 only). Addresses are never sent.
 --proxy also carries filter peer connections and broadcasts, and gives each Esplora query its own Tor circuit.
 --xmr-daemon turns on Monero direct pay through monerod RPC: your own node (loopback or LAN, direct), or a remote node through --proxy (required for .onion, and on mainnet). There is no default node. Testnet4 pays on Monero stagenet.
 --remote publishes the node's admin API as a Tor onion service that only paired devices can find (docs/home-node.md); `ob-node pair` prints a one-time pairing code and approves the device; `ob-node devices` lists and removes devices.
@@ -91,7 +91,7 @@ fn serve(args: &[String]) -> ExitCode {
     eprintln!("ob-node: chain data from {}", plan.describe());
     eprintln!("ob-node: paid after {} confirmation(s)", options.confirmations);
     if options.uses_public_server() {
-        eprintln!("ob-node: WARNING: a public Esplora server sees every address it is asked about; drop --esplora/--public-fallback, or pass --peer with your own node, to keep them private.");
+        eprintln!("ob-node: WARNING: a public Esplora server is not told which addresses this wallet follows. It still sees any transaction broadcast to it, and without --proxy it sees this machine's IP. Pass --peer with your own node to keep broadcasts off public servers.");
     }
     match &options.proxy {
         Some(proxy) => eprintln!("ob-node: rates and chain queries go through {proxy}"),
