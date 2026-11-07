@@ -230,8 +230,30 @@ where the node is (the node reaches the gateway over Tor). Over time the
 timing pattern says how busy the store is, and the token ties it to the phone's
 Apple or Google account. That is the tradeoff; keep push off if it matters.
 
-A gateway needs the app's APNs key and FCM credentials, so it is run by
-whoever publishes the app. The project does not run one yet.
+### Running a push gateway
+
+The project does not run one, and the node has no default: without
+`--push-gateway` nothing is ever sent. A gateway can only wake the app it
+holds credentials for, so it is run by whoever publishes the app. It needs:
+
+- **An onion service**, `http://….onion`, that accepts
+  `POST /v1/wake` with `{"platform": "apns" | "fcm", "token": "…"}` and
+  answers `202`. Nodes reach it only over Tor, so it never sees their
+  addresses. It should keep no logs of tokens or timing, and rate-limit per
+  token (the node already sends at most one wake-up per device per 10 minutes).
+- **APNs:** an Apple Developer Program membership, an APNs auth key (`.p8`)
+  with its key id and team id, and the app's bundle id
+  (`app.openbazaar.mobile`). Send a background notification
+  (`apns-push-type: background`, `content-available: 1`, no alert, no
+  payload data) to `api.push.apple.com`.
+- **FCM:** a Firebase project with the Android app registered, and a service
+  account key for the FCM HTTP v1 API. Send a data-only, high-priority
+  message with no notification block.
+- The matching app build: the iOS app with the push entitlement and the
+  Android app with that project's `google-services.json`. The app sends its
+  token to the node only after the user turns push on.
+
+Run a node against it with `ob-node serve --remote --push-gateway http://….onion`.
 
 ## Tradeoffs and alternatives
 
