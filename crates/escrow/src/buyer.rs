@@ -5,12 +5,17 @@ use musig2::secp::{Point, Scalar};
 use musig2::PubNonce;
 use openbazaar_protocol::EscrowTerms as EnvelopeTerms;
 
+use crate::context::Context;
 use crate::contract::{self, Branch, Contract, SignedRefund};
 use crate::crypto;
 use crate::letter::{self, ModeratorRuling};
 use crate::messages::ReleaseSignature;
+use crate::state;
 use crate::tx::Spend;
+use crate::wire::{Reader, Writer};
 use crate::{Error, EscrowTerms, Party, Phase};
+
+const SNAPSHOT_MAGIC: &[u8; 4] = b"OBSB";
 
 /// Buyer state after funding round 3.
 ///
@@ -175,6 +180,56 @@ impl BuyerEscrow {
         let tx = letter::settle(&self.contract, &self.branch, &self.secret, ruling)?;
         contract::enter(&mut self.phase, Phase::Disputed)?;
         Ok(tx)
+    }
+
+    /// A snapshot for durable storage, without the secret key. See *Persistence* in the crate docs.
+    ///
+    /// Store a new snapshot after every call that changes [`Self::phase`],
+    /// before sending or broadcasting its result.
+    pub fn snapshot(&self) -> Vec<u8> {
+        let mut w = Writer::new(SNAPSHOT_MAGIC, state::VERSION);
+        state::write_contract(&mut w, &self.contract);
+        w.var(&self.refund.to_bytes());
+        state::write_branch(&mut w, &self.branch);
+        w.point(&self.vendor_wins_point);
+        w.var(&self.psbt.as_ref().map(Psbt::serialize).unwrap_or_default());
+        state::write_phase(&mut w, self.phase);
+        w.finish()
+    }
+
+    /// Reload a [`Self::snapshot`] with the buyer's per-order secret.
+    ///
+    /// Rebuilds the contract from the stored terms and outpoint and
+    /// re-verifies the refund, the buyer-wins pre-signature, and the
+    /// buyer's adaptor half. Heights are not checked against `ctx.tip`.
+    pub fn restore(bytes: &[u8], buyer_secret: &[u8; 32], ctx: &Context) -> Result<Self, Error> {
+        let mut r = Reader::new(bytes, SNAPSHOT_MAGIC, state::VERSION)?;
+        let (contract, secret) = state::read_contract(&mut r, buyer_secret, Party::Buyer, ctx)?;
+        let refund = SignedRefund::from_bytes(r.var(usize::MAX)?)?;
+        state::check_template(&contract, Spend::Refund, refund.transaction())?;
+        let branch = state::read_branch(&mut r, &contract, &secret, Party::Buyer)?;
+        let vendor_wins_point = r.point()?;
+        let psbt = match r.var(usize::MAX)? {
+            [] => None,
+            bytes => {
+                let psbt = Psbt::deserialize(bytes).map_err(|_| Error::Malformed)?;
+                if psbt.unsigned_tx.compute_txid() != contract.outpoint.txid {
+                    return Err(Error::BadFunding("stored PSBT does not create the escrow output"));
+                }
+                Some(psbt)
+            }
+        };
+        let phase = state::read_phase(&mut r)?;
+        r.finish()?;
+        Ok(Self {
+            contract,
+            secret,
+            refund,
+            branch,
+            vendor_wins_point,
+            psbt,
+            phase,
+        })
     }
 
     /// A copy for tests that start many scenarios from one funded escrow.

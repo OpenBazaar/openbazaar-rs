@@ -148,13 +148,17 @@ impl Templates {
             value,
             script_pubkey: terms.payout(party).clone(),
         };
-        let presigned = |party: Party, lock: absolute::LockTime| {
-            spend_template(outpoint, lock, vec![pay(party, anchored), anchor.clone()])
-        };
-        let dispute = |party: Party| {
+        let refund = spend_template(
+            outpoint,
+            height_lock(terms.refund_height)?,
+            vec![pay(Party::Buyer, anchored), anchor.clone()],
+        );
+        // The claim pays the vendor exactly what the vendor-wins outcome
+        // pays, so a vendor who won a ruling saves nothing by waiting for it.
+        let with_fee = |party: Party, lock: absolute::LockTime| {
             spend_template(
                 outpoint,
-                absolute::LockTime::ZERO,
+                lock,
                 vec![
                     pay(party, winner),
                     TxOut {
@@ -171,10 +175,10 @@ impl Templates {
                 absolute::LockTime::ZERO,
                 vec![pay(Party::Vendor, payout)],
             ),
-            refund: presigned(Party::Buyer, height_lock(terms.refund_height)?),
-            claim: presigned(Party::Vendor, height_lock(terms.vendor_claim_height)?),
-            buyer_wins: dispute(Party::Buyer),
-            vendor_wins: dispute(Party::Vendor),
+            refund,
+            claim: with_fee(Party::Vendor, height_lock(terms.vendor_claim_height)?),
+            buyer_wins: with_fee(Party::Buyer, absolute::LockTime::ZERO),
+            vendor_wins: with_fee(Party::Vendor, absolute::LockTime::ZERO),
         })
     }
 
@@ -197,6 +201,19 @@ impl Templates {
             &self.vendor_wins,
         ]
     }
+}
+
+/// The largest signed vsize of any spend `terms` produce, with the 64-byte
+/// key-path witness attached. `terms.network_fee` divided by this is the
+/// lowest fee rate any presigned spend pays.
+pub fn max_spend_vsize(terms: &EscrowTerms) -> Result<u64, Error> {
+    let templates = Templates::build(terms, OutPoint::null())?;
+    Ok(templates
+        .all()
+        .iter()
+        .map(|tx| attach_key_spend((*tx).clone(), &[0u8; 64]).vsize() as u64)
+        .max()
+        .unwrap_or(0))
 }
 
 /// Keyless pay-to-anchor output. Anyone can spend it to CPFP the parent.

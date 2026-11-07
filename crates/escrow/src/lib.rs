@@ -13,7 +13,7 @@
 //! | spend          | `nLockTime`           | pays                              | moderator |
 //! |----------------|-----------------------|-----------------------------------|-----------|
 //! | release        | 0                     | vendor                            | no        |
-//! | vendor claim   | `vendor_claim_height` | vendor + anchor                   | no        |
+//! | vendor claim   | `vendor_claim_height` | vendor + moderator fee + anchor   | no        |
 //! | buyer refund   | `refund_height`       | buyer + anchor                    | no        |
 //! | buyer wins     | 0                     | buyer + moderator fee + anchor    | picks it  |
 //! | vendor wins    | 0                     | vendor + moderator fee + anchor   | picks it  |
@@ -110,19 +110,16 @@
 //!
 //! # Moderator fee collection
 //!
-//! The fee is an output of each dispute outcome, so it is collected only when
-//! the winner broadcasts that outcome. A vendor who wins close to `V` can
-//! skip it and wait for the fee-free claim. A buyer who wins cannot. That
-//! skews moderator pay toward buyer-wins rulings.
-//!
-//! Proposed fix, not implemented: make the fee owed on every path that can
-//! follow a dispute. Either (a) the vendor claim also pays the moderator fee
-//! once a dispute could have been opened, so skipping the ruling saves the
-//! vendor nothing; or (b) a fee bond: the funding transaction creates a second
-//! output worth the fee, spendable by the moderator with a ruling-revealed
-//! secret or returned to the parties after `R`. Option (a) charges undisputed
-//! orders that end in a claim; option (b) needs a second funding output and
-//! its own presigned spends.
+//! The fee is an output of both dispute outcomes and of the vendor claim.
+//! The claim pays the vendor exactly what the vendor-wins outcome pays, so a
+//! vendor who wins a ruling close to `V` saves nothing by waiting for the
+//! claim, and the moderator is paid the same whichever branch it opens.
+//! Only the cooperative release and the buyer refund (the vendor vanished)
+//! are fee-free. The cost: an order that ends in a claim without any dispute
+//! still pays the fee, and the claim shows the moderator's payout script on
+//! chain. This is option (a) of the two remedies for the review's M3
+//! finding; the rejected option (b), a separate fee-bond output, would put a
+//! moderator-spendable output in the funding transaction.
 //!
 //! # Caller obligations
 //!
@@ -141,7 +138,14 @@
 //!   [`order_public_key`] from a 32-byte secret shared only by the two
 //!   parties, and use fresh payout scripts, so orders are unlinkable.
 //! * **Persistence.** Store [`SignedRefund`] (buyer) or [`SignedClaim`] (vendor)
-//!   before funding or shipping.
+//!   before funding or shipping. [`BuyerEscrow::snapshot`],
+//!   [`VendorEscrow::snapshot`], and [`VendorAwaitingSignatures::snapshot`]
+//!   hold everything else a restart needs except the per-order secret, which
+//!   `restore` takes back. Snapshots never hold a secret nonce, so
+//!   [`BuyerAwaitingReply`] cannot be stored: after a restart in round 1 the
+//!   buyer starts round 1 again with fresh nonces. A restored state is a
+//!   copy: store a new snapshot after every phase change and before sending
+//!   or broadcasting its result, and never act on two copies.
 //! * **Ship after funding.** The vendor ships only after
 //!   [`VendorEscrow::verify_funding`] accepts the confirmed funding transaction.
 
@@ -158,6 +162,7 @@ mod messages;
 mod moderator;
 mod policy;
 mod proofs;
+mod state;
 mod terms;
 mod tx;
 mod vencrypt;
@@ -174,13 +179,13 @@ pub use funding::{
 pub use letter::{is_equivocation, DisputeCase, ModeratorRuling};
 pub use messages::{BuyerOpen, BuyerSignatures, FundingNonces, ReleaseSignature, VendorReply};
 pub use moderator::{
-    FundingChain, InMemoryRulingStore, Moderator, ModeratorKeys, ModeratorRecord, RulingKey,
-    RulingStore,
+    FundingChain, InMemoryRulingStore, LetterCache, Moderator, ModeratorKeys, ModeratorRecord,
+    RulingKey, RulingStore,
 };
 pub use policy::{payout_dust_limit, Policy, ANCHOR_VALUE};
 pub use proofs::Pok;
 pub use terms::{order_public_key, order_secret_key, EscrowTerms, SignedTerms};
-pub use tx::{anchor_script, is_final_at_height};
+pub use tx::{anchor_script, is_final_at_height, max_spend_vsize};
 pub use vencrypt::VerifiableShare;
 pub use vendor::{ReleaseNonce, VendorEscrow};
 

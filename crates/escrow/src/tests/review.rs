@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use bitcoin::hashes::Hash;
-use bitcoin::{Amount, ScriptBuf, TxOut};
+use bitcoin::{Amount, OutPoint, ScriptBuf, TxOut};
 
 use super::support::*;
 use crate::{
@@ -198,6 +198,63 @@ fn m1_moderator_checks_the_funding_output_on_chain() {
     );
 
     moderator().open(&letter, TIP).unwrap();
+}
+
+/// A chain view that finds outputs only by the script it is asked to
+/// follow, as compact block filters do, and is still scanning at first.
+struct ScriptChain {
+    outputs: Vec<(OutPoint, TxOut)>,
+    asked: std::cell::RefCell<Vec<(ScriptBuf, u32)>>,
+    scanning: std::cell::Cell<bool>,
+}
+
+impl crate::FundingChain for ScriptChain {
+    fn funding_output(
+        &self,
+        outpoint: &OutPoint,
+        script: &bitcoin::Script,
+        not_before: u32,
+    ) -> Result<Option<TxOut>, Error> {
+        self.asked.borrow_mut().push((script.to_owned(), not_before));
+        if self.scanning.replace(false) {
+            return Err(Error::ChainNotReady);
+        }
+        Ok(self
+            .outputs
+            .iter()
+            .find(|(at, out)| at == outpoint && out.script_pubkey == *script)
+            .map(|(_, out)| out.clone()))
+    }
+}
+
+#[test]
+fn m1_a_script_following_chain_is_asked_for_the_funding_script_from_the_horizon() {
+    let (buyer, _) = funded();
+    let letter = buyer.dispute_letter(b"a").unwrap();
+    let chain = ScriptChain {
+        outputs: vec![(outpoint(), buyer.funding_output().clone())],
+        asked: Default::default(),
+        scanning: std::cell::Cell::new(true),
+    };
+    let mut m = crate::Moderator::new(
+        moderator_keys(),
+        record(),
+        chain,
+        crate::InMemoryRulingStore::default(),
+    )
+    .unwrap();
+    assert_eq!(m.review(&letter, TIP).unwrap_err(), Error::ChainNotReady);
+    m.review(&letter, TIP).unwrap();
+    let terms = buyer.terms();
+    let horizon = terms
+        .refund_height
+        .saturating_sub(Policy::default().max_refund_horizon);
+    let asked = m.chain().asked.borrow().clone();
+    assert_eq!(asked.len(), 2);
+    for (script, not_before) in asked {
+        assert_eq!(script, buyer.funding_output().script_pubkey);
+        assert_eq!(not_before, horizon);
+    }
 }
 
 /// M2: one moderator with one store hands out at most one branch per escrow.

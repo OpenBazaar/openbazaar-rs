@@ -85,12 +85,15 @@ impl DisputeCase {
     /// that record, so a moderator cannot refuse terms it published.
     ///
     /// `proofs_cached` skips only the adaptor and share proofs, for letter
-    /// bytes whose hash already passed them.
+    /// bytes whose hash already passed them. Otherwise `gate` runs after the
+    /// local checks and before the chain lookup and the proofs, and can
+    /// refuse the letter.
     pub(crate) fn verify(
         letter: &[u8],
         ctx: &Context,
         chain: &impl FundingChain,
         proofs_cached: bool,
+        gate: &mut dyn FnMut(&RulingKey, Party) -> Result<(), Error>,
     ) -> Result<Self, Error> {
         let mut r = Reader::new(letter, LETTER_MAGIC, LETTER_VERSION)?;
         let signed = SignedTerms::decode(r.var(usize::MAX)?)?;
@@ -117,14 +120,27 @@ impl DisputeCase {
         {
             return Err(Error::KeyMismatch);
         }
-        if chain.funding_output(&outpoint).as_ref() != Some(&contract.funding_output) {
-            return Err(Error::FundingNotOnChain);
-        }
         let spend = Spend::dispute(favored);
         if &outcome != contract.tx(spend) {
             return Err(Error::BadPayload);
         }
         let adaptor_point = contract::adaptor_point(party_point, share.point())?;
+        if !proofs_cached {
+            let key = RulingKey {
+                terms_digest: contract.signed.terms().digest(),
+                outpoint,
+            };
+            gate(&key, favored)?;
+        }
+        let terms = contract.signed.terms();
+        let not_before = terms
+            .refund_height
+            .saturating_sub(terms.moderator.policy.max_refund_horizon);
+        let script = &contract.funding_output.script_pubkey;
+        let on_chain = chain.funding_output(&outpoint, script, not_before)?;
+        if on_chain.as_ref() != Some(&contract.funding_output) {
+            return Err(Error::FundingNotOnChain);
+        }
         if !proofs_cached {
             let sighash = tx::key_spend_sighash(&outcome, &contract.funding_output)?;
             crypto::verify_adaptor(&contract.key_agg, &adaptor_sig, &sighash, adaptor_point)?;

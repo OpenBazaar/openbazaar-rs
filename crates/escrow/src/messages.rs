@@ -24,7 +24,7 @@ pub struct FundingNonces {
 }
 
 impl FundingNonces {
-    fn write(&self, w: &mut Writer) {
+    pub(crate) fn write(&self, w: &mut Writer) {
         for nonce in [
             &self.refund,
             &self.claim,
@@ -35,7 +35,7 @@ impl FundingNonces {
         }
     }
 
-    fn read(r: &mut Reader<'_>) -> Result<Self, Error> {
+    pub(crate) fn read(r: &mut Reader<'_>) -> Result<Self, Error> {
         Ok(Self {
             refund: r.nonce()?,
             claim: r.nonce()?,
