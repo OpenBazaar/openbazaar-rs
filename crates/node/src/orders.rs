@@ -227,7 +227,7 @@ impl Node {
             remotes.push(remote);
             plans.push(plan);
         }
-        let reply_url = self.own_url().map(str::to_string);
+        let reply_url = self.sale_reply_url();
         let mut sealed = Vec::with_capacity(packages.len());
         for ((package, remote), plan) in packages.iter().zip(&remotes).zip(&plans) {
             let letter = self.seal_letter(

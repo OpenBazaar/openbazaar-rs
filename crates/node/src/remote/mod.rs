@@ -3,7 +3,9 @@
 //!
 //! As a server (`ob-node serve --remote`), the node publishes its admin API
 //! as a restricted onion service that only paired devices can find
-//! ([`services`]), and pipes it to a loopback [`gateway`]. A device pairs
+//! ([`services`]), and pipes it to a loopback [`gateway`]. The same Tor
+//! client publishes a separate public onion that forwards only catalog,
+//! order mail, and review routes. A device pairs
 //! with a one-time code, its request is approved on the node after the owner
 //! compares emoji ([`pairing`]), and it is registered with its own keys
 //! ([`devices`]); from then on it signs every request ([`auth`]). With
@@ -32,6 +34,7 @@ mod push;
 mod services;
 mod sync;
 mod tor;
+pub(crate) use tor::Tor;
 mod web;
 
 /// The web export for a browser on this machine. Unlike [`web::response`],
@@ -48,7 +51,7 @@ mod vectors;
 use std::net::{SocketAddr, TcpListener};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Mutex, MutexGuard, OnceLock};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::vault::Vault;
@@ -143,7 +146,7 @@ pub(crate) struct Remote {
     gateway: OnceLock<SocketAddr>,
     pairing_gateway: OnceLock<SocketAddr>,
     pub(crate) services: services::Services,
-    tor: OnceLock<Result<tor::Tor, String>>,
+    tor: OnceLock<Result<Arc<tor::Tor>, String>>,
     lan: lan::LanState,
     home: home::HomeState,
 }
@@ -192,15 +195,16 @@ impl Remote {
         self.gateway.get().is_some()
     }
 
-    fn tor(&self, data_dir: &Path) -> Result<&tor::Tor, String> {
+    fn tor(&self, data_dir: &Path) -> Result<Arc<tor::Tor>, String> {
         self.tor
-            .get_or_init(|| tor::Tor::start(data_dir))
+            .get_or_init(|| tor::Tor::start(data_dir).map(Arc::new))
             .as_ref()
+            .map(Arc::clone)
             .map_err(Clone::clone)
     }
 
-    fn running_tor(&self) -> Option<&tor::Tor> {
-        self.tor.get().and_then(|tor| tor.as_ref().ok())
+    fn running_tor(&self) -> Option<Arc<tor::Tor>> {
+        self.tor.get().and_then(|tor| tor.as_ref().ok().map(Arc::clone))
     }
 
     /// Act as if the gateway were listening on `addr`, without a socket.
@@ -217,7 +221,7 @@ impl Remote {
         }
         let code = self.pairing().issue(by, Instant::now());
         if let (Some(tor), Some(target)) = (self.running_tor(), self.pairing_gateway.get()) {
-            self.services.open_pairing(tor, &code, *target);
+            self.services.open_pairing(&tor, &code, *target);
         }
         Some(code)
     }
@@ -279,13 +283,14 @@ pub(crate) fn run(node: &Node, main_port: u16, stop: &AtomicBool) {
     };
     let _ = remote.gateway.set(admin_addr);
     let _ = remote.pairing_gateway.set(pairing_addr);
-    if config.onion {
+    let sale_listener = if config.onion {
         match remote.tor(&node.data_dir) {
             Ok(tor) => {
+                node.peers.attach(Arc::clone(&tor));
                 let generation = remote.devices().generation;
                 let moving = remote.devices().moving;
                 remote.services.open_admin(
-                    tor,
+                    &tor,
                     generation,
                     moving.map(|moving| moving.from),
                     admin_addr,
@@ -299,13 +304,42 @@ pub(crate) fn run(node: &Node, main_port: u16, stop: &AtomicBool) {
                         eprintln!("ob-node: remote access: the onion service has no address yet")
                     }
                 }
+                match crate::sale_gate::bind() {
+                    Ok(listener) => match listener.local_addr() {
+                        Ok(addr) => {
+                            remote.services.open_sale(&tor, addr);
+                            match remote.services.sale_onion() {
+                                Some(onion) => eprintln!(
+                                    "ob-node: store at http://{onion}/ (Tor only; catalog, order mail, and reviews)"
+                                ),
+                                None => eprintln!("ob-node: store onion has no address yet"),
+                            }
+                            remote.services.has_sale().then_some(listener)
+                        }
+                        Err(err) => {
+                            eprintln!("ob-node: store onion: {err}");
+                            None
+                        }
+                    },
+                    Err(err) => {
+                        eprintln!("ob-node: store onion could not listen: {err}");
+                        None
+                    }
+                }
             }
-            Err(err) => eprintln!("ob-node: remote access over Tor is off: {err}"),
+            Err(err) => {
+                eprintln!("ob-node: remote access over Tor is off: {err}");
+                None
+            }
         }
     } else {
         eprintln!("ob-node: remote gateway on http://{admin_addr}/ (loopback only, no onion)");
-    }
+        None
+    };
     std::thread::scope(|scope| {
+        if let Some(listener) = sale_listener {
+            scope.spawn(move || crate::sale_gate::serve(listener, main_port, stop));
+        }
         if let Some(addr) = config.lan {
             scope.spawn(move || lan::serve(node, addr, main_port, stop));
         }

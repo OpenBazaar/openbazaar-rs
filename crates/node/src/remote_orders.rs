@@ -55,7 +55,7 @@ impl Node {
         if !direct || xmr {
             return Err(OrderError::Invalid("This store takes direct bitcoin payment only."));
         }
-        if self.own_url().is_none() {
+        if self.sale_reply_url().is_none() {
             return Err(OrderError::Invalid("This node has no address for the seller's reply."));
         }
         Ok(Some(url))

@@ -8,6 +8,9 @@
 //! * One open pairing service per live code, keyed by the code's secret, so
 //!   a device that knows only the 8 words can find it. It serves `/pair/*`
 //!   and goes away with the code.
+//! * One public sale service, nickname `ob-sale`, with no client auth. It
+//!   forwards to the sale gate, which allows catalog, media, reviews, and
+//!   order mail and answers everything else itself.
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -29,6 +32,7 @@ pub(crate) const MOVE_GRACE_SECS: u64 = 7 * 24 * 3600;
 pub(crate) struct Services {
     admin: Mutex<Vec<(u32, Service)>>,
     pairing: Mutex<HashMap<String, Service>>,
+    sale: Mutex<Option<Service>>,
 }
 
 fn admin_nickname(generation: u32) -> String {
@@ -50,6 +54,10 @@ impl Services {
 
     fn pairing(&self) -> MutexGuard<'_, HashMap<String, Service>> {
         self.pairing.lock().unwrap_or_else(|err| err.into_inner())
+    }
+
+    fn sale(&self) -> MutexGuard<'_, Option<Service>> {
+        self.sale.lock().unwrap_or_else(|err| err.into_inner())
     }
 
     pub(crate) fn open_admin(
@@ -107,6 +115,27 @@ impl Services {
                 eprintln!("ob-node: admin onion {generation}: could not update its devices: {err}");
             }
         }
+    }
+
+    /// A public onion for catalog, order mail, and reviews. Its keys stay
+    /// under the nickname `ob-sale`, so the address survives a restart.
+    pub(crate) fn open_sale(&self, tor: &Tor, target: SocketAddr) {
+        match tor.serve("ob-sale", None, Discovery::Open, target) {
+            Ok(service) => *self.sale() = Some(service),
+            Err(err) => eprintln!("ob-node: store onion: {err}"),
+        }
+    }
+
+    pub(crate) fn has_sale(&self) -> bool {
+        self.sale().is_some()
+    }
+
+    /// The public store address, `….onion`, when the sale service is up.
+    pub(crate) fn sale_onion(&self) -> Option<String> {
+        self.sale()
+            .as_ref()
+            .and_then(|service| service.forward.onion_address())
+            .map(|onion| onion.to_string())
     }
 
     pub(crate) fn open_pairing(&self, tor: &Tor, code: &Code, target: SocketAddr) {

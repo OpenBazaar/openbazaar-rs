@@ -1,7 +1,7 @@
 //! Order mail between a buyer's node and a seller's node.
 //!
-//! Three kinds of bytes cross, all over loopback HTTP for now (the same
-//! transport as escrow mail), all sealed with tormail:
+//! Three kinds of bytes cross, sealed with tormail, over loopback HTTP or one
+//! request to a sale onion. A redirect is not a second connection:
 //!
 //! | from   | to                      | what                                           |
 //! |--------|-------------------------|------------------------------------------------|
@@ -24,6 +24,7 @@
 //! first letter of an order each side pins the other's per-order sender key.
 
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use bitcoin::hashes::{sha256, Hash, HashEngine};
@@ -46,8 +47,8 @@ pub(crate) enum MailError {
     Retry(String),
 }
 
-pub(crate) fn open_outbox(dir: &std::path::Path, vault: Vault) -> Result<Outbox, Error> {
-    Outbox::open_named(dir, "order-outbox", vault, Box::new(UrlTransport))
+pub(crate) fn open_outbox(dir: &std::path::Path, vault: Vault, peers: Arc<crate::peer_http::PeerLink>) -> Result<Outbox, Error> {
+    Outbox::open_named(dir, "order-outbox", vault, Box::new(UrlTransport::new(peers)))
 }
 
 /// The outbox key of `body` to `url` in conversation `conversation`: the

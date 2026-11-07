@@ -1,7 +1,8 @@
 //! Stores this node follows on other nodes, kept as signed copies.
 //!
-//! A follow is the base URL of another node (loopback HTTP for now, like
-//! escrow mail). Every round the node reads `GET {url}/public/store`, the
+//! A follow is the base URL of another node: loopback HTTP, or `http://` and
+//! a v3 onion reached through this node's Tor client. Every round the node
+//! reads `GET {url}/public/store`, the
 //! signed store record and listings that node sells, checks every
 //! signature, fetches the images the records name, and serves the copies in
 //! its catalog beside its own. The copies are kept in `replicas.obv`, sealed
@@ -19,7 +20,7 @@ use std::time::Duration;
 use openbazaar_protocol::{Catalog, Listing, Store, StoreId};
 use serde_json::{json, Value};
 
-use crate::escrow_mail::{check_loopback, hex, unhex};
+use crate::escrow_mail::{hex, unhex};
 use crate::escrow_outbox::now_secs;
 use crate::vault::Vault;
 use crate::{Error, Node};
@@ -51,14 +52,9 @@ pub(crate) struct Replicas {
     pub follows: Vec<Follow>,
 }
 
-/// A base URL as followed: loopback `http://`, no trailing slash.
+/// A base URL as followed: loopback `http://` or a v3 onion, no path.
 pub(crate) fn normalize(url: &str) -> Result<String, String> {
-    let url = url.trim().trim_end_matches('/').to_string();
-    check_loopback(&url)?;
-    if url.trim_start_matches("http://").contains('/') {
-        return Err(format!("{url} is a base URL with no path"));
-    }
-    Ok(url)
+    crate::peer_http::sale_base(url)
 }
 
 fn decode_records(store: &str, listings: &[Value]) -> Result<Replica, String> {
@@ -195,7 +191,7 @@ impl Node {
     /// (`ob-node serve --follow URL`). Answers the normalized URL.
     pub fn add_follow(&self, url: &str) -> Result<String, String> {
         let url = normalize(url)?;
-        if self.own_url() == Some(url.as_str()) {
+        if self.own_url() == Some(url.as_str()) || self.sale_reply_url().as_deref() == Some(url.as_str()) {
             return Err("That is this node's own address.".into());
         }
         let mut replicas = self.replicas();
@@ -254,7 +250,7 @@ impl Node {
 
     /// Fetch the store at `url`, keep it, and serve it. `true` when the copy changed.
     fn replicate(&self, url: &str) -> bool {
-        let fetched = fetch_store(url).and_then(|replica| match self.refuse_replica(&replica.store) {
+        let fetched = fetch_store(&self.peers, url).and_then(|replica| match self.refuse_replica(&replica.store) {
             Some(reason) => Err(reason),
             None => Ok(replica),
         });
@@ -312,7 +308,7 @@ impl Node {
             if self.media.get(&hash).is_some() {
                 continue;
             }
-            match fetch_image(url, &hash) {
+            match fetch_image(&self.peers, url, &hash) {
                 Ok(bytes) => match self.media.put(&bytes) {
                     Ok((got, _)) if got == hash => {}
                     Ok(_) => eprintln!("ob-node: {url} sent an image that does not match its hash"),
@@ -338,44 +334,39 @@ impl Node {
     }
 }
 
-fn fetch_store(url: &str) -> Result<Replica, String> {
-    use std::io::Read;
-    let response = crate::escrow_mail::loopback_request("GET", &format!("{url}/public/store"), FETCH_TIMEOUT)?.call()
-        .map_err(|err| match err {
-            ureq::Error::Status(404, _) => "that node is not selling".to_string(),
-            other => format!("{url}: {other}"),
-        })?;
-    if !(200..300).contains(&response.status()) {
-        return Err(format!("{url}: {}", response.status()));
+fn fetch_store(peers: &crate::peer_http::PeerLink, url: &str) -> Result<Replica, String> {
+    let answer = crate::peer_http::call(peers, "GET", &format!("{url}/public/store"), None, None, FETCH_TIMEOUT, MAX_STORE_BODY as usize)?;
+    if answer.status == 404 {
+        return Err("that node is not selling".into());
     }
-    let mut body = Vec::new();
-    response
-        .into_reader()
-        .take(MAX_STORE_BODY + 1)
-        .read_to_end(&mut body)
-        .map_err(|err| err.to_string())?;
-    if body.len() as u64 > MAX_STORE_BODY {
+    if !(200..300).contains(&answer.status) {
+        return Err(format!("{url}: {}", answer.status));
+    }
+    if answer.body.len() as u64 > MAX_STORE_BODY {
         return Err("the store's answer is too large".into());
     }
-    let value: Value = serde_json::from_slice(&body).map_err(|_| "the store's answer could not be read".to_string())?;
+    let value: Value = serde_json::from_slice(&answer.body).map_err(|_| "the store's answer could not be read".to_string())?;
     let store = value["store"].as_str().ok_or("the store's answer has no store record")?;
     decode_records(store, value["listings"].as_array().map_or(&[][..], Vec::as_slice))
 }
 
-fn fetch_image(url: &str, hash: &[u8; 32]) -> Result<Vec<u8>, String> {
-    use std::io::Read;
-    let response = crate::escrow_mail::loopback_request("GET", &format!("{url}/public/media/{}", hex(hash)), FETCH_TIMEOUT)?.call()
-        .map_err(|err| err.to_string())?;
-    if !(200..300).contains(&response.status()) {
-        return Err(format!("{url}: {}", response.status()));
+fn fetch_image(peers: &crate::peer_http::PeerLink, url: &str, hash: &[u8; 32]) -> Result<Vec<u8>, String> {
+    let answer = crate::peer_http::call(
+        peers,
+        "GET",
+        &format!("{url}/public/media/{}", hex(hash)),
+        None,
+        None,
+        FETCH_TIMEOUT,
+        crate::media::MAX_MEDIA,
+    )?;
+    if !(200..300).contains(&answer.status) {
+        return Err(format!("{url}: {}", answer.status));
     }
-    let mut bytes = Vec::new();
-    response
-        .into_reader()
-        .take(crate::media::MAX_MEDIA as u64 + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|err| err.to_string())?;
-    Ok(bytes)
+    if answer.body.len() > crate::media::MAX_MEDIA {
+        return Err("the image is too large".into());
+    }
+    Ok(answer.body)
 }
 
 #[cfg(test)]
@@ -413,7 +404,7 @@ mod tests {
             }
         });
 
-        let err = match fetch_store(&format!("http://127.0.0.1:{seller_port}")) {
+        let err = match fetch_store(&crate::peer_http::PeerLink::default(), &format!("http://127.0.0.1:{seller_port}")) {
             Err(err) => err,
             Ok(_) => panic!("the redirect was treated as a store"),
         };
@@ -423,10 +414,14 @@ mod tests {
     }
 
     #[test]
-    fn only_loopback_base_urls_are_followed() {
+    fn clearnet_base_urls_are_not_followed() {
+        let onion = "25njqamcweflpvkl73j4szahhihoc4xt3ktcgjnpaingr5yhkenl5sid.onion";
         assert_eq!(normalize(" http://127.0.0.1:9000/ ").unwrap(), "http://127.0.0.1:9000");
+        assert_eq!(normalize(&format!("http://{onion}/")).unwrap(), format!("http://{onion}"));
         assert!(normalize("http://10.0.0.1:9000").is_err());
         assert!(normalize("https://127.0.0.1:9000").is_err());
         assert!(normalize("http://127.0.0.1:9000/public").is_err());
+        assert!(normalize(&format!("https://{onion}")).is_err());
+        assert!(normalize(&format!("http://{onion}/public")).is_err());
     }
 }

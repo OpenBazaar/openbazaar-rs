@@ -15,7 +15,7 @@ use openbazaar_protocol::{Listing, ListingKind};
 use serde_json::{json, Value};
 use tormail::{open_message, open_order, reply_frame, seal_reply, DropId, Opened, Order, ReplyPublic, SealedLetter, StoreSecret};
 
-use crate::escrow_mail::{check_loopback, hex};
+use crate::escrow_mail::hex;
 use crate::order_mail::{body_bytes, mail_key, MailError, REPLY_MAIL};
 use crate::own_listings::StoreError;
 use crate::vault::Vault;
@@ -160,7 +160,7 @@ impl Node {
             };
         }
         let reply_url = order.options.get("replyUrl").cloned().unwrap_or_default();
-        check_loopback(&reply_url).map_err(refused)?;
+        let reply_url = crate::peer_http::sale_base(&reply_url).map_err(refused)?;
         let route = Route { url: reply_url, key: *order.reply.key.as_bytes(), drop: order.reply.drop.0 };
         let priced = match order.terms.lines.is_empty() {
             true => self.price_order(&order),
