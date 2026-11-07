@@ -197,7 +197,11 @@ export type RemoteOrder = {
   oversold: boolean;
   /** Signed receipts kept for reviewing this order. */
   receipts: number;
+  /** The buyer's review of this order, waiting to publish or published. */
+  review: OrderReview | null;
 };
+
+export type OrderReview = { rating: number; text: string; published: boolean; sendAfter: number; writtenOn: number | null };
 
 export type DirectPayment = {
   address: string;
@@ -721,7 +725,15 @@ function parseRemote(value: unknown): RemoteOrder | null {
       : null,
     oversold: Array.isArray(remote.oversold) && remote.oversold.length > 0,
     receipts: Array.isArray(remote.receipts) ? remote.receipts.length : 0,
+    review: parseOrderReview(remote.review),
   };
+}
+
+function parseOrderReview(value: unknown): OrderReview | null {
+  if (!value || typeof value !== "object") return null;
+  const review = value as Record<string, unknown>;
+  const number = (v: unknown) => (typeof v === "number" ? v : 0);
+  return { rating: number(review.rating), text: typeof review.text === "string" ? review.text : "", published: review.published === true, sendAfter: number(review.sendAfter), writtenOn: typeof review.writtenOn === "number" ? review.writtenOn : null };
 }
 
 function parseModerator(value: unknown): Moderator | null {

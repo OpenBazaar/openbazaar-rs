@@ -36,7 +36,7 @@ export function CommerceFields({ commerce, kind, currency, basePrice, images, on
         <button type="button" className="ob-text-link" aria-label={`Remove ${s.name || "this service"}`} onClick={() => set({ shipping: { ...shipping, services: shipping.services.filter((_, n) => n !== i) } })}>Remove</button>
       </div>)}
       {shipping.services.length < MAX_SERVICES && <button type="button" className="ob-secondary" onClick={() => set({ shipping: { ...shipping, services: [...shipping.services, defaultService()] } })}>Add a shipping service</button>}
-      <label className="ob-field"><span>Local pickup area (optional)</span><input value={shipping.pickup ?? ""} maxLength={40} placeholder="Portland, OR" onChange={e => set({ shipping: { ...shipping, pickup: e.target.value || null } })}/><small className="ob-field-hint">Name a city or region only, never an address. Buyers who choose pickup arrange the meeting with you in private messages.</small></label>
+      <label className="ob-field"><span>Local pickup area (optional)</span><input value={shipping.pickup ?? ""} maxLength={40} placeholder="Portland" onChange={e => set({ shipping: { ...shipping, pickup: e.target.value || null } })}/><small className="ob-field-hint">Name a city, state or country only, with no commas or numbers, never an address. Buyers who choose pickup arrange the meeting with you in private messages.</small></label>
     </fieldset>}
   </>;
 }

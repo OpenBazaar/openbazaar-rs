@@ -78,3 +78,27 @@
 .ob-service-row { display: grid; grid-template-columns: minmax(140px, 2fr) repeat(2, minmax(90px, 1fr)) repeat(2, minmax(80px, .7fr)) auto; gap: 10px; align-items: end; margin-bottom: 12px; }
 .ob-service-row .ob-text-link { padding-bottom: 12px; }
 @media (max-width: 760px) { .ob-service-row { grid-template-columns: 1fr 1fr; } }
+
+.ob-stars { display: inline-flex; gap: 1px; color: var(--ob-line); font-size: 14px; line-height: 1; }
+.ob-stars.is-large { font-size: 20px; }
+.ob-stars .is-on, .ob-star-picker .is-on { color: #c98a12; }
+.ob-stars .is-half { background: linear-gradient(90deg, #c98a12 50%, var(--ob-line) 50%); -webkit-background-clip: text; background-clip: text; color: transparent; }
+.ob-reviews { margin-top: 28px; display: grid; gap: 12px; }
+.ob-reviews h2 { margin: 0; font-size: 20px; }
+.ob-reviews.is-store { margin-top: 18px; }
+.ob-review-summary { display: flex; align-items: center; gap: 10px; color: var(--ob-secondary); font-size: 14px; }
+.ob-review-summary strong { color: var(--ob-ink); font-size: 20px; }
+.ob-review-none, .ob-review-note { margin: 0; color: var(--ob-muted); font-size: 13px; line-height: 1.45; }
+.ob-review-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 12px; }
+.ob-review { padding: 14px 16px; border: 1px solid var(--ob-line); border-radius: 10px; background: var(--ob-surface); display: grid; gap: 8px; }
+.ob-review-head { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.ob-review-badge { padding: 2px 8px; border-radius: 999px; background: var(--ob-subtle); color: var(--ob-brand); font-size: 12px; font-weight: 600; }
+.ob-review-listing { margin: 0; font-size: 13px; font-weight: 600; color: var(--ob-secondary); }
+.ob-review-text { margin: 0; color: var(--ob-ink); font-size: 14px; line-height: 1.5; white-space: pre-wrap; }
+.ob-review-reply { margin-left: 12px; padding: 10px 12px; border-left: 3px solid var(--ob-brand); background: var(--ob-subtle); border-radius: 0 8px 8px 0; font-size: 13px; }
+.ob-review-reply p { margin: 4px 0 0; color: var(--ob-secondary); line-height: 1.45; }
+.ob-review-reply-form, .ob-order-review { display: grid; gap: 10px; margin-top: 12px; }
+.ob-order-review { padding: 14px 16px; border: 1px solid var(--ob-line); border-radius: 10px; background: var(--ob-surface); }
+.ob-star-picker { display: inline-flex; gap: 4px; }
+.ob-star-picker button { border: 0; background: none; padding: 2px; font-size: 26px; line-height: 1; color: var(--ob-line); cursor: pointer; }
+.ob-star-picker button:focus-visible { outline: 2px solid var(--ob-brand); border-radius: 4px; }
