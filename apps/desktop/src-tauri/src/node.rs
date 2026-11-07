@@ -48,7 +48,7 @@ impl Sidecar {
     /// In home mode it also publishes its onion service and the LAN channel
     /// for paired devices. `file_vault` keeps the node's keys in a file in the
     /// data folder instead of the OS keychain (for a disposable profile).
-    pub fn start(app_data_dir: &Path, port: Option<u16>, file_vault: bool) -> Result<Self, String> {
+    pub fn start(app_data_dir: &Path, port: Option<u16>, file_vault: bool, shop: Option<&Path>) -> Result<Self, String> {
         create_private_dir(app_data_dir)
             .map_err(|err| format!("Could not create {}: {err}", app_data_dir.display()))?;
         let data_dir = app_data_dir.join(NETWORK);
@@ -80,6 +80,9 @@ impl Sidecar {
             .stderr(log);
         if file_vault {
             command.arg("--vault").arg("file");
+        }
+        if let Some(shop) = shop {
+            command.arg("--local-shop").arg(shop);
         }
         hide_console(&mut command);
         let child = command
@@ -203,6 +206,86 @@ fn open_private_log(path: &Path) -> io::Result<File> {
     options.open(path)
 }
 
+/// The Expo web export, when a dev build can see `apps/mobile/dist`.
+/// The packaged app looks in its resource directory before this.
+pub fn shop_directory() -> Option<PathBuf> {
+    let mut dir = std::env::current_exe().ok()?;
+    for _ in 0..8 {
+        if !dir.pop() {
+            break;
+        }
+        let candidate = dir.join("apps/mobile/dist");
+        if candidate.join("index.html").is_file() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+/// Ask the node for a one-time localhost path. The pairing token is sent only
+/// to 127.0.0.1 and is never part of the URL that comes back.
+pub fn browser_url(origin: &str, token: &str) -> Result<String, String> {
+    let port = loopback_port(origin)?;
+    let mut stream = TcpStream::connect_timeout(
+        &SocketAddr::from((Ipv4Addr::LOCALHOST, port)),
+        Duration::from_secs(2),
+    )
+    .map_err(|_| "The shop is not running on this machine.".to_string())?;
+    stream.set_read_timeout(Some(Duration::from_secs(2))).map_err(|err| err.to_string())?;
+    let request = format!(
+        "POST /browser-session HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nX-Ob-Pair: {token}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+    );
+    std::io::Write::write_all(&mut stream, request.as_bytes()).map_err(|err| err.to_string())?;
+    let mut raw = Vec::new();
+    std::io::Read::read_to_end(&mut stream, &mut raw).map_err(|err| err.to_string())?;
+    let text = String::from_utf8(raw).map_err(|_| "The shop sent a session the app could not read.".to_string())?;
+    let body = text.split("\r\n\r\n").nth(1).ok_or_else(|| "The shop did not start a browser session.".to_string())?;
+    accept_browser_url(origin, body, token).ok_or_else(|| "The shop did not start a browser session.".to_string())
+}
+
+pub(crate) fn accept_browser_url(origin: &str, body: &str, token: &str) -> Option<String> {
+    let url = body.trim();
+    let ticket = url.strip_prefix(&format!("{origin}/browser/"))?;
+    if ticket.len() == 64 && ticket.bytes().all(|byte| byte.is_ascii_hexdigit()) && ticket != token {
+        Some(url.to_string())
+    } else {
+        None
+    }
+}
+
+fn loopback_port(origin: &str) -> Result<u16, String> {
+    let rest = origin.strip_prefix("http://127.0.0.1:").ok_or_else(|| "The shop address is not on this machine.".to_string())?;
+    if rest.is_empty() || !rest.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err("The shop address is not on this machine.".to_string());
+    }
+    rest.parse().map_err(|_| "The shop address is not on this machine.".to_string())
+}
+
+pub fn open_url(url: &str) -> Result<(), String> {
+    browser_command()
+        .arg(url)
+        .spawn()
+        .map(|_| ())
+        .map_err(|err| format!("Could not open the browser: {err}"))
+}
+
+#[cfg(target_os = "macos")]
+fn browser_command() -> Command {
+    Command::new("open")
+}
+
+#[cfg(target_os = "windows")]
+fn browser_command() -> Command {
+    let mut command = Command::new("cmd");
+    command.arg("/C").arg("start").arg("");
+    command
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn browser_command() -> Command {
+    Command::new("xdg-open")
+}
+
 #[cfg(windows)]
 fn hide_console(command: &mut Command) {
     use std::os::windows::process::CommandExt;
@@ -245,5 +328,18 @@ mod tests {
         fs::write(dir.join("node.port"), "not a port").unwrap();
         assert_ne!(node_port(&dir).unwrap(), 0);
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn the_browser_link_is_a_one_time_local_path() {
+        let origin = "http://127.0.0.1:56562";
+        let token = "ab".repeat(32);
+        let ticket = "cd".repeat(32);
+        let url = accept_browser_url(origin, &format!("{origin}/browser/{ticket}\n"), &token).unwrap();
+        assert_eq!(url, format!("{origin}/browser/{ticket}"));
+        assert!(accept_browser_url(origin, &format!("{origin}/browser/{token}\n"), &token).is_none());
+        assert!(accept_browser_url(origin, "http://evil.example/browser/cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\n", &token).is_none());
+        assert!(loopback_port("http://127.0.0.1:56562").is_ok());
+        assert!(loopback_port("http://evil.example:56562").is_err());
     }
 }

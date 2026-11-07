@@ -12,13 +12,32 @@ use std::path::Path;
 
 const MAX_FILE: u64 = 16 * 1024 * 1024;
 const MARKER: &str = r#"<meta name="ob-home-node" content="1">"#;
+const LOCAL_MARKER: &str = r#"<meta name="ob-local-shop" content="1">"#;
 const PAGE_CSP: &str = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 
 pub(crate) fn response(dir: &Path, path: &str) -> Option<Vec<u8>> {
+    page(dir, path, true)
+}
+
+/// The same export for a browser on this machine. No home-node marker, so
+/// the page stays in the local shop and uses the localhost cookie.
+pub(crate) fn local_page(dir: &Path, path: &str) -> Option<Vec<u8>> {
+    page(dir, path, false)
+}
+
+fn page(dir: &Path, path: &str, home: bool) -> Option<Vec<u8>> {
     let path = path.split(['?', '#']).next().unwrap_or(path);
-    let name = if path == "/" { "index.html" } else { path.strip_prefix('/')? };
-    let safe = name.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_./".contains(&b))
-        && name.split('/').all(|part| !part.is_empty() && !part.starts_with('.'));
+    let name = if path == "/" {
+        "index.html"
+    } else {
+        path.strip_prefix('/')?
+    };
+    let safe = name
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b"-_./".contains(&b))
+        && name
+            .split('/')
+            .all(|part| !part.is_empty() && !part.starts_with('.'));
     if !safe {
         return None;
     }
@@ -31,9 +50,16 @@ pub(crate) fn response(dir: &Path, path: &str) -> Option<Vec<u8>> {
     let content_type = content_type(name);
     if name == "index.html" {
         let page = String::from_utf8(body).ok()?;
-        body = page.replacen("<head>", &format!("<head>{MARKER}"), 1).into_bytes();
+        let marker = if home { MARKER } else { LOCAL_MARKER };
+        body = page
+            .replacen("<head>", &format!("<head>{marker}"), 1)
+            .into_bytes();
     }
-    let cache = if name.starts_with("_expo/static/") { "public, max-age=31536000, immutable" } else { "no-cache" };
+    let cache = if name.starts_with("_expo/static/") {
+        "public, max-age=31536000, immutable"
+    } else {
+        "no-cache"
+    };
     let head = format!(
         "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: {cache}\r\nX-Content-Type-Options: nosniff\r\nContent-Security-Policy: {PAGE_CSP}\r\nX-Frame-Options: DENY\r\nReferrer-Policy: no-referrer\r\nCross-Origin-Opener-Policy: same-origin\r\n\r\n",
         body.len()
@@ -71,15 +97,30 @@ mod tests {
         let dir = TempDir::new();
         let web = dir.0.join("web");
         fs::create_dir_all(web.join("_expo/static/js")).unwrap();
-        fs::write(web.join("index.html"), "<html><head><title>x</title></head></html>").unwrap();
+        fs::write(
+            web.join("index.html"),
+            "<html><head><title>x</title></head></html>",
+        )
+        .unwrap();
         fs::write(web.join("_expo/static/js/app.js"), "1").unwrap();
         fs::write(web.join(".env"), "secret").unwrap();
         fs::write(dir.0.join("vault.key"), "secret").unwrap();
         let page = String::from_utf8(response(&web, "/").unwrap()).unwrap();
         assert!(page.contains(MARKER) && page.contains("script-src 'self'"));
-        let script = String::from_utf8(response(&web, "/_expo/static/js/app.js?v=1").unwrap()).unwrap();
+        let local = String::from_utf8(local_page(&web, "/").unwrap()).unwrap();
+        assert!(local.contains(LOCAL_MARKER) && !local.contains("ob-home-node"));
+        let script =
+            String::from_utf8(response(&web, "/_expo/static/js/app.js?v=1").unwrap()).unwrap();
         assert!(script.contains("immutable") && script.contains("text/javascript"));
-        for bad in ["/../vault.key", "/.env", "/_expo/../../vault.key", "//etc/passwd", "/missing.js", "/_expo/static", "/a%2e%2e/b"] {
+        for bad in [
+            "/../vault.key",
+            "/.env",
+            "/_expo/../../vault.key",
+            "//etc/passwd",
+            "/missing.js",
+            "/_expo/static",
+            "/a%2e%2e/b",
+        ] {
             assert!(response(&web, bad).is_none(), "{bad}");
         }
     }

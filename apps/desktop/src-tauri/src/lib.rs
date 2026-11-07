@@ -5,7 +5,8 @@
 /// before the page runs. The token is set only on the app's own origin, so a
 /// page the webview might navigate to never sees it, and the node itself
 /// gives the token to no request. A menu-bar icon stays up with the process:
-/// choosing Open shows this same shop window, and Quit stops the node. Closing
+/// choosing Open shows this same shop window, Open in browser signs a browser
+/// on this machine into that same shop, and Quit stops the node. Closing
 /// the shop window hides it and leaves the node running. A second launch
 /// focuses the first window.
 ///
@@ -72,8 +73,9 @@ fn separate_profile() -> Option<PathBuf> {
 
 fn start(app: AppHandle) {
     let profile = separate_profile();
-    let started =
-        app_data_dir(&app).and_then(|dir| node::Sidecar::start(&dir, None, profile.is_some()));
+    let shop = shop_dir(&app);
+    let started = app_data_dir(&app)
+        .and_then(|dir| node::Sidecar::start(&dir, None, profile.is_some(), shop.as_deref()));
     let sidecar = match started {
         Ok(sidecar) => sidecar,
         Err(message) => return fail(&app, message),
@@ -81,7 +83,7 @@ fn start(app: AppHandle) {
     let origin = sidecar.origin.clone();
     let token = sidecar.token.clone();
     *app.state::<NodeState>().0.lock().unwrap() = Some(sidecar);
-    tray::set_running(&app, true);
+    tray::set_running(&app, true, Some(&origin));
     if let Err(err) = open_main_window(&app, &origin, &token, profile.as_deref()) {
         fail(&app, format!("Could not open the shop window: {err}"));
     }
@@ -127,16 +129,15 @@ fn set_home_node_mode(app: AppHandle, on: bool) -> Result<bool, String> {
     let state = app.state::<NodeState>();
     let mut slot = state.0.lock().unwrap();
     let port = slot.as_ref().map(|sidecar| sidecar.port);
-    tray::set_running(&app, false);
+    tray::set_running(&app, false, None);
     if let Some(mut old) = slot.take() {
         old.stop();
     }
-    *slot = Some(node::Sidecar::start(
-        &dir,
-        port,
-        separate_profile().is_some(),
-    )?);
-    tray::set_running(&app, true);
+    let shop = shop_dir(&app);
+    let started = node::Sidecar::start(&dir, port, separate_profile().is_some(), shop.as_deref())?;
+    let origin = started.origin.clone();
+    *slot = Some(started);
+    tray::set_running(&app, true, Some(&origin));
     Ok(on)
 }
 
@@ -175,6 +176,23 @@ fn separate_storage<'a>(
     window.data_directory(dir.join("webview"))
 }
 
+pub(crate) fn browser_session(app: &AppHandle) -> Option<(String, String)> {
+    let state = app.state::<NodeState>();
+    let guard = state.0.lock().ok()?;
+    let node = guard.as_ref()?;
+    Some((node.origin.clone(), node.token.clone()))
+}
+
+fn shop_dir(app: &AppHandle) -> Option<PathBuf> {
+    if let Ok(resources) = app.path().resource_dir() {
+        let bundled = resources.join("shop");
+        if bundled.join("index.html").is_file() {
+            return Some(bundled);
+        }
+    }
+    node::shop_directory()
+}
+
 pub(crate) fn focus_main_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window(MAIN_WINDOW) {
         let _ = window.unminimize();
@@ -191,7 +209,7 @@ fn stop_node(app: &AppHandle) {
 
 fn fail(app: &AppHandle, message: String) {
     stop_node(app);
-    tray::set_running(app, false);
+    tray::set_running(app, false, None);
     app.dialog()
         .message(message)
         .title("OpenBazaar could not start")

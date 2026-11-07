@@ -34,6 +34,12 @@ mod sync;
 mod tor;
 mod web;
 
+/// The web export for a browser on this machine. Unlike [`web::response`],
+/// the page is not marked as a remote home-node client.
+pub(crate) fn local_shop_page(dir: &Path, path: &str) -> Option<Vec<u8>> {
+    web::local_page(dir, path)
+}
+
 #[cfg(test)]
 mod tests;
 #[cfg(test)]

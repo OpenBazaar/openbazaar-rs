@@ -2,10 +2,13 @@
 //!
 //! Every request is parsed with hard limits ([`crate::http_parse`]), must
 //! name this listener by a loopback Host, and, if a browser sent it, must
-//! come from the desktop webview or the configured shop origin
-//! ([`crate::http_guard`]). No route hands out the pairing token: the desktop
+//! come from the desktop webview, the configured shop origin, or this
+//! listener when it is serving the local shop ([`crate::http_guard`],
+//! [`crate::browser`]). No route hands out the pairing token: the desktop
 //! app reads it from the data dir, and a browser shop trades a one-time code
 //! from the node's terminal for it at `POST /pair` ([`crate::pairing`]).
+//! A browser on this machine can instead open a one-time path and receive a
+//! short-lived cookie ([`crate::browser`]).
 //! The listener is bound to 127.0.0.1; the peer check refuses a connection
 //! that was forwarded from somewhere else. There is no other way to name a
 //! peer from this server.
@@ -18,13 +21,14 @@ use serde_json::{json, Value};
 
 use crate::escrow_http::{self, Action};
 use crate::lock_http::{self, Route};
-use crate::http_guard::{check_origin, host_allowed, secret_eq, OriginCheck, DEFAULT_SHOP_ORIGIN};
+use crate::http_guard::{check_origin, host_allowed, OriginCheck, DEFAULT_SHOP_ORIGIN};
 use crate::http_parse::{self, header, Request};
 use crate::{find_listing, labelers, listing_value, mail_drop, media, pairing, stores, vendor_labels, wallet_http, Node, OrderError};
 
 const PAIR_HEADER: &str = "X-Ob-Pair";
 /// Every response: never cached, never sniffed or framed, no referrer, and
-/// no content may load from it (the node serves no HTML).
+/// no content may load from it (API responses are not documents; the local
+/// shop files carry their own page policy).
 const SECURITY_HEADERS: &str = "Cache-Control: no-store\r\nPragma: no-cache\r\nX-Content-Type-Options: nosniff\r\nContent-Security-Policy: default-src 'none'; frame-ancestors 'none'\r\nX-Frame-Options: DENY\r\nReferrer-Policy: no-referrer\r\n";
 
 /// Who is calling, from the node's point of view.
@@ -43,12 +47,22 @@ pub(crate) fn http_response_cors(
     body: &[u8],
     origin: Option<&str>,
 ) -> Vec<u8> {
+    http_response_headers(status, content_type, body, origin, "")
+}
+
+pub(crate) fn http_response_headers(
+    status: &str,
+    content_type: &str,
+    body: &[u8],
+    origin: Option<&str>,
+    extra: &str,
+) -> Vec<u8> {
     let allow = match origin {
         Some(origin) => format!("Access-Control-Allow-Origin: {origin}\r\n"),
         None => String::new(),
     };
     let header = format!(
-        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n{SECURITY_HEADERS}{allow}Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, {PAIR_HEADER}\r\nAccess-Control-Max-Age: 600\r\nVary: Origin\r\n\r\n",
+        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n{SECURITY_HEADERS}{extra}{allow}Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, {PAIR_HEADER}\r\nAccess-Control-Max-Age: 600\r\nVary: Origin\r\n\r\n",
         body.len()
     );
     let mut response = header.into_bytes();
@@ -145,9 +159,12 @@ pub(crate) fn respond(node: &Node, raw: &[u8], client: Client) -> Vec<u8> {
     let origin = match check_origin(request.head, &node.local.shop_origin) {
         OriginCheck::Absent => Some(node.local.shop_origin.clone()),
         OriginCheck::Allowed(origin) => Some(origin),
-        OriginCheck::Refused => {
-            return http_response_cors("403 Forbidden", "text/plain", b"That page may not call this node.", None)
-        }
+        OriginCheck::Refused => match header(request.head, "Origin") {
+            Some(origin) if crate::browser::is_own_origin(origin, client.port) => Some(origin.to_string()),
+            _ => {
+                return http_response_cors("403 Forbidden", "text/plain", b"That page may not call this node.", None)
+            }
+        },
     };
     if request.method == "OPTIONS" {
         return http_response_cors("204 No Content", "text/plain", b"", origin.as_deref());
@@ -163,6 +180,9 @@ fn between<'a>(path: &'a str, prefix: &str, suffix: &str) -> Option<&'a str> {
 fn route(node: &Node, request: &Request<'_>, client: Client, origin: Option<&str>) -> Vec<u8> {
     let (method, path, head, body) = (request.method, request.path, request.head, request.body);
     let client = &client;
+    if let Some(response) = crate::browser::route(node, client, method, path, head, origin) {
+        return response;
+    }
     let modules = [crate::store_http::response, crate::sales_http::response, crate::commerce_http::response, crate::reviews_http::response, crate::public_http::response];
     for module in modules {
         if let Some(response) = module(node, client, head, method, path, body, origin) {
@@ -170,7 +190,11 @@ fn route(node: &Node, request: &Request<'_>, client: Client, origin: Option<&str
         }
     }
     match (method, path) {
-        ("GET", "/catalog") | ("GET", "/") => crate::xmr::catalog_response(node, origin),
+        ("GET", "/") => match crate::browser::shop_page(node, head) {
+            Some(page) => page,
+            None => crate::xmr::catalog_response(node, origin),
+        },
+        ("GET", "/catalog") => crate::xmr::catalog_response(node, origin),
         (_, path) if path.starts_with("/xmr/") => crate::xmr::response(node, client, head, method, path, body, origin),
         (_, path) if path.starts_with("/ln/") => crate::lightning::response(node, client, head, method, path, body, origin),
         ("POST", "/pair") => pairing::response(node, body, origin),
@@ -239,7 +263,7 @@ fn route(node: &Node, request: &Request<'_>, client: Client, origin: Option<&str
         ("GET", path) if path.starts_with("/listings/") => {
             listing_response(node, &path["/listings/".len()..], origin)
         }
-        ("POST", "/orders") => order_response(node, head, body, origin),
+        ("POST", "/orders") => order_response(node, client, head, body, origin),
         ("POST", "/checkout") => checkout_response(node, client, head, body, origin),
         ("GET", "/labelers") | ("PUT", "/labelers") => labelers::response(node, client, head, method, body, origin),
         ("GET", "/stores") => stores::list_response(node, client, head, origin),
@@ -256,7 +280,10 @@ fn route(node: &Node, request: &Request<'_>, client: Client, origin: Option<&str
         (_, path) if path == "/home" || path.starts_with("/home/") => {
             crate::remote::home_response(node, client, head, method, path, body, origin)
         }
-        _ => http_response_cors("404 Not Found", "text/plain", b"not found", origin),
+        _ => match crate::browser::shop_file(node, method, path, head) {
+            Some(page) => page,
+            None => http_response_cors("404 Not Found", "text/plain", b"not found", origin),
+        },
     }
 }
 
@@ -278,8 +305,8 @@ fn listing_response(node: &Node, hash: &str, origin: Option<&str>) -> Vec<u8> {
     }
 }
 
-fn order_response(node: &Node, head: &str, body: &[u8], origin: Option<&str>) -> Vec<u8> {
-    if !secret_eq(header(head, PAIR_HEADER), node.pairing_token()) {
+fn order_response(node: &Node, client: &Client, head: &str, body: &[u8], origin: Option<&str>) -> Vec<u8> {
+    if !crate::browser::allows(node, client, head) {
         return json_error(
             "401 Unauthorized",
             "The shop is not paired with this node.",
@@ -348,7 +375,7 @@ pub(crate) fn local_guard(node: &Node, client: &Client, head: &str, origin: Opti
             origin,
         ));
     }
-    if !secret_eq(header(head, PAIR_HEADER), node.pairing_token()) {
+    if !crate::browser::allows(node, client, head) {
         return Err(json_error(
             "403 Forbidden",
             "The shop is not paired with this node.",

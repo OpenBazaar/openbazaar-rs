@@ -1,6 +1,6 @@
 import { verifiedListings, verifiedStore, type StoreSummary } from "./records.ts";
 import type { LabelerLabel } from "./safety/filter";
-import { homeFetch, servedByHomeNode, signedFetch, targetPrefix } from "./homeNode/transport.ts";
+import { homeFetch, servedByHomeNode, servedByLocalShop, signedFetch, targetPrefix } from "./homeNode/transport.ts";
 import { lnBlockedReason, lnStoreKeys, parseLnInvoice, type LnInvoice } from "./lightning.ts";
 
 // The shop dials only this origin. A query parameter, settings field, seed,
@@ -11,12 +11,17 @@ import { lnBlockedReason, lnStoreKeys, parseLnInvoice, type LnInvoice } from "./
 // node gives the token only for a one-time code printed in its terminal.
 // A page served by a home node to a remote browser talks only to that origin
 // and signs each request with its device key (src/homeNode/transport.ts).
+// A page served by this machine's node (`ob-local-shop`) talks to that same
+// origin and relies on the short-lived localhost cookie. It does not receive
+// the pairing token.
 const DESKTOP_NODE_ORIGIN = (globalThis as { __OB_NODE_ORIGIN__?: unknown }).__OB_NODE_ORIGIN__;
 export const NODE_ORIGIN = servedByHomeNode()
   ? location.origin
   : typeof DESKTOP_NODE_ORIGIN === "string" && /^http:\/\/127\.0\.0\.1:\d{1,5}$/.test(DESKTOP_NODE_ORIGIN)
     ? DESKTOP_NODE_ORIGIN
-    : "http://127.0.0.1:8787";
+    : servedByLocalShop()
+      ? location.origin
+      : "http://127.0.0.1:8787";
 
 export const OFFLINE_MESSAGE =
   "The shop cannot be reached because your node is offline.";
@@ -440,12 +445,28 @@ function parseLabelers(value: unknown): LabelerState {
 
 let pairing: Promise<string> | null = null;
 
+let localShopSession: Promise<boolean> | null = null;
+
+/// The localhost cookie is enough. The pairing token stays out of this page.
+function localShopSignedIn(): Promise<boolean> {
+  if (!localShopSession) {
+    const origin = typeof location === "undefined" ? "" : location.origin;
+    localShopSession = fetch(`${origin}/browser-session`, { cache: "no-store" })
+      .then((response) => response.ok)
+      .catch(() => false);
+  }
+  return localShopSession;
+}
+
 async function pairingToken(): Promise<string> {
   if (servedByHomeNode() || homeFetch()) {
     return "";
   }
   if (typeof DESKTOP_TOKEN === "string" && TOKEN_PATTERN.test(DESKTOP_TOKEN)) {
     return DESKTOP_TOKEN;
+  }
+  if (servedByLocalShop() && (await localShopSignedIn())) {
+    return "";
   }
   const stored = tokenStore()?.getItem(TOKEN_KEY);
   if (stored && TOKEN_PATTERN.test(stored)) {

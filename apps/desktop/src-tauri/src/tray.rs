@@ -2,17 +2,19 @@
 //!
 //! The icon is a black-and-clear template, so macOS tints it for the menu bar
 //! in light and dark mode. A left click opens the shop window the node already
-//! serves. The menu (right click) can open that same window, open the LAN
-//! setup page, or quit. The status line is not a command.
+//! serves. The menu (right click) can open that same window, open the shop
+//! in the system browser, open the LAN setup page, or quit. The status line
+//! shows where that browser should point, and is not a command.
 
 use tauri::image::Image;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder, Wry};
 
-use crate::focus_main_window;
+use crate::{browser_session, focus_main_window};
 
 const OPEN: &str = "open";
+const BROWSER: &str = "browser";
 const PAIR: &str = "pair";
 const QUIT: &str = "quit";
 const PAIR_WINDOW: &str = "pair";
@@ -31,6 +33,7 @@ struct TrayState {
 
 pub fn install(app: &AppHandle) -> tauri::Result<()> {
     let open = MenuItem::with_id(app, OPEN, "Open OpenBazaar", true, None::<&str>)?;
+    let browser = MenuItem::with_id(app, BROWSER, "Open in browser", true, None::<&str>)?;
     let pair = MenuItem::with_id(app, PAIR, "Pair a device", true, None::<&str>)?;
     let status = MenuItem::with_id(app, "status", "Node stopped", false, None::<&str>)?;
     let quit = MenuItem::with_id(app, QUIT, "Quit", true, None::<&str>)?;
@@ -38,7 +41,15 @@ pub fn install(app: &AppHandle) -> tauri::Result<()> {
     let above_quit = PredefinedMenuItem::separator(app)?;
     let menu = Menu::with_items(
         app,
-        &[&open, &pair, &above_status, &status, &above_quit, &quit],
+        &[
+            &open,
+            &browser,
+            &pair,
+            &above_status,
+            &status,
+            &above_quit,
+            &quit,
+        ],
     )?;
 
     let icon = TrayIconBuilder::with_id("openbazaar")
@@ -49,6 +60,7 @@ pub fn install(app: &AppHandle) -> tauri::Result<()> {
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id().as_ref() {
             OPEN => focus_main_window(app),
+            BROWSER => open_browser(app),
             PAIR => open_pair(app),
             QUIT => app.exit(0),
             _ => {}
@@ -70,20 +82,45 @@ pub fn install(app: &AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
-pub fn set_running(app: &AppHandle, running: bool) {
+pub fn set_running(app: &AppHandle, running: bool, origin: Option<&str>) {
     let Some(tray) = app.try_state::<TrayState>() else {
         return;
     };
     let status = tray.status.clone();
+    let text = status_label(running, origin);
     drop(tray);
     std::thread::spawn(move || {
-        let text = if running {
-            "Node running"
-        } else {
-            "Node stopped"
-        };
         let _ = status.set_text(text);
     });
+}
+
+pub(crate) fn status_label(running: bool, origin: Option<&str>) -> String {
+    match (
+        running,
+        origin.map(str::trim).filter(|origin| !origin.is_empty()),
+    ) {
+        (true, Some(origin)) => format!("Node running at {origin}/"),
+        (true, None) => "Node running".to_string(),
+        (false, _) => "Node stopped".to_string(),
+    }
+}
+
+/// Open the system browser on a one-time localhost path. The address bar
+/// then lands on the shop, and the pairing token never leaves this process.
+fn open_browser(app: &AppHandle) {
+    let Some((origin, token)) = browser_session(app) else {
+        return;
+    };
+    let url = match crate::node::browser_url(&origin, &token) {
+        Ok(url) => url,
+        Err(err) => {
+            eprintln!("Open in browser: {err}");
+            return;
+        }
+    };
+    if let Err(err) = crate::node::open_url(&url) {
+        eprintln!("Open in browser: {err}");
+    }
 }
 
 /// The LAN setup page, in its own webview so the shop window stays put.
@@ -167,5 +204,15 @@ mod tests {
         assert_eq!(at(8, 8), 255, "awning");
         assert_eq!(at(18, 28), 0, "door");
         assert_eq!(at(11, 23), 0, "window");
+    }
+
+    #[test]
+    fn the_status_line_shows_the_local_shop_address() {
+        let origin = "http://127.0.0.1:56562";
+        let label = status_label(true, Some(origin));
+        assert_eq!(label, "Node running at http://127.0.0.1:56562/");
+        assert!(!label.contains("/browser/"));
+        assert_eq!(status_label(false, Some(origin)), "Node stopped");
+        assert_eq!(status_label(true, None), "Node running");
     }
 }

@@ -9,6 +9,9 @@ import { deviceKey, signedHeaders, type DeviceKey } from "./signing.ts";
 //   origin, signed with this browser's device key.
 // - The desktop app with its target set to "home": requests go to the app's
 //   own node under /home/proxy, which signs them and carries them over Tor.
+// - The page was served by this machine's node to a browser on this machine
+//   (`<meta name="ob-local-shop">`). Requests stay on this origin. The node
+//   accepts a short-lived localhost cookie instead of the pairing token.
 // - Otherwise: the app's own node, as before.
 
 export type NodeTarget = "local" | "home";
@@ -44,6 +47,11 @@ function storage(): Storage | null {
 
 export function servedByHomeNode(): boolean {
   return typeof document !== "undefined" && document.querySelector('meta[name="ob-home-node"]') !== null;
+}
+
+/// The loopback node served this page to a browser on this machine.
+export function servedByLocalShop(): boolean {
+  return typeof document !== "undefined" && document.querySelector('meta[name="ob-local-shop"]') !== null;
 }
 
 export function nodeTarget(): NodeTarget {
