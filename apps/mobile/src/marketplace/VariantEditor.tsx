@@ -30,7 +30,7 @@ export function VariantEditor({ axes, rows, currency, basePrice, images, onChang
           <label className="ob-field">Option name
             <input value={axis.name} placeholder="Size" onChange={e => setAxes(axes.map((x, b) => (b === a ? { ...x, name: e.target.value } : x)))}/>
           </label>
-          <label className="ob-field ob-field-wide">Values, separated by commas
+          <label className="ob-field">Values, separated by commas
             <input
               value={drafts[a] ?? ""}
               placeholder="S, M, L"

@@ -42,7 +42,7 @@ export function VariantPicker({ commerce, selection, onSelect, quantity, onQuant
   const note = variant ? stockNote(available, commerce.availability, asOf) : null;
   const max = variant ? maxQuantity(commerce, available) : 0;
   const tier = [...commerce.tiers].reverse().find(t => t.minQty <= quantity);
-  const next = commerce.tiers.find(t => t.minQty > quantity);
+  const next = commerce.tiers.find(t => t.minQty > quantity && t.minQty <= max);
   return (
     <div className="ob-variant-picker">
       <span className="ob-condition-chip" title={commerce.conditionNote || undefined}>{CONDITION_LABELS[commerce.condition]}</span>
@@ -72,7 +72,7 @@ export function VariantPicker({ commerce, selection, onSelect, quantity, onQuant
       {commerce.axes.length > 0 && !variant && <p className="ob-stock-note is-info">Choose {commerce.axes.filter((_, a) => selection[a] === null).map(x => x.name.toLowerCase()).join(" and ")}.</p>}
       {note && <p className={`ob-stock-note is-${note.tone}`} role="status">{note.text}</p>}
       {variant && max > 0 && (
-        <div className="ob-quantity">
+        <div className="ob-buy-quantity">
           <span>Quantity</span>
           <div className="ob-stepper">
             <button type="button" aria-label="One fewer" disabled={quantity <= 1} onClick={() => onQuantity(quantity - 1)}>−</button>
