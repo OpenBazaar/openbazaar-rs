@@ -226,6 +226,7 @@ pub fn config(bitcoind: &Bitcoind, dir: &Path, lsp: Option<LspConfig>) -> LnConf
         gossip: GossipSource::P2p,
         lsp,
         listen: None,
+        announce: None,
         max_lsp_fee_bps: 500,
         min_lsp_fee_cap_sats: 5_000,
         proxy: None,

@@ -17,6 +17,9 @@ use tor_rtcompat::PreferredRuntime;
 use tormail::{Discovery, OnionAddress, OnionForward};
 
 pub(crate) const ADMIN_PORT: u16 = 80;
+/// Virtual port a Lightning peer dials on the `ob-ln` onion. LDK binds a
+/// loopback socket; this is the port the node announces.
+pub(crate) const LIGHTNING_PORT: u16 = 9735;
 const EXCHANGE_TIMEOUT: Duration = Duration::from_secs(90);
 /// Pause before refetching a descriptor that refused our discovery key.
 const DESCRIPTOR_WAIT: Duration = Duration::from_secs(8);
@@ -68,13 +71,25 @@ impl Tor {
         discovery: Discovery<'_>,
         target: SocketAddr,
     ) -> Result<Service, String> {
+        self.serve_on(nickname, identity, discovery, ADMIN_PORT, target)
+    }
+
+    /// Publish an onion service and pipe `port` to `target`.
+    pub(crate) fn serve_on(
+        &self,
+        nickname: &str,
+        identity: Option<[u8; 32]>,
+        discovery: Discovery<'_>,
+        port: u16,
+        target: SocketAddr,
+    ) -> Result<Service, String> {
         let _inside = self.runtime.enter();
         let (forward, run) = tormail::start_onion_forward(
             &self.client,
             nickname,
             identity,
             discovery,
-            ADMIN_PORT,
+            port,
             target,
         )
         .map_err(|err| err.to_string())?;

@@ -19,6 +19,7 @@ fn mutinynet_lsp_opens_a_channel_for_a_faucet_payment() {
         gossip: GossipSource::Rgs("https://rgs.mutinynet.com/snapshot".into()),
         lsp: Some(LspConfig { peer: LSP.parse().unwrap(), token: Some(LSP_TOKEN.into()) }),
         listen: None,
+        announce: None,
         max_lsp_fee_bps: 500,
         min_lsp_fee_cap_sats: 15_000,
         proxy: None,

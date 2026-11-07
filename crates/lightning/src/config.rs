@@ -9,6 +9,7 @@ use std::str::FromStr;
 
 use ldk_node::bitcoin::secp256k1::PublicKey;
 use ldk_node::bitcoin::Network;
+use ldk_node::lightning::ln::msgs::SocketAddress;
 
 /// `NODE_ID@HOST:PORT`.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -129,8 +130,14 @@ pub struct LnConfig {
     pub gossip: GossipSource,
     /// `None`: no LSP. Receiving then needs a channel opened by hand.
     pub lsp: Option<LspConfig>,
-    /// Accept inbound peer connections here. `None`: outbound only.
+    /// TCP socket LDK binds. Loopback or LAN only. `None`: outbound only,
+    /// unless the node later fills this with the loopback socket an onion
+    /// forwards to. LDK cannot bind an onion: `SocketAddress::OnionV3` does
+    /// not resolve to a TCP address.
     pub listen: Option<String>,
+    /// `host.onion:port` told to peers. Never a clearnet address. `None`:
+    /// nothing is announced, so a loopback bind stays off the gossip network.
+    pub announce: Option<String>,
     /// The most an LSP may take for a just-in-time channel, as a share of the
     /// payment in basis points (1/100 of a percent), with a floor in sats.
     pub max_lsp_fee_bps: u64,
@@ -174,6 +181,12 @@ impl LnConfig {
         if let Some(listen) = &self.listen {
             if !host_is_local(listen) {
                 return Some(listen.clone());
+            }
+        }
+        // A public announcement is a direct address a peer is told, proxy or not.
+        if let Some(announce) = &self.announce {
+            if !matches!(SocketAddress::from_str(announce), Ok(SocketAddress::OnionV3 { .. })) {
+                return Some(announce.clone());
             }
         }
         None
@@ -220,6 +233,7 @@ mod tests {
             gossip: GossipSource::Rgs("https://rgs.mutinynet.com/snapshot".into()),
             lsp: Some(LspConfig { peer: format!("{ID}@44.219.111.31:39735").parse().unwrap(), token: None }),
             listen: None,
+            announce: None,
             max_lsp_fee_bps: 500,
             min_lsp_fee_cap_sats: 10_000,
             proxy: None,
@@ -235,6 +249,14 @@ mod tests {
         through_tor.chain = ChainSource::Esplora("https://mutinynet.com/api".into());
         through_tor.listen = Some("1.2.3.4:9735".into());
         assert!(through_tor.dials_in_the_clear().unwrap().contains("1.2.3.4"), "a public listen address stays direct");
+        through_tor.listen = Some("127.0.0.1:9735".into());
+        through_tor.announce = Some("1.2.3.4:9735".into());
+        assert!(
+            through_tor.dials_in_the_clear().unwrap().contains("1.2.3.4"),
+            "a public announcement stays direct"
+        );
+        through_tor.announce = Some("25njqamcweflpvkl73j4szahhihoc4xt3ktcgjnpaingr5yhkenl5sid.onion:9735".into());
+        assert!(through_tor.dials_in_the_clear().is_none(), "an onion announcement is not a clearnet dial");
         let local = LnConfig {
             network: Network::Regtest,
             storage_dir: PathBuf::new(),
@@ -242,6 +264,7 @@ mod tests {
             gossip: GossipSource::P2p,
             lsp: Some(LspConfig { peer: format!("{ID}@127.0.0.1:9735").parse().unwrap(), token: None }),
             listen: Some("127.0.0.1:9736".into()),
+            announce: None,
             max_lsp_fee_bps: 500,
             min_lsp_fee_cap_sats: 10_000,
             proxy: None,
@@ -258,6 +281,7 @@ mod tests {
             gossip: GossipSource::P2p,
             lsp: None,
             listen: None,
+            announce: None,
             max_lsp_fee_bps: 500,
             min_lsp_fee_cap_sats: 5_000,
             proxy: None,

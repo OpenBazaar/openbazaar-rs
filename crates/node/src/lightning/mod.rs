@@ -441,13 +441,42 @@ impl Node {
         Ok(true)
     }
 
+    /// When `--remote` is on, publish an inbound onion and point LDK at it.
+    ///
+    /// The onion address exists only after the Tor client launches the
+    /// service. LDK copies announcement addresses at start and cannot bind
+    /// an onion, so this runs first: bind stays loopback or LAN, and the
+    /// announcement is the onion. A failure here leaves LDK unstarted so a
+    /// later retry can still set that announcement.
+    fn ln_inbound(&self, config: &mut openbazaar_lightning::LnConfig) -> Result<(), String> {
+        if !self.remote.onion_configured() || config.announce.is_some() {
+            return Ok(());
+        }
+        let bind = config
+            .listen
+            .clone()
+            .unwrap_or_else(|| format!("127.0.0.1:{}", crate::remote::LIGHTNING_PORT));
+        let local = inbound_target(&bind)?;
+        let onion = self.remote.open_ln_onion(&self.data_dir, local)?;
+        // Bind the address the onion forwards to, so LDK does not resolve a name.
+        config.listen = Some(local.to_string());
+        config.announce = Some(onion);
+        Ok(())
+    }
+
     /// Start the LDK node once its keys exist. Called from the Lightning thread.
     fn ln_start(&self) {
-        let Some(config) = self.ln.config().cloned() else { return };
+        let Some(mut config) = self.ln.config().cloned() else { return };
         if self.ln.rail().is_some() {
             return;
         }
         if guard(&self.ln.next_try).is_some_and(|at| Instant::now() < at) {
+            return;
+        }
+        if let Err(err) = self.ln_inbound(&mut config) {
+            eprintln!("ob-node: Lightning did not start: {err}");
+            *guard(&self.ln.error) = Some(err);
+            *guard(&self.ln.next_try) = Some(Instant::now() + RETRY);
             return;
         }
         let secret = match self.ln_fill_keys().and_then(|_| self.ln.secret()) {
@@ -458,9 +487,13 @@ impl Node {
                 return;
             }
         };
+        let announced = config.announce.clone();
         match LdkRail::start(config, &secret) {
             Ok(rail) => {
-                eprintln!("ob-node: Lightning node {} is running", rail.info().node_id);
+                match &announced {
+                    Some(onion) => eprintln!("ob-node: Lightning node {} accepts peers at {onion}", rail.info().node_id),
+                    None => eprintln!("ob-node: Lightning node {} is running", rail.info().node_id),
+                }
                 *guard(&self.ln.error) = None;
                 let _ = self.ln.rail.set(Arc::new(rail));
             }
@@ -487,6 +520,43 @@ impl Node {
         if let Some(rail) = self.ln.rail() {
             rail.stop();
         }
+    }
+}
+
+/// The loopback or LAN socket an onion may forward to. A name that is only
+/// local (`localhost`, `*.local`) becomes `127.0.0.1` on that port.
+fn inbound_target(listen: &str) -> Result<std::net::SocketAddr, String> {
+    if !openbazaar_lightning::config::host_is_local(listen) {
+        return Err(format!("Lightning will not bind {listen}: that is a public clearnet address"));
+    }
+    if let Ok(addr) = listen.parse::<std::net::SocketAddr>() {
+        if addr.port() == 0 || !openbazaar_lightning::config::host_is_local(&addr.ip().to_string()) {
+            return Err(format!("Lightning will not bind {listen}: that is a public clearnet address"));
+        }
+        return Ok(addr);
+    }
+    let port = listen
+        .rsplit_once(':')
+        .and_then(|(_, port)| port.parse::<u16>().ok())
+        .filter(|port| *port != 0)
+        .ok_or_else(|| format!("Lightning listen {listen} is not HOST:PORT"))?;
+    Ok(std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, port)))
+}
+
+#[cfg(test)]
+mod inbound_target_tests {
+    use super::inbound_target;
+
+    #[test]
+    fn a_public_listen_is_not_the_onion_target() {
+        for listen in ["1.2.3.4:9735", "0.0.0.0:9735", "8.8.8.8:9735", "203.0.113.9:9735", "[::]:9735"] {
+            let err = inbound_target(listen).expect_err(listen);
+            assert!(err.contains("public clearnet"), "{listen}: {err}");
+        }
+        assert_eq!(inbound_target("localhost:9735").unwrap().to_string(), "127.0.0.1:9735");
+        assert_eq!(inbound_target("127.0.0.1:9736").unwrap().to_string(), "127.0.0.1:9736");
+        let lan = inbound_target("192.168.1.9:9735").unwrap();
+        assert!(matches!(lan.ip(), std::net::IpAddr::V4(ip) if ip.is_private()));
     }
 }
 
