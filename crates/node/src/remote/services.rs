@@ -11,6 +11,9 @@
 //! * One public sale service, nickname `ob-sale`, with no client auth. It
 //!   forwards to the sale gate, which allows catalog, media, reviews, order
 //!   mail, and escrow mail, and answers everything else itself.
+//! * One public Lightning service, nickname `ob-ln`. Virtual port 9735
+//!   forwards to the loopback socket LDK binds. The node announces that
+//!   onion and not the loopback address.
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -23,7 +26,7 @@ use super::devices::Move;
 use super::now_secs;
 use super::pairing::Code;
 use super::protocol::pairing_onion_seed;
-use super::tor::{Service, Tor};
+use super::tor::{Service, Tor, LIGHTNING_PORT};
 use crate::Node;
 
 pub(crate) const MOVE_GRACE_SECS: u64 = 7 * 24 * 3600;
@@ -33,6 +36,7 @@ pub(crate) struct Services {
     admin: Mutex<Vec<(u32, Service)>>,
     pairing: Mutex<HashMap<String, Service>>,
     sale: Mutex<Option<Service>>,
+    lightning: Mutex<Option<Service>>,
 }
 
 fn admin_nickname(generation: u32) -> String {
@@ -58,6 +62,10 @@ impl Services {
 
     fn sale(&self) -> MutexGuard<'_, Option<Service>> {
         self.sale.lock().unwrap_or_else(|err| err.into_inner())
+    }
+
+    fn lightning(&self) -> MutexGuard<'_, Option<Service>> {
+        self.lightning.lock().unwrap_or_else(|err| err.into_inner())
     }
 
     pub(crate) fn open_admin(
@@ -124,6 +132,27 @@ impl Services {
             Ok(service) => *self.sale() = Some(service),
             Err(err) => eprintln!("ob-node: store onion: {err}"),
         }
+    }
+
+    /// A public onion for inbound Lightning. Its keys stay under `ob-ln`.
+    /// Virtual port [`LIGHTNING_PORT`] forwards to `target` (loopback or LAN).
+    pub(crate) fn open_lightning(&self, tor: &Tor, target: SocketAddr) -> Result<String, String> {
+        let mut slot = self.lightning();
+        if let Some(service) = slot.as_ref() {
+            return service
+                .forward
+                .onion_address()
+                .map(|onion| onion.to_string())
+                .ok_or_else(|| "Lightning onion has no address yet".to_string());
+        }
+        let service = tor.serve_on("ob-ln", None, Discovery::Open, LIGHTNING_PORT, target)?;
+        let onion = service
+            .forward
+            .onion_address()
+            .map(|onion| onion.to_string())
+            .ok_or_else(|| "Lightning onion has no address yet".to_string())?;
+        *slot = Some(service);
+        Ok(onion)
     }
 
     pub(crate) fn has_sale(&self) -> bool {

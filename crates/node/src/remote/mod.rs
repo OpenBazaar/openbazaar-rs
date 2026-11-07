@@ -34,7 +34,7 @@ mod push;
 mod services;
 mod sync;
 mod tor;
-pub(crate) use tor::Tor;
+pub(crate) use tor::{Tor, LIGHTNING_PORT};
 mod web;
 
 /// The web export for a browser on this machine. Unlike [`web::response`],
@@ -193,6 +193,22 @@ impl Remote {
 
     pub(crate) fn enabled(&self) -> bool {
         self.gateway.get().is_some()
+    }
+
+    /// `--remote`: this process starts the Tor client that can publish onions.
+    pub(crate) fn onion_configured(&self) -> bool {
+        self.config().onion
+    }
+
+    /// Publish the Lightning onion on the existing Tor client. Virtual port
+    /// [`tor::LIGHTNING_PORT`] forwards to `local`. Returns `host.onion:port`.
+    pub(crate) fn open_ln_onion(&self, data_dir: &Path, local: SocketAddr) -> Result<String, String> {
+        if local.port() == 0 || !openbazaar_lightning::config::host_is_local(&local.to_string()) {
+            return Err(format!("Lightning will not bind {local}: that is a public clearnet address"));
+        }
+        let tor = self.tor(data_dir)?;
+        let onion = self.services.open_lightning(&tor, local)?;
+        Ok(format!("{onion}:{}", tor::LIGHTNING_PORT))
     }
 
     fn tor(&self, data_dir: &Path) -> Result<Arc<tor::Tor>, String> {

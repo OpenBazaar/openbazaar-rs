@@ -174,6 +174,7 @@ impl LnFlags {
             gossip,
             lsp: lsp.map(|peer| LspConfig { peer, token }),
             listen: self.listen.clone(),
+            announce: None,
             max_lsp_fee_bps: MAX_LSP_FEE_BPS,
             min_lsp_fee_cap_sats: self.max_fee_sats.unwrap_or(MIN_LSP_FEE_CAP_SATS),
             proxy: proxy.map(str::to_string),

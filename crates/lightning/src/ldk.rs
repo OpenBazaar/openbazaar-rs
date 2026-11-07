@@ -72,6 +72,59 @@ fn socket(address: &str) -> Result<SocketAddress, LnError> {
     SocketAddress::from_str(address).map_err(|_| LnError::Invalid(format!("{address} is not HOST:PORT.")))
 }
 
+/// The TCP address LDK binds, and the onion it may announce.
+///
+/// LDK's start binds every `listening_addresses` entry with `TcpListener`
+/// after `ToSocketAddrs`. `SocketAddress::OnionV3` returns
+/// "Resolution of OnionV3 addresses is currently unsupported", so the onion
+/// cannot be that list. The bind is loopback or LAN. The announcement, when
+/// present, is an onion and nothing else.
+pub(crate) fn inbound_sockets(listen: &str, announce: Option<&str>) -> Result<(SocketAddress, Option<SocketAddress>), LnError> {
+    let bind = socket(listen)?;
+    if bind_is_public(&bind) {
+        return Err(LnError::Invalid(format!(
+            "Lightning will not bind {listen}: that is a public clearnet address"
+        )));
+    }
+    let announce = match announce {
+        Some(address) => Some(onion_announcement(address)?),
+        None => None,
+    };
+    Ok((bind, announce))
+}
+
+fn bind_is_public(address: &SocketAddress) -> bool {
+    match address {
+        SocketAddress::TcpIpV4 { addr, port } => {
+            if *port == 0 {
+                return true;
+            }
+            let ip = std::net::Ipv4Addr::from(*addr);
+            !(ip.is_loopback() || ip.is_private() || ip.is_link_local())
+        }
+        SocketAddress::TcpIpV6 { addr, port } => {
+            if *port == 0 {
+                return true;
+            }
+            let ip = std::net::Ipv6Addr::from(*addr);
+            let ula = (ip.segments()[0] & 0xfe00) == 0xfc00;
+            let link_local = (ip.segments()[0] & 0xffc0) == 0xfe80;
+            !(ip.is_loopback() || ula || link_local)
+        }
+        SocketAddress::Hostname { hostname, port } => *port == 0 || !crate::config::host_is_local(hostname.as_str()),
+        SocketAddress::OnionV2(_) | SocketAddress::OnionV3 { .. } => true,
+    }
+}
+
+fn onion_announcement(address: &str) -> Result<SocketAddress, LnError> {
+    match SocketAddress::from_str(address) {
+        Ok(onion @ SocketAddress::OnionV3 { port, .. }) if port != 0 => Ok(onion),
+        _ => Err(LnError::Invalid(format!(
+            "Lightning will not announce {address}: a peer would be told a clearnet address"
+        ))),
+    }
+}
+
 fn payment_id(hash: &str) -> Option<PaymentId> {
     let bytes: [u8; 32] = hex::decode(hash).ok()?.try_into().ok()?;
     Some(PaymentId(bytes))
@@ -90,8 +143,14 @@ impl LdkRail {
         ldk.network = config.network;
         ldk.storage_dir_path = config.storage_dir.to_string_lossy().into_owned();
         ldk.socks_proxy = config.proxy.clone();
+        let mut announce_onion = false;
         if let Some(listen) = &config.listen {
-            ldk.listening_addresses = Some(vec![socket(listen)?]);
+            let (bind, announce) = inbound_sockets(listen, config.announce.as_deref())?;
+            ldk.listening_addresses = Some(vec![bind]);
+            if let Some(onion) = announce {
+                ldk.announcement_addresses = Some(vec![onion]);
+                announce_onion = true;
+            }
         }
         if let (Some(lsp), Some(anchors)) = (&config.lsp, ldk.anchor_channels_config.as_mut()) {
             // The LSP's just-in-time channel arrives before this node has
@@ -99,6 +158,13 @@ impl LdkRail {
             anchors.trusted_peers_no_reserve.push(lsp.peer.node_id);
         }
         let mut builder = Builder::from_config(ldk);
+        if announce_onion {
+            // Gossip runs only when an alias is set. The addresses it broadcasts
+            // are `announcement_addresses` (the onion), not the loopback bind.
+            builder
+                .set_node_alias("openbazaar".to_string())
+                .map_err(|err| LnError::Failed(format!("Lightning alias: {err}")))?;
+        }
         builder.set_entropy_seed_bytes(*ldk_entropy(secret));
         builder.set_custom_logger(Arc::new(StderrLog::default()));
         match &config.chain {
@@ -338,9 +404,10 @@ impl Drop for LdkRail {
 
 #[cfg(test)]
 mod tests {
-    use super::LdkRail;
+    use super::{inbound_sockets, LdkRail};
     use crate::rail::LightningRail;
     use crate::{ChainSource, GossipSource, LnConfig, LspConfig};
+    use ldk_node::lightning::ln::msgs::SocketAddress;
 
     #[test]
     fn a_public_lightning_peer_is_not_dialed() {
@@ -356,6 +423,7 @@ mod tests {
                 token: Some("JZWN9YLW".into()),
             }),
             listen: None,
+            announce: None,
             max_lsp_fee_bps: 500,
             min_lsp_fee_cap_sats: 10_000,
             proxy: None,
@@ -429,5 +497,51 @@ mod tests {
         let peer = peer.expect("the proxy did not accept the peer").expect("the dial has no peer");
         assert!(peer.ip().is_loopback(), "the TCP connection went to {peer}, not the proxy");
         assert_eq!(seen.lock().unwrap().as_deref(), Some("public-peer.invalid:9735"));
+    }
+
+    /// LDK binds `listening_addresses` and, once an alias is set, gossips
+    /// `announcement_addresses` or else those bind addresses. A public IP in
+    /// either list fails this test.
+    #[test]
+    fn lightning_does_not_bind_or_announce_a_public_address() {
+        const ONION: &str = "25njqamcweflpvkl73j4szahhihoc4xt3ktcgjnpaingr5yhkenl5sid.onion:9735";
+        let (bind, announced) = inbound_sockets("127.0.0.1:9735", Some(ONION)).expect("loopback bind and onion announcement");
+        let announced = announced.expect("the onion is announced");
+        assert!(
+            matches!(bind, SocketAddress::TcpIpV4 { addr: [127, 0, 0, 1], port: 9735 }),
+            "bound {bind}"
+        );
+        assert!(matches!(announced, SocketAddress::OnionV3 { port: 9735, .. }), "announced {announced}");
+        let announced = announced.to_string();
+        assert!(announced.ends_with(".onion:9735"), "{announced}");
+        assert!(!announced.contains("127.0.0.1"), "{announced}");
+        for (listen, announce) in [
+            ("1.2.3.4:9735", None),
+            ("0.0.0.0:9735", Some(ONION)),
+            ("8.8.8.8:9735", Some(ONION)),
+            ("203.0.113.9:9735", Some(ONION)),
+            ("ln.example.com:9735", Some(ONION)),
+            ("127.0.0.1:0", Some(ONION)),
+            (ONION, None),
+            ("127.0.0.1:9735", Some("1.2.3.4:9735")),
+            ("127.0.0.1:9735", Some("0.0.0.0:9735")),
+            ("127.0.0.1:9735", Some("127.0.0.1:9735")),
+            ("[::]:9735", Some(ONION)),
+        ] {
+            let err = inbound_sockets(listen, announce).expect_err(listen).to_string();
+            assert!(
+                err.contains("public clearnet") || err.contains("clearnet address"),
+                "{listen} / {announce:?} was accepted or said: {err}"
+            );
+        }
+        let (lan, announced) = inbound_sockets("192.168.1.9:9735", Some(ONION)).expect("a LAN socket is not a public bind");
+        assert!(matches!(lan, SocketAddress::TcpIpV4 { addr: [192, 168, 1, 9], .. }));
+        assert!(matches!(announced, Some(SocketAddress::OnionV3 { .. })));
+        let (only_bind, announced) = inbound_sockets("127.0.0.1:9736", None).expect("loopback without an announcement");
+        assert!(matches!(only_bind, SocketAddress::TcpIpV4 { addr: [127, 0, 0, 1], port: 9736 }));
+        assert!(announced.is_none(), "a loopback bind is not announced");
+        let (local_name, announced) = inbound_sockets("localhost:9735", None).expect("localhost is a loopback bind");
+        assert!(matches!(local_name, SocketAddress::Hostname { .. }));
+        assert!(announced.is_none(), "localhost is not announced");
     }
 }
