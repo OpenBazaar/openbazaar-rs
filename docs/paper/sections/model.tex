@@ -13,7 +13,7 @@
   \item[Seed.] A node whose address ships with the software or is pasted by the user, used only to find other nodes. Seeds are untrusted for content: every record is verified against its signature.
 \end{description}
 
-\paragraph{External parties.} The Bitcoin network and chain; a source of chain data for the node (its own Bitcoin node, compact block filters, or a block-explorer API); Tor relays; Lightning routing nodes; an exchange-rate source for fiat estimates; and, for physical goods, a parcel carrier.
+\paragraph{External parties.} The Bitcoin network and chain; a source of chain data for the node (its own Bitcoin node, compact block filters, or a block-explorer API); Tor relays; Lightning routing nodes and, for a vendor that uses one, a Lightning service provider; an exchange-rate source for fiat estimates; and, for physical goods, a parcel carrier.
 
 \paragraph{Records and messages.} A \emph{store record} names a store key, a display name, a region, direct-payment strings, and the store's content rating. A \emph{listing} names its store key, describes one offer, and carries the vendor's content label. A \emph{label set} is a labeler's signed statement about stores and listings. An \emph{order letter} is an HPKE ciphertext addressed to one vendor. \emph{Escrow messages} are the three funding rounds and the release exchange between buyer and vendor. A \emph{dispute letter} goes from one party to the moderator, and a \emph{ruling} comes back.
 

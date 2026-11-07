@@ -240,6 +240,7 @@ pub(crate) fn response(node: &Node, client: &Client, head: &str, body: &[u8], or
                 }
             }
             crate::xmr::add_xmr_flags(node, &mut catalog);
+            crate::lightning::add_ln_flags(node, &mut catalog);
             json_body("200 OK", &json!({ "hash": hash, "catalog": catalog }), origin)
         }
         Err(LabelError::Invalid(message)) => json_error("400 Bad Request", message, origin),

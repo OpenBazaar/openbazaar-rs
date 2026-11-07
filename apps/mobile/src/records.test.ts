@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
 import { schnorr } from "@noble/curves/secp256k1.js";
+import { sha256 } from "@noble/hashes/sha2.js";
 
 import { parseCatalog, storeRatingOf } from "./catalog.ts";
 import { bytesToHex, hexToBytes, verifiedListing, verifyListingRecord, verifyStoreRecord } from "./records.ts";
@@ -104,9 +105,9 @@ test("Monero stands only if the store's signed record takes it", () => {
   assert.equal(verifyStoreRecord(store)?.details?.acceptsXmr, false);
   const last = store.length / 2 - 64 - 1;
   const bytes = hexToBytes(store)!;
-  assert.equal(bytes[last], 0, "the Monero flag is the last signed byte");
-  bytes[last] = 2;
-  assert.equal(verifyStoreRecord(bytesToHex(bytes)), null, "a flag other than 0 or 1 does not decode");
+  assert.equal(bytes[last], 0, "the rail flags are the last signed byte");
+  bytes[last] = 4;
+  assert.equal(verifyStoreRecord(bytesToHex(bytes)), null, "an unknown rail flag does not decode");
   assert.equal(verifyStoreRecord(flip(store, last)), null, "the flag is signed");
 
   const listing = { ...raw().listings[0], acceptsXmr: true };
@@ -114,4 +115,38 @@ test("Monero stands only if the store's signed record takes it", () => {
   assert.equal(verifiedListing(listing, new Set([key]))?.acceptsXmr, false, "the node's word alone is not enough");
   assert.equal(verifiedListing(listing, new Set([key]), new Set([key]))?.acceptsXmr, true);
   assert.equal(verifiedListing({ ...listing, acceptsXmr: false }, new Set([key]), new Set([key]))?.acceptsXmr, false);
+});
+
+/// The demo store record with the rail flags set to `rails`, signed again by a new key.
+function resignedStore(rails: number): { hex: string; key: string } {
+  const store = raw().stores[0];
+  const bytes = hexToBytes(String(store.record))!;
+  const record = verifyStoreRecord(store.record)!;
+  const utf8 = (text: string) => new TextEncoder().encode(text).length + 2;
+  const keyAt = 5 + utf8(record.name) + utf8(record.region) + utf8(record.bolt12Offer) + utf8(record.silentPaymentCode);
+  const secret = schnorr.utils.randomSecretKey();
+  const key = schnorr.getPublicKey(secret);
+  const body = bytes.slice(0, bytes.length - 64);
+  body.set(key, keyAt);
+  body[body.length - 1] = rails;
+  const tag = sha256(new TextEncoder().encode("ob/store/v1"));
+  const signature = schnorr.sign(sha256(new Uint8Array([...tag, ...tag, ...body])), secret);
+  return { hex: bytesToHex(new Uint8Array([...body, ...signature])), key: bytesToHex(key) };
+}
+
+test("Lightning stands only if the store's signed record takes it", () => {
+  const both = resignedStore(3);
+  const details = verifyStoreRecord(both.hex)?.details;
+  assert.equal(details?.acceptsXmr, true);
+  assert.equal(details?.acceptsLightning, true);
+  const lightning = verifyStoreRecord(resignedStore(2).hex)?.details;
+  assert.deepEqual([lightning?.acceptsXmr, lightning?.acceptsLightning], [false, true]);
+  assert.equal(verifyStoreRecord(resignedStore(4).hex), null, "an unknown rail flag does not decode");
+  assert.equal(verifyStoreRecord(raw().stores[0].record)?.details?.acceptsLightning, false);
+
+  const listing = { ...raw().listings[0], acceptsLightning: true };
+  const key = String(listing.storeId);
+  assert.equal(verifiedListing(listing, new Set([key]))?.acceptsLightning, false, "the node's word alone is not enough");
+  assert.equal(verifiedListing(listing, new Set([key]), new Set(), new Set([key]))?.acceptsLightning, true);
+  assert.equal(verifiedListing(listing, new Set([key]), new Set([key]))?.acceptsLightning, false, "Monero is not Lightning");
 });

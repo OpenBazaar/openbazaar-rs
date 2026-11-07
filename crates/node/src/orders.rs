@@ -190,6 +190,9 @@ impl Node {
             if package.xmr {
                 self.xmr_ready(&package.lines[0].0.seller)?;
             }
+            if package.ln {
+                self.ln_ready(&package.lines[0].0.seller)?;
+            }
         }
         let needs_address = packages.iter().any(|package| {
             package.lines.iter().any(|(listing, _)| listing.kind == ListingKind::Physical)
@@ -246,6 +249,8 @@ impl Node {
             let lines = line_values(&package.lines)?;
             let (payment, mut escrow) = if package.xmr {
                 (Some(self.xmr_payment(total, &seller)?), None)
+            } else if package.ln {
+                (Some(self.ln_payment(total, &id)?), None)
             } else {
                 self.payment_for(package.settlement, total, &seller)?
             };
@@ -427,6 +432,8 @@ struct PackagePlan<'a> {
     settlement: Settlement,
     /// Paid in Monero (direct pay only).
     xmr: bool,
+    /// Paid over Lightning (direct pay only).
+    ln: bool,
     items: u64,
     shipping: u64,
 }
@@ -477,11 +484,13 @@ fn checkout_packages<'a>(catalog: &'a Catalog, body: &Value) -> Result<Vec<Packa
             ));
         }
         let xmr = crate::xmr::rail_of(package.get("rail"), settlement == Settlement::Escrow)?;
+        let ln = crate::lightning::ln_rail_of(package.get("rail"), settlement == Settlement::Escrow)?;
         let (items, shipping) = package_shipping(&lines)?;
         plans.push(PackagePlan {
             lines,
             settlement,
             xmr,
+            ln,
             items,
             shipping,
         });

@@ -1,6 +1,7 @@
 import { verifiedListings, verifiedStore, type StoreSummary } from "./records.ts";
 import type { LabelerLabel } from "./safety/filter";
 import { servedByHomeNode, signedFetch, targetPrefix } from "./homeNode/transport.ts";
+import { parseLnInvoice, type LnInvoice } from "./lightning.ts";
 
 // The shop dials only this origin. A query parameter, settings field, seed,
 // peer, or vendor address cannot point it anywhere else. Paired requests send
@@ -48,6 +49,8 @@ export type ListingHeader = {
   acceptsModerator: boolean;
   /** Monero is on at this node and the store's signed record takes it. */
   acceptsXmr: boolean;
+  /** Lightning runs at this node and the store's signed record takes it. */
+  acceptsLightning: boolean;
   description?: string;
   seller: string;
   stock: number;
@@ -172,6 +175,8 @@ export type DirectPayment = {
   silentPaymentCode: string;
   lightning: string;
   onchain: string;
+  /** The order's BOLT 11 invoice when it is paid over Lightning. */
+  ln: LnInvoice | null;
 };
 
 export type EscrowReceipt = {
@@ -311,7 +316,7 @@ export async function placeCheckout(order: {
   addressLabel?: string;
   shipTo?: ShipTo & { street2?: string; country?: string };
   deliveryNote?: string;
-  packages: { settlement: "direct" | "escrow"; rail?: "btc" | "xmr"; lines: CheckoutLine[] }[];
+  packages: { settlement: "direct" | "escrow"; rail?: "btc" | "xmr" | "ln"; lines: CheckoutLine[] }[];
 }): Promise<CheckoutReceipt> {
   const token = await pairingToken();
   const response = await request("/checkout", {
@@ -593,6 +598,7 @@ export function parseCatalog(value: unknown): ShopCatalog {
     record.listings,
     new Set(stores.map((store) => store.key)),
     new Set(stores.filter((store) => store.acceptsXmr).map((store) => store.key)),
+    new Set(stores.filter((store) => store.acceptsLightning).map((store) => store.key)),
   );
   const first = stores[0];
   const strictest = stores.reduce<ContentRating>(
@@ -777,6 +783,7 @@ function parsePayment(value: unknown): DirectPayment {
     silentPaymentCode: typeof payment.silentPaymentCode === "string" ? payment.silentPaymentCode : "",
     lightning: typeof payment.lightning === "string" ? payment.lightning : "",
     onchain: typeof payment.onchain === "string" ? payment.onchain : "",
+    ln: parseLnInvoice(payment),
   };
 }
 

@@ -53,6 +53,24 @@ pub(crate) fn store_id(wallet: &NodeWallet) -> StoreId {
     StoreId::from_bytes(xonly.serialize())
 }
 
+/// The payment rails a store record opts in to besides on-chain bitcoin.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Rails {
+    pub xmr: bool,
+    pub lightning: bool,
+}
+
+impl Rails {
+    /// What `store` signed, or neither.
+    pub(crate) fn of(store: Option<&Store>) -> Self {
+        let details = store.and_then(|store| store.details.as_ref());
+        Self {
+            xmr: details.is_some_and(|d| d.accepts_xmr),
+            lightning: details.is_some_and(|d| d.accepts_lightning),
+        }
+    }
+}
+
 /// The record this node would sign now, without its signature. `None` while
 /// `watch.obv` predates the store mailbox key.
 pub(crate) fn unsigned(
@@ -61,7 +79,7 @@ pub(crate) fn unsigned(
     network: NetworkMode,
     moderators: &[[u8; 32]],
     rating: ContentRating,
-    accepts_xmr: bool,
+    rails: Rails,
 ) -> Result<Option<Store>, Error> {
     let Ok(mailbox) = wallet.watch.store_mailbox_key() else {
         return Ok(None);
@@ -110,7 +128,8 @@ pub(crate) fn unsigned(
                 ships_to,
                 created_on,
             },
-            accepts_xmr,
+            accepts_xmr: rails.xmr,
+            accepts_lightning: rails.lightning,
         }),
         signature: [0u8; 64],
     }))
@@ -151,8 +170,7 @@ pub(crate) fn open(
     let id = store_id(wallet);
     let cached = read_cached(dir, vault, &id)?;
     let rating = cached.as_ref().and_then(|store| store.rating).unwrap_or(ContentRating::General);
-    let accepts_xmr = cached.as_ref().and_then(|store| store.details.as_ref()).is_some_and(|d| d.accepts_xmr);
-    let want = unsigned(dir, wallet, network, moderators, rating, accepts_xmr)?;
+    let want = unsigned(dir, wallet, network, moderators, rating, Rails::of(cached.as_ref()))?;
     let seed = wallet_keys::vault_tier_seed(&wallet.dir, vault, network)?;
     let (record, pending) = match (want, cached, seed) {
         (Some(want), Some(cached), _) if current(&cached, &want) => (Some(cached), false),
@@ -204,17 +222,16 @@ impl Node {
         }
         let old = self.own_record();
         let rating = old.as_ref().and_then(|store| store.rating).unwrap_or(ContentRating::General);
-        let accepts_xmr = old.as_ref().and_then(|store| store.details.as_ref()).is_some_and(|d| d.accepts_xmr);
-        self.publish_own(rating, accepts_xmr, &secret)
+        self.publish_own(rating, Rails::of(old.as_ref()), &secret)
     }
 
-    /// Sign the own store with `rating` and `accepts_xmr` unless the served
+    /// Sign the own store with `rating` and `rails` unless the served
     /// record already says that, then serve and cache it.
-    pub(crate) fn publish_own(&self, rating: ContentRating, accepts_xmr: bool, secret: &SecretKey) -> Result<(), Error> {
+    pub(crate) fn publish_own(&self, rating: ContentRating, rails: Rails, secret: &SecretKey) -> Result<(), Error> {
         let moderators = self.own_moderators();
         let want = {
             let wallet = self.buyer_wallet();
-            unsigned(&self.data_dir, &wallet, self.network, &moderators, rating, accepts_xmr)?
+            unsigned(&self.data_dir, &wallet, self.network, &moderators, rating, rails)?
         };
         let Some(want) = want else {
             return Ok(());

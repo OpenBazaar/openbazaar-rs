@@ -249,7 +249,8 @@ impl Node {
         };
         if store.id == self.own_store {
             let rating = store.rating.unwrap_or(openbazaar_protocol::ContentRating::General);
-            return self.publish_own(rating, accept, &secret).map_err(|err| AcceptError::Failed(err.to_string()));
+            let rails = crate::own_store::Rails { xmr: accept, ..crate::own_store::Rails::of(Some(&store)) };
+            return self.publish_own(rating, rails, &secret).map_err(|err| AcceptError::Failed(err.to_string()));
         }
         let signed = with_xmr(&store, accept, &secret).map_err(|err| AcceptError::Failed(err.to_string()))?;
         self.xmr.save_accepts(seller, accept).map_err(AcceptError::Failed)?;

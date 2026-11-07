@@ -23,6 +23,9 @@ pub const MAX_PROCESSING: usize = 120;
 pub const MAX_MODERATORS: usize = 16;
 pub const MAX_SHIPS_TO: usize = 64;
 const ONION_HOST_LEN: usize = 56;
+/// The last byte of a v3 record: bit 0 Monero, bit 1 Lightning. A record
+/// signed before Lightning existed has 0 or 1 there and reads the same.
+const RAIL_FLAGS: u8 = 0b11;
 
 /// X-only store key. Listings name the store by this value.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -106,6 +109,9 @@ pub struct StoreDetails {
     pub profile: StoreProfile,
     /// The store takes Monero direct pay. Escrow stays Bitcoin-only.
     pub accepts_xmr: bool,
+    /// The store's node issues Lightning invoices for direct pay. Escrow
+    /// stays on-chain.
+    pub accepts_lightning: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -335,7 +341,7 @@ impl StoreDetails {
             writer.bytes(&country.0);
         }
         writer.u32(profile.created_on);
-        writer.u8(u8::from(self.accepts_xmr));
+        writer.u8(u8::from(self.accepts_xmr) | u8::from(self.accepts_lightning) << 1);
         Ok(())
     }
 
@@ -365,6 +371,11 @@ impl StoreDetails {
         for _ in 0..count {
             ships_to.push(CountryCode::from_bytes(reader.array()?)?);
         }
+        let created_on = reader.u32()?;
+        let rails = reader.u8()?;
+        if rails > RAIL_FLAGS {
+            return Err(Error::BadProfile("an unknown payment rail flag is set"));
+        }
         Ok(Self {
             mailbox_key,
             onion,
@@ -378,13 +389,10 @@ impl StoreDetails {
                 returns_policy,
                 processing_time,
                 ships_to,
-                created_on: reader.u32()?,
+                created_on,
             },
-            accepts_xmr: match reader.u8()? {
-                0 => false,
-                1 => true,
-                _ => return Err(Error::BadProfile("the Monero flag is 0 or 1")),
-            },
+            accepts_xmr: rails & 1 != 0,
+            accepts_lightning: rails & 2 != 0,
         })
     }
 }
@@ -446,6 +454,7 @@ mod tests {
                 created_on: 20260101,
             },
             accepts_xmr: true,
+            accepts_lightning: true,
         }
     }
 
@@ -524,6 +533,7 @@ mod tests {
             Box::new(|d| d.profile.ships_to.truncate(1)),
             Box::new(|d| d.profile.created_on += 1),
             Box::new(|d| d.accepts_xmr = !d.accepts_xmr),
+            Box::new(|d| d.accepts_lightning = !d.accepts_lightning),
         ];
         for tamper in tampers {
             let mut changed = store.clone();
@@ -558,10 +568,15 @@ mod tests {
         assert!(matches!(Store::decode(&bytes), Err(Error::BadProfile(_))));
 
         let mut bytes = sample().encode().unwrap();
-        let xmr = bytes.len() - 64 - 1;
-        assert_eq!(bytes[xmr], 1, "Monero flag");
-        bytes[xmr] = 2;
+        let rails = bytes.len() - 64 - 1;
+        assert_eq!(bytes[rails], 3, "Monero and Lightning flags");
+        bytes[rails] = 4;
         assert!(matches!(Store::decode(&bytes), Err(Error::BadProfile(_))));
+        bytes[rails] = 1;
+        let monero_only = Store::decode(&bytes).unwrap();
+        let details = monero_only.details.as_ref().unwrap();
+        assert!(details.accepts_xmr && !details.accepts_lightning);
+        assert!(monero_only.verify().is_err(), "dropping the Lightning flag kept the signature valid");
     }
 
     #[test]

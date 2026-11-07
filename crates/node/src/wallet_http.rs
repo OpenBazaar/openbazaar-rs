@@ -15,7 +15,8 @@ pub(crate) fn network_response(node: &Node, origin: Option<&str>) -> Vec<u8> {
         "publicChainServer": chain.public_server(),
         "chainBackend": chain.to_json(),
         "xmrBackend": node.xmr.backend_value(),
-        "lightning": "offer-only",
+        "lightning": node.ln_wallet_value(),
+        "lightningBackend": node.ln_backend_value(),
         "silentPayments": "code-only",
     });
     if let (Some(map), Value::Object(egress)) = (value.as_object_mut(), node.local.egress.value(chain.public_server())) {

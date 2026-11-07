@@ -57,6 +57,7 @@ mod wallet_lock;
 mod wallet_session;
 mod watch;
 mod xmr;
+mod lightning;
 
 #[cfg(test)]
 mod checkout_tests;
@@ -113,6 +114,7 @@ pub use egress::Egress;
 pub use escrow_fixture::MODERATOR_FEE_SATS;
 pub use media::MAX_MEDIA;
 pub use http::{http_response, serve_on};
+pub use lightning::LnFlags;
 pub use network::{NetworkMode, ServeOptions, VaultChoice};
 pub use orders::OrderError;
 pub use pay_order::PayError;
@@ -245,6 +247,7 @@ pub struct Node {
     pub(crate) xmr: xmr::XmrNode,
     /// Paired devices and the home node this node is a client of.
     pub(crate) remote: remote::Remote,
+    pub(crate) ln: lightning::LnNode,
 }
 
 impl Node {
@@ -282,6 +285,7 @@ impl Node {
         let moderators: Vec<[u8; 32]> =
             (!catalog.moderator.name.is_empty()).then_some(catalog.moderator.id).into_iter().collect();
         xmr::apply_signed_accepts(&dir, &vault, &mut catalog, network)?;
+        lightning::apply_signed_accepts(&dir, &vault, &mut catalog, network)?;
         let own = own_store::open(&dir, &vault, &buyer_wallet, network, &moderators)?;
         let own_store = own.id;
         catalog.stores.retain(|store| store.id != own_store);
@@ -356,6 +360,7 @@ impl Node {
             lock,
             xmr,
             remote: remote::Remote::open(&dir, vault.clone())?,
+            ln: lightning::LnNode::open(&dir, &vault)?,
         };
         node.drop_uncommitted_spend()?;
         Ok(node)
@@ -422,6 +427,7 @@ impl Node {
             scope.spawn(|| self.run_auto_lock(&stop));
             scope.spawn(|| self.run_xmr(poll, &stop));
             scope.spawn(|| remote::run(self, port, &stop));
+            scope.spawn(|| self.run_lightning(&stop));
             let result = http::serve(self, port);
             stop.store(true, Ordering::Relaxed);
             result

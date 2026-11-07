@@ -151,7 +151,7 @@ fn escrow_stores_that_do_not_accept_it_and_missing_prices_refuse_monero() {
     };
     assert_eq!(refused(&node, "Paperback novel", "Marlow Goods", "escrow", "xmr"), super::checkout::ESCROW_IS_BITCOIN_ONLY);
     assert!(refused(&node, "Letterpress cards", "Hale Paper", "direct", "xmr").contains("does not accept Monero"));
-    assert!(refused(&node, "Paperback novel", "Marlow Goods", "direct", "eth").contains("btc or xmr"));
+    assert!(refused(&node, "Paperback novel", "Marlow Goods", "direct", "eth").contains("btc, xmr, or ln"));
     node.xmr.rate = super::rate::XmrRate::new(Egress { proxy: None, live_rates: false });
     assert!(refused(&node, "Paperback novel", "Marlow Goods", "direct", "xmr").contains("no XMR price"));
     assert_eq!(request(&node, "GET", "/rates", "").1["xmr"], Value::Null);

@@ -31,6 +31,7 @@ mdns-sd = "0.21"
 musig2 = "0.4.1"
 p256 = { version = "0.13", features = ["ecdsa"] }
 openbazaar-escrow = { path = "../escrow" }
+openbazaar-lightning = { path = "../lightning" }
 openbazaar-pay = { path = "../pay" }
 openbazaar-protocol = { path = "../protocol" }
 openbazaar-xmr = { path = "../xmr" }
@@ -57,5 +58,7 @@ keyring = { version = "3.6", features = ["windows-native"] }
 keyring = { version = "3.6", features = ["async-secret-service", "tokio", "crypto-rust"] }
 
 [dev-dependencies]
+openbazaar-lightning = { path = "../lightning", features = ["mock", "regtest"] }
+tempfile = "3"
 openbazaar-xmr = { path = "../xmr", features = ["mock"] }
 proptest = "1"
