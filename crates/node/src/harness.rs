@@ -41,6 +41,11 @@ pub(crate) struct Chain {
     pub broadcasts: Mutex<Vec<Transaction>>,
     pub fee_rate: Mutex<f64>,
     pub fail_broadcast: AtomicBool,
+    /// Act like compact block filters: no lookup by txid, and a script is
+    /// "still scanning" the first time it is followed.
+    pub filters: AtomicBool,
+    /// Scripts followed through `script_txs`, with the height asked for.
+    pub followed: Mutex<Vec<(ScriptBuf, u32)>>,
 }
 
 #[derive(Clone)]
@@ -141,6 +146,17 @@ impl ChainSource for MockChain {
             .unwrap_or_default())
     }
 
+    fn script_txs(&self, script: &bitcoin::Script, from: u32) -> Result<Vec<AddressTx>, String> {
+        if self.0.filters.load(Ordering::Relaxed) {
+            let mut followed = self.0.followed.lock().unwrap();
+            if !followed.iter().any(|(seen, _)| seen.as_script() == script) {
+                followed.push((script.to_owned(), from));
+                return Err("compact block filters are still scanning for a newly followed address".into());
+            }
+        }
+        Ok(self.0.by_script.lock().unwrap().get(script).cloned().unwrap_or_default())
+    }
+
     fn fee_rate(&self) -> Result<f64, String> {
         Ok(*self.0.fee_rate.lock().unwrap())
     }
@@ -202,6 +218,9 @@ impl ChainSource for MockChain {
 
     /// Outputs of broadcast transactions, with the height `mine` gave them.
     fn output(&self, outpoint: &OutPoint) -> Result<Option<(TxOut, Option<u32>)>, String> {
+        if self.0.filters.load(Ordering::Relaxed) {
+            return Err("compact block filters find transactions by address".into());
+        }
         let Some(tx) = self
             .broadcasts()
             .into_iter()
@@ -445,11 +464,15 @@ pub(crate) fn fund_node_wallet(node: &Node, chain: &MockChain, sats: u64) {
     chain.fund_wallet(&address, sats);
 }
 
-/// One node serving HTTP on its own loopback port and data dir.
+/// One node serving HTTP on its own loopback port and data dir. The port
+/// outlives the node, so a test can restart the node behind the same URL;
+/// while it is down the port answers 503 and senders keep the letter.
 pub(crate) struct Peer {
     pub node: Arc<Node>,
     pub url: String,
-    _dir: TempDir,
+    slot: Arc<Mutex<Option<Arc<Node>>>>,
+    escrow: EscrowConfig,
+    dir: TempDir,
 }
 
 impl Peer {
@@ -458,23 +481,64 @@ impl Peer {
     /// run; tests drive them so every step is deterministic.
     pub fn spawn(chain: &MockChain, escrow: impl FnOnce(String) -> EscrowConfig) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let url = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+        let port = listener.local_addr().unwrap().port();
+        let url = format!("http://127.0.0.1:{port}");
         let dir = TempDir::new();
-        let node = Arc::new(open_node(
-            &dir.0,
-            NetworkMode::Testnet4,
-            chain,
-            1,
-            escrow(url.clone()),
-        ));
-        let server = Arc::clone(&node);
-        std::thread::spawn(move || crate::http::serve_on(&server, listener));
+        let escrow = escrow(url.clone());
+        let node = Arc::new(open_node(&dir.0, NetworkMode::Testnet4, chain, 1, escrow.clone()));
+        let slot = Arc::new(Mutex::new(Some(Arc::clone(&node))));
+        let serving = Arc::clone(&slot);
+        std::thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                serve_one(&serving, stream, port);
+            }
+        });
         Self {
             node,
             url,
-            _dir: dir,
+            slot,
+            escrow,
+            dir,
         }
     }
+
+    /// Take the node down: its port answers 503 until [`Self::start`].
+    pub fn stop(&self) {
+        *self.slot.lock().unwrap() = None;
+    }
+
+    /// Close the node and open its data dir again, as after a crash or a
+    /// restart: everything in memory is gone. `unlocked` unlocks the wallet.
+    pub fn restart(&mut self, chain: &MockChain, unlocked: bool) {
+        self.stop();
+        let mut config = NodeConfig::offline(NetworkMode::Testnet4);
+        config.chain = Box::new(chain.clone());
+        config.confirmations = 1;
+        config.escrow = self.escrow.clone();
+        let node = Node::open_with(&self.dir.0, load_catalog(NetworkMode::Testnet4).unwrap(), config).unwrap();
+        if unlocked {
+            unlock(&node);
+        }
+        self.node = Arc::new(node);
+        self.start();
+    }
+
+    pub fn start(&self) {
+        *self.slot.lock().unwrap() = Some(Arc::clone(&self.node));
+    }
+}
+
+fn serve_one(slot: &Mutex<Option<Arc<Node>>>, mut stream: std::net::TcpStream, port: u16) {
+    use std::io::Write;
+    let Ok(raw) = crate::http_parse::read(&mut stream) else {
+        return;
+    };
+    let node = slot.lock().unwrap().clone();
+    let response = match node {
+        Some(node) => crate::http::respond(&node, &raw, crate::http::Client { loopback: true, port }),
+        None => crate::http::http_response("503 Service Unavailable", "text/plain", b"restarting"),
+    };
+    let _ = stream.write_all(&response);
 }
 
 /// A buyer, a vendor, and a moderator, each on its own node, sharing one chain.
@@ -495,6 +559,7 @@ impl Market {
         });
         let vendor = Peer::spawn(&chain, |url| EscrowConfig {
             mailbox_url: Some(url),
+            moderator_url: Some(moderator.url.clone()),
             ..EscrowConfig::default()
         });
         let vendors: BTreeMap<String, String> = SELLERS
@@ -520,10 +585,14 @@ impl Market {
         [&self.buyer.node, &self.vendor.node, &self.moderator.node]
     }
 
-    /// Run every node's mail loop until no node has mail left. Returns how many letters were handled.
+    /// Retry every node's outbox, then run every node's mail loop, until no
+    /// node has mail left. Returns how many letters were handled.
     pub fn deliver(&self) -> usize {
         let mut total = 0;
         loop {
+            for node in self.nodes() {
+                node.flush_escrow_outbox(true);
+            }
             let handled: usize = self
                 .nodes()
                 .iter()
@@ -534,6 +603,28 @@ impl Market {
             }
             total += handled;
         }
+    }
+
+    /// One round: retry the outboxes, and let the first node with mail
+    /// handle it. Returns false when no node has mail left.
+    pub fn deliver_one(&self) -> bool {
+        for node in self.nodes() {
+            node.flush_escrow_outbox(true);
+        }
+        self.nodes().iter().any(|node| node.process_escrow_mail() > 0)
+    }
+
+    /// Restart all three nodes on their data dirs, unlocked.
+    pub fn restart_all(&mut self) {
+        let chain = self.chain.clone();
+        for peer in [&mut self.buyer, &mut self.vendor, &mut self.moderator] {
+            peer.restart(&chain, true);
+        }
+    }
+
+    /// Letters waiting in any node's outbox.
+    pub fn queued(&self) -> usize {
+        self.nodes().iter().map(|node| node.escrow.outbox.pending()).sum()
     }
 
     /// Mine a block and let every node's watcher see it.

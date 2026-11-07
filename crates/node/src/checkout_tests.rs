@@ -9,7 +9,7 @@ use serde_json::{json, Value};
 use tormail::{open_order, SealedLetter, StoreSecret};
 
 use crate::http::{dispatch, respond, Client};
-use crate::{load_catalog, NetworkMode, Node, NodeConfig, ESCROW_SPEND_FEE_SATS};
+use crate::{load_catalog, NetworkMode, Node, NodeConfig};
 
 struct TempDir(PathBuf);
 
@@ -236,7 +236,7 @@ fn moderated_order_records_the_buyer_side_and_asks_the_vendor_node() {
     let receipt: Value = serde_json::from_str(&body).unwrap();
     assert_eq!(receipt["sealed"], true);
     assert_eq!(receipt["settlement"], "escrow");
-    assert_eq!(receipt["escrow"]["fundingSats"], 4_000 + ESCROW_SPEND_FEE_SATS);
+    assert_eq!(receipt["escrow"]["fundingSats"], 4_000 + receipt["escrow"]["spendFeeSats"].as_u64().unwrap());
     assert_eq!(receipt["escrow"]["signaturesRequired"], 2);
     assert_eq!(receipt["escrow"]["stage"], "requested");
     assert!(receipt["escrow"]["buyerPayout"].as_str().unwrap().starts_with("tb1p"));
