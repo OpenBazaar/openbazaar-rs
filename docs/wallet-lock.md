@@ -54,7 +54,8 @@ two files.
 
 | tier | file | sealed with | holds | available while locked |
 |---|---|---|---|---|
-| receive | `watch.obv` | vault key (OS keystore) | public BIP 86 descriptors (xpubs), escrow mail key, silent payment code, store signing public key | yes |
+| receive | `watch.obv` | vault key (OS keystore) | public BIP 86 descriptors (xpubs), escrow mail key, store mailbox key (X25519), letter root, silent payment code, store signing public key | yes |
+| receive | `store-record.obv` (data dir) | vault key | the node's own store record as last signed (public bytes) | yes |
 | receive | `state.obv` | vault key | BDK changeset (public descriptors, revealed indexes, chain data), next escrow key index | yes |
 | spend | `spend.obv` | spend key | the BIP 39 phrase: spend xprv, per-order escrow keys, store signing key, BIP 352 spend key | no |
 | — | `wallet.lock` | Argon2id(passphrase) | the spend key | — |
@@ -63,7 +64,22 @@ two files.
 What a locked node still does: watch the chain and update balances, hand out
 new receive addresses from the xpubs, take direct (non-escrow) orders, accept
 escrow letters into the mailbox, and open the ones that need no signature
-(the moderator reviewing a dispute, the buyer's release nonce). Letters that
+(the moderator reviewing a dispute, the buyer's release nonce). Orders and
+escrow mail sealed to the store's mailbox key open with the receive tier,
+and the letters a locked node sends are signed with per-conversation keys
+from the letter root, which never signs a transaction, an escrow step, or a
+store record. A letter that waits for an unlock is not yet admitted to the
+replay guard, so it is not refused as a repeat when it is read again.
+
+The store signing key stays in the spend tier. Nothing in the store record
+needs a new signature while locked: its keys are fixed by the phrase, and the
+profile, rating, moderators, and Monero choice change only through routes
+that answer `423` while locked (or by editing `store-profile.json`). The node
+serves the record it last signed, from `store-record.obv`, and signs it again
+at the next unlock if its inputs changed (`GET /stores/{key}` shows
+`unpublishedChanges` until then). A `watch.obv` from before the mailbox key
+and letter root were added gets them at the next unlock; until then the node
+answers `423` to checkout rather than sending an unsigned letter. Letters that
 need a signature stay in the mailbox until the next unlock: the vendor's whole
 side (terms, refund, release), and the buyer's countersign, funding, and
 ruling steps. Payments the user already confirmed but the worker had not

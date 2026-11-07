@@ -7,6 +7,11 @@
 //! decides the role it is handled in: the node's own mail key (buyer), a
 //! seller's order mailbox key (vendor), or the fixture moderator's key.
 //!
+//! Each letter is signed inside its ciphertext by the sender's key for that
+//! escrow and role ([`crate::letter_auth`]). A letter whose signature fails,
+//! whose message id was seen before, or whose sender differs from the one
+//! this escrow is pinned to is dropped before any desk reads it.
+//!
 //! A node never delivers to its own URL: one process would then hold both
 //! per-order keys, which is exactly what the two-party protocol rules out.
 
@@ -15,10 +20,10 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use bitcoin::hex::{DisplayHex, FromHex};
-use tormail::{open_message, seal_message, Mailbox, SealedLetter, StoreKey, StoreSecret};
+use tormail::{open_message, seal_message, Mailbox, Opened, SealedLetter, StoreKey, StoreSecret};
 
 use crate::escrow_buyer::BuyerDesk;
-use crate::escrow_fixture::{moderator_mail_secret, vendor_mail_secret};
+use crate::escrow_fixture::moderator_mail_secret;
 use crate::escrow_moderator::ModeratorDesk;
 use crate::escrow_vendor::VendorDesk;
 use crate::network::NetworkMode;
@@ -224,7 +229,8 @@ impl Node {
         if self.own_url() == Some(url.trim_end_matches('/')) {
             return Err("an escrow peer must be another node, not this one".into());
         }
-        let letter = seal_message(&mail.encode(), to).map_err(|err| err.to_string())?;
+        let from = self.escrow_letter_key(mail.kind, &mail.escrow)?;
+        let letter = seal_message(&mail.encode(), to, &from).map_err(|err| err.to_string())?;
         deliver(url, &letter)
     }
 
@@ -310,38 +316,64 @@ impl Node {
 
     /// Open a letter with the receive tier, then handle it, or defer it
     /// when its step signs with a spend-tier key and the wallet is locked.
-    fn handle_letter(&self, letter: &SealedLetter) -> Result<Handled, String> {
+    /// A deferred letter is not yet admitted, so the replay guard does not
+    /// refuse it when it is read again after the unlock.
+    pub(crate) fn handle_letter(&self, letter: &SealedLetter) -> Result<Handled, String> {
         let unlocked = self.lock.state() == crate::wallet_lock::State::Unlocked;
-        if let Ok(body) = open_message(letter, &self.buyer_mail_secret()) {
-            let mail = Mail::decode(&body)?;
-            if !unlocked && buyer_step_signs(mail.kind) {
-                return Ok(Handled::Deferred);
-            }
-            return self.buyer_mail(mail).map(|()| Handled::Done);
+        let (desk, opened) = self.open_letter(letter)?;
+        let mail = Mail::decode(&opened.body)?;
+        let signs = match desk {
+            Desk::Buyer => buyer_step_signs(mail.kind),
+            // Every vendor round uses the sale's per-order key.
+            Desk::Vendor(_) => true,
+            Desk::Moderator => false,
+        };
+        if signs && !unlocked {
+            return Ok(Handled::Deferred);
+        }
+        self.letter_guard.admit(&opened, &mail.escrow, mail.kind)?;
+        let (escrow, kind) = (mail.escrow, mail.kind);
+        match desk {
+            Desk::Buyer => self.buyer_mail(mail),
+            Desk::Vendor(seller) => self.vendor_mail(&seller, mail),
+            Desk::Moderator => self.moderator_mail(mail),
+        }?;
+        self.letter_guard.pin(&opened, &escrow, kind)?;
+        Ok(Handled::Done)
+    }
+
+    /// Open `letter` with the first of this node's mail keys that fits. A
+    /// letter that opens but fails its signature is refused, not tried again.
+    fn open_letter(&self, letter: &SealedLetter) -> Result<(Desk, Opened<Vec<u8>>), String> {
+        let refuse = |err: tormail::Error| match err {
+            tormail::Error::Unauthenticated => Err(err.to_string()),
+            _ => Ok(()),
+        };
+        match open_message(letter, &self.buyer_mail_secret()) {
+            Ok(opened) => return Ok((Desk::Buyer, opened)),
+            Err(err) => refuse(err)?,
         }
         for seller in self.store_wallets.keys() {
-            let Some(secret) = vendor_mail_secret(seller) else {
+            let Some(secret) = self.seller_mail_secret(seller) else {
                 continue;
             };
-            if let Ok(body) = open_message(letter, &secret) {
-                let mail = Mail::decode(&body)?;
-                // Every vendor round uses the sale's per-order key.
-                if !unlocked {
-                    return Ok(Handled::Deferred);
-                }
-                return self.vendor_mail(seller, mail).map(|()| Handled::Done);
+            match open_message(letter, &secret) {
+                Ok(opened) => return Ok((Desk::Vendor(seller.clone()), opened)),
+                Err(err) => refuse(err)?,
             }
         }
         if self.escrow.config.moderates {
-            if let Ok(body) = open_message(letter, &moderator_mail_secret()) {
-                return self.moderator_mail(Mail::decode(&body)?).map(|()| Handled::Done);
+            match open_message(letter, &moderator_mail_secret()) {
+                Ok(opened) => return Ok((Desk::Moderator, opened)),
+                Err(err) => refuse(err)?,
             }
         }
         Err("no key on this node opens it".into())
     }
 }
 
-enum Handled {
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Handled {
     Done,
     Deferred,
 }
@@ -350,6 +382,12 @@ enum Handled {
 /// funding, and settling a ruling. A release nonce is only stored.
 fn buyer_step_signs(kind: Kind) -> bool {
     matches!(kind, Kind::Offer | Kind::Reply | Kind::Ruling)
+}
+
+enum Desk {
+    Buyer,
+    Vendor(String),
+    Moderator,
 }
 
 #[cfg(test)]

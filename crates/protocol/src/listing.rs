@@ -2,6 +2,7 @@ use bitcoin::secp256k1::SecretKey;
 
 use crate::content::{ContentLabel, ContentRating, ContentTags};
 use crate::encode::{self, Reader, Writer};
+use crate::public_text;
 use crate::sign::{self, SIG_LEN};
 use crate::store::StoreId;
 use crate::Error;
@@ -126,6 +127,7 @@ impl Listing {
             content: Some(content),
             signature: [0u8; SIG_LEN],
         };
+        listing.check_public_text()?;
         let body = listing.encode_body()?;
         let signature = sign::sign(TAG, &body, secret);
         Ok(Self {
@@ -145,8 +147,24 @@ impl Listing {
             content: Some(content),
             ..self.clone()
         };
+        listing.check_public_text()?;
         let signature = sign::sign(TAG, &listing.encode_body()?, secret);
         Ok(Self { signature, ..listing })
+    }
+
+    /// The free-text fields must not carry contact or location data.
+    fn check_public_text(&self) -> Result<(), Error> {
+        public_text::check_region("ship-from", &self.ship_from)?;
+        for (field, text) in [
+            ("title", &self.title),
+            ("category", &self.category),
+            ("description", &self.description),
+            ("seller", &self.seller),
+            ("product", &self.product),
+        ] {
+            public_text::check(field, text)?;
+        }
+        Ok(())
     }
 
     pub fn content_hash(&self) -> Result<ListingHash, Error> {
@@ -251,8 +269,6 @@ impl Listing {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::payment::DirectPay;
-    use crate::store::Store;
 
     fn sample() -> Listing {
         sample_with(ContentLabel::GENERAL)
@@ -260,19 +276,8 @@ mod tests {
 
     fn sample_with(content: ContentLabel) -> Listing {
         let secret = sign::secret_from_label("listing-test");
-        let store = Store::sign(
-            "Marlow Goods",
-            "Oregon",
-            DirectPay {
-                bolt12_offer: "bolt12-offer:fixture".to_string(),
-                silent_payment_code: "bip352-code:fixture".to_string(),
-            },
-            ContentRating::General,
-            &secret,
-        )
-        .unwrap();
         Listing::sign(
-            store.id,
+            StoreId::from_bytes(sign::xonly(&secret)),
             "Paperback novel",
             "Books",
             18_000,
@@ -313,6 +318,46 @@ mod tests {
     /// Offset of the rating byte in an encoded labeled listing.
     fn rating_offset(bytes: &[u8]) -> usize {
         bytes.len() - SIG_LEN - 3
+    }
+
+    #[test]
+    fn signing_refuses_contact_or_location_text() {
+        let secret = sign::secret_from_label("listing-test");
+        let with = |description: &str, seller: &str| {
+            Listing::sign(
+                StoreId::from_bytes(sign::xonly(&secret)),
+                "Paperback novel",
+                "Books",
+                18_000,
+                "Oregon",
+                description,
+                seller,
+                8,
+                20260312,
+                true,
+                ListingKind::Physical,
+                "",
+                800,
+                30_000,
+                ContentLabel::GENERAL,
+                &secret,
+            )
+        };
+        assert!(matches!(
+            with("Local pickup at 221B Baker Street.", "Marlow Goods"),
+            Err(Error::PrivateText { field: "description", .. })
+        ));
+        assert!(matches!(
+            with("A sewn paperback.", "marlow@example.org"),
+            Err(Error::PrivateText { field: "seller", .. })
+        ));
+        let listing = with("A sewn paperback.", "Marlow Goods").unwrap();
+        let mut leaky = listing.clone();
+        leaky.description = "Text 503-555-0142 to haggle.".into();
+        assert!(matches!(
+            leaky.relabel(adult(), &secret),
+            Err(Error::PrivateText { field: "description", .. })
+        ));
     }
 
     #[test]
@@ -458,19 +503,8 @@ mod tests {
     fn wrong_store_key_cannot_sign() {
         let secret = sign::secret_from_label("listing-test");
         let other = sign::secret_from_label("someone-else");
-        let store = Store::sign(
-            "Marlow Goods",
-            "Oregon",
-            DirectPay {
-                bolt12_offer: "bolt12-offer:fixture".to_string(),
-                silent_payment_code: "bip352-code:fixture".to_string(),
-            },
-            ContentRating::General,
-            &secret,
-        )
-        .unwrap();
         let result = Listing::sign(
-            store.id,
+            StoreId::from_bytes(sign::xonly(&secret)),
             "Paperback novel",
             "Books",
             18_000,

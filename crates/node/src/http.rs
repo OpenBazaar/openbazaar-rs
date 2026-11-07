@@ -20,7 +20,7 @@ use crate::escrow_http::{self, Action};
 use crate::lock_http::{self, Route};
 use crate::http_guard::{check_origin, host_allowed, secret_eq, OriginCheck, DEFAULT_SHOP_ORIGIN};
 use crate::http_parse::{self, header, Request};
-use crate::{find_listing, labelers, listing_value, mail_drop, pairing, vendor_labels, wallet_http, Node, OrderError};
+use crate::{find_listing, labelers, listing_value, mail_drop, media, pairing, stores, vendor_labels, wallet_http, Node, OrderError};
 
 const PAIR_HEADER: &str = "X-Ob-Pair";
 /// Every response: never cached, never sniffed or framed, no referrer, and
@@ -37,7 +37,7 @@ pub fn http_response(status: &str, content_type: &str, body: &[u8]) -> Vec<u8> {
     http_response_cors(status, content_type, body, Some(DEFAULT_SHOP_ORIGIN))
 }
 
-fn http_response_cors(
+pub(crate) fn http_response_cors(
     status: &str,
     content_type: &str,
     body: &[u8],
@@ -71,6 +71,7 @@ pub fn serve_on(node: &Node, listener: TcpListener) -> std::io::Result<()> {
     eprintln!("ob-node network at http://127.0.0.1:{port}/network");
     eprintln!("ob-node wallet at http://127.0.0.1:{port}/wallet");
     eprintln!("ob-node content labels at http://127.0.0.1:{port}/content-labels");
+    eprintln!("ob-node stores at http://127.0.0.1:{port}/stores");
     eprintln!("ob-node labelers at http://127.0.0.1:{port}/labelers");
     eprintln!("ob-node mailbox {}", node.mailbox_path().display());
     for connection in listener.incoming() {
@@ -212,6 +213,13 @@ fn route(node: &Node, request: &Request<'_>, client: Client, origin: Option<&str
         ("POST", "/orders") => order_response(node, head, body, origin),
         ("POST", "/checkout") => checkout_response(node, client, head, body, origin),
         ("GET", "/labelers") | ("PUT", "/labelers") => labelers::response(node, client, head, method, body, origin),
+        ("GET", "/stores") => stores::list_response(node, client, head, origin),
+        ("GET", path) if path.starts_with("/stores/") => {
+            stores::detail_response(node, client, head, &path["/stores/".len()..], origin)
+        }
+        ("GET", path) if path.starts_with("/media/") => {
+            media::response(node, client, head, &path["/media/".len()..], origin)
+        }
         ("POST", "/content-labels") => vendor_labels::response(node, client, head, body, origin),
         _ => http_response_cors("404 Not Found", "text/plain", b"not found", origin),
     }

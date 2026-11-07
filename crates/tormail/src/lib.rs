@@ -1,7 +1,8 @@
 //! Tor order mailbox for OpenBazaar.
 //!
 //! A listing is public and replicated. An order is a private letter to one
-//! vendor. [`seal_order`] encrypts it to that vendor's store key. An
+//! vendor. [`seal_order`] signs it with a per-order [`SenderKey`], pads it
+//! to a size bucket, and encrypts it to that vendor's mailbox key. An
 //! [`OrderTransport`] carries the ciphertext to the vendor's v3 onion
 //! address. No public relay stores "this key wrote to that key."
 //!
@@ -26,22 +27,28 @@
 #![forbid(unsafe_code)]
 
 mod error;
+mod guard;
+pub mod letter;
 mod listen;
 mod mailbox;
 mod onion;
 mod order;
+pub mod reply;
 mod seal;
 mod transport;
 
 pub use error::Error;
 pub use listen::{start_onion_listener, OnionListener};
+pub use guard::{ReplayGuard, SenderPins};
+pub use letter::{MessageId, Opened, SenderId, SenderKey};
 pub use mailbox::{LetterId, Mailbox};
 pub use onion::{HsIdParseError, OnionAddress, ORDER_PORT};
 pub use order::{ListingHash, Order, PaymentRail};
+pub use reply::{DropId, ReplyDelivery, ReplyPath};
 pub use seal::{
     open_message, open_order, open_reply, seal_message, seal_order, seal_reply, ReplyKeypair,
     ReplyPublic, ReplySecret, SealedLetter, SealedReply, StoreKey, StoreKeypair, StoreSecret,
-    MAX_MESSAGE_LEN,
+    LETTER_BUCKETS, MAX_MESSAGE_LEN, MAX_REPLY_LEN, REPLY_BUCKETS,
 };
 pub use transport::{ArtiOrderTransport, MemoryTransport, OrderTransport};
 

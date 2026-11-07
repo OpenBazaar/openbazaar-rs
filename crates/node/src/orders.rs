@@ -11,11 +11,9 @@ use std::fmt;
 use rand::rngs::StdRng;
 use rand::{RngCore, SeedableRng};
 
-use openbazaar_protocol::{vendor_mail_key, Catalog, Listing, ListingKind};
+use openbazaar_protocol::{Catalog, Listing, ListingKind};
 use serde_json::{json, Value};
-use tormail::{
-    seal_order, ListingHash, Order, PaymentRail, ReplyKeypair, SealedLetter, StoreKey, StoreSecret,
-};
+use tormail::{seal_order, ListingHash, Order, PaymentRail, ReplyPath, SealedLetter};
 
 use crate::buyer_orders::{now_secs, BuyerOrder};
 use crate::{accepts_moderator, find_listing, Node};
@@ -119,8 +117,8 @@ impl Node {
             .ok_or(OrderError::Invalid("Enter a quantity of at most 99."))?;
         let sealed_lines = line_values(&lines)?;
         let (listing, quantity) = &lines[0];
-        let letter_id = self.seal_package(&lines, settlement, &ship_text, &note, shipping)?;
         let checkout_id = random_id();
+        let letter_id = self.seal_package(&catalog, &checkout_id, &lines, settlement, &ship_text, &note, shipping)?;
         let mut response = json!({
             "orderId": letter_id,
             "letterId": letter_id,
@@ -134,7 +132,7 @@ impl Node {
             "totalSats": total,
             "settlement": settlement.as_str(),
             "sealed": true,
-            "storeName": catalog.store.name,
+            "storeName": catalog.store_of(listing).map_or(seller.as_str(), |store| store.name.as_str()),
             "seller": seller,
             "storeId": listing.store_id.to_hex(),
             "addressLabel": address_label,
@@ -209,21 +207,20 @@ impl Node {
         } else {
             String::new()
         };
+        let checkout_id = random_id();
         let mut sealed = Vec::with_capacity(packages.len());
         for package in &packages {
-            let seller = package.lines[0].0.seller.clone();
-            let vendor = vendor_key(&seller)?;
-            let letter = seal_letter(
+            let letter = self.seal_letter(
+                &catalog,
+                &checkout_id,
                 &package.lines,
                 package.settlement,
                 letter_ship(&package.lines, &ship_text, &note),
                 package.shipping,
                 &note,
-                &vendor,
             )?;
             sealed.push(letter);
         }
-        let checkout_id = random_id();
         let created = now_secs();
         let mut orders = Vec::with_capacity(packages.len());
         let mut items_total = 0u64;
@@ -304,17 +301,19 @@ impl Node {
         }))
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn seal_package(
         &self,
+        catalog: &Catalog,
+        checkout_id: &str,
         lines: &[(&Listing, u32)],
         settlement: Settlement,
         ship_text: &str,
         note: &str,
         shipping: u64,
     ) -> Result<String, OrderError> {
-        let seller = &lines[0].0.seller;
-        let vendor = vendor_key(seller)?;
-        let letter = seal_letter(lines, settlement, letter_ship(lines, ship_text, note), shipping, note, &vendor)?;
+        let ship_to = letter_ship(lines, ship_text, note);
+        let letter = self.seal_letter(catalog, checkout_id, lines, settlement, ship_to, shipping, note)?;
         let id = self
             .mailbox
             .accept(&letter)
@@ -551,14 +550,26 @@ fn letter_ship(lines: &[(&Listing, u32)], ship_text: &str, note: &str) -> String
     }
 }
 
+impl Node {
+/// Seal one seller's order to the mailbox key in that store's signed
+/// record, signed by this order's own letter key, with a reply key and drop
+/// id derived for this order alone.
+#[allow(clippy::too_many_arguments)]
 fn seal_letter(
+    &self,
+    catalog: &Catalog,
+    checkout_id: &str,
     lines: &[(&Listing, u32)],
     settlement: Settlement,
     ship_to: String,
     shipping: u64,
     note: &str,
-    vendor: &StoreKey,
 ) -> Result<SealedLetter, OrderError> {
+    let store = catalog
+        .store_of(lines[0].0)
+        .ok_or(OrderError::Invalid("That seller has no store record."))?;
+    let vendor = crate::stores::mailbox_key(store).map_err(OrderError::Failed)?;
+    let store_key = *store.id.as_bytes();
     let mut options = BTreeMap::new();
     options.insert("settlement".to_string(), settlement.as_str().to_string());
     options.insert("shipping".to_string(), shipping.to_string());
@@ -578,7 +589,11 @@ fn seal_letter(
             .to_hex();
         options.insert(hash, quantity.to_string());
     }
-    let reply = ReplyKeypair::generate();
+    let not_ready = |detail: String| match self.lock.state() {
+        crate::wallet_lock::State::Unlocked => OrderError::Failed(detail),
+        state => OrderError::Locked(state.as_str()),
+    };
+    let (reply, drop) = self.order_reply_secret(checkout_id, &store_key).map_err(not_ready)?;
     let rail = match settlement {
         Settlement::Direct => PaymentRail::Lightning,
         Settlement::Escrow => PaymentRail::OnChain,
@@ -589,18 +604,12 @@ fn seal_letter(
         options,
         ship_to,
         rail,
-        *reply.public_key(),
+        ReplyPath::sealed_only(reply.public_key(), drop),
     )
     .map_err(|err| OrderError::Failed(err.to_string()))?;
-    seal_order(&order, vendor).map_err(|err| OrderError::Failed(err.to_string()))
+    let from = self.order_letter_key(checkout_id, &store_key).map_err(not_ready)?;
+    seal_order(&order, &vendor, &from).map_err(|err| OrderError::Failed(err.to_string()))
 }
-
-fn vendor_key(seller: &str) -> Result<StoreKey, OrderError> {
-    let secret = vendor_mail_key(seller)
-        .ok_or(OrderError::Invalid("That seller has no mailbox key."))?;
-    let secret = StoreSecret::from_bytes(secret.secret_bytes())
-        .map_err(|err| OrderError::Failed(err.to_string()))?;
-    Ok(secret.public_key())
 }
 
 fn random_id() -> String {

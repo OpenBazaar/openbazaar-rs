@@ -20,6 +20,18 @@ pub enum Error {
     #[error("letter could not be opened")]
     Seal,
 
+    /// The letter opened but its sender signature did not verify.
+    #[error("letter is not signed by its sender key")]
+    Unauthenticated,
+
+    /// A letter with this message id was already accepted.
+    #[error("letter was already received")]
+    Replay,
+
+    /// The letter is signed by a different key than earlier letters in its conversation.
+    #[error("letter is from a different sender than this conversation")]
+    WrongSender,
+
     /// `take` was asked for an id the mailbox does not have.
     #[error("no letter with that id")]
     Missing,

@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use openbazaar_pay::{Bolt12Offer, SilentPaymentCode};
-use openbazaar_protocol::{fixture_keys, vendor_mail_key};
+use openbazaar_protocol::fixture_store_keys;
 use serde_json::{json, Value};
 use tormail::{open_order, SealedLetter, StoreSecret};
 
@@ -71,8 +71,12 @@ fn open_stored(node: &Node, letter_id: &str) -> tormail::Order {
     let path = node.mailbox_path().join(format!("{letter_id}.letter"));
     let bytes = fs::read(&path).unwrap();
     let letter = SealedLetter::from_bytes(&bytes).unwrap();
-    let secret = StoreSecret::from_bytes(fixture_keys().store.secret_bytes()).unwrap();
-    open_order(&letter, &secret).unwrap()
+    let names: Vec<String> = node.catalog().stores.iter().map(|store| store.name.clone()).collect();
+    names
+        .iter()
+        .find_map(|name| open_order(&letter, &node.seller_mail_secret(name)?).ok())
+        .expect("a demo store's mailbox key opens the letter")
+        .body
 }
 
 #[test]
@@ -611,7 +615,7 @@ fn checkout_post(node: &Node, json_body: &str) -> Vec<u8> {
 }
 
 fn seller_secret(seller: &str) -> StoreSecret {
-    StoreSecret::from_bytes(vendor_mail_key(seller).unwrap().secret_bytes()).unwrap()
+    StoreSecret::from_bytes(fixture_store_keys(seller).unwrap().mailbox).unwrap()
 }
 
 fn opened_hashes(order: &tormail::Order) -> Vec<String> {
@@ -682,7 +686,7 @@ fn multi_seller_checkout_seals_one_letter_per_vendor() {
             }
             assert!(open_order(&letter, &seller_secret(other)).is_err(), "{seller} opened by {other}");
         }
-        let opened = open_order(&letter, &seller_secret(seller)).unwrap();
+        let opened = open_order(&letter, &seller_secret(seller)).unwrap().body;
         assert!(opened.ship_to.contains("14 Larch Lane"));
         assert!(!opened.ship_to.contains(checkout_id));
         let expected_shipping = order["shippingSats"].as_u64().unwrap().to_string();

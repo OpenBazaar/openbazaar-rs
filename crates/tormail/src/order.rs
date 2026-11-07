@@ -1,16 +1,20 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
+use crate::onion::OnionAddress;
+use crate::reply::{DropId, ReplyPath};
 use crate::seal::ReplyPublic;
 use crate::Error;
 
 const MAGIC: &[u8; 4] = b"OBOD";
-const VERSION: u8 = 1;
+/// Version 1 carried only a reply key. Version 2 carries a [`ReplyPath`].
+const VERSION: u8 = 2;
 const MAX_QUANTITY: u32 = 1_000_000;
 const MAX_OPTIONS: usize = 16;
 const MAX_OPTION_NAME: usize = 64;
 const MAX_OPTION_VALUE: usize = 256;
 const MAX_SHIP_TO: usize = 1024;
+const MAX_ONION: usize = 62;
 
 /// Hash of the public listing the buyer is ordering.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -70,8 +74,8 @@ pub struct Order {
     pub options: BTreeMap<String, String>,
     pub ship_to: String,
     pub rail: PaymentRail,
-    /// Ephemeral X25519 key the vendor uses to answer this buyer directly.
-    pub reply_key: ReplyPublic,
+    /// Per-order reply key, reply onion, and drop id. See [`crate::reply`].
+    pub reply: ReplyPath,
 }
 
 impl Order {
@@ -82,7 +86,7 @@ impl Order {
         options: BTreeMap<String, String>,
         ship_to: impl Into<String>,
         rail: PaymentRail,
-        reply_key: ReplyPublic,
+        reply: ReplyPath,
     ) -> Result<Self, Error> {
         let order = Self {
             listing_hash,
@@ -90,7 +94,7 @@ impl Order {
             options,
             ship_to: ship_to.into(),
             rail,
-            reply_key,
+            reply,
         };
         order.check()?;
         Ok(order)
@@ -128,7 +132,9 @@ impl Order {
         }
         push_str(&mut out, &self.ship_to);
         out.push(self.rail.as_byte());
-        out.extend_from_slice(self.reply_key.as_bytes());
+        out.extend_from_slice(self.reply.key.as_bytes());
+        push_str(&mut out, self.reply.onion.as_ref().map_or("", OnionAddress::as_str));
+        out.extend_from_slice(&self.reply.drop.0);
         out
     }
 
@@ -160,11 +166,14 @@ impl Order {
         }
         let ship_to = cursor.string(MAX_SHIP_TO)?;
         let rail = PaymentRail::from_byte(cursor.u8()?)?;
-        let reply_key = ReplyPublic::from_bytes(cursor.array()?)?;
+        let key = ReplyPublic::from_bytes(cursor.array()?)?;
+        let onion = cursor.string(MAX_ONION)?;
+        let onion = if onion.is_empty() { None } else { Some(OnionAddress::parse(&onion)?) };
+        let drop = DropId(cursor.array()?);
         if !cursor.is_empty() {
             return Err(Error::Malformed);
         }
-        Self::new(listing_hash, quantity, options, ship_to, rail, reply_key)
+        Self::new(listing_hash, quantity, options, ship_to, rail, ReplyPath { key, onion, drop })
     }
 }
 
@@ -177,7 +186,7 @@ impl fmt::Debug for Order {
             .field("options", &self.options)
             .field("ship_to", &"(sealed from logs)")
             .field("rail", &self.rail)
-            .field("reply_key", &self.reply_key)
+            .field("reply", &self.reply)
             .finish()
     }
 }

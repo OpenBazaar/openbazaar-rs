@@ -2,12 +2,18 @@
 //!
 //! | tier    | file in `wallets/<name>/`        | sealed with            | holds |
 //! |---------|----------------------------------|------------------------|-------|
-//! | receive | `watch.obv`                      | vault key (keystore)   | public spend descriptors (BIP 86 xpubs), escrow mail key, silent payment code, store signing public key |
+//! | receive | `watch.obv`                      | vault key (keystore)   | public spend descriptors (BIP 86 xpubs), escrow mail key, store mailbox key, letter root, silent payment code, store signing public key |
 //! | spend   | `spend.obv`                      | spend key (`wallet.lock`, Argon2id) | the BIP 39 phrase: spend xprv, escrow keys, store signing, BIP 352 spend |
 //!
 //! The receive tier is open whenever the node runs, so a locked node still
-//! watches the chain, hands out fresh addresses, reports balances, and opens
-//! escrow mail. Nothing in it can sign a transaction or an escrow step.
+//! watches the chain, hands out fresh addresses, reports balances, opens
+//! escrow mail and orders sealed to its store's mailbox key, and signs
+//! letters with per-conversation keys from the letter root. Nothing in it
+//! can sign a transaction, an escrow step, or a store record.
+//!
+//! A `watch.obv` written before the store mailbox key and letter root were
+//! added lacks both; they are derived from `seed.obv` while that exists, or
+//! at the next unlock ([`upgrade_watch`]).
 //!
 //! A data dir from before the lock keeps the phrase in `seed.obv` under the
 //! vault key. That file stays until a passphrase is set; then the phrase is
@@ -39,11 +45,37 @@ pub(crate) struct WatchKeys {
     pub internal: String,
     /// Opens escrow mail sent to this wallet as buyer.
     pub mail_key: Zeroizing<[u8; 32]>,
+    /// X25519 secret of the mailbox key in this wallet's store record.
+    /// `None` until a `watch.obv` from before it existed is upgraded.
+    pub store_mailbox_key: Option<Zeroizing<[u8; 32]>>,
+    /// Root of the per-conversation letter keys. `None` like `store_mailbox_key`.
+    pub letter_root: Option<Zeroizing<[u8; 32]>>,
     pub silent_payment_code: String,
     pub store_signing_pubkey: PublicKey,
 }
 
+const UPGRADE_NEEDED: &str = "Unlock the wallet once to finish upgrading this node's mail keys.";
+
+fn hex32(text: &str) -> Option<Zeroizing<[u8; 32]>> {
+    let mut out = Zeroizing::new([0u8; 32]);
+    if text.len() != 64 {
+        return None;
+    }
+    for (index, byte) in out.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(text.get(index * 2..index * 2 + 2)?, 16).ok()?;
+    }
+    Some(out)
+}
+
 impl WatchKeys {
+    pub(crate) fn store_mailbox_key(&self) -> Result<&[u8; 32], String> {
+        self.store_mailbox_key.as_deref().ok_or_else(|| UPGRADE_NEEDED.to_string())
+    }
+
+    pub(crate) fn letter_root(&self) -> Result<&[u8; 32], String> {
+        self.letter_root.as_deref().ok_or_else(|| UPGRADE_NEEDED.to_string())
+    }
+
     fn from_seed(seed: &Seed, network: NetworkMode) -> Result<Self, Error> {
         let secp = Secp256k1::new();
         let (external, internal) = seed.wallet_descriptors();
@@ -59,13 +91,15 @@ impl WatchKeys {
             external: public(external)?,
             internal: public(internal)?,
             mail_key: Zeroizing::new(seed.mail_key().secret_bytes()),
+            store_mailbox_key: Some(Zeroizing::new(seed.store_mailbox_secret())),
+            letter_root: Some(Zeroizing::new(seed.letter_root())),
             silent_payment_code: code.to_string(),
             store_signing_pubkey: PublicKey::from_secret_key(&secp, &seed.store_signing_key()),
         })
     }
 
     fn encode(&self) -> Vec<u8> {
-        let value = json!({
+        let mut value = json!({
             "version": 1,
             "external": self.external,
             "internal": self.internal,
@@ -73,6 +107,12 @@ impl WatchKeys {
             "silentPaymentCode": self.silent_payment_code,
             "storeSigningPubkey": self.store_signing_pubkey.to_string(),
         });
+        if let Some(key) = &self.store_mailbox_key {
+            value["storeMailboxKey"] = json!(encode_hex(&key[..]));
+        }
+        if let Some(root) = &self.letter_root {
+            value["letterRoot"] = json!(encode_hex(&root[..]));
+        }
         serde_json::to_vec(&value).expect("watch keys are plain json")
     }
 
@@ -80,18 +120,16 @@ impl WatchKeys {
         let bad = || Error::Detail("watch.obv could not be read".to_string());
         let value: Value = serde_json::from_slice(bytes).map_err(|_| bad())?;
         let text = |key: &str| value.get(key).and_then(Value::as_str).map(str::to_string).ok_or_else(bad);
-        let mail = text("mailKey")?;
-        let mut mail_key = Zeroizing::new([0u8; 32]);
-        if mail.len() != 64 {
-            return Err(bad());
-        }
-        for (index, byte) in mail_key.iter_mut().enumerate() {
-            *byte = u8::from_str_radix(&mail[index * 2..index * 2 + 2], 16).map_err(|_| bad())?;
-        }
+        let optional = |key: &str| match value.get(key).and_then(Value::as_str) {
+            None => Ok(None),
+            Some(text) => hex32(text).map(Some).ok_or_else(bad),
+        };
         Ok(Self {
             external: text("external")?,
             internal: text("internal")?,
-            mail_key,
+            mail_key: hex32(&text("mailKey")?).ok_or_else(bad)?,
+            store_mailbox_key: optional("storeMailboxKey")?,
+            letter_root: optional("letterRoot")?,
             silent_payment_code: text("silentPaymentCode")?,
             store_signing_pubkey: text("storeSigningPubkey")?.parse().map_err(|_| bad())?,
         })
@@ -104,7 +142,12 @@ impl WatchKeys {
 pub(crate) fn open_watch(dir: &Path, vault: &Vault, network: NetworkMode) -> Result<WatchKeys, Error> {
     let path = dir.join(WATCH_FILE);
     if let Some(bytes) = vault.read_sealed(&path)? {
-        return WatchKeys::decode(&bytes);
+        let mut keys = WatchKeys::decode(&bytes)?;
+        if keys.needs_upgrade() && dir.join(SEED_FILE).exists() {
+            let seed = Seed::load_or_create(&dir.join(SEED_FILE), vault, network)?;
+            upgrade_watch(dir, vault, &mut keys, &seed)?;
+        }
+        return Ok(keys);
     }
     if dir.join(SPEND_FILE).exists() && !dir.join(SEED_FILE).exists() {
         return Err(Error::Detail(format!(
@@ -116,6 +159,32 @@ pub(crate) fn open_watch(dir: &Path, vault: &Vault, network: NetworkMode) -> Res
     let keys = WatchKeys::from_seed(&seed, network)?;
     vault.write_sealed(&path, &keys.encode())?;
     Ok(keys)
+}
+
+impl WatchKeys {
+    pub(crate) fn needs_upgrade(&self) -> bool {
+        self.store_mailbox_key.is_none() || self.letter_root.is_none()
+    }
+}
+
+/// Add the store mailbox key and letter root from `seed` to an older `watch.obv`.
+pub(crate) fn upgrade_watch(dir: &Path, vault: &Vault, keys: &mut WatchKeys, seed: &Seed) -> Result<(), Error> {
+    keys.store_mailbox_key = Some(Zeroizing::new(seed.store_mailbox_secret()));
+    keys.letter_root = Some(Zeroizing::new(seed.letter_root()));
+    vault.write_sealed(&dir.join(WATCH_FILE), &keys.encode())
+}
+
+/// The phrase in the vault tier (`seed.obv`) of a wallet that has not moved
+/// to the spend tier yet: before the first passphrase, or made while locked.
+pub(crate) fn vault_tier_seed(dir: &Path, vault: &Vault, network: NetworkMode) -> Result<Option<Seed>, Error> {
+    match vault.read_sealed(&dir.join(SEED_FILE))?.map(Zeroizing::new) {
+        Some(bytes) => {
+            let phrase = std::str::from_utf8(&bytes)
+                .map_err(|_| Error::Detail("the backup phrase could not be read".to_string()))?;
+            Seed::from_phrase(phrase, network).map(Some)
+        }
+        None => Ok(None),
+    }
 }
 
 /// The phrase from the spend tier.

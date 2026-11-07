@@ -25,15 +25,19 @@ mod http_guard;
 mod http_parse;
 mod instructions;
 mod labelers;
+mod letter_auth;
 mod mail_drop;
+mod media;
 mod network;
 mod orders;
+mod own_store;
 mod pairing;
 mod pay_order;
 mod rates;
 mod lock_http;
 mod seed;
 mod spend_tickets;
+mod stores;
 mod vault;
 mod vault_key;
 mod vendor_labels;
@@ -56,7 +60,11 @@ mod lock_receive_tests;
 #[cfg(test)]
 mod multinode_tests;
 #[cfg(test)]
+mod own_store_tests;
+#[cfg(test)]
 mod payment_tests;
+#[cfg(test)]
+mod stores_tests;
 #[cfg(test)]
 mod surface_tests;
 
@@ -72,12 +80,8 @@ use std::time::Duration;
 use rand::rngs::StdRng;
 use rand::{RngCore, SeedableRng};
 
-use bitcoin::secp256k1::{PublicKey, Secp256k1};
-use bitcoin::Amount;
-use openbazaar_pay::{Bolt12Offer, SilentPaymentCode};
 use openbazaar_protocol::{
-    fixture_catalog, fixture_keys, Catalog, ContentRating, DirectPay, Error as ProtocolError,
-    Listing, Store,
+    fixture_catalog, fixture_keys, fixture_store_keys, Catalog, ContentRating, Error as ProtocolError, Listing, Moderator, StoreId,
 };
 use serde_json::{json, Value};
 use tormail::Mailbox;
@@ -95,6 +99,7 @@ pub use chain_backend::ChainPlan;
 pub use chain_filters::{ChainStore, FilterChain, FilterConfig};
 pub use egress::Egress;
 pub use escrow_fixture::MODERATOR_FEE_SATS;
+pub use media::MAX_MEDIA;
 pub use http::{http_response, serve_on};
 pub use instructions::ESCROW_SPEND_FEE_SATS;
 pub use network::{NetworkMode, ServeOptions, VaultChoice};
@@ -194,6 +199,13 @@ impl std::error::Error for Error {}
 pub struct Node {
     /// Written only by `POST /content-labels`.
     catalog: RwLock<Catalog>,
+    /// This node's own store, signed with the store key from its seed.
+    pub(crate) own_store: StoreId,
+    /// The own store's served record is behind its inputs until the next unlock.
+    pub(crate) own_pending: AtomicBool,
+    pub(crate) data_dir: PathBuf,
+    pub(crate) media: media::Media,
+    pub(crate) letter_guard: letter_auth::LetterGuard,
     pub(crate) vendor_labels: Mutex<VendorLabels>,
     pub(crate) mailbox: Mailbox,
     pub(crate) escrow: escrow_mail::Escrow,
@@ -250,16 +262,38 @@ impl Node {
         check_catalog_network(&catalog, network)?;
         fs::create_dir_all(&dir).map_err(|err| Error::Detail(err.to_string()))?;
         vault_key::check_private(&dir)?;
-        let vendor_labels = VendorLabels::open(&dir, &mut catalog, &fixture_keys().store)?;
+        let vault = Vault::open(&dir, &local.vault)?;
+        let wallets = dir.join("wallets");
+        let buyer_wallet = NodeWallet::open(&wallets, "node", &vault, network)?;
+        let moderators: Vec<[u8; 32]> =
+            (!catalog.moderator.name.is_empty()).then_some(catalog.moderator.id).into_iter().collect();
+        xmr::apply_signed_accepts(&dir, &vault, &mut catalog, network)?;
+        let own = own_store::open(&dir, &vault, &buyer_wallet, network, &moderators)?;
+        let own_store = own.id;
+        catalog.stores.retain(|store| store.id != own_store);
+        catalog.stores.extend(own.record);
+        let own_secret = wallet_keys::vault_tier_seed(&buyer_wallet.dir, &vault, network)?.map(|seed| seed.store_signing_key());
+        let secrets: Vec<_> = catalog
+            .stores
+            .iter()
+            .filter_map(|store| {
+                if store.id == own_store {
+                    own_secret.map(|secret| (store.id, secret))
+                } else {
+                    fixture_secret(store, network).map(|secret| (store.id, secret))
+                }
+            })
+            .collect();
+        let vendor_labels = VendorLabels::open(&dir, &mut catalog, &secrets)?;
+        if let Some(record) = catalog.store(&own_store) {
+            own_store::write_cached(&dir, &vault, record)?;
+        }
         let mailbox = Mailbox::open(dir.join("mailbox")).map_err(|err| Error::Detail(err.to_string()))?;
         let escrow_inbox = Mailbox::open(dir.join("escrow-mail")).map_err(|err| Error::Detail(err.to_string()))?;
         let (pairing_token, pairing_fresh) = load_pairing(&dir)?;
-        let vault = Vault::open(&dir, &local.vault)?;
         let addresses = AddressBook::open(&dir, vault.clone())?;
         let buyer_orders = BuyerOrders::open(&dir, vault.clone(), network.as_str())?;
         let labelers = Labelers::open(&dir, vault.clone())?;
-        let wallets = dir.join("wallets");
-        let buyer_wallet = NodeWallet::open(&wallets, "node", &vault, network)?;
         let mut store_wallets = BTreeMap::new();
         for listing in &catalog.listings {
             if store_wallets.contains_key(&listing.seller) {
@@ -280,6 +314,11 @@ impl Node {
             .map_err(Error::Detail)?;
         let node = Self {
             catalog: RwLock::new(catalog),
+            own_store,
+            own_pending: AtomicBool::new(own.pending),
+            data_dir: dir.clone(),
+            media: media::Media::open(dir.join("media"), network)?,
+            letter_guard: letter_auth::LetterGuard::open(&dir)?,
             vendor_labels: Mutex::new(vendor_labels),
             mailbox,
             escrow: escrow_mail::Escrow::new(config.escrow, escrow_inbox),
@@ -394,67 +433,89 @@ pub fn exit_when_stdin_closes() {
     });
 }
 
+/// The catalog this node serves before it adds its own store.
+///
+/// Testnet4: the demo stores and listings, with payment codes for testnet4,
+/// accepting the testnet4 fixture moderator. Mainnet: empty; the demo data
+/// is never served there.
 pub fn load_catalog(network: NetworkMode) -> Result<Catalog, Error> {
-    let mut catalog = fixture_catalog();
-    install_direct_pay(&mut catalog, network)?;
+    let catalog = match network {
+        NetworkMode::Testnet4 => {
+            let mut catalog = fixture_catalog();
+            prepare_fixture_stores(&mut catalog, network)?;
+            catalog
+        }
+        NetworkMode::Mainnet => Catalog {
+            stores: Vec::new(),
+            moderator: Moderator { name: String::new(), id: [0; 32] },
+            listings: Vec::new(),
+        },
+    };
     catalog.verify().map_err(Error::Protocol)?;
     Ok(catalog)
 }
 
-/// Refuse a catalog whose store payment codes belong to another network.
+/// The secret of `store` if it is a demo store, whose key is a public fixture.
+fn demo_secret(store: &openbazaar_protocol::Store) -> Option<bitcoin::secp256k1::SecretKey> {
+    let secret = fixture_store_keys(&store.name)?.store;
+    let id = secret.x_only_public_key(&bitcoin::secp256k1::Secp256k1::new()).0.serialize();
+    (id == *store.id.as_bytes()).then_some(secret)
+}
+
+/// The demo store secret for `store`, on testnet4 only.
+fn fixture_secret(store: &openbazaar_protocol::Store, network: NetworkMode) -> Option<bitcoin::secp256k1::SecretKey> {
+    (network == NetworkMode::Testnet4).then(|| demo_secret(store)).flatten()
+}
+
+/// Refuse a catalog whose store payment codes belong to another network,
+/// or demo stores on mainnet.
 fn check_catalog_network(catalog: &Catalog, network: NetworkMode) -> Result<(), Error> {
-    let pay = &catalog.store.direct_pay;
-    network::offer_for(&pay.bolt12_offer, network).map_err(Error::Detail)?;
-    network::code_for(&pay.silent_payment_code, network).map_err(Error::Detail)?;
+    if network == NetworkMode::Mainnet && catalog.stores.iter().any(|store| demo_secret(store).is_some()) {
+        return Err(Error::Detail("The demo stores are testnet4 data; a mainnet node does not serve them.".into()));
+    }
+    for store in &catalog.stores {
+        let pay = &store.direct_pay;
+        network::offer_for(&pay.bolt12_offer, network).map_err(Error::Detail)?;
+        network::code_for(&pay.silent_payment_code, network).map_err(Error::Detail)?;
+    }
     Ok(())
 }
 
-/// Replace placeholder or other-network payment strings with a BOLT 12 offer
-/// and BIP 352 code for `network`, and re-sign the store.
-fn install_direct_pay(catalog: &mut Catalog, network: NetworkMode) -> Result<(), Error> {
+/// Give each demo store a BOLT 12 offer and BIP 352 code for `network` and
+/// the real escrow moderator id, and sign it again with its own key.
+fn prepare_fixture_stores(catalog: &mut Catalog, network: NetworkMode) -> Result<(), Error> {
     let keys = fixture_keys();
-    let mut offer = catalog.store.direct_pay.bolt12_offer.clone();
-    let mut code = catalog.store.direct_pay.silent_payment_code.clone();
-    let offer_real = network::offer_for(&offer, network).is_ok();
-    let code_real = network::code_for(&code, network).is_ok();
-    if offer_real && code_real {
-        return Ok(());
-    }
-    if !code_real {
-        code = SilentPaymentCode::from_keys(&keys.scan, &keys.spend, network.bitcoin())
-            .map_err(|err| Error::Detail(err.to_string()))?
-            .to_string();
-    }
-    if !offer_real {
-        let secp = Secp256k1::new();
-        let pubkey = PublicKey::from_secret_key(&secp, &keys.store);
-        offer = Bolt12Offer::create(
-            pubkey,
-            Amount::from_sat(18_000),
-            "Marlow Goods",
-            network.bitcoin(),
-        )
+    let record = escrow_fixture::moderator_record(network).map_err(Error::Detail)?;
+    let moderator: [u8; 32] = record.signing_key[1..].try_into().expect("compressed key");
+    catalog.moderator.id = moderator;
+    let code = openbazaar_pay::SilentPaymentCode::from_keys(&keys.scan, &keys.spend, network.bitcoin())
         .map_err(|err| Error::Detail(err.to_string()))?
         .to_string();
+    let secp = bitcoin::secp256k1::Secp256k1::new();
+    for store in &mut catalog.stores {
+        let secret = fixture_store_keys(&store.name)
+            .ok_or_else(|| Error::Detail(format!("{} is not a demo store", store.name)))?
+            .store;
+        let mut next = store.clone();
+        let pubkey = bitcoin::secp256k1::PublicKey::from_secret_key(&secp, &secret);
+        next.direct_pay = stores::direct_pay(pubkey, code.clone(), &store.name, network)?;
+        if let Some(details) = next.details.as_mut() {
+            details.moderators = vec![moderator];
+        }
+        *store = next.resign(&secret).map_err(Error::Protocol)?;
     }
-    catalog.store = Store::sign(
-        catalog.store.name.clone(),
-        catalog.store.region.clone(),
-        DirectPay {
-            bolt12_offer: offer,
-            silent_payment_code: code,
-        },
-        catalog.store.rating.unwrap_or(ContentRating::General),
-        &keys.store,
-    )
-    .map_err(Error::Protocol)?;
     Ok(())
 }
 
+/// A listing takes escrow when it says so and its store's signed record
+/// names the moderator this node uses.
 pub(crate) fn accepts_moderator(catalog: &Catalog, listing: &Listing) -> bool {
     listing.moderated
-        && listing.store_id == catalog.store.id
         && !catalog.moderator.name.is_empty()
+        && catalog
+            .store_of(listing)
+            .and_then(|store| store.details.as_ref())
+            .is_some_and(|details| details.moderators.contains(&catalog.moderator.id))
 }
 
 pub(crate) fn find_listing<'a>(catalog: &'a Catalog, hash: &str) -> Option<&'a Listing> {
@@ -486,11 +547,12 @@ pub(crate) fn listing_value(catalog: &Catalog, listing: &Listing) -> Result<Valu
         "acceptsModerator": accepts_moderator(catalog, listing),
         "contentRating": rating_name(listing.content.map(|label| label.rating)),
         "contentTags": listing.content.map(|label| label.tags.names()).unwrap_or_default(),
+        "record": listing.encode()?.iter().map(|byte| format!("{byte:02x}")).collect::<String>(),
     }))
 }
 
 /// A record signed before labels existed is "unrated", not "general".
-fn rating_name(rating: Option<ContentRating>) -> &'static str {
+pub(crate) fn rating_name(rating: Option<ContentRating>) -> &'static str {
     rating.map_or("unrated", ContentRating::as_str)
 }
 
@@ -499,13 +561,22 @@ pub fn catalog_value(catalog: &Catalog) -> Result<Value, ProtocolError> {
     for listing in &catalog.listings {
         listings.push(listing_value(catalog, listing)?);
     }
+    let mut stores = Vec::with_capacity(catalog.stores.len());
+    for store in &catalog.stores {
+        stores.push(stores::store_summary(catalog, store, None)?);
+    }
+    // `store` is the first store, for clients that predate `stores`.
+    let first = catalog.stores.first().map(|store| {
+        json!({
+            "id": store.id.to_hex(),
+            "name": store.name,
+            "region": store.region,
+            "contentRating": rating_name(store.rating),
+        })
+    });
     Ok(json!({
-        "store": {
-            "id": catalog.store.id.to_hex(),
-            "name": catalog.store.name,
-            "region": catalog.store.region,
-            "contentRating": rating_name(catalog.store.rating),
-        },
+        "store": first,
+        "stores": stores,
         "moderator": {
             "name": catalog.moderator.name,
             "id": catalog.moderator.id_hex(),
@@ -598,41 +669,40 @@ mod tests {
     use std::path::PathBuf;
 
     #[test]
-    fn fixture_catalog_verifies() {
-        let catalog = load_catalog(NetworkMode::Mainnet).unwrap();
-        assert_eq!(catalog.store.name, "Marlow Goods");
+    fn testnet4_serves_three_demo_stores_each_signing_its_own_listings() {
+        use openbazaar_pay::{Bolt12Offer, SilentPaymentCode};
+        let catalog = load_catalog(NetworkMode::Testnet4).unwrap();
+        let names: Vec<&str> = catalog.stores.iter().map(|store| store.name.as_str()).collect();
+        assert_eq!(names, ["Marlow Goods", "Hale Paper", "North Kitchen"]);
         assert_eq!(catalog.moderator.name, "June Pell");
-        assert!(catalog
-            .listings
-            .iter()
-            .any(|listing| listing.kind.as_str() == "physical"));
-        assert!(catalog
-            .listings
-            .iter()
-            .any(|listing| listing.kind.as_str() == "digital"));
-        assert!(catalog.store.direct_pay.bolt12_offer.starts_with("lno1"));
-        assert!(catalog
-            .store
-            .direct_pay
-            .silent_payment_code
-            .starts_with("sp1"));
-        assert!(Bolt12Offer::parse(&catalog.store.direct_pay.bolt12_offer).is_ok());
-        assert!(SilentPaymentCode::parse(&catalog.store.direct_pay.silent_payment_code).is_ok());
+        let record = escrow_fixture::moderator_record(NetworkMode::Testnet4).unwrap();
+        assert_eq!(catalog.moderator.id[..], record.signing_key[1..]);
+        for store in &catalog.stores {
+            store.verify().unwrap();
+            assert_eq!(store.version(), 3);
+            assert_eq!(store.details.as_ref().unwrap().moderators, [catalog.moderator.id]);
+            assert!(network::offer_for(&store.direct_pay.bolt12_offer, NetworkMode::Testnet4).is_ok());
+            assert!(network::offer_for(&store.direct_pay.bolt12_offer, NetworkMode::Mainnet).is_err());
+            assert!(store.direct_pay.silent_payment_code.starts_with("tsp1"));
+            assert!(Bolt12Offer::parse(&store.direct_pay.bolt12_offer).is_ok());
+            assert!(SilentPaymentCode::parse(&store.direct_pay.silent_payment_code).is_ok());
+            let own = catalog.listings.iter().filter(|listing| listing.store_id == store.id);
+            assert!(own.clone().count() > 0, "{}", store.name);
+            assert!(own.clone().all(|listing| listing.seller == store.name));
+        }
+        assert!(catalog.listings.iter().any(|listing| listing.kind.as_str() == "physical"));
+        assert!(catalog.listings.iter().any(|listing| listing.kind.as_str() == "digital"));
+        assert!(catalog.listings.iter().all(|listing| accepts_moderator(&catalog, listing) == listing.moderated));
     }
 
     #[test]
-    fn store_payment_codes_are_regenerated_for_each_network() {
-        let test = load_catalog(NetworkMode::Testnet4).unwrap();
+    fn mainnet_serves_no_demo_data() {
         let main = load_catalog(NetworkMode::Mainnet).unwrap();
-        assert!(test.store.direct_pay.silent_payment_code.starts_with("tsp1"));
-        assert!(main.store.direct_pay.silent_payment_code.starts_with("sp1"));
-        assert!(network::offer_for(&test.store.direct_pay.bolt12_offer, NetworkMode::Testnet4).is_ok());
-        assert!(network::offer_for(&test.store.direct_pay.bolt12_offer, NetworkMode::Mainnet).is_err());
-        assert!(network::code_for(&main.store.direct_pay.silent_payment_code, NetworkMode::Testnet4).is_err());
-        assert_eq!(test.store.id, main.store.id);
-        assert_eq!(catalog_value(&test).unwrap(), catalog_value(&main).unwrap());
-        assert!(check_catalog_network(&main, NetworkMode::Testnet4).is_err());
+        assert!(main.stores.is_empty() && main.listings.is_empty());
+        assert!(main.moderator.name.is_empty());
+        let test = load_catalog(NetworkMode::Testnet4).unwrap();
         assert!(check_catalog_network(&test, NetworkMode::Mainnet).is_err());
+        assert!(check_catalog_network(&test, NetworkMode::Testnet4).is_ok());
     }
 
     #[test]

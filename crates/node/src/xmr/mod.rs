@@ -15,9 +15,11 @@
 //! while that exists, or at the first unlock.
 //!
 //! Monero is off until `ob-node serve --xmr-daemon URL` (no default node, no
-//! light-wallet server). Stores opt in one by one (`PUT /xmr/stores`). The
-//! choice is kept on this node only: the signed store record does not carry
-//! it yet (store record v3 is where it will go). Escrow is Bitcoin-only.
+//! light-wallet server). Stores opt in one by one (`PUT /xmr/stores`), which
+//! signs the store's v3 record again with `acceptsXmr` set. Checkout and the
+//! catalog read the flag from the signed record only. `xmr-stores.obv` keeps
+//! the choice for the demo stores, whose records are rebuilt from fixtures at
+//! every boot. Escrow is Bitcoin-only.
 
 mod checkout;
 mod http;
@@ -32,6 +34,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
 
+use bitcoin::secp256k1::SecretKey;
+use openbazaar_protocol::{Catalog, Store};
 use openbazaar_xmr::{BackendStatus, SpendKey, ViewKeys, XmrChain, XmrNetwork, XmrWallet};
 use serde_json::{json, Value};
 
@@ -134,13 +138,7 @@ impl XmrNode {
             stores.insert(seller.clone(), Mutex::new(Slot::open(&wallets.join(name), vault, network)?));
         }
         let accepts_path = dir.join(STORES_FILE);
-        let accepts = match vault.read_sealed(&accepts_path)? {
-            Some(bytes) => serde_json::from_slice::<Vec<String>>(&bytes)
-                .map_err(|_| Error::Detail(format!("{STORES_FILE} could not be read")))?
-                .into_iter()
-                .collect(),
-            None => BTreeSet::new(),
-        };
+        let accepts = read_accepts(&accepts_path, vault)?;
         Ok(Self {
             network,
             vault: vault.clone(),
@@ -170,15 +168,8 @@ impl XmrNode {
         self.stores.get(seller).map(guard)
     }
 
-    pub(crate) fn accepts(&self, seller: &str) -> bool {
-        guard(&self.accepts).contains(seller)
-    }
-
-    /// Opt a store in or out. Only stores whose wallets this node holds.
-    pub(crate) fn set_accepts(&self, seller: &str, accept: bool) -> Result<(), String> {
-        if !self.stores.contains_key(seller) {
-            return Err("That seller has no wallet on this node.".into());
-        }
+    /// Remember a demo store's choice for the next boot.
+    fn save_accepts(&self, seller: &str, accept: bool) -> Result<(), String> {
         let mut accepts = guard(&self.accepts);
         if accept {
             accepts.insert(seller.to_string());
@@ -189,15 +180,96 @@ impl XmrNode {
         let bytes = serde_json::to_vec(&list).map_err(|err| err.to_string())?;
         self.vault.write_sealed(&self.accepts_path, &bytes).map_err(|err| err.to_string())
     }
+}
 
-    pub(crate) fn stores_value(&self) -> Value {
-        let accepts = guard(&self.accepts);
+fn read_accepts(path: &Path, vault: &Vault) -> Result<BTreeSet<String>, Error> {
+    match vault.read_sealed(path)? {
+        Some(bytes) => Ok(serde_json::from_slice::<Vec<String>>(&bytes)
+            .map_err(|_| Error::Detail(format!("{STORES_FILE} could not be read")))?
+            .into_iter()
+            .collect()),
+        None => Ok(BTreeSet::new()),
+    }
+}
+
+/// Sign each demo store that opted in to Monero again with `acceptsXmr`.
+pub(crate) fn apply_signed_accepts(dir: &Path, vault: &Vault, catalog: &mut Catalog, network: NetworkMode) -> Result<(), Error> {
+    let accepts = read_accepts(&dir.join(STORES_FILE), vault)?;
+    for store in &mut catalog.stores {
+        if !accepts.contains(&store.name) {
+            continue;
+        }
+        let Some(secret) = crate::fixture_secret(store, network) else { continue };
+        *store = with_xmr(store, true, &secret).map_err(Error::Protocol)?;
+    }
+    Ok(())
+}
+
+/// `store` signed again with `accept` as its Monero flag.
+fn with_xmr(store: &Store, accept: bool, secret: &SecretKey) -> Result<Store, openbazaar_protocol::Error> {
+    let mut next = store.clone();
+    if let Some(details) = next.details.as_mut() {
+        details.accepts_xmr = accept;
+    }
+    next.resign(secret)
+}
+
+/// Why a store's Monero choice could not change.
+pub(crate) enum AcceptError {
+    Unknown(String),
+    Locked,
+    Failed(String),
+}
+
+impl Node {
+    /// What the store named `seller` signed about Monero.
+    pub(crate) fn accepts_xmr(&self, seller: &str) -> bool {
+        self.catalog()
+            .stores
+            .iter()
+            .find(|store| store.name == seller)
+            .and_then(|store| store.details.as_ref())
+            .is_some_and(|details| details.accepts_xmr)
+    }
+
+    /// Opt a store in or out by signing its record again. Only stores whose
+    /// Monero wallets this node holds; the own store's key needs an unlock.
+    pub(crate) fn set_accepts_xmr(&self, seller: &str, accept: bool) -> Result<(), AcceptError> {
+        if !self.xmr.stores.contains_key(seller) {
+            return Err(AcceptError::Unknown("That seller has no wallet on this node.".into()));
+        }
+        let store = self.seller_store(seller).map_err(AcceptError::Unknown)?;
+        if store.details.is_none() {
+            return Err(AcceptError::Unknown("That store's record cannot carry a Monero choice.".into()));
+        }
+        let secret = match self.store_secret(&store.id) {
+            Some(secret) => secret,
+            None if store.id == self.own_store => return Err(AcceptError::Locked),
+            None => return Err(AcceptError::Unknown("This node does not hold that store's key.".into())),
+        };
+        if store.id == self.own_store {
+            let rating = store.rating.unwrap_or(openbazaar_protocol::ContentRating::General);
+            return self.publish_own(rating, accept, &secret).map_err(|err| AcceptError::Failed(err.to_string()));
+        }
+        let signed = with_xmr(&store, accept, &secret).map_err(|err| AcceptError::Failed(err.to_string()))?;
+        self.xmr.save_accepts(seller, accept).map_err(AcceptError::Failed)?;
+        let mut catalog = self.catalog_mut();
+        if let Some(old) = catalog.stores.iter_mut().find(|old| old.id == signed.id) {
+            *old = signed;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn xmr_stores_value(&self) -> Value {
         json!({
-            "network": self.xmr_network().as_str(),
-            "enabled": self.chain().is_some(),
-            "stores": self.stores.keys().map(|seller| json!({ "seller": seller, "acceptsXmr": accepts.contains(seller) })).collect::<Vec<_>>(),
+            "network": self.xmr.xmr_network().as_str(),
+            "enabled": self.xmr.chain().is_some(),
+            "stores": self.xmr.stores.keys().map(|seller| json!({ "seller": seller, "acceptsXmr": self.accepts_xmr(seller) })).collect::<Vec<_>>(),
         })
     }
+}
+
+impl XmrNode {
 
     pub(crate) fn backend_value(&self) -> Value {
         let status = match self.chain() {

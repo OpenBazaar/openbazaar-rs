@@ -18,7 +18,6 @@ use openbazaar_escrow::{
     BuyerOpen, BuyerSignatures, EscrowTerms, ReleaseNonce, ReleaseSignature, SignedTerms,
     VendorAwaitingSignatures, VendorEscrow, VendorSession,
 };
-use openbazaar_protocol::vendor_mail_key;
 use serde_json::{json, Value};
 use tormail::StoreKey;
 
@@ -177,7 +176,7 @@ impl Node {
             .validate_at_tip(&ctx.policy, ctx.tip)
             .map_err(failed)?;
         let vendor_signature = terms.sign(&secret.secret_bytes()).map_err(failed)?;
-        let store = vendor_mail_key(seller).ok_or("that seller has no store key")?;
+        let store = self.seller_store_secret(seller)?;
         let secp = Secp256k1::new();
         let store_signature = secp
             .sign_schnorr_no_aux_rand(
