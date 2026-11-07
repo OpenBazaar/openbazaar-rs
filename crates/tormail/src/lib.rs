@@ -48,7 +48,7 @@ pub use guard::{ReplayGuard, SenderPins};
 pub use letter::{MessageId, Opened, SenderId, SenderKey};
 pub use mailbox::{LetterId, Mailbox};
 pub use onion::{HsIdParseError, OnionAddress, ORDER_PORT};
-pub use order::{ListingHash, Order, PaymentRail};
+pub use order::{ListingHash, Order, OrderTerms, PaymentRail, TermsLine, NO_SERVICE};
 pub use reply::{reply_frame, DropId, ReplyDelivery, ReplyPath};
 pub use seal::{
     open_message, open_order, open_reply, seal_message, seal_order, seal_reply, ReplyKeypair,

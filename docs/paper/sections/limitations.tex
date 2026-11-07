@@ -17,6 +17,7 @@ We collect the limitations of the design, ordered roughly by how much they matte
   \item \textbf{Amounts can identify listings.} Public prices let a chain observer guess what was bought from the payment amount.
   \item \textbf{Letter sizes leak.} Letters are padded to a few size buckets, so an observer learns the bucket.
   \item \textbf{Timing correlation.} Tor does not resist an adversary who can watch both a phone and its home node. Sale letters are on loopback, so they are visible to whoever can see those two machines. Letter timing can still be correlated with chain timing.
+  \item \textbf{Reviews show signed purchases, not independent buyers.} A seller can sign receipts for review keys it holds and review itself, and a review reaches only nodes connected to one that holds it.
   \item \textbf{Labels are only advice.} Self-labels are only as honest as the vendor, and labelers only as good as the buyer's choice of them; nothing in the design removes content from the network.
   \item \textbf{The device is trusted.} A process on the same machine can act as the client, and at-rest encryption is only as strong as the protection of its key.
   \item \textbf{Informal analysis.} The security arguments in \S\ref{sec:security} are informal, and the protocol has had no external cryptographic review.
@@ -38,5 +39,7 @@ A change to the protocol, to payments, to the threat model, or to the seller's f
 \paragraph{Catalog freshness and spam.} A per-store sequence number and a signed index of current listings would let a buyer detect stale and withheld records. A publishing cost that replicas check would make open replication safe against spam; its form (a small payment, a proof of a funded output, or a rate limit tied to store age) is not designed.
 
 \paragraph{Private retrieval and transport.} Private information retrieval for catalog records at scale, and carrying order letters over a mix network. Delivering those letters over a vendor onion service is the same open work: the letter library can dial an onion service, and the node does not, so a sale runs between nodes that can reach each other's loopback addresses.
+
+\paragraph{Reputation.} Reviews (\S\ref{sec:reviews}) are the only reputation signal in the design. Three additions are not designed beyond their outline: moderators publishing signed dispute outcomes that say which party received the funds, with no addresses or identities; an optional seller bond, time-locked on chain, that a buyer can verify before ordering; and a new-store state that shows no stars until a store has verified sales and shows its first sales as moderated escrow. Each needs care so that a direct payment between a seller and itself does not count as a completed escrow sale.
 
 \paragraph{Formal analysis.} A game-based proof of the escrow properties, and a machine-checked model of the message rounds and timeline.

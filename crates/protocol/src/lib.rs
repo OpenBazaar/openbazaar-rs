@@ -5,7 +5,11 @@
 
 #![forbid(unsafe_code)]
 
+mod commerce;
+#[cfg(test)]
+mod commerce_tests;
 mod content;
+mod coupon;
 mod dispute;
 mod encode;
 mod error;
@@ -19,11 +23,21 @@ mod listing_details;
 #[cfg(test)]
 mod listing_v6_tests;
 pub mod public_text;
+mod offer;
 mod order;
 mod payment;
+pub mod pricing;
+#[cfg(test)]
+mod pricing_tests;
+mod review;
+mod shipping;
 mod sign;
+mod signed;
 mod store;
+mod taxonomy;
+mod variants;
 
+pub use commerce::{Availability, Commerce, Condition, Pricing, Purchase, Returns, Sale, Tier, MAX_SPECIFICS, MAX_TIERS};
 pub use content::{ContentLabel, ContentRating, ContentTags};
 pub use dispute::{DisputeEnvelope, DisputePlaintext};
 pub use error::Error;
@@ -37,6 +51,13 @@ pub use keys::KeyRole;
 pub use labeler::{resolve_labels, LabelEntry, LabelSet, LabelTarget, ResolvedLabel};
 pub use listing::{Listing, ListingHash, ListingKind};
 pub use listing_details::{FiatPrice, ListingDetails, ListingId, MAX_IMAGES};
+pub use coupon::{Coupon, Discount, SignedCoupon, MAX_COUPON_LISTINGS};
+pub use offer::{Bid, Offer, SignedOffer};
 pub use order::{OrderEnvelope, OrderPlaintext};
+pub use review::{Receipt, Reply, Review, SignedReceipt, SignedReply, SignedReview, MAX_REVIEW_TEXT};
+pub use shipping::{Service, Shipping, MAX_SERVICES, MAX_SERVICE_REGIONS};
+pub use signed::{Signed, Terms};
+pub use taxonomy::{taxonomy_name, TAXONOMY};
+pub use variants::{Axis, Variant, VariantId, Variants, MAX_AXES, MAX_AXIS_VALUES, MAX_VARIANTS};
 pub use payment::DirectPay;
 pub use store::{CountryCode, Store, StoreDetails, StoreId, StoreProfile};

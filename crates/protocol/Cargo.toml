@@ -9,3 +9,6 @@ publish.workspace = true
 [dependencies]
 bitcoin = "0.32.7"
 x25519-dalek = { version = "2", features = ["static_secrets"] }
+
+[dev-dependencies]
+serde_json = "1"
