@@ -178,6 +178,7 @@ impl Node {
             }
         }
         changed += self.watch_sales(tip);
+        changed += self.watch_stock();
         Ok(changed)
     }
 

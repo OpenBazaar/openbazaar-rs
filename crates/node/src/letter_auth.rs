@@ -99,6 +99,16 @@ impl Node {
         Ok(SenderKey::derive(&*self.letter_root()?, "order", &Self::order_conversation(checkout_id, store)))
     }
 
+    /// The buyer's per-order review key: a receipt names it, a review is
+    /// signed with it, and it links to nothing else the buyer does.
+    pub(crate) fn order_review_secret(&self, checkout_id: &str, store: &[u8; 32]) -> Result<bitcoin::secp256k1::SecretKey, String> {
+        let root = self.letter_root()?;
+        let conversation = Self::order_conversation(checkout_id, store);
+        (0..8)
+            .find_map(|n| bitcoin::secp256k1::SecretKey::from_slice(&derive_secret(&root, "review-key", &conversation, n)).ok())
+            .ok_or_else(|| "no review key".to_string())
+    }
+
     /// The buyer's per-order reply secret and drop id. Derived again from
     /// the order record when a reply arrives; never stored.
     pub(crate) fn order_reply_secret(&self, checkout_id: &str, store: &[u8; 32]) -> Result<(ReplySecret, tormail::DropId), String> {

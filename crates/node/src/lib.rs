@@ -12,9 +12,13 @@ mod addresses;
 mod build_info;
 mod buyer_orders;
 mod chain;
+mod checkout_terms;
 mod chain_backend;
 mod chain_filters;
 mod coin_locks;
+mod commerce_draft;
+mod commerce_http;
+mod coupons;
 mod egress;
 mod escrow_bump;
 mod escrow_buyer;
@@ -35,10 +39,12 @@ mod http_parse;
 mod instructions;
 mod labelers;
 mod letter_auth;
+mod live_stock;
 mod mail_drop;
 mod media;
 mod network;
 mod order_mail;
+mod order_terms;
 mod orders;
 mod own_listings;
 mod own_store;
@@ -51,10 +57,12 @@ mod remote;
 mod remote_orders;
 mod replicas;
 mod lock_http;
+mod sale_terms;
 mod sales;
 mod sales_http;
 mod seed;
 mod spend_tickets;
+mod stock;
 mod store_http;
 mod store_profile;
 mod stores;
@@ -84,6 +92,8 @@ mod multinode_tests;
 mod multinode_durable_tests;
 #[cfg(test)]
 mod multinode_seller_tests;
+#[cfg(test)]
+mod multinode_variant_tests;
 #[cfg(test)]
 mod own_store_tests;
 #[cfg(test)]
@@ -240,6 +250,11 @@ pub struct Node {
     pub(crate) replicas: Mutex<replicas::Replicas>,
     /// Sales to buyers on other nodes.
     pub(crate) sales: Mutex<sales::Sales>,
+    /// Live stock and the units held for unpaid quotes.
+    pub(crate) stock: Mutex<stock::StockLedger>,
+    /// Coupon uses and spent offers.
+    pub(crate) order_terms: Mutex<order_terms::TermsLedger>,
+    pub(crate) coupons: Mutex<coupons::CouponBook>,
     /// Order letters and replies on their way to other nodes.
     pub(crate) order_outbox: escrow_outbox::Outbox,
     pub(crate) data_dir: PathBuf,
@@ -369,6 +384,9 @@ impl Node {
             own_listings: Mutex::new(own_listings),
             replicas: Mutex::new(replicas),
             sales: Mutex::new(sales::Sales::open(&dir, vault.clone())?),
+            stock: Mutex::new(stock::StockLedger::open(&dir, vault.clone())?),
+            order_terms: Mutex::new(order_terms::TermsLedger::open(&dir, vault.clone())?),
+            coupons: Mutex::new(coupons::CouponBook::open(&dir, vault.clone())?),
             order_outbox: order_mail::open_outbox(&dir, vault.clone())?,
             data_dir: dir.clone(),
             media: media::Media::open(dir.join("media"), network)?,
@@ -615,6 +633,9 @@ pub(crate) fn listing_value(catalog: &Catalog, listing: &Listing) -> Result<Valu
         value["price"] = details.price.as_ref().map_or(Value::Null, |price| {
             json!({ "currency": price.currency, "amount": price.amount, "shipping": price.shipping })
         });
+    }
+    if let Some(commerce) = &listing.commerce {
+        value["commerce"] = commerce_draft::value(commerce);
     }
     Ok(value)
 }
