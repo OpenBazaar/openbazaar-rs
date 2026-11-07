@@ -170,7 +170,13 @@ impl Node {
         let sent: Vec<String> = targets
             .into_iter()
             .filter(|url| !reached.contains(url))
-            .filter(|url| ureq::post(&format!("{url}{PUBLIC_REVIEWS}")).timeout(TIMEOUT).set("Content-Type", "application/json").send_string(&body).is_ok())
+            .filter(|url| {
+                crate::escrow_mail::loopback_request("POST", &format!("{url}{PUBLIC_REVIEWS}"), TIMEOUT)
+                    .and_then(|request| {
+                        request.set("Content-Type", "application/json").send_string(&body).map_err(|err| err.to_string())
+                    })
+                    .is_ok_and(|response| (200..300).contains(&response.status()))
+            })
             .collect();
         if sent.is_empty() {
             return 0;
@@ -187,11 +193,15 @@ impl Node {
 
     /// Pull the review pool of the node at `url`. Returns how many records were new.
     pub(crate) fn pull_reviews(&self, url: &str) -> usize {
-        let fetched = ureq::get(&format!("{url}{PUBLIC_REVIEWS}")).timeout(TIMEOUT).call().ok().and_then(|response| {
-            let mut body = Vec::new();
-            response.into_reader().take(MAX_BODY).read_to_end(&mut body).ok()?;
-            serde_json::from_slice::<Value>(&body).ok()
-        });
+        let fetched = crate::escrow_mail::loopback_request("GET", &format!("{url}{PUBLIC_REVIEWS}"), TIMEOUT)
+            .ok()
+            .and_then(|request| request.call().ok())
+            .filter(|response| (200..300).contains(&response.status()))
+            .and_then(|response| {
+                let mut body = Vec::new();
+                response.into_reader().take(MAX_BODY).read_to_end(&mut body).ok()?;
+                serde_json::from_slice::<Value>(&body).ok()
+            });
         fetched.map_or(0, |value| self.take_reviews(&value))
     }
 
@@ -215,5 +225,53 @@ impl Node {
         let carries = self.carries();
         self.reviews().merge(vec![], vec![reply], carries);
         Ok(self.reviews().store_value(&self.catalog().listings, &self.own_store))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use std::thread;
+
+    use serde_json::json;
+
+    use crate::harness::TempDir;
+    use crate::{load_catalog, NetworkMode, Node};
+
+    #[test]
+    fn a_direct_review_post_does_not_follow_a_redirect() {
+        let trap = TcpListener::bind("127.0.0.1:0").unwrap();
+        let trap_port = trap.local_addr().unwrap().port();
+        let hits = Arc::new(AtomicUsize::new(0));
+        let counted = hits.clone();
+        thread::spawn(move || {
+            for mut stream in trap.incoming().flatten() {
+                counted.fetch_add(1, Ordering::SeqCst);
+                let mut buf = [0u8; 512];
+                let _ = stream.read(&mut buf);
+                let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+            }
+        });
+        let seller = TcpListener::bind("127.0.0.1:0").unwrap();
+        let seller_port = seller.local_addr().unwrap().port();
+        thread::spawn(move || {
+            for mut stream in seller.incoming().flatten() {
+                let mut buf = [0u8; 1024];
+                let _ = stream.read(&mut buf);
+                let body = format!("HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:{trap_port}/stolen\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                let _ = stream.write_all(body.as_bytes());
+            }
+        });
+
+        let dir = TempDir::new();
+        let node = Node::open(&dir.0, load_catalog(NetworkMode::Testnet4).unwrap()).unwrap();
+        let remote = json!({ "url": format!("http://127.0.0.1:{seller_port}") });
+        let sent = node.send_review("no-such-order", &remote, "abcd");
+        thread::sleep(std::time::Duration::from_millis(200));
+        assert_eq!(sent, 0);
+        assert_eq!(hits.load(Ordering::SeqCst), 0, "the review was posted to the redirect target");
     }
 }

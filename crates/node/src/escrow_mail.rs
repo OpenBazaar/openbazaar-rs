@@ -215,6 +215,22 @@ pub(crate) fn check_loopback(url: &str) -> Result<(), String> {
     }
 }
 
+/// One request to another node on this machine.
+///
+/// Redirects are off. A seller, or anyone answering on the loopback URL, must
+/// not bounce the request to a public host: the next connection would leave
+/// this machine and show its IP, and would carry the review, the catalog
+/// fetch, or the sealed letter with it.
+pub(crate) fn loopback_request(method: &str, url: &str, timeout: Duration) -> Result<ureq::Request, String> {
+    check_loopback(url)?;
+    let agent = ureq::AgentBuilder::new()
+        .redirects(0)
+        .timeout_connect(timeout)
+        .timeout_read(timeout)
+        .build();
+    Ok(agent.request(method, url).timeout(timeout))
+}
+
 /// This node's escrow inbox, outbox, durable state, and the state each role
 /// keeps in memory between rounds.
 pub(crate) struct Escrow {

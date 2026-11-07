@@ -340,13 +340,14 @@ impl Node {
 
 fn fetch_store(url: &str) -> Result<Replica, String> {
     use std::io::Read;
-    let response = ureq::get(&format!("{url}/public/store"))
-        .timeout(FETCH_TIMEOUT)
-        .call()
+    let response = crate::escrow_mail::loopback_request("GET", &format!("{url}/public/store"), FETCH_TIMEOUT)?.call()
         .map_err(|err| match err {
             ureq::Error::Status(404, _) => "that node is not selling".to_string(),
             other => format!("{url}: {other}"),
         })?;
+    if !(200..300).contains(&response.status()) {
+        return Err(format!("{url}: {}", response.status()));
+    }
     let mut body = Vec::new();
     response
         .into_reader()
@@ -363,10 +364,11 @@ fn fetch_store(url: &str) -> Result<Replica, String> {
 
 fn fetch_image(url: &str, hash: &[u8; 32]) -> Result<Vec<u8>, String> {
     use std::io::Read;
-    let response = ureq::get(&format!("{url}/public/media/{}", hex(hash)))
-        .timeout(FETCH_TIMEOUT)
-        .call()
+    let response = crate::escrow_mail::loopback_request("GET", &format!("{url}/public/media/{}", hex(hash)), FETCH_TIMEOUT)?.call()
         .map_err(|err| err.to_string())?;
+    if !(200..300).contains(&response.status()) {
+        return Err(format!("{url}: {}", response.status()));
+    }
     let mut bytes = Vec::new();
     response
         .into_reader()
@@ -379,6 +381,46 @@ fn fetch_image(url: &str, hash: &[u8; 32]) -> Result<Vec<u8>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_catalog_fetch_does_not_follow_a_redirect_to_another_host() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        use std::thread;
+
+        let trap = TcpListener::bind("127.0.0.1:0").unwrap();
+        let trap_port = trap.local_addr().unwrap().port();
+        let hits = Arc::new(AtomicUsize::new(0));
+        let counted = hits.clone();
+        thread::spawn(move || {
+            for mut stream in trap.incoming().flatten() {
+                counted.fetch_add(1, Ordering::SeqCst);
+                let mut buf = [0u8; 512];
+                let _ = stream.read(&mut buf);
+                let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}");
+            }
+        });
+        let seller = TcpListener::bind("127.0.0.1:0").unwrap();
+        let seller_port = seller.local_addr().unwrap().port();
+        thread::spawn(move || {
+            for mut stream in seller.incoming().flatten() {
+                let mut buf = [0u8; 1024];
+                let _ = stream.read(&mut buf);
+                let body = format!("HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:{trap_port}/stolen\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                let _ = stream.write_all(body.as_bytes());
+            }
+        });
+
+        let err = match fetch_store(&format!("http://127.0.0.1:{seller_port}")) {
+            Err(err) => err,
+            Ok(_) => panic!("the redirect was treated as a store"),
+        };
+        thread::sleep(std::time::Duration::from_millis(200));
+        assert_eq!(hits.load(Ordering::SeqCst), 0, "the buyer's catalog fetch followed the redirect: {err}");
+        assert!(err.contains("could not be read") || err.contains("302") || err.contains(seller_port.to_string().as_str()), "{err}");
+    }
 
     #[test]
     fn only_loopback_base_urls_are_followed() {

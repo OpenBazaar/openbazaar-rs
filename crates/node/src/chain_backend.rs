@@ -5,11 +5,12 @@
 //! | none | compact filters from P2P peers | no one |
 //! | `--peer HOST:PORT` | compact filters from the user's own node only | that node |
 //! | `--esplora URL` (LAN, loopback, onion) | the user's Esplora server | that server |
-//! | `--esplora URL` (anything else) | that public Esplora server | that server |
+//! | `--esplora URL` (anything else) | that public Esplora server, for the tip, fees, and broadcasts | no one (addresses are not sent) |
 //!
 //! With no flags, `--public-fallback` (on by default on testnet4 only) lets
-//! the node use the public Esplora servers while no filter peer answers.
-//! `--peer` and `--esplora` never fall back to anything.
+//! the node ask the public Esplora servers for the tip, fees, and broadcasts
+//! while no filter peer answers. Address lookups and wallet scans stay on
+//! the filters. `--peer` and `--esplora` never fall back to anything.
 
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -60,7 +61,7 @@ impl ChainPlan {
         }
     }
 
-    /// Every Esplora server this plan may send addresses to.
+    /// Every Esplora server this plan may contact. A public one is not asked for addresses.
     pub fn esplora_servers(&self) -> &[String] {
         match self {
             ChainPlan::Filters { fallback, .. } => fallback,
@@ -78,7 +79,7 @@ impl ChainPlan {
                 "compact block filters from P2P peers; no public server fallback".into()
             }
             ChainPlan::Filters { fallback, .. } => format!(
-                "compact block filters from P2P peers; public Esplora ({}) only while no peer answers",
+                "compact block filters from P2P peers; public Esplora ({}) for the tip, fees, and broadcasts only while no peer answers",
                 fallback.join(", ")
             ),
             ChainPlan::Esplora { urls } => format!("Esplora at {}", urls.join(", ")),
@@ -147,7 +148,8 @@ pub(crate) fn parse_peer(text: &str, network: NetworkMode) -> Result<(String, u1
     Ok((host.to_string(), port))
 }
 
-/// Compact filters first; the public Esplora servers only while no peer answers or the scan is stuck.
+/// Compact filters first. Public Esplora answers the tip, fees, and broadcasts
+/// while no peer answers or the scan is stuck. It is never asked for an address.
 struct FallbackChain {
     primary: FilterChain,
     fallback: EsploraChain,
@@ -159,7 +161,7 @@ impl FallbackChain {
         let unreachable = self.primary.unreachable_for(FALLBACK_AFTER);
         if self.active.swap(unreachable, Ordering::Relaxed) != unreachable {
             if unreachable {
-                eprintln!("ob-node: WARNING: no filter peer answered or the filter scan stopped moving; asking the public Esplora servers, which see the addresses");
+                eprintln!("ob-node: WARNING: no filter peer answered or the filter scan stopped moving; asking public Esplora for the tip, fees, and broadcasts only. Addresses stay on the filters, so a payment is not seen until a peer answers");
             } else {
                 eprintln!("ob-node: filter peers answer again; the public Esplora servers are no longer asked");
             }
@@ -194,21 +196,13 @@ impl ChainSource for FallbackChain {
     }
 
     fn address_txs(&self, address: &Address) -> Result<Vec<AddressTx>, String> {
-        let primary = self.primary.address_txs(address);
-        if self.use_fallback() {
-            self.fallback.address_txs(address)
-        } else {
-            primary
-        }
+        // Even while the fallback is answering for the tip, a public server
+        // is not told this address. That query is what would link sales.
+        self.primary.address_txs(address)
     }
 
     fn script_txs(&self, script: &bitcoin::Script, from: u32) -> Result<Vec<AddressTx>, String> {
-        let primary = self.primary.script_txs(script, from);
-        if self.use_fallback() {
-            self.fallback.script_txs(script, from)
-        } else {
-            primary
-        }
+        self.primary.script_txs(script, from)
     }
 
     fn fee_rate(&self) -> Result<f64, String> {
@@ -220,10 +214,78 @@ impl ChainSource for FallbackChain {
     }
 
     fn wallet_update(&self, request: WalletRequest) -> Result<Update, String> {
-        self.pick().wallet_update(request)
+        self.primary.wallet_update(request)
     }
 
     fn output(&self, outpoint: &OutPoint) -> Result<Option<(TxOut, Option<u32>)>, String> {
-        self.pick().output(outpoint)
+        self.primary.output(outpoint)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use std::thread;
+    use std::time::Duration;
+
+    use bitcoin::{Address, Network};
+    use std::str::FromStr;
+
+    use super::*;
+    use crate::chain::ChainSource;
+    use crate::chain_filters::{ChainStore, FilterChain, FilterConfig};
+    use crate::harness::TempDir;
+    use crate::vault::Vault;
+
+    #[test]
+    fn a_quiet_filter_peer_does_not_send_sale_addresses_to_public_esplora() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let hits = Arc::new(AtomicUsize::new(0));
+        let counted = hits.clone();
+        thread::spawn(move || {
+            for mut stream in listener.incoming().flatten() {
+                counted.fetch_add(1, Ordering::SeqCst);
+                let mut buf = [0u8; 1024];
+                let _ = stream.read(&mut buf);
+                let _ = stream.write_all(b"HTTP/1.1 500 No\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+            }
+        });
+
+        let dir = TempDir::new();
+        std::fs::create_dir_all(dir.0.join("filters")).unwrap();
+        let primary = FilterChain::new(FilterConfig::own_node(Network::Regtest, vec![("127.0.0.1".into(), 1)])).unwrap();
+        let store = ChainStore {
+            dir: dir.0.join("filters"),
+            vault: Vault::open(&dir.0, &crate::VaultMode::File).unwrap(),
+            wallet_tip: None,
+        };
+        primary.open(store).unwrap();
+        primary.test_peer_silent_for(Duration::from_secs(180));
+        let fallback = crate::chain::EsploraChain::with_egress(
+            &[format!("http://127.0.0.1:{port}")],
+            Network::Regtest,
+            &Egress::default(),
+        )
+        .unwrap();
+        let chain = FallbackChain { primary, fallback, active: AtomicBool::new(false) };
+        let address = Address::from_str("bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080")
+            .unwrap()
+            .require_network(Network::Regtest)
+            .unwrap();
+
+        let _ = chain.address_txs(&address);
+        thread::sleep(Duration::from_millis(300));
+        assert_eq!(hits.load(Ordering::SeqCst), 0, "the sale address was sent to Esplora");
+
+        let _ = chain.tip_height();
+        let started = std::time::Instant::now();
+        while hits.load(Ordering::SeqCst) == 0 && started.elapsed() < Duration::from_secs(5) {
+            thread::sleep(Duration::from_millis(50));
+        }
+        assert!(hits.load(Ordering::SeqCst) >= 1, "the tip query should still use the fallback");
     }
 }

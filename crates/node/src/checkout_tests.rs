@@ -605,6 +605,31 @@ fn rejects_a_client_supplied_destination() {
     assert!(node.mailbox.list().unwrap().is_empty());
 }
 
+#[test]
+fn two_orders_are_paid_to_different_addresses_and_the_street_stays_out_of_the_receipt() {
+    let (_dir, node) = node();
+    let book = hash_of(&node, "Paperback novel");
+    let body = json!({
+        "listingHash": book,
+        "quantity": 1,
+        "settlement": "direct",
+        "shipTo": {
+            "name": "Ada Brooks",
+            "street": "14 Larch Lane",
+            "city": "Portland",
+            "region": "Oregon",
+            "postalCode": "97202"
+        }
+    })
+    .to_string();
+    let first: Value = serde_json::from_str(&status_and_body(&dispatch(&node, &post(&node, &body))).1).unwrap();
+    let second: Value = serde_json::from_str(&status_and_body(&dispatch(&node, &post(&node, &body))).1).unwrap();
+    let (a, b) = (first["payment"]["address"].as_str().unwrap(), second["payment"]["address"].as_str().unwrap());
+    assert_ne!(a, b, "one receive address for two sales would link them on chain");
+    assert!(!first.to_string().contains("14 Larch Lane"));
+    assert!(!second.to_string().contains("Larch"));
+}
+
 fn checkout_post(node: &Node, json_body: &str) -> Vec<u8> {
     format!(
         "POST /checkout HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nOrigin: http://127.0.0.1:4173\r\nX-Ob-Pair: {}\r\n\r\n{json_body}",
