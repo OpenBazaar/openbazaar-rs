@@ -14,7 +14,7 @@ The design treats every source of nodes as untrusted for content and only partly
   \item Every record received from any of them is verified against its signature and content hash before use.
 \end{itemize}
 
-Because records are self-authenticating, a malicious seed or replica cannot forge or alter a listing. It can withhold records, serve stale ones (\S\ref{sec:catalog}), or, if it controls all of a node's peers, present a partial view of the network: an eclipse attack~\citep{heilman2015eclipse}. Remembering peers across sessions, drawing peers from several independent sources, and preferring a pasted link over seed-supplied data are the mitigations; no Sybil defense~\citep{douceur2002sybil} is designed beyond the publishing cost of \S\ref{sec:catalog}.
+The node follows a store by a loopback URL and copies its signed records (\S\ref{sec:sale}). It does not dial a seed or an onion address to find stores. Because records are self-authenticating, a malicious seed or replica cannot forge or alter a listing. It can withhold records, serve stale ones (\S\ref{sec:catalog}), or, if it controls all of a node's peers, present a partial view of the network: an eclipse attack~\citep{heilman2015eclipse}. Remembering peers across sessions, drawing peers from several independent sources, and preferring a pasted link over seed-supplied data are the mitigations; no Sybil defense~\citep{douceur2002sybil} is designed beyond the publishing cost of \S\ref{sec:catalog}.
 
 \subsection{Private search at scale}
 

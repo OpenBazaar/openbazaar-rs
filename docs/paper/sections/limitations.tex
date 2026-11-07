@@ -15,8 +15,8 @@ We collect the limitations of the design, ordered roughly by how much they matte
   \item \textbf{Escrow outcomes are recognizable.} The anchor output marks refund, claim, and dispute spends as contract spends, and a moderator that reuses its payout script links its disputes.
   \item \textbf{No catalog freshness or completeness.} A replica can serve stale listings or omit them without detection.
   \item \textbf{Amounts can identify listings.} Public prices let a chain observer guess what was bought from the payment amount.
-  \item \textbf{Letter sizes leak.} Letters are not padded, so their sizes leak approximate content length.
-  \item \textbf{Timing correlation.} Tor does not resist an adversary who can watch both a buyer's node and a vendor's onion service, or who correlates letter timing with chain timing.
+  \item \textbf{Letter sizes leak.} Letters are padded to a few size buckets, so an observer learns the bucket.
+  \item \textbf{Timing correlation.} Tor does not resist an adversary who can watch both a phone and its home node. Sale letters are on loopback, so they are visible to whoever can see those two machines. Letter timing can still be correlated with chain timing.
   \item \textbf{Labels are only advice.} Self-labels are only as honest as the vendor, and labelers only as good as the buyer's choice of them; nothing in the design removes content from the network.
   \item \textbf{The device is trusted.} A process on the same machine can act as the client, and at-rest encryption is only as strong as the protection of its key.
   \item \textbf{Informal analysis.} The security arguments in \S\ref{sec:security} are informal, and the protocol has had no external cryptographic review.
@@ -24,6 +24,8 @@ We collect the limitations of the design, ordered roughly by how much they matte
 
 \subsection{Future work}
 \label{sec:future}
+
+A change to the protocol, to payments, to the threat model, or to the seller's flow updates this paper in the same pull request. The paragraphs below are open problems. They are not behavior the nodes already have.
 
 \paragraph{Smaller verifiable encryption.} Bitwise ElGamal is simple and relies only on the discrete-log setting of secp256k1, but it is large. Batch verification of the 256 bit proofs would cut the moderator's verification cost substantially without changing the format. Verifiable encryption in a group with an easy discrete-log subgroup, such as the class-group or Paillier-based constructions used for two-party ECDSA and scriptless swaps~\citep{shlomovits2020juggling}, could reduce the share to a few kilobytes, at the cost of a second hardness assumption.
 
@@ -35,6 +37,6 @@ We collect the limitations of the design, ordered roughly by how much they matte
 
 \paragraph{Catalog freshness and spam.} A per-store sequence number and a signed index of current listings would let a buyer detect stale and withheld records. A publishing cost that replicas check would make open replication safe against spam; its form (a small payment, a proof of a funded output, or a rate limit tied to store age) is not designed.
 
-\paragraph{Private retrieval and transport.} Private information retrieval for catalog records at scale; padding letters to fixed size buckets; carrying letters over a mix network; and a pairing transport that lets a phone reach its owner's node on another machine with mutual authentication.
+\paragraph{Private retrieval and transport.} Private information retrieval for catalog records at scale, and carrying order letters over a mix network. Delivering those letters over a vendor onion service is the same open work: the letter library can dial an onion service, and the node does not, so a sale runs between nodes that can reach each other's loopback addresses.
 
 \paragraph{Formal analysis.} A game-based proof of the escrow properties, and a machine-checked model of the message rounds and timeline.
