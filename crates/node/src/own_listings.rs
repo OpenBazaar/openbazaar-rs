@@ -329,6 +329,7 @@ impl Node {
             free_over_sats: 0,
             content: Some(draft.content),
             details: Some(ListingDetails { id: id.unwrap_or_else(new_id), images: draft.images, price: fiat }),
+            commerce: None,
             signature: [0; 64],
         };
         let listing = unsigned.resign(&secret).map_err(|err| StoreError::invalid(capitalize(&err.to_string())))?;
