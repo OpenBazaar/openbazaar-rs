@@ -18,13 +18,19 @@ public final class ObDeviceKeyModule: Module {
     Data("app.openbazaar.devicekey.\(alias)".utf8)
   }
 
-  private func freshContext() async throws -> LAContext {
+  /// Face ID or the device passcode, reused for five minutes.
+  /// A Secure Enclave key created with `userPresence` rejects this context:
+  /// `SecKeyCreateSignature` returns CryptoTokenKit -5 and no prompt is shown.
+  /// The device key is created with biometry or the passcode instead, which
+  /// this authentication satisfies.
+  private func signingContext() async throws -> LAContext {
     if let context, Date().timeIntervalSince(contextAt) < Self.reuseSeconds {
       return context
     }
     let next = LAContext()
     next.touchIDAuthenticationAllowableReuseDuration = Self.reuseSeconds
     next.localizedReason = "Unlock your home node"
+    next.localizedFallbackTitle = "Enter Passcode"
     try await next.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: "Unlock your home node")
     context = next
     contextAt = Date()
@@ -57,7 +63,14 @@ public final class ObDeviceKeyModule: Module {
 
   private static func create(_ alias: String, userPresence: Bool, secureEnclave: Bool) throws -> SecKey {
     var flags: SecAccessControlCreateFlags = secureEnclave ? [.privateKeyUsage] : []
-    if userPresence { flags.insert(.userPresence) }
+    if userPresence && secureEnclave {
+      // `userPresence` cannot be combined with kSecUseAuthenticationContext.
+      // Biometry or the device passcode is the same owner check, and the
+      // signature operation can satisfy it with the context passed below.
+      flags.formUnion([.biometryAny, .or, .devicePasscode])
+    } else if userPresence {
+      flags.insert(.userPresence)
+    }
     let protection = userPresence ? kSecAttrAccessibleWhenUnlockedThisDeviceOnly : kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
     var error: Unmanaged<CFError>?
     guard let access = SecAccessControlCreateWithFlags(kCFAllocatorDefault, protection, flags, &error) else {
@@ -109,7 +122,7 @@ public final class ObDeviceKeyModule: Module {
     }
 
     AsyncFunction("sign") { (alias: String, preimage: String, userPresence: Bool) async throws -> String in
-      let context = userPresence ? try await self.freshContext() : nil
+      let context = userPresence ? try await self.signingContext() : nil
       guard let key = try Self.find(alias, context: context) else { throw DeviceKeyException("No key named \(alias)") }
       var error: Unmanaged<CFError>?
       guard let signature = SecKeyCreateSignature(key, .ecdsaSignatureMessageX962SHA256, Data(preimage.utf8) as CFData, &error) as Data? else {
