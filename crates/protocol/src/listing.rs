@@ -2,6 +2,7 @@ use bitcoin::secp256k1::SecretKey;
 
 use crate::content::{ContentLabel, ContentRating, ContentTags};
 use crate::encode::{self, Reader, Writer};
+use crate::commerce::{Commerce, Context};
 use crate::listing_details::ListingDetails;
 use crate::public_text;
 use crate::sign::{self, SIG_LEN};
@@ -15,6 +16,8 @@ const VERSION_UNLABELED: u8 = 4;
 const VERSION_LABELED: u8 = 5;
 /// Adds [`ListingDetails`]: a stable id, images, and a fiat price.
 const VERSION: u8 = 6;
+/// Adds [`Commerce`]: condition, specifics, variants, pricing, shipping, returns.
+const VERSION_COMMERCE: u8 = 7;
 
 /// Address of a listing: SHA256 of the canonical body, without the signature.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -89,6 +92,8 @@ pub struct Listing {
     pub content: Option<ContentLabel>,
     /// Id, images, and fiat price. `None` for a version 4 or 5 record.
     pub details: Option<ListingDetails>,
+    /// Variants, terms and shipping. `None` for a version 4 to 6 record.
+    pub commerce: Option<Commerce>,
     pub signature: [u8; SIG_LEN],
 }
 
@@ -112,6 +117,7 @@ impl Listing {
 
     pub fn version(&self) -> u8 {
         match (&self.content, &self.details) {
+            _ if self.commerce.is_some() => VERSION_COMMERCE,
             (_, Some(_)) => VERSION,
             (Some(_), None) => VERSION_LABELED,
             (None, None) => VERSION_UNLABELED,
@@ -156,6 +162,7 @@ impl Listing {
             free_over_sats,
             content: Some(content),
             details: None,
+            commerce: None,
             signature: [0u8; SIG_LEN],
         };
         listing.check_public_text()?;
@@ -194,6 +201,26 @@ impl Listing {
             ("product", &self.product),
         ] {
             public_text::check(field, text)?;
+        }
+        match &self.commerce {
+            Some(commerce) => commerce.check_public_text(),
+            None => Ok(()),
+        }
+    }
+
+    /// A version 7 listing has a fiat price, and its plain `stock` is the sum
+    /// of its variants' stock, so a client that reads only v6 fields still
+    /// shows how many are left.
+    fn check_commerce(&self, commerce: &Commerce) -> Result<(), Error> {
+        let details = self.details.as_ref().ok_or(Error::BadListing("a version 7 listing has an id"))?;
+        let price = details.price.as_ref().ok_or(Error::BadListing("a version 7 listing has a fiat price"))?;
+        commerce.check(&Context {
+            price: price.amount,
+            digital: self.kind == ListingKind::Digital,
+            images: details.images.len(),
+        })?;
+        if !commerce.variants.is_empty() && u64::from(self.stock) != commerce.variants.total_stock().min(u64::from(u32::MAX)) {
+            return Err(Error::BadListing("stock is the sum of the variants' stock"));
         }
         Ok(())
     }
@@ -267,11 +294,15 @@ impl Listing {
         if let Some(details) = &self.details {
             details.encode(&mut writer)?;
         }
+        if let Some(commerce) = &self.commerce {
+            self.check_commerce(commerce)?;
+            commerce.encode(&mut writer)?;
+        }
         Ok(writer.finish())
     }
 
     fn decode_body(reader: &mut Reader<'_>) -> Result<Self, Error> {
-        let version = reader.expect_magic_in(&MAGIC, &[VERSION_UNLABELED, VERSION_LABELED, VERSION])?;
+        let version = reader.expect_magic_in(&MAGIC, &[VERSION_UNLABELED, VERSION_LABELED, VERSION, VERSION_COMMERCE])?;
         let mut listing = Self {
             store_id: StoreId::from_bytes(reader.array()?),
             title: reader.str()?,
@@ -289,6 +320,7 @@ impl Listing {
             free_over_sats: reader.u64()?,
             content: None,
             details: None,
+            commerce: None,
             signature: [0u8; SIG_LEN],
         };
         if version >= VERSION_LABELED {
@@ -297,8 +329,13 @@ impl Listing {
                 tags: ContentTags::from_bits(reader.u16()?),
             });
         }
-        if version == VERSION {
+        if version >= VERSION {
             listing.details = Some(ListingDetails::decode(reader)?);
+        }
+        if version == VERSION_COMMERCE {
+            let commerce = Commerce::decode(reader)?;
+            listing.check_commerce(&commerce)?;
+            listing.commerce = Some(commerce);
         }
         Ok(listing)
     }

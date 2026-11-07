@@ -8,7 +8,13 @@ use crate::Error;
 
 const MAGIC: &[u8; 4] = b"OBOD";
 /// Version 1 carried only a reply key. Version 2 carries a [`ReplyPath`].
-const VERSION: u8 = 2;
+const VERSION_REPLY: u8 = 2;
+/// Version 3 adds [`OrderTerms`]. An order with default terms is still
+/// written as version 2, so a seller on older code can read it.
+const VERSION: u8 = 3;
+const MAX_TERMS_BLOB: usize = 512;
+/// [`OrderTerms::service`] when nothing is shipped: pickup or digital.
+pub const NO_SERVICE: u8 = 0xff;
 const MAX_QUANTITY: u32 = 1_000_000;
 const MAX_OPTIONS: usize = 16;
 const MAX_OPTION_NAME: usize = 64;
@@ -76,6 +82,31 @@ pub struct Order {
     pub rail: PaymentRail,
     /// Per-order reply key, reply onion, and drop id. See [`crate::reply`].
     pub reply: ReplyPath,
+    pub terms: OrderTerms,
+}
+
+/// What a version 3 order adds: which variant, how it ships, and any coupon
+/// or accepted offer, as encoded signed records the vendor checks itself.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct OrderTerms {
+    /// Stable listing id; zeros for a listing without one.
+    pub listing_id: [u8; 16],
+    /// Zeros for a listing without variants.
+    pub variant_id: [u8; 8],
+    /// Index into the listing's shipping services, or [`NO_SERVICE`].
+    pub service: u8,
+    /// An encoded signed coupon, or empty.
+    pub coupon: Vec<u8>,
+    /// An encoded signed offer, or empty.
+    pub offer: Vec<u8>,
+    /// The order's review key: a receipt names it, a review is signed by it.
+    pub review_key: [u8; 32],
+}
+
+impl OrderTerms {
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
 }
 
 impl Order {
@@ -95,7 +126,15 @@ impl Order {
             ship_to: ship_to.into(),
             rail,
             reply,
+            terms: OrderTerms::default(),
         };
+        order.check()?;
+        Ok(order)
+    }
+
+    /// The same order with version 3 terms.
+    pub fn with_terms(self, terms: OrderTerms) -> Result<Self, Error> {
+        let order = Self { terms, ..self };
         order.check()?;
         Ok(order)
     }
@@ -116,13 +155,16 @@ impl Order {
         if self.ship_to.trim().is_empty() {
             return Err(Error::InvalidOrder("ship-to is empty"));
         }
+        if self.terms.coupon.len() > MAX_TERMS_BLOB || self.terms.offer.len() > MAX_TERMS_BLOB {
+            return Err(Error::InvalidOrder("coupon or offer is too long"));
+        }
         Ok(())
     }
 
     pub(crate) fn encode(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(64 + self.ship_to.len());
         out.extend_from_slice(MAGIC);
-        out.push(VERSION);
+        out.push(if self.terms.is_default() { VERSION_REPLY } else { VERSION });
         out.extend_from_slice(&self.listing_hash.0);
         out.extend_from_slice(&self.quantity.to_le_bytes());
         out.extend_from_slice(&(self.options.len() as u16).to_le_bytes());
@@ -135,6 +177,15 @@ impl Order {
         out.extend_from_slice(self.reply.key.as_bytes());
         push_str(&mut out, self.reply.onion.as_ref().map_or("", OnionAddress::as_str));
         out.extend_from_slice(&self.reply.drop.0);
+        if !self.terms.is_default() {
+            let terms = &self.terms;
+            out.extend_from_slice(&terms.listing_id);
+            out.extend_from_slice(&terms.variant_id);
+            out.push(terms.service);
+            push_blob(&mut out, &terms.coupon);
+            push_blob(&mut out, &terms.offer);
+            out.extend_from_slice(&terms.review_key);
+        }
         out
     }
 
@@ -144,7 +195,8 @@ impl Order {
         if magic != MAGIC {
             return Err(Error::Malformed);
         }
-        if cursor.u8()? != VERSION {
+        let version = cursor.u8()?;
+        if version != VERSION_REPLY && version != VERSION {
             return Err(Error::Malformed);
         }
         let listing_hash = ListingHash(cursor.array()?);
@@ -170,10 +222,22 @@ impl Order {
         let onion = cursor.string(MAX_ONION)?;
         let onion = if onion.is_empty() { None } else { Some(OnionAddress::parse(&onion)?) };
         let drop = DropId(cursor.array()?);
+        let mut terms = OrderTerms::default();
+        if version == VERSION {
+            terms.listing_id = cursor.array()?;
+            terms.variant_id = cursor.array()?;
+            terms.service = cursor.u8()?;
+            terms.coupon = cursor.blob(MAX_TERMS_BLOB)?;
+            terms.offer = cursor.blob(MAX_TERMS_BLOB)?;
+            terms.review_key = cursor.array()?;
+            if terms.is_default() {
+                return Err(Error::Malformed);
+            }
+        }
         if !cursor.is_empty() {
             return Err(Error::Malformed);
         }
-        Self::new(listing_hash, quantity, options, ship_to, rail, ReplyPath { key, onion, drop })
+        Self::new(listing_hash, quantity, options, ship_to, rail, ReplyPath { key, onion, drop })?.with_terms(terms)
     }
 }
 
@@ -187,6 +251,7 @@ impl fmt::Debug for Order {
             .field("ship_to", &"(sealed from logs)")
             .field("rail", &self.rail)
             .field("reply", &self.reply)
+            .field("terms", &self.terms)
             .finish()
     }
 }
@@ -201,6 +266,12 @@ fn check_text(value: &str, min: usize, max: usize, what: &'static str) -> Result
         }));
     }
     Ok(())
+}
+
+fn push_blob(out: &mut Vec<u8>, value: &[u8]) {
+    let len = u16::try_from(value.len()).expect("blob limit fits in u16");
+    out.extend_from_slice(&len.to_le_bytes());
+    out.extend_from_slice(value);
 }
 
 fn push_str(out: &mut Vec<u8>, value: &str) {
@@ -254,6 +325,14 @@ impl<'a> Cursor<'a> {
         Ok(out)
     }
 
+    fn blob(&mut self, max: usize) -> Result<Vec<u8>, Error> {
+        let len = self.u16()? as usize;
+        if len > max {
+            return Err(Error::InvalidOrder("coupon or offer is too long"));
+        }
+        Ok(self.take(len)?.to_vec())
+    }
+
     fn string(&mut self, max: usize) -> Result<String, Error> {
         let len = self.u16()? as usize;
         if len > max {
@@ -276,4 +355,68 @@ fn hex(bytes: &[u8]) -> String {
         out.push(DIGITS[(byte & 0x0f) as usize] as char);
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::seal::ReplyKeypair;
+
+    fn order() -> Order {
+        let mut options = BTreeMap::new();
+        options.insert("Size".to_owned(), "M".to_owned());
+        let reply = ReplyKeypair::generate();
+        Order::new(
+            ListingHash([7; 32]),
+            2,
+            options,
+            "1 Test Lane",
+            PaymentRail::OnChain,
+            ReplyPath::sealed_only(*reply.public_key(), DropId::generate()),
+        )
+        .unwrap()
+    }
+
+    fn terms() -> OrderTerms {
+        OrderTerms {
+            listing_id: [9; 16],
+            variant_id: [4; 8],
+            service: 1,
+            coupon: b"OBCP-bytes".to_vec(),
+            offer: Vec::new(),
+            review_key: [3; 32],
+        }
+    }
+
+    #[test]
+    fn default_terms_stay_version_2() {
+        let order = order();
+        let bytes = order.encode();
+        assert_eq!(bytes[4], VERSION_REPLY);
+        assert_eq!(Order::decode(&bytes).unwrap(), order);
+    }
+
+    #[test]
+    fn terms_round_trip_as_version_3() {
+        let order = order().with_terms(terms()).unwrap();
+        let bytes = order.encode();
+        assert_eq!(bytes[4], VERSION);
+        let decoded = Order::decode(&bytes).unwrap();
+        assert_eq!(decoded.terms, terms());
+        assert_eq!(decoded, order);
+    }
+
+    #[test]
+    fn version_3_with_default_terms_is_not_canonical() {
+        let mut bytes = order().encode();
+        bytes[4] = VERSION;
+        bytes.extend_from_slice(&[0; 16 + 8 + 1 + 2 + 2 + 32]);
+        assert!(matches!(Order::decode(&bytes), Err(Error::Malformed)));
+    }
+
+    #[test]
+    fn oversized_blobs_are_refused() {
+        let big = OrderTerms { offer: vec![1; MAX_TERMS_BLOB + 1], ..terms() };
+        assert!(matches!(order().with_terms(big), Err(Error::InvalidOrder(_))));
+    }
 }

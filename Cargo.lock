@@ -4176,6 +4176,7 @@ name = "openbazaar-protocol"
 version = "0.1.0-alpha.1"
 dependencies = [
  "bitcoin",
+ "serde_json",
  "x25519-dalek 2.0.1",
 ]
 
