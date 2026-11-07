@@ -36,7 +36,12 @@ pub use store::ChainStore;
 /// Scripts taken from each keychain of a full wallet scan.
 const FULL_SCAN_SPKS: usize = 100;
 const BROADCAST_TIMEOUT: Duration = Duration::from_secs(30);
+/// Paid blocks that form the estimate. Empty blocks are not samples.
 const FEE_BLOCKS: u32 = 3;
+/// Blocks walked back from the tip while collecting those paid samples.
+/// Empty blocks pay nothing, so a run of them at the tip must not hide
+/// the last blocks miners actually filled.
+const FEE_LOOKBACK: u32 = 12;
 const FEE_CACHE: Duration = Duration::from_secs(30 * 60);
 const PEER_INFO_TIMEOUT: Duration = Duration::from_millis(500);
 
@@ -132,6 +137,41 @@ impl Shared {
             .clone()
             .ok_or_else(|| "the filter client is not connected to any peer yet".to_string())
     }
+}
+
+/// A block that paid a fee. Empty blocks average 0 and are not samples.
+fn is_paid_block(rate: f64) -> bool {
+    rate.is_finite() && rate > 0.0
+}
+
+/// Median fee rate, in sat/vB, from block averages ordered newest first.
+///
+/// An empty block averages 0: the coinbase collected no fees. Those zeroes
+/// are not what miners accepted. Counting them pulls the median to 0, and
+/// the payment floor then pins the spend at 1 sat/vB. At most `sample` of
+/// the newest paid rates are used. When every observed block was empty the
+/// result is 0, so that floor is the whole estimate. `None` means no block
+/// was observed.
+fn fee_rate_from_blocks(rates_newest_first: &[f64], sample: usize) -> Option<f64> {
+    let mut paid = Vec::new();
+    let mut saw_block = false;
+    for rate in rates_newest_first {
+        if !rate.is_finite() {
+            continue;
+        }
+        saw_block = true;
+        if is_paid_block(*rate) {
+            paid.push(*rate);
+            if paid.len() == sample {
+                break;
+            }
+        }
+    }
+    if paid.is_empty() {
+        return if saw_block { Some(0.0) } else { None };
+    }
+    paid.sort_by(f64::total_cmp);
+    Some(paid[paid.len() / 2])
 }
 
 /// Whether a scan that is behind has stayed at `height` for longer than `after`.
@@ -247,19 +287,19 @@ impl FilterChain {
         let hashes: Vec<BlockHash> = {
             let index = self.shared.index();
             index.tip()?;
-            index.snapshot().iter().rev().take(FEE_BLOCKS as usize).map(|(_, header)| header.block_hash()).collect()
+            index.snapshot().iter().rev().take(FEE_LOOKBACK as usize).map(|(_, header)| header.block_hash()).collect()
         };
         let mut rates = Vec::new();
         for hash in hashes {
             if let Some(Ok(rate)) = self.wait(BROADCAST_TIMEOUT, requester.average_fee_rate(hash)) {
                 rates.push(rate.to_sat_per_kwu() as f64 / 250.0);
             }
+            let paid = rates.iter().copied().filter(|rate| is_paid_block(*rate)).count();
+            if paid >= FEE_BLOCKS as usize {
+                break;
+            }
         }
-        rates.sort_by(f64::total_cmp);
-        rates
-            .get(rates.len() / 2)
-            .copied()
-            .ok_or_else(|| "no recent block gave a fee estimate".to_string())
+        fee_rate_from_blocks(&rates, FEE_BLOCKS as usize).ok_or_else(|| "no recent block gave a fee estimate".to_string())
     }
 }
 
