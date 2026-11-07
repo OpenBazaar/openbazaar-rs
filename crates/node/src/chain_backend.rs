@@ -202,6 +202,15 @@ impl ChainSource for FallbackChain {
         }
     }
 
+    fn script_txs(&self, script: &bitcoin::Script, from: u32) -> Result<Vec<AddressTx>, String> {
+        let primary = self.primary.script_txs(script, from);
+        if self.use_fallback() {
+            self.fallback.script_txs(script, from)
+        } else {
+            primary
+        }
+    }
+
     fn fee_rate(&self) -> Result<f64, String> {
         self.pick().fee_rate()
     }

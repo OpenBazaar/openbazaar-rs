@@ -153,6 +153,30 @@ fn a_new_script_is_rescanned_before_it_is_reported() {
 }
 
 #[test]
+fn an_escrow_script_is_followed_from_the_height_asked_not_the_lookback() {
+    let mut chain = TestChain::new();
+    let deep = NEW_SCRIPT_LOOKBACK + 20;
+    for height in 1..=deep {
+        chain.mine(if height == 3 { vec![pay(&script(7), 9_000, 9)] } else { vec![] });
+    }
+    let mut index = FilterIndex::new(Network::Regtest, genesis(&chain));
+    index.watch([script(1)]);
+    assert!(scan(&mut index, &chain, 0).is_empty());
+
+    let mut lookback = index.clone();
+    assert!(lookback.watch([script(7)]));
+    let from = lookback.take_rescan().unwrap();
+    assert!(from > 3, "the wallet lookback starts at {from}, after the funding");
+
+    assert!(index.watch_from([script(7)], 2));
+    assert_eq!(index.take_rescan(), Some(2));
+    assert_eq!(scan(&mut index, &chain, 2), [3]);
+    assert!(index.is_ready(&script(7)));
+    assert_eq!(index.address_txs(&script(7))[0].height, Some(3));
+    assert!(!index.watch_from([script(7)], 1), "a followed script is not rescanned again");
+}
+
+#[test]
 fn a_peer_that_changes_a_checked_filter_is_refused() {
     let mut chain = TestChain::new();
     chain.mine(vec![pay(&script(1), 1_000, 1)]);

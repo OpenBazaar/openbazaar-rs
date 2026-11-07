@@ -98,6 +98,14 @@ impl FilterIndex {
 
     /// Follow these scripts. Returns `true` when any is new and a rescan was queued.
     pub(crate) fn watch(&mut self, scripts: impl IntoIterator<Item = ScriptBuf>) -> bool {
+        let from = self.processed.height.saturating_sub(NEW_SCRIPT_LOOKBACK);
+        self.watch_from(scripts, from)
+    }
+
+    /// [`Self::watch`], rescanning from block `from` (never below `start`)
+    /// for any script that is new. Escrow funding checks use it: the
+    /// funding can be far older than the lookback a new wallet address gets.
+    pub(crate) fn watch_from(&mut self, scripts: impl IntoIterator<Item = ScriptBuf>, from: u32) -> bool {
         let mut added = false;
         for script in scripts {
             if self.scripts.contains_key(&script) {
@@ -117,7 +125,7 @@ impl FilterIndex {
             self.covered = self.generation;
             return false;
         }
-        let from = self.processed.height.saturating_sub(NEW_SCRIPT_LOOKBACK).max(self.start.height);
+        let from = from.min(self.processed.height).max(self.start.height);
         self.rescan_from = Some(self.rescan_from.map_or(from, |queued| queued.min(from)));
         true
     }
