@@ -177,7 +177,7 @@ function BackupCheck({
   )
 }
 
-function SetupWallet({ status, onStatus }: { status: LockStatus; onStatus: (s: LockStatus) => void }) {
+export function SetupWallet({ status, onStatus }: { status: LockStatus; onStatus: (s: LockStatus) => void }) {
   const [passphrase, setPassphrase] = useState(''),
     [repeat, setRepeat] = useState('')
   const [backup, setBackup] = useState<{ phrase: string[]; confirmWords: number[]; lock: LockStatus } | null>(null)
@@ -430,18 +430,20 @@ export function Dialog({ label, onCancel, children }: { label: string; onCancel:
 export function UnlockDialog({
   status,
   onCancel,
-  onUnlocked
+  onUnlocked,
+  reason = 'Unlock the wallet to make this payment.'
 }: {
   status: LockStatus
   onCancel: () => void
   onUnlocked: (s: LockStatus) => void
+  reason?: string
 }) {
   return (
     <Dialog label='Unlock wallet' onCancel={onCancel}>
       {status.state === 'setup' ? (
         <p>Set a wallet passphrase on the wallet page before paying.</p>
       ) : (
-        <UnlockForm status={status} onStatus={onUnlocked} reason='Unlock the wallet to make this payment.' />
+        <UnlockForm status={status} onStatus={onUnlocked} reason={reason} />
       )}
       <div className='ob-form-actions'>
         <button className='ob-secondary' onClick={onCancel}>

@@ -53,8 +53,17 @@ pub(crate) struct HttpTransport;
 impl Transport for HttpTransport {
     fn deliver(&self, base_url: &str, letter: &[u8]) -> Result<(), Refusal> {
         check_loopback(base_url).map_err(Refusal::Refused)?;
-        let url = format!("{}/escrow/mail", base_url.trim_end_matches('/'));
-        match ureq::post(&url)
+        UrlTransport.deliver(&format!("{}/escrow/mail", base_url.trim_end_matches('/')), letter)
+    }
+}
+
+/// `POST {url}` over loopback HTTP, the URL naming the route: order mail.
+pub(crate) struct UrlTransport;
+
+impl Transport for UrlTransport {
+    fn deliver(&self, url: &str, letter: &[u8]) -> Result<(), Refusal> {
+        check_loopback(url).map_err(Refusal::Refused)?;
+        match ureq::post(url)
             .timeout(DELIVERY_TIMEOUT)
             .set("Content-Type", "application/octet-stream")
             .send_bytes(letter)
@@ -107,7 +116,12 @@ pub(crate) fn mail_key(url: &str, mail: &Mail) -> [u8; 32] {
 
 impl Outbox {
     pub(crate) fn open(data_dir: &Path, vault: Vault, transport: Box<dyn Transport>) -> Result<Self, Error> {
-        let dir = data_dir.join("escrow-outbox");
+        Self::open_named(data_dir, "escrow-outbox", vault, transport)
+    }
+
+    /// An outbox in `data_dir/name`.
+    pub(crate) fn open_named(data_dir: &Path, name: &str, vault: Vault, transport: Box<dyn Transport>) -> Result<Self, Error> {
+        let dir = data_dir.join(name);
         fs::create_dir_all(&dir).map_err(|err| Error::Detail(err.to_string()))?;
         Ok(Self {
             dir,
@@ -142,6 +156,20 @@ impl Outbox {
             Err(err) if err.kind() == ErrorKind::NotFound => {}
             Err(err) => eprintln!("ob-node: escrow outbox {}: {err}", path.display()),
         }
+    }
+
+    /// Store `letter` for `url` under `key` for the next [`Outbox::flush`],
+    /// without trying it: for a sender that must not wait on the peer.
+    pub(crate) fn queue(&self, key: [u8; 32], url: &str, letter: &[u8]) -> Result<(), String> {
+        let _guard = self.lock.lock().unwrap_or_else(|err| err.into_inner());
+        let path = self.path(&key);
+        if self.read(&path)?.is_some() {
+            return Ok(());
+        }
+        self.write(
+            &path,
+            &json!({ "url": url, "letter": hex(letter), "attempts": 0, "created": now_secs(), "nextAt": 0 }),
+        )
     }
 
     /// Store `letter` for `url` under `key`, then try it once. An entry

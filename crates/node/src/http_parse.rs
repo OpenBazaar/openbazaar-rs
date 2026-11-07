@@ -13,6 +13,18 @@ pub(crate) const MAX_HEAD: usize = 8 * 1024;
 pub(crate) const MAX_HEADERS: usize = 64;
 /// Room for one sealed escrow letter (up to 64 KiB) plus JSON slack.
 pub(crate) const MAX_BODY: usize = 72 * 1024;
+/// `POST /media` alone carries one image, up to the node's image cap.
+pub(crate) const MAX_UPLOAD: usize = crate::media::MAX_MEDIA;
+
+/// The body cap for the request whose head starts with `head`, read with cap
+/// `max_body`. Only the loopback server (cap [`MAX_BODY`]) takes image uploads.
+fn body_limit(head: &[u8], max_body: usize) -> usize {
+    if max_body == MAX_BODY && head.starts_with(b"POST /media ") {
+        MAX_UPLOAD
+    } else {
+        max_body
+    }
+}
 const MAX_TARGET: usize = 2048;
 pub(crate) const READ_DEADLINE: Duration = Duration::from_secs(5);
 
@@ -93,7 +105,7 @@ pub(crate) fn parse_up_to(raw: &[u8], max_body: usize) -> Result<Request<'_>, Re
         }
     }
     let length = length.unwrap_or(0);
-    if length > max_body {
+    if length > body_limit(raw, max_body) {
         return Err(BODY_TOO_LARGE);
     }
     if rest.len() < length {
@@ -199,7 +211,7 @@ fn wanted(buf: &[u8], max_body: usize) -> Wanted {
         .find(|(key, _)| key.eq_ignore_ascii_case("content-length"))
         .and_then(|(_, value)| value.trim().parse::<usize>().ok())
         .unwrap_or(0);
-    if length > max_body || buf.len() - split - 4 >= length {
+    if length > body_limit(buf, max_body) || buf.len() - split - 4 >= length {
         Wanted::Done
     } else {
         Wanted::More
@@ -245,6 +257,19 @@ mod tests {
             assert!(refused.status.starts_with(status), "{:?}: {}", String::from_utf8_lossy(raw), refused.status);
         }
         assert!(parse(big.as_bytes()).err().unwrap().status.starts_with("413"));
+    }
+
+    #[test]
+    fn only_an_image_upload_may_exceed_the_body_cap() {
+        let image = vec![7u8; MAX_BODY + 1];
+        let upload = [format!("POST /media HTTP/1.1\r\nContent-Length: {}\r\n\r\n", image.len()).as_bytes(), &image].concat();
+        assert_eq!(parse(&upload).unwrap().body.len(), MAX_BODY + 1);
+        assert!(matches!(wanted(&upload, MAX_BODY), Wanted::Done));
+        assert!(parse_up_to(&upload, MAX_BODY - 1).err().unwrap().status.starts_with("413"));
+        let other = [format!("POST /media/x HTTP/1.1\r\nContent-Length: {}\r\n\r\n", image.len()).as_bytes(), &image].concat();
+        assert!(parse(&other).err().unwrap().status.starts_with("413"));
+        let huge = format!("POST /media HTTP/1.1\r\nContent-Length: {}\r\n\r\n", MAX_UPLOAD + 1);
+        assert!(parse(huge.as_bytes()).err().unwrap().status.starts_with("413"));
     }
 
     #[test]

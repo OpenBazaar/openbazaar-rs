@@ -67,6 +67,19 @@ impl ReplyPath {
     }
 }
 
+/// The frame for `reply` to drop `drop`, for a transport that reaches the
+/// buyer some other way than an onion (a loopback reply URL, for now).
+pub fn reply_frame(drop: DropId, reply: &SealedReply) -> Vec<u8> {
+    let reply = reply.to_bytes();
+    let mut out = Vec::with_capacity(4 + 1 + 16 + 4 + reply.len());
+    out.extend_from_slice(FRAME_MAGIC);
+    out.push(FRAME_VERSION);
+    out.extend_from_slice(&drop.0);
+    out.extend_from_slice(&(reply.len() as u32).to_le_bytes());
+    out.extend_from_slice(&reply);
+    out
+}
+
 /// One sealed reply on its way to a buyer's reply onion.
 #[derive(Clone, Debug)]
 pub struct ReplyDelivery {
@@ -78,14 +91,7 @@ pub struct ReplyDelivery {
 impl ReplyDelivery {
     /// The bytes written on the reply stream. The onion is the dial target, not part of the frame.
     pub fn to_frame(&self) -> Vec<u8> {
-        let reply = self.reply.to_bytes();
-        let mut out = Vec::with_capacity(4 + 1 + 16 + 4 + reply.len());
-        out.extend_from_slice(FRAME_MAGIC);
-        out.push(FRAME_VERSION);
-        out.extend_from_slice(&self.drop.0);
-        out.extend_from_slice(&(reply.len() as u32).to_le_bytes());
-        out.extend_from_slice(&reply);
-        out
+        reply_frame(self.drop, &self.reply)
     }
 
     /// Read a frame on the buyer's side: the drop id and the sealed reply.

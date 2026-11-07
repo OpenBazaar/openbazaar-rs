@@ -114,6 +114,7 @@ impl VendorLabels {
                 .listings
                 .iter()
                 .position(|listing| listing.content_hash().is_ok_and(|hash| hash.to_hex() == target))
+                .filter(|index| *index < self.base.len())
                 .ok_or(LabelError::UnknownListing)?;
             Some(self.apply_listing(catalog, index, parse_label(request)?, secrets)?)
         };
@@ -223,6 +224,10 @@ pub(crate) fn response(node: &Node, client: &Client, head: &str, body: &[u8], or
     let Ok(request) = serde_json::from_slice::<Value>(body) else {
         return json_error("400 Bad Request", "The label could not be read.", origin);
     };
+    let target = request["target"].as_str().unwrap_or("");
+    if node.own_listings().by_hash(target).is_some() {
+        return own_listing_response(node, target, &request, origin);
+    }
     let result = {
         let mut labels = node.vendor_labels.lock().unwrap_or_else(|err| err.into_inner());
         let secrets = node.held_store_secrets();
@@ -253,6 +258,26 @@ pub(crate) fn response(node: &Node, client: &Client, head: &str, body: &[u8], or
             eprintln!("ob-node: {detail}");
             json_error("500 Internal Server Error", "The label could not be saved.", origin)
         }
+    }
+}
+
+/// A listing the own store signed through `/store/listings`; its labels
+/// live with the listing, not in `content-labels.json`.
+fn own_listing_response(node: &Node, target: &str, request: &Value, origin: Option<&str>) -> Vec<u8> {
+    let label = match parse_label(request) {
+        Ok(label) => label,
+        Err(LabelError::Invalid(message)) => return json_error("400 Bad Request", message, origin),
+        Err(_) => return json_error("400 Bad Request", "The label could not be read.", origin),
+    };
+    match node.relabel_own_listing(target, label) {
+        Ok(hash) => match catalog_value(&node.catalog()) {
+            Ok(mut catalog) => {
+                crate::xmr::add_xmr_flags(node, &mut catalog);
+                json_body("200 OK", &json!({ "hash": hash, "catalog": catalog }), origin)
+            }
+            Err(err) => json_error("500 Internal Server Error", &err.to_string(), origin),
+        },
+        Err(err) => crate::store_http::error_response(err, origin),
     }
 }
 

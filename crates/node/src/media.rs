@@ -55,6 +55,24 @@ impl Media {
         Ok(Self { dir, builtin })
     }
 
+    /// Keep an image under its SHA-256. Only the image types [`image_type`]
+    /// knows, up to [`MAX_MEDIA`] bytes.
+    pub(crate) fn put(&self, bytes: &[u8]) -> Result<([u8; 32], &'static str), String> {
+        if bytes.len() > MAX_MEDIA {
+            return Err("That image is larger than 2 MiB.".into());
+        }
+        let kind = image_type(bytes).ok_or("Upload a PNG, JPEG, GIF, or WebP image.")?;
+        let hash = sha256::Hash::hash(bytes).to_byte_array();
+        if self.get(&hash).is_none() {
+            let name: String = hash.iter().map(|byte| format!("{byte:02x}")).collect();
+            let tmp = self.dir.join(format!("{name}.tmp"));
+            fs::write(&tmp, bytes)
+                .and_then(|_| fs::rename(&tmp, self.dir.join(&name)))
+                .map_err(|err| err.to_string())?;
+        }
+        Ok((hash, kind))
+    }
+
     /// The bytes and content type for `hash`, only if everything checks.
     pub(crate) fn get(&self, hash: &[u8; 32]) -> Option<(&'static str, Vec<u8>)> {
         let bytes = match self.builtin.get(hash) {
@@ -124,6 +142,12 @@ mod tests {
 
         let mainnet = Media::open(dir.clone(), NetworkMode::Mainnet).unwrap();
         assert!(mainnet.get(&hash).is_none(), "demo images are testnet4 only");
+
+        let (put, kind) = mainnet.put(&jpeg).unwrap();
+        assert_eq!((put, kind), (jpeg_hash, "image/jpeg"));
+        assert_eq!(mainnet.get(&jpeg_hash).unwrap().1, jpeg.to_vec());
+        assert!(mainnet.put(script).is_err(), "only images are kept");
+        assert!(mainnet.put(&big).is_err(), "nothing above the cap is kept");
         let _ = fs::remove_dir_all(dir);
     }
 }

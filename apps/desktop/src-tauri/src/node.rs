@@ -1,4 +1,4 @@
-//! The bundled `ob-node` sidecar: one per app, on a free loopback port.
+//! The bundled `ob-node` sidecar: one per app, on a loopback port kept across launches.
 //!
 //! The node gets a piped stdin and exits when that pipe closes, so it stops
 //! with the app even when the app is killed without running its exit hook.
@@ -44,9 +44,11 @@ pub fn set_home_mode(app_data_dir: &Path, on: bool) -> io::Result<()> {
 }
 
 impl Sidecar {
-    /// Start the node on `port` (a free one when `None`). In home mode it
-    /// also publishes its onion service and the LAN channel for paired devices.
-    pub fn start(app_data_dir: &Path, port: Option<u16>) -> Result<Self, String> {
+    /// Start the node on `port` (the saved one, else a free one, when `None`).
+    /// In home mode it also publishes its onion service and the LAN channel
+    /// for paired devices. `file_vault` keeps the node's keys in a file in the
+    /// data folder instead of the OS keychain (for a disposable profile).
+    pub fn start(app_data_dir: &Path, port: Option<u16>, file_vault: bool) -> Result<Self, String> {
         create_private_dir(app_data_dir)
             .map_err(|err| format!("Could not create {}: {err}", app_data_dir.display()))?;
         let data_dir = app_data_dir.join(NETWORK);
@@ -57,7 +59,7 @@ impl Sidecar {
             .map_err(|err| format!("Could not open {}: {err}", log_path.display()))?;
         let port = match port {
             Some(port) => port,
-            None => free_loopback_port().map_err(|err| format!("No free loopback port: {err}"))?,
+            None => node_port(&data_dir).map_err(|err| format!("No free loopback port: {err}"))?,
         };
         let binary = sidecar_path().map_err(|err| format!("Could not find ob-node: {err}"))?;
 
@@ -76,6 +78,9 @@ impl Sidecar {
             .stdin(Stdio::piped())
             .stdout(log.try_clone().map_err(|err| err.to_string())?)
             .stderr(log);
+        if file_vault {
+            command.arg("--vault").arg("file");
+        }
         hide_console(&mut command);
         let child = command
             .spawn()
@@ -156,6 +161,20 @@ fn read_token(path: &Path) -> io::Result<String> {
     }
 }
 
+/// The port saved in `node.port` if it is still free, else a new one, saved.
+/// Other nodes keep this node's URL for mail and follows, so it must not
+/// change between launches.
+fn node_port(data_dir: &Path) -> io::Result<u16> {
+    let path = data_dir.join("node.port");
+    let saved = fs::read_to_string(&path).ok().and_then(|text| text.trim().parse::<u16>().ok());
+    if let Some(port) = saved.filter(|&port| port != 0 && TcpListener::bind((Ipv4Addr::LOCALHOST, port)).is_ok()) {
+        return Ok(port);
+    }
+    let port = free_loopback_port()?;
+    fs::write(&path, port.to_string())?;
+    Ok(port)
+}
+
 /// The OS picks the port; the listener is dropped right before the node binds it.
 fn free_loopback_port() -> io::Result<u16> {
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
@@ -193,3 +212,38 @@ fn hide_console(command: &mut Command) {
 
 #[cfg(not(windows))]
 fn hide_console(_command: &mut Command) {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("ob-desktop-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn the_node_keeps_its_port_across_launches() {
+        let dir = temp_dir("port-kept");
+        let first = node_port(&dir).unwrap();
+        assert_eq!(fs::read_to_string(dir.join("node.port")).unwrap(), first.to_string());
+        assert_eq!(node_port(&dir).unwrap(), first);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_taken_or_unreadable_port_is_replaced() {
+        let dir = temp_dir("port-taken");
+        let taken = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let busy = taken.local_addr().unwrap().port();
+        fs::write(dir.join("node.port"), busy.to_string()).unwrap();
+        let port = node_port(&dir).unwrap();
+        assert_ne!(port, busy);
+        assert_eq!(fs::read_to_string(dir.join("node.port")).unwrap(), port.to_string());
+        fs::write(dir.join("node.port"), "not a port").unwrap();
+        assert_ne!(node_port(&dir).unwrap(), 0);
+        fs::remove_dir_all(dir).unwrap();
+    }
+}

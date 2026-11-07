@@ -36,6 +36,12 @@ pub const AWAITING_TERMS: &str = "Awaiting vendor terms";
 pub const RELEASED: &str = "Released";
 pub const DISPUTED: &str = "Disputed";
 pub const SETTLED: &str = "Settled by the moderator";
+/// Orders to a store on another node ([`crate::remote_orders`]), set from
+/// the seller's replies. The watcher leaves these alone.
+pub const AWAITING_SELLER: &str = "Awaiting seller";
+pub const DECLINED: &str = "Declined by the seller";
+pub const SHIPPED: &str = "Shipped";
+pub const COMPLETED: &str = "Completed";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Observation {
@@ -171,6 +177,7 @@ impl Node {
                 eprintln!("ob-node: order {}: {err}", target.id);
             }
         }
+        changed += self.watch_sales(tip);
         Ok(changed)
     }
 
@@ -178,7 +185,10 @@ impl Node {
         let orders = self.orders();
         orders
             .on_network()
-            .filter(|order| ![PAID, FUNDED, AWAITING_TERMS, RELEASED, DISPUTED, SETTLED].contains(&order.status.as_str()))
+            .filter(|order| {
+                ![PAID, FUNDED, AWAITING_TERMS, RELEASED, DISPUTED, SETTLED, AWAITING_SELLER, DECLINED, SHIPPED, COMPLETED]
+                    .contains(&order.status.as_str())
+            })
             .filter_map(|order| {
                 if order.settlement == "escrow" {
                     let escrow = order.escrow.as_ref()?;

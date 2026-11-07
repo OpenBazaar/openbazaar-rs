@@ -133,6 +133,8 @@ pub struct ServeOptions {
     pub xmr_daemons: Vec<String>,
     /// `--lightning` and its flags; see `lightning/options.rs`.
     pub lightning: crate::LnFlags,
+    /// `--follow URL`: copy the store another node sells there. May be repeated.
+    pub follows: Vec<String>,
 }
 
 impl ServeOptions {
@@ -158,6 +160,7 @@ impl ServeOptions {
         let mut live_rates = true;
         let mut xmr_daemons: Vec<String> = Vec::new();
         let mut lightning = crate::LnFlags::default();
+        let mut follows: Vec<String> = Vec::new();
         let mut iter = args.iter();
         while let Some(arg) = iter.next() {
             let mut value = |name: &str| {
@@ -234,6 +237,7 @@ impl ServeOptions {
                     let text = value("--xmr-daemon")?;
                     xmr_daemons.extend(text.split(',').map(str::trim).filter(|url| !url.is_empty()).map(String::from));
                 }
+                "--follow" => follows.push(crate::replicas::normalize(&value("--follow")?)?),
                 other if !other.starts_with('-') => {
                     port = other
                         .parse()
@@ -275,6 +279,7 @@ impl ServeOptions {
             live_rates,
             xmr_daemons,
             lightning,
+            follows,
         })
     }
 

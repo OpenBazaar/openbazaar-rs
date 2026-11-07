@@ -1,0 +1,101 @@
+import { useState, type FormEvent } from "react";
+import { updateProfile, type ProfileChanges, type SellerProfile } from "../seller";
+import { PageHeading } from "./PageHeading";
+import { ImageUpload, MediaImage, useLockedAction } from "./SellerKit";
+
+type Fields = Required<Omit<ProfileChanges, "shipsTo">> & { shipsTo: string };
+
+function fieldsOf(profile: SellerProfile): Fields {
+  return {
+    name: profile.name,
+    region: profile.region,
+    tagline: profile.tagline,
+    about: profile.about,
+    avatar: profile.avatar,
+    banner: profile.banner,
+    shippingPolicy: profile.shippingPolicy,
+    returnsPolicy: profile.returnsPolicy,
+    processingTime: profile.processingTime,
+    shipsTo: profile.shipsTo.join(", "),
+  };
+}
+
+function TextField({ label, value, onChange, max, wide = false, multiline = false, placeholder }: { label: string; value: string; onChange: (value: string) => void; max: number; wide?: boolean; multiline?: boolean; placeholder?: string }) {
+  return <label className={`ob-field ${wide ? "ob-field-wide" : ""}`}>
+    <span>{label}</span>
+    {multiline ? <textarea value={value} maxLength={max} placeholder={placeholder} onChange={e => onChange(e.target.value)}/> : <input value={value} maxLength={max} placeholder={placeholder} onChange={e => onChange(e.target.value)}/>}
+  </label>;
+}
+
+/** The storefront editor: what buyers see, signed by the node when saved. */
+export function StoreSetup({ profile, onSaved, onViewStore }: { profile: SellerProfile; onSaved: (profile: SellerProfile, message: string) => void; onViewStore: () => void }) {
+  const [fields, setFields] = useState(() => fieldsOf(profile));
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const { run, dialog } = useLockedAction(setError);
+  const set = <K extends keyof Fields>(key: K) => (value: Fields[K]) => setFields(f => ({ ...f, [key]: value }));
+  const first = !profile.setUp;
+  async function save(e: FormEvent) {
+    e.preventDefault();
+    if (busy) return;
+    setBusy(true);
+    setError("");
+    const shipsTo = fields.shipsTo.split(/[\s,]+/).map(code => code.trim().toUpperCase()).filter(Boolean);
+    await run(async () => {
+      const next = await updateProfile({ ...fields, shipsTo });
+      setFields(fieldsOf(next));
+      onSaved(next, first ? "Your store is open" : "Store saved and signed");
+    });
+    setBusy(false);
+  }
+  return <section className="ob-store-setup">
+    <PageHeading title={first ? "Set up your store" : "Store settings"} description={first ? "Name your store and say what you sell. Your node signs it and serves it to buyers." : "Changes are signed by your node and replace the store buyers see."} action={profile.setUp ? <button className="ob-secondary" onClick={onViewStore}>View your store</button> : undefined}/>
+    <form className="ob-store-form" onSubmit={e => void save(e)}>
+      <div className="ob-store-images">
+        <div className="ob-store-banner-edit">
+          {fields.banner ? <MediaImage hash={fields.banner} alt="Store banner" className="ob-store-banner-img"/> : <span className="ob-store-banner-empty">No banner</span>}
+          <div className="ob-store-image-actions">
+            <ImageUpload label={fields.banner ? "Change banner" : "Add banner"} onUploaded={set("banner")}/>
+            {fields.banner && <button type="button" className="ob-text-link" onClick={() => set("banner")(null)}>Remove</button>}
+          </div>
+        </div>
+        <div className="ob-store-avatar-edit">
+          <span className="ob-store-avatar">{fields.avatar ? <MediaImage hash={fields.avatar} alt="Store avatar"/> : (fields.name.charAt(0) || "?")}</span>
+          <ImageUpload label={fields.avatar ? "Change avatar" : "Add avatar"} onUploaded={set("avatar")}/>
+          {fields.avatar && <button type="button" className="ob-text-link" onClick={() => set("avatar")(null)}>Remove</button>}
+        </div>
+      </div>
+      <fieldset className="ob-store-section">
+        <legend>About your store</legend>
+        <div className="ob-field-grid">
+          <TextField label="Store name" value={fields.name} onChange={set("name")} max={60} placeholder="Brook and Pine"/>
+          <TextField label="Based in" value={fields.region} onChange={set("region")} max={40} placeholder="Region or country"/>
+          <TextField label="Tagline" value={fields.tagline} onChange={set("tagline")} max={120} wide placeholder="One line about what you make or sell"/>
+          <TextField label="Description" value={fields.about} onChange={set("about")} max={2000} wide multiline/>
+        </div>
+      </fieldset>
+      <fieldset className="ob-store-section">
+        <legend>Shipping and returns</legend>
+        <div className="ob-field-grid">
+          <TextField label="Ships to (country codes)" value={fields.shipsTo} onChange={set("shipsTo")} max={400} placeholder="US, CA, GB"/>
+          <TextField label="Processing time" value={fields.processingTime} onChange={set("processingTime")} max={120} placeholder="Ships in 2–3 days"/>
+          <TextField label="Shipping policy" value={fields.shippingPolicy} onChange={set("shippingPolicy")} max={500} wide multiline/>
+          <TextField label="Returns policy" value={fields.returnsPolicy} onChange={set("returnsPolicy")} max={500} wide multiline/>
+        </div>
+      </fieldset>
+      <fieldset className="ob-store-section">
+        <legend>Payments</legend>
+        <ul className="ob-payment-rails">
+          <li className="is-on"><strong>Bitcoin, paid to you directly</strong><span>{profile.network === "testnet4" ? "Testnet4 coins. Each order gets a fresh address from your node's wallet." : "Each order gets a fresh address from your node's wallet."}</span></li>
+          <li className={profile.xmrAvailable ? "" : "is-off"}><strong>Monero</strong><span>{profile.xmrAvailable ? "Buyers can pay in Monero." : "Not available for your own store on this node yet."}</span></li>
+          <li className={profile.escrowAvailable ? "" : "is-off"}><strong>Moderated escrow</strong><span>{profile.escrowAvailable ? "Buyers can choose a moderator." : "Not available for your own store on this node yet. Orders are paid directly."}</span></li>
+        </ul>
+      </fieldset>
+      {error && <p className="ob-form-error" role="alert">{error}</p>}
+      <div className="ob-form-actions">
+        <button className="ob-primary" disabled={busy || !fields.name.trim()}>{busy ? "Signing…" : first ? "Open my store" : "Save store"}</button>
+      </div>
+    </form>
+    {dialog}
+  </section>;
+}

@@ -53,18 +53,25 @@ impl MailDrop {
 
 /// `Err` carries the refusal to send instead of queueing the letter.
 pub(crate) fn admit(node: &Node, head: &str, body: &[u8]) -> Result<(), Vec<u8>> {
+    admit_mail(node, head, body)?;
+    let pending = node.escrow.inbox.list().map(|ids| ids.len()).unwrap_or(MAX_PENDING);
+    if pending >= MAX_PENDING {
+        return Err(json_error("503 Service Unavailable", "The escrow inbox is full.", None));
+    }
+    Ok(())
+}
+
+/// The limits every peer mail route shares: order mail (`POST /mail`,
+/// `POST /mail/reply`) is handled as it arrives, so it has no inbox to fill.
+pub(crate) fn admit_mail(node: &Node, head: &str, body: &[u8]) -> Result<(), Vec<u8>> {
     if has_header(head, "origin") {
-        return Err(json_error("403 Forbidden", "Escrow mail comes from nodes, not pages.", None));
+        return Err(json_error("403 Forbidden", "Mail comes from nodes, not pages.", None));
     }
     if body.len() > MAX_SEALED_LEN {
         return Err(json_error("413 Content Too Large", "That letter is too large.", None));
     }
     if !node.mail_drop.take(Instant::now()) {
         return Err(json_error("429 Too Many Requests", "Too many letters. Try again shortly.", None));
-    }
-    let pending = node.escrow.inbox.list().map(|ids| ids.len()).unwrap_or(MAX_PENDING);
-    if pending >= MAX_PENDING {
-        return Err(json_error("503 Service Unavailable", "The escrow inbox is full.", None));
     }
     Ok(())
 }
