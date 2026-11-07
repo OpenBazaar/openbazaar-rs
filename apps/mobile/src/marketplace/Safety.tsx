@@ -34,7 +34,6 @@ export function SafetySettingsPanel({ settings, onChange, labelSources }: { sett
 export function HideActions({ listing, settings, onChange }: { listing: ListingHeader; settings: SafetySettings; onChange: (settings: SafetySettings) => void }) {
   return <div className="ob-hide-actions">
     <button className="ob-text-link" onClick={() => onChange({ ...settings, hiddenListings: toggleHidden(settings.hiddenListings, { id: listing.hash, label: listing.title }) })}>Hide this listing</button>
-    {" · "}
     <button className="ob-text-link" onClick={() => onChange({ ...settings, hiddenStores: toggleHidden(settings.hiddenStores, { id: listing.storeId, label: listing.seller }) })}>Hide this seller</button>
   </div>;
 }
@@ -43,8 +42,7 @@ export function SafetyInterstitial({ reason, onShow, onBack }: { reason: string;
   return <div className="ob-empty" role="alert">
     <h2>This listing is hidden on this device.</h2>
     <p>{reason} You can change this in Content filters.</p>
-    <button className="ob-secondary" onClick={onShow}>Show it anyway</button>
-    <button className="ob-primary" onClick={onBack}>Back to the goods</button>
+    <div className="ob-empty-actions"><button className="ob-secondary" onClick={onShow}>Show listing</button><button className="ob-primary" onClick={onBack}>Back to products</button></div>
   </div>;
 }
 

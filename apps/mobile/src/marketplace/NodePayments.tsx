@@ -28,6 +28,7 @@ import { paymentStatusView } from '../paymentStatus'
 import { useNodeResource } from '../useNodeResource'
 import { isLocked, quotePayment, type LockStatus, type Quote, type Ticket } from '../walletLock'
 import { SpendConfirmDialog, UnlockDialog, WalletLockPanel, useLockState } from './WalletLock'
+import { PageHeading } from './PageHeading'
 
 function usePaymentState(activeWallet: boolean, onWallet: () => void) {
   const network = useNodeResource(fetchNetwork, 30000)
@@ -213,16 +214,9 @@ export function WalletPanel({
       : current?.receiveAddress
   return (
     <section className='ob-wallet-page'>
-      <div className='ob-section-heading'>
-        <h1>Your wallet</h1>
-        <button className='ob-secondary' onClick={() => void wallet.refresh()}>
-          Refresh wallet
-        </button>
-      </div>
-      <p className='ob-page-intro'>
-        Your node holds this bitcoin and pays each seller order from it.
-        Balances refresh every 15 seconds.
-      </p>
+      <PageHeading title="Your wallet" description="Your node holds this bitcoin and pays each seller separately." action={
+        <button className='ob-secondary' disabled={wallet.loading} onClick={() => void wallet.refresh()}>Refresh wallet</button>
+      }/>
       <WalletLockPanel lock={lock} />
       {(error || wallet.error || network.error) && (
         <p className='ob-form-error' role='alert'>
@@ -458,8 +452,7 @@ export function OrderPayment({
       )}
       {escrow ? (
         <p className='ob-page-intro'>
-          Escrow payment is not available in this client. This order’s status is
-          read-only.
+          Escrow payment is not available here yet. You can track this order’s status here.
         </p>
       ) : (
         <>
