@@ -11,6 +11,7 @@ import {
   type LnStores
 } from '../lightning'
 import { useNodeResource } from '../useNodeResource'
+import { RailMark } from './RailMark'
 import { Dialog, FormError, Passphrase, useSubmit } from './WalletLock'
 
 /** Seller settings: which stores take Lightning, the LSP, and channels. */
@@ -37,7 +38,7 @@ export function LightningSettings() {
   return (
     <div className='ob-settings-page'>
       <header className='ob-settings-heading'>
-        <h1>Lightning</h1>
+        <h1 className='ob-rail'><RailMark rail='lightning' /> Lightning</h1>
         <p>Take Lightning payments for direct orders. Your node issues one invoice per order. Escrow stays on-chain.</p>
       </header>
       {(status.error || stores.error) && <p className='ob-form-error' role='alert'>{status.error || stores.error}</p>}

@@ -959,6 +959,24 @@ svg {
 .ob-payment-choice svg {
   color: #8da07e;
 }
+.ob-rail {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.ob-rail svg {
+  flex-shrink: 0;
+  color: var(--ob-brand);
+}
+.ob-rail-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  margin: 8px 0 0;
+}
+.ob-payment-note .ob-rail-row {
+  color: var(--ob-ink);
+}
 .ob-place-order {
   width: 100%;
 }

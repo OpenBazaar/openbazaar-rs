@@ -6,7 +6,7 @@ import { sha256 } from "@noble/hashes/sha2.js";
 
 import { parseBuyerOrder } from "./catalog.ts";
 import { bytesToHex, verifyListingRecord } from "./records.ts";
-import { draftOf, formatPrice, fromMinorUnits, parseFollows, parseOwnListings, parseProfile, parseSale, salesToShip, toMinorUnits } from "./seller.ts";
+import { displayNameError, draftOf, formatPrice, fromMinorUnits, parseFollows, parseOwnListings, parseProfile, parseSale, salesToShip, toMinorUnits } from "./seller.ts";
 
 const SECRET = new Uint8Array(32).fill(7);
 const STORE = bytesToHex(schnorr.getPublicKey(SECRET));
@@ -101,11 +101,22 @@ test("typed prices become minor units and back", () => {
   assert.equal(formatPrice(25000, "SAT"), "25,000 sats");
 });
 
+test("a store display name is required and at most 64 bytes", () => {
+  assert.equal(displayNameError("  "), "Give the store a name.");
+  assert.equal(displayNameError("Brook and Pine"), null);
+  assert.equal(displayNameError("N".repeat(64)), null);
+  assert.match(displayNameError("N".repeat(65)) ?? "", /64/);
+  assert.equal(displayNameError("字".repeat(21)), null);
+  assert.match(displayNameError("字".repeat(22)) ?? "", /64/);
+});
+
 test("the profile reads the node's values and drops unknown ones", () => {
   const profile = parseProfile({ role: "seller", storeKey: STORE, name: "Brook and Pine", avatar: IMAGE, banner: "not a hash", shipsTo: ["US", 4], xmrAvailable: false, published: true });
   assert.equal(profile.role, "seller");
   assert.equal(profile.avatar, IMAGE);
   assert.equal(profile.banner, null);
+  assert.equal(profile.acceptsLightning, false);
+  assert.equal(parseProfile({ role: "seller", storeKey: STORE, acceptsLightning: true }).acceptsLightning, true);
   assert.deepEqual(profile.shipsTo, ["US"]);
   assert.equal(parseProfile({ role: "admin", storeKey: STORE }).role, null);
   assert.throws(() => parseProfile({ role: "seller" }));

@@ -23,6 +23,8 @@ export type SellerProfile = {
   shipsTo: string[];
   contentRating: ContentRating;
   acceptsXmr: boolean;
+  /** The signed store record takes Lightning direct pay. */
+  acceptsLightning: boolean;
   /** This node can take Monero for its own store's sales. */
   xmrAvailable: boolean;
   /** This node can run escrow for its own store's sales. */
@@ -42,6 +44,17 @@ export type ProfileChanges = Partial<
 /** "SAT" prices in sats; the rest in the currency's minor unit. */
 export type PriceCurrency = "SAT" | "USD" | "EUR" | "GBP" | "JPY";
 export const PRICE_CURRENCIES: readonly PriceCurrency[] = ["USD", "EUR", "GBP", "JPY", "SAT"];
+/** Bytes in the signed store record's display name. */
+export const MAX_STORE_NAME = 64;
+
+/** Why `name` cannot be signed, or null when it can. Empty names are refused. */
+export function displayNameError(name: string): string | null {
+  const text = name.trim();
+  if (!text) return "Give the store a name.";
+  if (new TextEncoder().encode(text).length > MAX_STORE_NAME) return `The name is at most ${MAX_STORE_NAME} characters.`;
+  return null;
+}
+
 export const CONTENT_TAGS = ["nudity", "violence", "drugs", "weapons", "gambling"] as const;
 export const MAX_LISTING_IMAGES = 8;
 
@@ -117,6 +130,7 @@ export function parseProfile(value: unknown): SellerProfile {
     shipsTo: Array.isArray(p.shipsTo) ? p.shipsTo.filter((c): c is string => typeof c === "string") : [],
     contentRating: RATINGS.includes(p.contentRating as ContentRating) ? (p.contentRating as ContentRating) : "unrated",
     acceptsXmr: p.acceptsXmr === true,
+    acceptsLightning: p.acceptsLightning === true,
     xmrAvailable: p.xmrAvailable === true,
     escrowAvailable: p.escrowAvailable === true,
     published: p.published === true,
