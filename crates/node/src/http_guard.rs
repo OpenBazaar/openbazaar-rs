@@ -6,9 +6,11 @@
 //! A name an attacker controls never matches, whatever it resolves to.
 //!
 //! **Origin.** A browser names the page that sent a request. Only the desktop
-//! webview origins and the configured shop origin may call; any other
-//! `Origin`, including `null`, is refused before the route runs, so a page
-//! cannot cause side effects even with a request whose answer it cannot read.
+//! webview origins, the configured shop origin, and — only while this node
+//! is serving its local shop — this listener's own loopback origin may
+//! call. Any other `Origin`, including `null`, is refused before the route
+//! runs, so a page cannot cause side effects even with a request whose
+//! answer it cannot read.
 //! A request without `Origin` is not from a page (peer nodes, the CLI) and
 //! still needs the pairing token wherever the route asks for it.
 

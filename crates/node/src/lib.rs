@@ -9,6 +9,7 @@
 #![forbid(unsafe_code)]
 
 mod addresses;
+mod browser;
 mod build_info;
 mod buyer_orders;
 mod chain;
@@ -193,6 +194,9 @@ pub struct LocalConfig {
     /// `POST /pair` prints one-time codes. The desktop app turns this off.
     pub pair_codes: bool,
     pub egress: Egress,
+    /// `--local-shop`: the web export a browser on this machine loads.
+    /// Remote browsers keep using `--web-dir` on the onion gateway.
+    pub local_shop: Option<PathBuf>,
 }
 
 impl LocalConfig {
@@ -204,6 +208,7 @@ impl LocalConfig {
             shop_origin: http_guard::DEFAULT_SHOP_ORIGIN.to_string(),
             pair_codes: true,
             egress: Egress::default(),
+            local_shop: None,
         }
     }
 }
@@ -294,6 +299,8 @@ pub struct Node {
     /// Paired devices and the home node this node is a client of.
     pub(crate) remote: remote::Remote,
     pub(crate) ln: lightning::LnNode,
+    /// One-time paths and short-lived cookies for a browser on this machine.
+    pub(crate) browser: browser::Browser,
 }
 
 impl Node {
@@ -422,6 +429,7 @@ impl Node {
             xmr,
             remote: remote::Remote::open(&dir, vault.clone())?,
             ln: lightning::LnNode::open(&dir, &vault)?,
+            browser: browser::Browser::new(),
         };
         node.drop_uncommitted_spend()?;
         Ok(node)

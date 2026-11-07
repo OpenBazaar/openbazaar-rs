@@ -135,6 +135,8 @@ pub struct ServeOptions {
     pub lightning: crate::LnFlags,
     /// `--follow URL`: copy the store another node sells there. May be repeated.
     pub follows: Vec<String>,
+    /// `--local-shop DIR`: serve the web export on the loopback listener.
+    pub local_shop: Option<PathBuf>,
 }
 
 impl ServeOptions {
@@ -161,6 +163,7 @@ impl ServeOptions {
         let mut xmr_daemons: Vec<String> = Vec::new();
         let mut lightning = crate::LnFlags::default();
         let mut follows: Vec<String> = Vec::new();
+        let mut local_shop = None;
         let mut iter = args.iter();
         while let Some(arg) = iter.next() {
             let mut value = |name: &str| {
@@ -238,6 +241,13 @@ impl ServeOptions {
                     xmr_daemons.extend(text.split(',').map(str::trim).filter(|url| !url.is_empty()).map(String::from));
                 }
                 "--follow" => follows.push(crate::replicas::normalize(&value("--follow")?)?),
+                "--local-shop" => {
+                    let path = PathBuf::from(value("--local-shop")?);
+                    if !path.join("index.html").is_file() {
+                        return Err("--local-shop needs a directory that contains index.html".to_string());
+                    }
+                    local_shop = Some(path);
+                }
                 other if !other.starts_with('-') => {
                     port = other
                         .parse()
@@ -280,6 +290,7 @@ impl ServeOptions {
             xmr_daemons,
             lightning,
             follows,
+            local_shop,
         })
     }
 

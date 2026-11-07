@@ -65,25 +65,48 @@ fn a_rebound_host_name_is_refused_on_every_route() {
 
 #[test]
 fn a_foreign_page_cannot_drop_escrow_mail_or_reach_any_route() {
-    let (_dir, node) = node();
+    let (_dir, closed) = node();
     let letter = letter();
     for origin in ["https://evil.example", "null", "http://127.0.0.1:8787"] {
         let headers = format!("Host: 127.0.0.1:8787\r\nOrigin: {origin}\r\nContent-Type: text/plain\r\n");
-        let response = send(&node, &post("/escrow/mail", &headers, &letter));
+        let response = send(&closed, &post("/escrow/mail", &headers, &letter));
         assert!(status(&response).contains("403"), "{origin}: {}", status(&response));
-        let catalog = send(&node, format!("GET /catalog HTTP/1.1\r\nHost: 127.0.0.1:8787\r\nOrigin: {origin}\r\n\r\n").as_bytes());
+        let catalog = send(&closed, format!("GET /catalog HTTP/1.1\r\nHost: 127.0.0.1:8787\r\nOrigin: {origin}\r\n\r\n").as_bytes());
         assert!(status(&catalog).contains("403"), "{origin}");
     }
-    assert!(node.escrow.inbox.list().unwrap().is_empty());
+    assert!(closed.escrow.inbox.list().unwrap().is_empty());
     let shop = send(
-        &node,
+        &closed,
         &post("/escrow/mail", "Host: 127.0.0.1:8787\r\nOrigin: http://127.0.0.1:4173\r\n", &letter),
     );
     assert!(status(&shop).contains("403"), "pages never post escrow mail");
 
-    let peer = send(&node, &post("/escrow/mail", "Host: 127.0.0.1:8787\r\n", &letter));
+    let (shop_dir, mut serving) = node();
+    let page = shop_dir.0.join("shop");
+    std::fs::create_dir(&page).unwrap();
+    std::fs::write(page.join("index.html"), "<html><head></head></html>").unwrap();
+    serving.local.local_shop = Some(page);
+    let own = send(&serving, b"GET /catalog HTTP/1.1\r\nHost: 127.0.0.1:8787\r\nOrigin: http://127.0.0.1:8787\r\n\r\n");
+    assert!(status(&own).contains("200"), "the localhost shop may read the catalog");
+    let own_mail = send(&serving, &post("/escrow/mail", "Host: 127.0.0.1:8787\r\nOrigin: http://127.0.0.1:8787\r\n", &letter));
+    assert!(status(&own_mail).contains("403"), "the shop page does not post escrow mail");
+    let wallet = send(&serving, b"GET /wallet HTTP/1.1\r\nHost: 127.0.0.1:8787\r\nOrigin: http://127.0.0.1:8787\r\n\r\n");
+    assert!(status(&wallet).contains("403"), "the shop page still needs its cookie for the wallet");
+    assert!(serving.escrow.inbox.list().unwrap().is_empty());
+    for origin in ["https://evil.example", "null", "http://127.0.0.1:9"] {
+        let headers = format!("Host: 127.0.0.1:8787\r\nOrigin: {origin}\r\n");
+        let response = send(&serving, &post("/escrow/mail", &headers, &letter));
+        assert!(status(&response).contains("403"), "{origin} mail: {}", status(&response));
+        let catalog = send(&serving, format!("GET /catalog HTTP/1.1\r\nHost: 127.0.0.1:8787\r\nOrigin: {origin}\r\n\r\n").as_bytes());
+        assert!(status(&catalog).contains("403"), "{origin} catalog: {}", status(&catalog));
+        let wallet = send(&serving, format!("GET /wallet HTTP/1.1\r\nHost: 127.0.0.1:8787\r\nOrigin: {origin}\r\n\r\n").as_bytes());
+        assert!(status(&wallet).contains("403"), "{origin} wallet: {}", status(&wallet));
+    }
+    assert!(serving.escrow.inbox.list().unwrap().is_empty());
+
+    let peer = send(&closed, &post("/escrow/mail", "Host: 127.0.0.1:8787\r\n", &letter));
     assert!(status(&peer).contains("202"), "{peer}");
-    assert_eq!(node.escrow.inbox.list().unwrap().len(), 1);
+    assert_eq!(closed.escrow.inbox.list().unwrap().len(), 1);
 }
 
 #[test]

@@ -18,6 +18,9 @@ pub(crate) fn refusal(method: &str, path: &str, body: &[u8]) -> Option<&'static 
     };
     match (method, path) {
         (_, "/pair") => Some("The pairing token stays on the node's machine."),
+        (_, path) if path == "/browser-session" || path.starts_with("/browser/") => {
+            Some("A browser on this machine opens the shop. A paired device uses its own session.")
+        }
         (_, path) if path == "/home" || path.starts_with("/home/") => {
             Some("A device cannot reach another home node through this one.")
         }
@@ -46,6 +49,12 @@ mod tests {
     fn device_sessions_stop_short_of_the_machine() {
         for (method, path, body) in [
             ("POST", "/pair", "{}"),
+            ("POST", "/browser-session", ""),
+            (
+                "GET",
+                "/browser/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "",
+            ),
             ("GET", "/home", ""),
             ("POST", "/home/proxy/catalog", ""),
             ("POST", "/wallet/phrase", "{}"),
