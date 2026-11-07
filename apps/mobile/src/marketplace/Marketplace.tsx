@@ -13,6 +13,7 @@ import { CanopyDivider, MarketEmptyArtwork } from "./MarketArtwork";
 import { NetworkBadge, NodePaymentsProvider, OrderPayment, WalletPanel } from "./NodePayments";
 import { useNodeResource } from "../useNodeResource";
 import { PageHeading } from "./PageHeading";
+import { BuildLine, BuildMismatchWarning, useBuildInfo } from "./BuildInfo";
 
 
 type IconName = "settings" | "wallet" | "sun" | "moon" | "compass" | "heart" | "bag" | "arrow" | "search" | "chevron" | "check" | "shield" | "globe" | "close" | "menu" | "book" | "cup" | "home" | "music" | "shirt" | "tool" | "paper" | "grid" | "pin" | "bolt" | "external";
@@ -81,6 +82,7 @@ export default function Marketplace() {
   const [theme, setTheme] = useState<"light" | "dark">(() => { try { const t = localStorage.getItem("ob-theme"); if (t === "light" || t === "dark") return t; } catch {} return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light"; });
   useEffect(() => { document.documentElement.dataset.obTheme = theme; try { localStorage.setItem("ob-theme", theme); } catch {} }, [theme]);
   const [toast, setToast] = useState("");
+  const build = useBuildInfo();
   const [safety, setSafety] = useState(readSafety);
   const [revealed, setRevealed] = useState<string[]>([]);
   const [labelers, setLabelerState] = useState<LabelerState | null>(null);
@@ -176,6 +178,7 @@ export default function Marketplace() {
           <NavItem icon="grid" active={section === "store-labels"} onClick={() => navigate("store-labels")}>Store labels</NavItem>
         </nav>
         <div className="ob-node" title={loading ? "Connecting to your node" : loadError ? "Your node is offline" : "Your node is connected"}><span className={`ob-status-dot ${loadError ? "is-offline" : loading ? "is-loading" : ""}`}/><div><strong>{loading ? "Connecting to your node" : loadError ? "Your node is offline" : "Your node is connected"}</strong></div></div>
+        <BuildLine build={build} onCopied={setToast}/>
       </div>
       {!collapsed && <div className="ob-sidebar-resize" role="separator" aria-label="Resize sidebar" aria-orientation="vertical" aria-valuemin={224} aria-valuemax={360} aria-valuenow={sidebarWidth} tabIndex={mobile ? -1 : 0} title="Drag to resize. Use arrow keys when focused." onDoubleClick={() => setSidebarWidth(244)} onKeyDown={e => { if (e.key === "ArrowLeft" || e.key === "ArrowRight") { e.preventDefault(); setSidebarWidth(w => Math.max(224, Math.min(360, w + (e.key === "ArrowRight" ? 16 : -16)))); } if (e.key === "Home") setSidebarWidth(224); if (e.key === "End") setSidebarWidth(360); }} onPointerDown={e => { e.currentTarget.setPointerCapture(e.pointerId); setResizing(true); }} onPointerMove={e => { if (e.currentTarget.hasPointerCapture(e.pointerId)) setSidebarWidth(Math.max(224, Math.min(360, e.clientX))); }} onPointerUp={e => { e.currentTarget.releasePointerCapture(e.pointerId); setResizing(false); }} onPointerCancel={() => setResizing(false)}/>}
     </aside>
@@ -186,6 +189,7 @@ export default function Marketplace() {
         <div className="ob-topbar-right"><button className="ob-theme-toggle" role="switch" aria-checked={theme === "dark"} aria-label="Dark mode" title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"} onClick={() => setTheme(t => t === "dark" ? "light" : "dark")}><Icon name={theme === "dark" ? "moon" : "sun"} size={17}/><span className="ob-theme-track"><span/></span></button><label className="ob-currency"><Icon name="globe" size={16}/><select aria-label="Display currency" value={currency} onChange={e => { const c = e.target.value as CurrencyCode; setCurrency(c); try { localStorage.setItem("ob-shop-currency", c); } catch {} }}>{["USD", "EUR", "GBP", "JPY"].map(c => <option key={c}>{c}</option>)}</select></label></div>
       </header>
       <NetworkBadge/>
+      <BuildMismatchWarning build={build}/>
       <main className="ob-content" id="ob-content" ref={content}>
         <div className="ob-content-inner">
           {browsing && <div className="ob-discovery-bar"><div className="ob-search"><Icon name="search" size={18}/><input ref={searchRef} aria-label="Search listings" placeholder="Search marketplace" value={query} onChange={e => { setQuery(e.target.value); setPage({ name: "browse" }); }}/>{query ? <button className="ob-icon-button" aria-label="Clear search" onClick={() => setQuery("")}><Icon name="close" size={16}/></button> : <kbd>⌘ K</kbd>}</div></div>}

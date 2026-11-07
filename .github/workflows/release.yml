@@ -8,6 +8,11 @@ name: release
 # is checked, tagging v<version> at the built commit. A version with a
 # pre-release part (0.1.0-alpha.1) is published as a prerelease.
 #
+# The version comes from the run's input or tag. scripts/version.mjs writes it
+# to every file that carries it (Cargo.toml is the source of truth) and checks
+# they agree; the built ob-node must then report it. Builds are stamped with
+# the commit and kind: "release" for a tag or a published run, "ci" otherwise.
+#
 # Unsigned builds need no secrets. Signing runs only when these repository
 # secrets exist:
 #
@@ -60,6 +65,8 @@ jobs:
           node-version: 22
           cache: npm
           cache-dependency-path: apps/mobile/package-lock.json
+      - run: node scripts/version.mjs check
+      - run: node --test scripts/version.test.mjs
       - run: npm ci
         working-directory: apps/mobile
       - run: npm run typecheck
@@ -72,6 +79,8 @@ jobs:
     timeout-minutes: 60
     permissions:
       contents: read
+    env:
+      OB_BUILD_KIND: ${{ (startsWith(github.ref, 'refs/tags/v') || inputs.publish) && 'release' || 'ci' }}
     strategy:
       fail-fast: false
       matrix:
@@ -127,30 +136,22 @@ jobs:
         working-directory: apps/mobile
       - run: npm ci
         working-directory: apps/desktop
+      # Record whether the checkout was clean before the version is stamped,
+      # so the stamp itself does not mark the build dirty.
       - name: set the installer version
         shell: bash
         run: |
-          node <<'NODE'
-          const fs = require("fs");
-          const version = process.env.VERSION.replace(/^v/, "");
-          if (!/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(version)) {
-            console.error(`${process.env.VERSION} is not a semver version.`);
-            process.exit(1);
-          }
-          const confPath = "apps/desktop/src-tauri/tauri.conf.json";
-          const conf = JSON.parse(fs.readFileSync(confPath, "utf8"));
-          conf.version = version;
-          fs.writeFileSync(confPath, JSON.stringify(conf, null, 2) + "\n");
-          const cargoPath = "apps/desktop/src-tauri/Cargo.toml";
-          const cargo = fs.readFileSync(cargoPath, "utf8");
-          const updated = cargo.replace(/^version = ".*"$/m, `version = "${version}"`);
-          if (updated === cargo) {
-            console.error("apps/desktop/src-tauri/Cargo.toml version was not updated.");
-            process.exit(1);
-          }
-          fs.writeFileSync(cargoPath, updated);
-          fs.appendFileSync(process.env.GITHUB_ENV, `APP_VERSION=${version}\n`);
-          NODE
+          set -euo pipefail
+          version="${VERSION#v}"
+          if [ -n "$(git status --porcelain --untracked-files=no)" ]; then dirty=true; else dirty=false; fi
+          echo "OB_BUILD_DIRTY=${dirty}" >> "$GITHUB_ENV"
+          node scripts/version.mjs set "$version"
+          node scripts/version.mjs check
+          if [ "$(node scripts/version.mjs get)" != "$version" ]; then
+            echo "The version files say $(node scripts/version.mjs get), not ${version}." >&2
+            exit 1
+          fi
+          echo "APP_VERSION=${version}" >> "$GITHUB_ENV"
 
       # Tauri signs when APPLE_CERTIFICATE is set and notarizes when APPLE_ID,
       # APPLE_PASSWORD, and APPLE_TEAM_ID are set. An empty variable still
@@ -233,6 +234,14 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p dist-release
+          # The universal sidecar is checked; its per-architecture halves are not
+          # always runnable on this runner.
+          for bin in apps/desktop/src-tauri/binaries/ob-node-*; do
+            case "$bin" in *-aarch64-apple-darwin|*-x86_64-apple-darwin) [ "${{ matrix.target }}" = universal-apple-darwin ] && continue ;; esac
+            reported="$("$bin" --version)"
+            echo "$bin: $reported"
+            case "$reported" in "ob-node ${APP_VERSION} ("*) ;; *) echo "$bin is not ${APP_VERSION}" >&2; exit 1 ;; esac
+          done
           if [ -n "${{ matrix.target }}" ]; then
             bundle="apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle"
           else
@@ -256,6 +265,9 @@ jobs:
               ;;
           esac
           find dist-release -type f -print
+          for file in dist-release/*; do
+            case "$(basename "$file")" in *"_${APP_VERSION}_"*) ;; *) echo "$file does not carry ${APP_VERSION}" >&2; exit 1 ;; esac
+          done
       - uses: actions/upload-artifact@v4
         with:
           name: desktop-${{ matrix.name }}

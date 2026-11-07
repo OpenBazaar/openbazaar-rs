@@ -9,6 +9,7 @@
 #![forbid(unsafe_code)]
 
 mod addresses;
+mod build_info;
 mod buyer_orders;
 mod chain;
 mod chain_backend;
@@ -90,6 +91,7 @@ use vault::Vault;
 use vendor_labels::VendorLabels;
 use wallet::NodeWallet;
 
+pub use build_info::{BuildInfo, BUILD};
 pub use chain::{AddressTx, ChainSource, ChainStatus, EsploraChain, OfflineChain, WalletRequest};
 pub use chain_backend::ChainPlan;
 pub use chain_filters::{ChainStore, FilterChain, FilterConfig};

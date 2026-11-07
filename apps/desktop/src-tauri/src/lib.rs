@@ -6,6 +6,7 @@
 /// page the webview might navigate to never sees it, and the node itself
 /// gives the token to no request. Quitting
 /// the app stops the node. A second launch focuses the first window.
+mod build;
 mod node;
 
 use std::sync::Mutex;
@@ -25,6 +26,7 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_dialog::init())
         .manage(NodeState(Mutex::new(None)))
+        .menu(build::menu)
         .setup(|app| {
             let handle = app.handle().clone();
             std::thread::spawn(move || start(handle));
@@ -67,7 +69,8 @@ fn open_main_window(app: &AppHandle, origin: &str, token: &str) -> tauri::Result
         .resizable(true)
         .background_color(tauri::window::Color(0x06, 0x38, 0x53, 0xff))
         .initialization_script(format!(
-            "window.__OB_NODE_ORIGIN__ = {origin:?}; if ({APP_ORIGINS}.includes(window.location.origin)) {{ window.__OB_PAIR_TOKEN__ = {token:?}; }}"
+            "window.__OB_NODE_ORIGIN__ = {origin:?}; if ({APP_ORIGINS}.includes(window.location.origin)) {{ window.__OB_PAIR_TOKEN__ = {token:?}; {} }}",
+            build::init_script()
         ))
         .build()?;
     Ok(())

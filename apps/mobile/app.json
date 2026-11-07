@@ -2,7 +2,7 @@
   "expo": {
     "name": "OpenBazaar",
     "slug": "openbazaar",
-    "version": "0.0.0",
+    "version": "0.1.0-alpha.1",
     "icon": "./public/brand/ob-market-logo.png",
     "orientation": "portrait",
     "backgroundColor": "#063853",

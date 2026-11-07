@@ -2,7 +2,7 @@
 
 [package]
 name = "openbazaar-desktop"
-version = "0.0.0"
+version = "0.1.0-alpha.1"
 description = "Tauri shell for the shared OpenBazaar store screen"
 edition = "2021"
 license = "MIT"

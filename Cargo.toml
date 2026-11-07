@@ -12,7 +12,7 @@ members = [
 [workspace.package]
 edition = "2021"
 license = "MIT"
-version = "0.0.0"
+version = "0.1.0-alpha.1"
 publish = false
 
 # The wallet lock runs Argon2id at 256 MiB; unoptimized that takes tens of seconds.
