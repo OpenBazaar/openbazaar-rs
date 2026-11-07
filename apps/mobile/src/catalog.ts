@@ -1,7 +1,7 @@
 import { verifiedListings, verifiedStore, type StoreSummary } from "./records.ts";
 import type { LabelerLabel } from "./safety/filter";
 import { servedByHomeNode, signedFetch, targetPrefix } from "./homeNode/transport.ts";
-import { parseLnInvoice, type LnInvoice } from "./lightning.ts";
+import { lnBlockedReason, lnStoreKeys, parseLnInvoice, type LnInvoice } from "./lightning.ts";
 
 // The shop dials only this origin. A query parameter, settings field, seed,
 // peer, or vendor address cannot point it anywhere else. Paired requests send
@@ -82,6 +82,8 @@ export type ShopCatalog = {
   listings: ListingHeader[];
   /** Listings dropped because their record was missing, did not verify, or named an unknown store. */
   rejected: number;
+  /** Why this node refuses Lightning (mainnet), or `null`. No listing takes it then. */
+  lightningBlocked: string | null;
 };
 
 export type ShipTo = {
@@ -598,7 +600,7 @@ export function parseCatalog(value: unknown): ShopCatalog {
     record.listings,
     new Set(stores.map((store) => store.key)),
     new Set(stores.filter((store) => store.acceptsXmr).map((store) => store.key)),
-    new Set(stores.filter((store) => store.acceptsLightning).map((store) => store.key)),
+    lnStoreKeys(stores, record.lightning),
   );
   const first = stores[0];
   const strictest = stores.reduce<ContentRating>(
@@ -616,6 +618,7 @@ export function parseCatalog(value: unknown): ShopCatalog {
     moderator: parseModerator(record.moderator),
     listings,
     rejected,
+    lightningBlocked: lnBlockedReason(record.lightning),
   };
 }
 

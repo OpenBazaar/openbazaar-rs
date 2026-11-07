@@ -42,11 +42,17 @@ pub(crate) fn add_ln_flags(node: &Node, value: &mut Value) {
         "running": running,
         "network": node.ln.config().map(|config| super::options::network_name(config.network)),
     });
+    if node.ln_blocked() {
+        value["lightning"]["blocked"] = json!(super::MAINNET_BLOCKED);
+    }
 }
 
 impl Node {
     /// Everything a Lightning package needs, checked before any letter is sealed.
     pub(crate) fn ln_ready(&self, seller: &str) -> Result<(), OrderError> {
+        if self.ln_blocked() {
+            return Err(OrderError::Invalid(super::MAINNET_BLOCKED));
+        }
         if self.ln.config().is_none() {
             return Err(OrderError::Invalid("Lightning is off on this node. Start it with --lightning to pay over Lightning."));
         }
@@ -64,6 +70,9 @@ impl Node {
 
     /// The seller's invoice for one order of `total` sats.
     pub(crate) fn ln_payment(&self, total: u64, order_id: &str) -> Result<Value, OrderError> {
+        if self.ln_blocked() {
+            return Err(OrderError::Invalid(super::MAINNET_BLOCKED));
+        }
         let rail = self.ln.rail().ok_or(OrderError::Invalid("The Lightning node is still starting. Try again in a minute."))?;
         let amount_msat = total.checked_mul(1_000).ok_or(OrderError::Invalid("That total is too large."))?;
         let short: String = order_id.chars().take(12).collect();

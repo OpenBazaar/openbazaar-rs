@@ -21,6 +21,9 @@
 //! Lightning is off until `ob-node serve --lightning`. Stores opt in one by
 //! one (`PUT /ln/stores`), which signs the store record again with the
 //! Lightning flag; the first opt-in with an LSP needs `acknowledgeLsp`.
+//!
+//! A mainnet node refuses Lightning everywhere ([`MAINNET_BLOCKED`]): LDK
+//! dials peers, the LSP, and chain and gossip servers without `--proxy`.
 
 mod checkout;
 mod http;
@@ -64,6 +67,10 @@ pub(crate) const LSP_NOTICE: &str = "Lightning payments to your store reach you 
 The LSP opens a channel to your node when the first payment arrives and keeps a fee for it. \
 It sees the amount and time of every payment to you and the channel's size, and it must be online for a new channel to open. \
 It never sees what was bought, who bought it, or the shipping address. You can name another LSP or open channels yourself.";
+
+/// Why a mainnet node refuses Lightning, in every place it is asked for.
+pub(crate) const MAINNET_BLOCKED: &str =
+    "Lightning on mainnet is disabled until its connections run over Tor; it would reveal this node's IP address.";
 
 #[derive(Default)]
 struct Settings {
@@ -161,6 +168,9 @@ impl LnNode {
 
 /// Sign each demo store that opted in to Lightning again with the flag.
 pub(crate) fn apply_signed_accepts(dir: &Path, vault: &Vault, catalog: &mut Catalog, network: NetworkMode) -> Result<(), Error> {
+    if network == NetworkMode::Mainnet {
+        return Ok(());
+    }
     let settings = read_settings(&dir.join(SETTINGS_FILE), vault)?;
     for store in &mut catalog.stores {
         if !settings.stores.contains(&store.name) {
@@ -188,6 +198,7 @@ pub(crate) enum AcceptError {
     NeedsAcknowledgement,
     Locked,
     Failed(String),
+    Mainnet,
 }
 
 impl Node {
@@ -195,23 +206,37 @@ impl Node {
     /// goes under `wallets/node/lightning/`; the node starts it in `serve`
     /// once the Lightning secret is in the receive tier.
     pub fn enable_lightning(&self, mut config: LnConfig) -> Result<(), String> {
+        if self.ln_blocked() || config.network == openbazaar_lightning::ldk_node::bitcoin::Network::Bitcoin {
+            return Err(MAINNET_BLOCKED.into());
+        }
         config.storage_dir = self.ln.wallet_dir.join(STATE_DIR);
         self.ln.config.set(config).map_err(|_| "Lightning is already configured".to_string())
     }
 
     /// Use `rail` for Lightning (tests; `serve` starts LDK itself).
     pub fn set_lightning(&self, rail: Arc<dyn LightningRail>) -> Result<(), String> {
+        if self.ln_blocked() {
+            return Err(MAINNET_BLOCKED.into());
+        }
         self.ln.rail.set(rail).map_err(|_| "the Lightning node is already running".to_string())
     }
 
-    /// What the store named `seller` signed about Lightning.
+    /// `true` on mainnet, where Lightning is refused ([`MAINNET_BLOCKED`]).
+    pub(crate) fn ln_blocked(&self) -> bool {
+        self.network == NetworkMode::Mainnet
+    }
+
+    /// What the store named `seller` signed about Lightning. Always `false`
+    /// on mainnet, whatever a record says.
     pub(crate) fn accepts_lightning(&self, seller: &str) -> bool {
-        self.catalog()
-            .stores
-            .iter()
-            .find(|store| store.name == seller)
-            .and_then(|store| store.details.as_ref())
-            .is_some_and(|details| details.accepts_lightning)
+        !self.ln_blocked()
+            && self
+                .catalog()
+                .stores
+                .iter()
+                .find(|store| store.name == seller)
+                .and_then(|store| store.details.as_ref())
+                .is_some_and(|details| details.accepts_lightning)
     }
 
     /// Stores whose invoices this node's Lightning node issues: the own
@@ -230,6 +255,9 @@ impl Node {
     }
 
     pub(crate) fn set_accepts_lightning(&self, seller: &str, accept: bool, acknowledge: bool) -> Result<(), AcceptError> {
+        if self.ln_blocked() {
+            return Err(AcceptError::Mainnet);
+        }
         let Some(config) = self.ln.config() else { return Err(AcceptError::Off) };
         if !self.ln_sellers().iter().any(|name| name == seller) {
             return Err(AcceptError::Unknown("This node does not issue invoices for that store.".into()));
@@ -272,6 +300,9 @@ impl Node {
     }
 
     pub(crate) fn ln_stores_value(&self) -> Value {
+        if self.ln_blocked() {
+            return blocked_value();
+        }
         json!({
             "enabled": self.ln.config().is_some(),
             "lspAcknowledged": self.ln.lsp_acknowledged(),
@@ -286,6 +317,9 @@ impl Node {
 
     /// `GET /ln/status`: the node, its LSP, balances, channels.
     pub(crate) fn ln_status_value(&self) -> Value {
+        if self.ln_blocked() {
+            return blocked_value();
+        }
         let Some(config) = self.ln.config() else {
             return json!({ "enabled": false });
         };
@@ -343,6 +377,9 @@ impl Node {
 
     /// The short form `GET /wallet` carries.
     pub(crate) fn ln_wallet_value(&self) -> Value {
+        if self.ln_blocked() {
+            return blocked_value();
+        }
         match (self.ln.config(), self.ln.rail()) {
             (None, _) => json!({ "enabled": false }),
             (Some(config), None) => json!({ "enabled": true, "running": false, "network": options::network_name(config.network) }),
@@ -362,6 +399,9 @@ impl Node {
 
     /// `GET /network` `lightningBackend`.
     pub(crate) fn ln_backend_value(&self) -> Value {
+        if self.ln_blocked() {
+            return blocked_value();
+        }
         match self.ln.config() {
             None => json!({ "enabled": false }),
             Some(config) => json!({
@@ -440,6 +480,11 @@ impl Node {
             rail.stop();
         }
     }
+}
+
+/// What every Lightning status answer is on mainnet.
+fn blocked_value() -> Value {
+    json!({ "enabled": false, "blocked": MAINNET_BLOCKED })
 }
 
 /// Who learns what when this node uses Lightning.

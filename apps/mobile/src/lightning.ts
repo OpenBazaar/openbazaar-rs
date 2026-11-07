@@ -21,6 +21,8 @@ export type LnBalances = { lightningSats: number; inboundSats: number; onchainSa
 export type LnStatus = {
   /** `false` until the node runs with `--lightning`. */
   enabled: boolean
+  /** Why the node refuses Lightning (mainnet, until Lightning runs over Tor), or `null`. */
+  blocked: string | null
   network: LnNetwork | null
   running: boolean
   /** `unlock-to-create`: the Lightning keys are made at the next unlock. */
@@ -37,6 +39,7 @@ export type LnStatus = {
 }
 export type LnStores = {
   enabled: boolean
+  blocked: string | null
   lspAcknowledged: boolean
   /** Shown once, before the first store takes Lightning through an LSP. */
   lspNotice: string | null
@@ -95,6 +98,24 @@ function parseNetwork(value: unknown): LnNetwork {
 }
 const msatToSats = (value: unknown) => Math.ceil(count(value) / 1000)
 
+/**
+ * Why the node refuses Lightning, from the `lightning` of `/catalog` or the
+ * body of `/ln/status`; `null` when it may run. A node that names mainnet
+ * Lightning is refused too: mainnet Lightning would show its IP address.
+ */
+export function lnBlockedReason(value: unknown): string | null {
+  if (!value || typeof value !== 'object') return null
+  const r = value as Record<string, unknown>
+  if (typeof r.blocked === 'string' && r.blocked) return r.blocked
+  return r.network === 'bitcoin' ? 'Lightning on mainnet is disabled until its connections run over Tor.' : null
+}
+
+/** The stores buyers are offered Lightning for: none while the node refuses it. */
+export function lnStoreKeys(stores: { key: string; acceptsLightning: boolean }[], lightning: unknown): Set<string> {
+  if (lnBlockedReason(lightning)) return new Set()
+  return new Set(stores.filter(store => store.acceptsLightning).map(store => store.key))
+}
+
 /** How the UI names a Lightning network. */
 export function lnNetworkLabel(network: LnNetwork): string {
   return network === 'signet'
@@ -108,12 +129,14 @@ export function lnNetworkLabel(network: LnNetwork): string {
 
 export function parseLnStatus(value: unknown): LnStatus {
   const r = record(value)
-  if (r.enabled !== true)
-    return { enabled: false, network: null, running: false, keys: null, lsp: null, lspNotice: null, lspAcknowledged: false, reveals: [], nodeId: null, balances: null, channels: [], error: null }
+  const blocked = lnBlockedReason(r)
+  if (r.enabled !== true || blocked)
+    return { enabled: false, blocked, network: null, running: false, keys: null, lsp: null, lspNotice: null, lspAcknowledged: false, reveals: [], nodeId: null, balances: null, channels: [], error: null }
   const lsp = r.lsp == null ? null : record(r.lsp)
   const balances = r.balances == null ? null : record(r.balances)
   return {
     enabled: true,
+    blocked: null,
     network: parseNetwork(r.network),
     running: r.running === true,
     keys: r.keys === 'ready' ? 'ready' : 'unlock-to-create',
@@ -144,8 +167,10 @@ export function parseLnStatus(value: unknown): LnStatus {
 }
 export function parseLnStores(value: unknown): LnStores {
   const r = record(value)
+  const blocked = lnBlockedReason(r)
   return {
-    enabled: r.enabled === true,
+    enabled: r.enabled === true && !blocked,
+    blocked,
     lspAcknowledged: r.lspAcknowledged === true,
     lspNotice: textOrNull(r.lspNotice),
     stores: (Array.isArray(r.stores) ? r.stores : []).map(item => {

@@ -43,10 +43,15 @@ export function LightningSettings() {
       {(status.error || stores.error) && <p className='ob-form-error' role='alert'>{status.error || stores.error}</p>}
       {!ln ? (
         <p className='ob-page-intro' role='status'>{status.loading ? 'Checking Lightning…' : 'Lightning status unavailable.'}</p>
+      ) : ln.blocked ? (
+        <section className='ob-settings-card'>
+          <h2>Lightning is off on mainnet</h2>
+          <p>Lightning connections do not run over Tor yet, so they would reveal your node's IP address to peers, the LSP, and chain and gossip servers. Mainnet Lightning stays off until they do. Use on-chain bitcoin, or try Lightning on testnet4.</p>
+        </section>
       ) : !ln.enabled ? (
         <section className='ob-settings-card'>
           <h2>Lightning is off on this node</h2>
-          <p>Start the node with <code>ob-node serve --lightning</code>. On testnet4 it runs on Mutinynet, a test signet, through the public Mutinynet LSP. On mainnet, name a chain source and an LSP, or turn the LSP off and open channels yourself.</p>
+          <p>Start the node with <code>ob-node serve --lightning</code>. On testnet4 it runs on Mutinynet, a test signet, through the public Mutinynet LSP. With <code>--ln-network testnet4</code> or <code>regtest</code>, name an LSP or turn it off and open channels yourself.</p>
         </section>
       ) : (
         <>

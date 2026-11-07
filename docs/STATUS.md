@@ -18,7 +18,7 @@ Last checked against `main` at `b1eb18b` (escrow, payments, and transport code u
 | `sec-escrow-durable` | Durable escrow on the node: sealed sessions, ruling store, coin locks, outbox with retry, vendor disputes, CPFP bumps, presigned fee from the chain source, M3 fee on the claim, M6 limits, moderator funding check on compact filters; [review packet](escrow-review-packet.md) |
 | `home-node` | Home node: remote management over an Arti onion service with restricted discovery, words/QR pairing with an emoji check and approval on the node, per-device keys and signed replay-protected requests, revocation with address rotation, encrypted LAN channel and setup page, delta sync and batches, opt-in content-free push, desktop client and home mode, systemd/launchd/Docker packaging and release builds; [home-node.md](home-node.md) |
 | `sec-identity-letters` | PR #9: seed-derived store keys, store record v3 with a mailbox key, onion, moderators, profile and the signed Monero opt-in, signed letters with replay and sender-pin checks, padded letters and replies, client-side BIP-340 verification, a location/contact text validator, real fixture stores, `/stores` and `/media` |
-| `lightning` | Lightning for direct pay only: embedded LDK node in `crates/lightning`, LSPS2 just-in-time channels from an LSP the operator names, per-order BOLT 11 invoices, keys from the seed, sealed state, wallet-lock gating, store opt-in in the rail-flags byte, seller settings and checkout in the web shop; [lightning.md](lightning.md) |
+| `lightning` | Lightning for direct pay only, on test networks (mainnet refused until it runs over Tor): embedded LDK node in `crates/lightning`, LSPS2 just-in-time channels from an LSP the operator names, per-order BOLT 11 invoices, keys from the seed, sealed state, wallet-lock gating, store opt-in in the rail-flags byte, seller settings and checkout in the web shop; [lightning.md](lightning.md) |
 
 ## Mechanisms
 
@@ -119,10 +119,10 @@ Labels: **tested** = code on main with automated tests; **demo** = code runs, bu
 | Store opt-in | tested | Bit 1 of the rail-flags byte in store record v3. `PUT /ln/stores` signs the record again; the first opt-in answers `409` with the LSP notice until acknowledged. |
 | Per-order invoice, status | tested | BOLT 11, 1 hour, fresh hash. Paid on settlement with `receivedMsat` and `lspFeeMsat`; works while locked. |
 | LSP (LSPS2 just-in-time channels) | tested | Regtest with real LDK nodes; on Mutinynet the public C= LSP issued JIT invoices through the node and the UI. No completed live payment: the Mutinynet faucet needs a GitHub login. `--lsp`, `--lsp-token`, `--no-lsp`; fee cap 5 % or 10,000 sats. No OpenBazaar LSP; no mainnet default. |
-| Pay from the node | tested | Quote, spend ticket bound to the order, hash, amount, and fee cap, then pay (202). Mainnet needs `"confirm": true`. Channel open, close, and sweep need the passphrase. Invoices this node issued are refused. |
-| Networks | partly | Test mode runs on Mutinynet signet (no public testnet4 LSP); testnet4 and regtest need `--lsp` or `--no-lsp`. Mainnet needs `--ln-chain` and an LSP choice; not tested live. |
+| Pay from the node | tested | Quote, spend ticket bound to the order, hash, amount, and fee cap, then pay (202). Channel open, close, and sweep need the passphrase. Invoices this node issued are refused. |
+| Networks | partly | Test mode runs on Mutinynet signet (no public testnet4 LSP); testnet4 and regtest need `--lsp` or `--no-lsp`. Mainnet is blocked until Lightning runs over Tor: the flags, the `/ln` routes, the own store's Lightning bit, and Lightning at checkout are all refused, and the web shop hides it. No mainnet LSP default. |
 | Escrow | refused | `"rail": "ln"` with escrow is refused. |
-| Tor | future | `ldk-node` has no SOCKS support; peers, the LSP, the chain server, and the gossip server see the IP address. |
+| Tor | future | `ldk-node` has no SOCKS support; peers, the LSP, the chain server, and the gossip server would see the IP address. Mainnet Lightning opens only after this. |
 | Remote sellers | specified | Invoices come from a seller wallet on this node, as for Monero. |
 
 ### Escrow

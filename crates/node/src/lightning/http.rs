@@ -14,7 +14,8 @@
 //! | `POST /ln/orders/{id}/pay` | unlocked | `{ticket, confirm?}` | 202, the order with `paying` |
 //!
 //! Errors follow the bitcoin routes: 423 locked, 400 wrong passphrase or
-//! bad request, 429 backoff, 409 stale ticket.
+//! bad request, 429 backoff, 409 stale ticket. On mainnet every route but
+//! the `GET`s answers 403, and the `GET`s answer `{enabled: false, blocked}`.
 
 use serde_json::{json, Map, Value};
 
@@ -48,6 +49,9 @@ fn text<'a>(map: &'a Map<String, Value>, key: &str) -> &'a str {
 pub(crate) fn response(node: &Node, client: &Client, head: &str, method: &str, path: &str, body: &[u8], origin: Option<&str>) -> Vec<u8> {
     if let Err(response) = local_guard(node, client, head, origin) {
         return response;
+    }
+    if node.ln_blocked() && method != "GET" {
+        return json_error("403 Forbidden", super::MAINNET_BLOCKED, origin);
     }
     let rest = &path["/ln".len()..];
     let order = |suffix: &str| rest.strip_prefix("/orders/").and_then(|tail| tail.strip_suffix(suffix)).filter(|id| !id.is_empty() && !id.contains('/'));
@@ -125,6 +129,7 @@ fn put_store(node: &Node, map: &Map<String, Value>, origin: Option<&str>) -> Vec
     let acknowledge = map.get("acknowledgeLsp").and_then(Value::as_bool).unwrap_or(false);
     match node.set_accepts_lightning(seller, accept, acknowledge) {
         Ok(()) => json_body("200 OK", &node.ln_stores_value(), origin),
+        Err(AcceptError::Mainnet) => json_error("403 Forbidden", super::MAINNET_BLOCKED, origin),
         Err(AcceptError::Off) => json_error("409 Conflict", "Lightning is off on this node. Start it with --lightning.", origin),
         Err(AcceptError::NeedsAcknowledgement) => json_body(
             "409 Conflict",

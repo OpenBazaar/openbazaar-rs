@@ -14,8 +14,11 @@
 //! Test mode runs Lightning on Mutinynet, a public signet with 30-second
 //! blocks, because no public LSP serves testnet4 (checked November 2026).
 //! The default LSP there is the public "C=" LSPS2 node, and the chain view
-//! and gossip come from mutinynet.com. Mainnet has no defaults: it needs
-//! `--ln-chain` and either `--lsp` or `--no-lsp`. OpenBazaar runs no LSP.
+//! and gossip come from mutinynet.com. Testnet4 and regtest have no default
+//! LSP: name one with `--lsp`, or `--no-lsp`. OpenBazaar runs no LSP.
+//!
+//! A mainnet node refuses `--lightning` and every other flag here until
+//! LDK's connections run over Tor, and there is no mainnet LSP default.
 
 use std::path::Path;
 
@@ -100,6 +103,9 @@ impl LnFlags {
             || self.p2p_gossip
             || self.listen.is_some()
             || self.max_fee_sats.is_some();
+        if mode == NetworkMode::Mainnet && (self.on || named) {
+            return Err(super::MAINNET_BLOCKED.into());
+        }
         if !self.on {
             return if named { Err("Lightning flags need --lightning".into()) } else { Ok(None) };
         }
@@ -109,13 +115,11 @@ impl LnFlags {
         if self.rgs.is_some() && self.p2p_gossip {
             return Err("Choose --ln-rgs or --ln-p2p-gossip, not both".into());
         }
-        let network = match (mode, self.network.as_deref()) {
-            (NetworkMode::Mainnet, None) => Network::Bitcoin,
-            (NetworkMode::Mainnet, Some(_)) => return Err("--ln-network is for test mode; mainnet Lightning is bitcoin".into()),
-            (NetworkMode::Testnet4, None | Some("signet") | Some("mutinynet")) => Network::Signet,
-            (NetworkMode::Testnet4, Some("testnet4")) => Network::Testnet4,
-            (NetworkMode::Testnet4, Some("regtest")) => Network::Regtest,
-            (_, Some(other)) => return Err(format!("--ln-network must be signet, testnet4, or regtest, not {other:?}")),
+        let network = match self.network.as_deref() {
+            None | Some("signet") | Some("mutinynet") => Network::Signet,
+            Some("testnet4") => Network::Testnet4,
+            Some("regtest") => Network::Regtest,
+            Some(other) => return Err(format!("--ln-network must be signet, testnet4, or regtest, not {other:?}")),
         };
         let mutinynet = network == Network::Signet;
         let chain = match (&self.chain, network) {
@@ -205,20 +209,48 @@ mod tests {
     }
 
     #[test]
-    fn testnet4_and_mainnet_need_an_explicit_lsp_choice() {
+    fn testnet4_and_regtest_need_an_explicit_lsp_choice() {
         let testnet4 = flags(&["--lightning", "--ln-network", "testnet4"]).unwrap();
         assert!(testnet4.plan(NetworkMode::Testnet4).unwrap_err().contains("no default LSP"));
-        let main = flags(&["--lightning"]).unwrap();
-        assert!(main.plan(NetworkMode::Mainnet).unwrap_err().contains("--ln-chain"));
-        let main = flags(&["--lightning", "--ln-chain", "electrum:ssl://electrum.example.org:50002"]).unwrap();
-        assert!(main.plan(NetworkMode::Mainnet).unwrap_err().contains("no default LSP"));
         let id = "031b301307574bbe9b9ac7b79cbe1700e31e544513eae0b5d7497483083f99e581";
-        let main = flags(&["--lightning", "--ln-chain", "bitcoind:u:p@127.0.0.1:8332", "--lsp", &format!("{id}@45.79.192.236:9735")]).unwrap();
-        let plan = main.plan(NetworkMode::Mainnet).unwrap().unwrap();
-        assert_eq!(plan.network, Network::Bitcoin);
+        let lsp = format!("{id}@45.79.192.236:9735");
+        let testnet4 = flags(&["--lightning", "--ln-network", "testnet4", "--lsp", &lsp]).unwrap();
+        let plan = testnet4.plan(NetworkMode::Testnet4).unwrap().unwrap();
+        assert_eq!(plan.network, Network::Testnet4);
         assert!(plan.lsp.unwrap().token.is_none(), "the Mutinynet token never goes to another LSP");
-        assert!(flags(&["--lightning", "--ln-network", "signet"]).unwrap().plan(NetworkMode::Mainnet).is_err());
+        let regtest = flags(&["--lightning", "--ln-network", "regtest"]).unwrap();
+        assert!(regtest.plan(NetworkMode::Testnet4).unwrap_err().contains("--ln-chain"));
+        let regtest = flags(&["--lightning", "--ln-network", "regtest", "--ln-chain", "bitcoind:u:p@127.0.0.1:18443", "--no-lsp"]).unwrap();
+        assert_eq!(regtest.plan(NetworkMode::Testnet4).unwrap().unwrap().network, Network::Regtest);
         assert!(flags(&["--lightning", "--lsp", "x", "--no-lsp"]).unwrap().plan(NetworkMode::Testnet4).is_err());
         assert!(flags(&["--lightning", "--lsp-max-fee-sats", "lots"]).is_err());
+    }
+
+    #[test]
+    fn mainnet_refuses_every_lightning_flag() {
+        let id = "031b301307574bbe9b9ac7b79cbe1700e31e544513eae0b5d7497483083f99e581";
+        let lsp = format!("{id}@45.79.192.236:9735");
+        let cases: [&[&str]; 9] = [
+            &["--lightning"],
+            &["--lightning", "--ln-chain", "bitcoind:u:p@127.0.0.1:8332", "--lsp", &lsp],
+            &["--lightning", "--ln-chain", "electrum:ssl://electrum.example.org:50002", "--no-lsp"],
+            &["--lightning", "--ln-network", "signet"],
+            &["--no-lsp"],
+            &["--lsp", &lsp, "--lsp-token", "T"],
+            &["--ln-rgs", "https://rgs.example.org"],
+            &["--ln-listen", "0.0.0.0:9735"],
+            &["--lsp-max-fee-sats", "5000"],
+        ];
+        for args in cases {
+            let err = flags(args).unwrap().plan(NetworkMode::Mainnet).unwrap_err();
+            assert_eq!(err, super::super::MAINNET_BLOCKED, "{args:?}");
+        }
+        assert!(matches!(LnFlags::default().plan(NetworkMode::Mainnet), Ok(None)), "no flags: Lightning is just off");
+
+        let serve = |args: &[&str]| crate::network::ServeOptions::parse(&args.iter().map(|arg| arg.to_string()).collect::<Vec<_>>()).map(|_| ());
+        assert_eq!(serve(&["--network", "mainnet", "--lightning", "--no-lsp"]).unwrap_err(), super::super::MAINNET_BLOCKED);
+        assert_eq!(serve(&["--network", "mainnet", "--lsp", &lsp]).unwrap_err(), super::super::MAINNET_BLOCKED);
+        assert!(serve(&["--network", "testnet4", "--lightning"]).is_ok());
+        assert!(serve(&["--network", "mainnet"]).is_ok());
     }
 }

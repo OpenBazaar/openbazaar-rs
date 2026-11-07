@@ -77,6 +77,9 @@ impl Node {
     }
 
     fn ln_rail_or_refuse(&self) -> Result<std::sync::Arc<dyn openbazaar_lightning::LightningRail>, PayError> {
+        if self.ln_blocked() {
+            return Err(PayError::Invalid(super::MAINNET_BLOCKED.into()));
+        }
         if self.ln.config().is_none() && self.ln.rail().is_none() {
             return Err(PayError::Invalid("Lightning is off on this node. Start it with --lightning.".into()));
         }

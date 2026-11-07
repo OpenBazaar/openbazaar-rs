@@ -18,7 +18,7 @@ Chain data comes from BIP 157/158 compact block filters by default.
 --lan adds the encrypted LAN channel on port 8790, mDNS discovery, and the first-run setup page at http://openbazaar.local:8790/.
 --push-gateway sends content-free wake-ups to devices that turned push on, through that gateway over Tor. Off unless set.
 --web-dir serves the web shop export to paired browsers over that onion.
---lightning runs an LDK Lightning node for direct pay (see docs/lightning.md). On testnet4 it runs on Mutinynet signet with the public Mutinynet LSP. Mainnet has no defaults: name --ln-chain and --lsp, or --no-lsp. The LSP sees the amount and time of each payment to you; Lightning peers see your IP address (--proxy does not cover them).
+--lightning runs an LDK Lightning node for direct pay (see docs/lightning.md). On testnet4 it runs on Mutinynet signet with the public Mutinynet LSP; --ln-network testnet4 or regtest needs --lsp or --no-lsp (regtest also --ln-chain). Mainnet refuses Lightning until its connections run over Tor. The LSP sees the amount and time of each payment to you; Lightning peers see your IP address (--proxy does not cover them).
 --vault passphrase reads OB_VAULT_PASSPHRASE, or asks on the terminal.
 --vault file keeps the key in the data dir; use it only on headless machines and in tests.";
 const PASSPHRASE_ENV: &str = "OB_VAULT_PASSPHRASE";
@@ -119,6 +119,7 @@ fn serve(args: &[String]) -> ExitCode {
             config.chain.describe(),
             config.lsp.as_ref().map_or("none (open channels by hand)".to_string(), |lsp| lsp.peer.to_string())
         ),
+        None if network == NetworkMode::Mainnet => eprintln!("ob-node: Lightning is off on mainnet until its connections run over Tor"),
         None => eprintln!("ob-node: Lightning is off (no --lightning)"),
     }
     let vault = match vault_mode(&options) {
