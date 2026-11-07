@@ -1,7 +1,7 @@
 {
   "name": "openbazaar-desktop",
   "private": true,
-  "version": "0.0.0",
+  "version": "0.1.0-alpha.1",
   "description": "Tauri 2 shell. The screens are the Expo web export in apps/mobile.",
   "scripts": {
     "build": "tauri build"

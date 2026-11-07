@@ -9,6 +9,17 @@ permissions:
   contents: read
 
 jobs:
+  version:
+    name: version agreement
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: node scripts/version.mjs check
+      - run: node --test scripts/version.test.mjs
+
   rust:
     name: cargo test
     runs-on: ubuntu-latest

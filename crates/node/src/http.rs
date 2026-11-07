@@ -69,6 +69,7 @@ pub fn serve_on(node: &Node, listener: TcpListener) -> std::io::Result<()> {
     eprintln!("ob-node pair at http://127.0.0.1:{port}/pair");
     eprintln!("ob-node rates at http://127.0.0.1:{port}/rates");
     eprintln!("ob-node network at http://127.0.0.1:{port}/network");
+    eprintln!("ob-node version at http://127.0.0.1:{port}/version");
     eprintln!("ob-node wallet at http://127.0.0.1:{port}/wallet");
     eprintln!("ob-node content labels at http://127.0.0.1:{port}/content-labels");
     eprintln!("ob-node stores at http://127.0.0.1:{port}/stores");
@@ -165,6 +166,7 @@ fn route(node: &Node, request: &Request<'_>, client: Client, origin: Option<&str
             addresses_delete(node, client, head, &path["/addresses/".len()..], origin)
         }
         ("GET", "/network") => wallet_http::network_response(node, origin),
+        ("GET", "/version") => crate::build_info::version_response(node, client, head, origin),
         ("GET", "/wallet") => wallet_http::wallet_response(node, client, head, origin),
         ("POST", "/wallet/address") => wallet_http::wallet_address_response(node, client, head, origin),
         ("GET", "/lock") => lock_http::response(node, client, head, Route::Status, body, origin),

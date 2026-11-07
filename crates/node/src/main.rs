@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use ob_node::{LocalConfig, NetworkMode, NodeConfig, ServeOptions, VaultChoice, VaultMode};
 
-const USAGE: &str = "ob-node [print | serve [port] [--network testnet4|mainnet] [--data-dir DIR] [--peer HOST:PORT[,...] | --esplora URL[,URL...]] [--public-fallback | --no-public-fallback] [--confirmations N] [--poll-secs S] [--escrow-vendor SELLER=URL] [--moderator URL] [--moderate] [--vault keystore|passphrase|file] [--shop-origin URL] [--no-pair-codes] [--proxy socks5h://HOST:PORT] [--no-rates] [--xmr-daemon URL[,URL...]]]
+const USAGE: &str = "ob-node [print | --version | serve [port] [--network testnet4|mainnet] [--data-dir DIR] [--peer HOST:PORT[,...] | --esplora URL[,URL...]] [--public-fallback | --no-public-fallback] [--confirmations N] [--poll-secs S] [--escrow-vendor SELLER=URL] [--moderator URL] [--moderate] [--vault keystore|passphrase|file] [--shop-origin URL] [--no-pair-codes] [--proxy socks5h://HOST:PORT] [--no-rates] [--xmr-daemon URL[,URL...]]]
 
 Chain data comes from BIP 157/158 compact block filters by default.
 --peer uses only your own node (bitcoind with blockfilterindex=1 and peerblockfilters=1).
@@ -23,6 +23,10 @@ fn main() -> ExitCode {
     match args.first().map(String::as_str) {
         None | Some("print") => print_catalog(),
         Some("serve") => serve(&args[1..]),
+        Some("version") | Some("-V") | Some("--version") => {
+            println!("ob-node {}", ob_node::BUILD.summary());
+            ExitCode::SUCCESS
+        }
         Some("help") | Some("-h") | Some("--help") => {
             eprintln!("{USAGE}");
             ExitCode::SUCCESS
@@ -65,6 +69,7 @@ fn serve(args: &[String]) -> ExitCode {
         NetworkMode::Testnet4 => "TESTNET4 (test coins, no value)",
         NetworkMode::Mainnet => "MAINNET (real bitcoin)",
     };
+    eprintln!("ob-node {}", ob_node::BUILD.summary());
     eprintln!("ob-node: ==== network {banner} ====");
     eprintln!("ob-node: data dir {}", options.data_dir().display());
     let plan = options.chain_plan();

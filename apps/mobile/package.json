@@ -1,7 +1,7 @@
 {
   "name": "openbazaar-mobile",
   "private": true,
-  "version": "0.0.0",
+  "version": "0.1.0-alpha.1",
   "main": "index.ts",
   "scripts": {
     "typecheck": "tsc --noEmit",
