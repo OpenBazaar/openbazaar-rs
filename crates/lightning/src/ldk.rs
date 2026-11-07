@@ -80,15 +80,16 @@ fn payment_id(hash: &str) -> Option<PaymentId> {
 impl LdkRail {
     /// Build and start the LDK node. Returns once it runs; chain sync goes on in the background.
     pub fn start(config: LnConfig, secret: &[u8; 32]) -> Result<Self, LnError> {
-        if let Some(peer) = config.clearnet_peer() {
+        if let Some(peer) = config.dials_in_the_clear() {
             return Err(LnError::Invalid(format!(
-                "Lightning is not started: connecting to {peer} in the clear would show this machine's IP, and LDK does not use --proxy"
+                "Lightning is not started: connecting to {peer} in the clear would show this machine's IP"
             )));
         }
         std::fs::create_dir_all(&config.storage_dir).map_err(|err| LnError::Failed(err.to_string()))?;
         let mut ldk = Config::default();
         ldk.network = config.network;
         ldk.storage_dir_path = config.storage_dir.to_string_lossy().into_owned();
+        ldk.socks_proxy = config.proxy.clone();
         if let Some(listen) = &config.listen {
             ldk.listening_addresses = Some(vec![socket(listen)?]);
         }
@@ -357,6 +358,7 @@ mod tests {
             listen: None,
             max_lsp_fee_bps: 500,
             min_lsp_fee_cap_sats: 10_000,
+            proxy: None,
         };
         let started = std::time::Instant::now();
         match LdkRail::start(config, &[0x5a; 32]) {
@@ -367,5 +369,65 @@ mod tests {
             }
         }
         assert!(started.elapsed() < std::time::Duration::from_millis(500), "start dialed the public peer");
+    }
+
+    /// The dial LDK uses for a public peer. It fails unless the only TCP connection is to the proxy
+    /// and the proxy is told the peer's name (so this machine does not resolve it).
+    #[test]
+    fn a_public_lightning_peer_is_dialed_through_the_proxy() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::sync::{mpsc, Arc, Mutex};
+        use std::thread;
+        use std::time::Duration;
+
+        let seen = Arc::new(Mutex::new(None));
+        let record = Arc::clone(&seen);
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let proxy = format!("socks5h://{}", listener.local_addr().unwrap());
+        thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            let mut greet = [0u8; 3];
+            socket.read_exact(&mut greet).unwrap();
+            assert_eq!(greet, [0x05, 0x01, 0x00], "the greeting is not a SOCKS5 handshake");
+            socket.write_all(&[0x05, 0x00]).unwrap();
+            let mut hdr = [0u8; 4];
+            socket.read_exact(&mut hdr).unwrap();
+            assert_eq!(&hdr[..3], &[0x05, 0x01, 0x00]);
+            let dest = match hdr[3] {
+                0x01 => {
+                    let mut ip = [0u8; 4];
+                    socket.read_exact(&mut ip).unwrap();
+                    std::net::Ipv4Addr::from(ip).to_string()
+                }
+                0x03 => {
+                    let mut len = [0u8; 1];
+                    socket.read_exact(&mut len).unwrap();
+                    let mut name = vec![0u8; len[0] as usize];
+                    socket.read_exact(&mut name).unwrap();
+                    String::from_utf8(name).unwrap()
+                }
+                other => panic!("public peer address type {other} is not a name or an IPv4"),
+            };
+            let mut port = [0u8; 2];
+            socket.read_exact(&mut port).unwrap();
+            *record.lock().unwrap() = Some(format!("{dest}:{}", u16::from_be_bytes(port)));
+            socket.write_all(&[0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).unwrap();
+            let mut hold = [0u8; 1];
+            let _ = socket.read(&mut hold);
+        });
+
+        let (tx, rx) = mpsc::channel();
+        let proxy_for_dial = proxy.clone();
+        thread::spawn(move || {
+            let opened = ldk_node::connect_via_socks(&proxy_for_dial, "public-peer.invalid", 9735);
+            let _ = tx.send(opened.map(|stream| stream.peer_addr().ok()));
+        });
+        let peer = rx.recv_timeout(Duration::from_secs(2)).unwrap_or_else(|_| {
+            panic!("a public Lightning peer was dialed in the clear");
+        });
+        let peer = peer.expect("the proxy did not accept the peer").expect("the dial has no peer");
+        assert!(peer.ip().is_loopback(), "the TCP connection went to {peer}, not the proxy");
+        assert_eq!(seen.lock().unwrap().as_deref(), Some("public-peer.invalid:9735"));
     }
 }

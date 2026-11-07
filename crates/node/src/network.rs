@@ -269,7 +269,7 @@ impl ServeOptions {
         if !xmr_daemons.is_empty() {
             openbazaar_xmr::DaemonConfig::new(network.monero(), &xmr_daemons, proxy.clone())?;
         }
-        lightning.plan(network)?;
+        lightning.plan(network, proxy.as_deref())?;
         Ok(Self {
             port,
             network,

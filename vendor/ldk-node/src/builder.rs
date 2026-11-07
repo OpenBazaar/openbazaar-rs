@@ -1627,6 +1627,7 @@ fn build_with_store_internal(
 				latest_sync_timestamp,
 				Arc::clone(&network_graph),
 				Arc::clone(&logger),
+				config.socks_proxy.clone(),
 			))
 		},
 	};
@@ -1728,8 +1729,11 @@ fn build_with_store_internal(
 		Arc::clone(&runtime),
 	);
 
-	let connection_manager =
-		Arc::new(ConnectionManager::new(Arc::clone(&peer_manager), Arc::clone(&logger)));
+	let connection_manager = Arc::new(ConnectionManager::new(
+		Arc::clone(&peer_manager),
+		Arc::clone(&logger),
+		config.socks_proxy.clone(),
+	));
 
 	let output_sweeper = match io::utils::read_output_sweeper(
 		Arc::clone(&tx_broadcaster),

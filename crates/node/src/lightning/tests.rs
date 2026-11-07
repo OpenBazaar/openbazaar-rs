@@ -36,7 +36,7 @@ fn open(dir: &Path, btc: &MockChain, rail: &Arc<MockRail>) -> Node {
     while let Some(flag) = iter.next() {
         flags.take(flag, |_| iter.next().map(|text| text.to_string()).ok_or_else(|| "needs a value".to_string())).unwrap().unwrap();
     }
-    node.enable_lightning(flags.plan(NetworkMode::Testnet4).unwrap().unwrap()).unwrap();
+    node.enable_lightning(flags.plan(NetworkMode::Testnet4, None).unwrap().unwrap()).unwrap();
     node.set_lightning(rail.clone()).unwrap();
     node
 }
@@ -266,14 +266,14 @@ fn mainnet_refuses_lightning_at_every_entry_point() {
 
     let mut flags = LnFlags::default();
     flags.on = true;
-    assert_eq!(flags.plan(NetworkMode::Mainnet).unwrap_err(), blocked);
+    assert_eq!(flags.plan(NetworkMode::Mainnet, None).unwrap_err(), blocked);
     let mut local = LnFlags::default();
     let args = ["--lightning", "--ln-chain", "bitcoind:u:p@127.0.0.1:18443", "--no-lsp", "--ln-p2p-gossip"];
     let mut iter = args.iter();
     while let Some(flag) = iter.next() {
         local.take(flag, |_| iter.next().map(|text| text.to_string()).ok_or_else(|| "needs a value".to_string())).unwrap().unwrap();
     }
-    let config = local.plan(NetworkMode::Testnet4).unwrap().unwrap();
+    let config = local.plan(NetworkMode::Testnet4, None).unwrap().unwrap();
     assert_eq!(node.enable_lightning(config).unwrap_err(), blocked, "a test-network config does not slip in either");
     assert_eq!(node.set_lightning(Arc::new(MockRail::new(Network::Bitcoin))).unwrap_err(), blocked);
     assert!(node.ln.config().is_none() && node.ln.rail().is_none());
@@ -340,7 +340,7 @@ fn test_networks_still_run_lightning() {
         while let Some(flag) = iter.next() {
             flags.take(flag, |_| iter.next().map(String::from).ok_or_else(|| "needs a value".to_string())).unwrap().unwrap();
         }
-        node.enable_lightning(flags.plan(NetworkMode::Testnet4).unwrap().unwrap()).unwrap();
+        node.enable_lightning(flags.plan(NetworkMode::Testnet4, None).unwrap().unwrap()).unwrap();
         assert_eq!(request(&node, "GET", "/ln/status", "").1["network"], network);
     }
 }

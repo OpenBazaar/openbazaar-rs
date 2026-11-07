@@ -1,7 +1,6 @@
-//! The public Mutinynet LSP is not dialed. LDK does not use the node's proxy,
-//! so this used to show the machine's IP to 44.219.111.31 and mutinynet.com.
-//! Ignored because it is not part of the default suite; it must keep failing
-//! closed if someone runs it.
+//! The public Mutinynet LSP is not dialed when no proxy is set. This ignored
+//! test must keep failing closed: a public peer is reached only through
+//! `--proxy`, and this config does not set one.
 
 use openbazaar_lightning::{ChainSource, GossipSource, LdkRail, LightningRail, LnConfig, LspConfig};
 
@@ -22,6 +21,7 @@ fn mutinynet_lsp_opens_a_channel_for_a_faucet_payment() {
         listen: None,
         max_lsp_fee_bps: 500,
         min_lsp_fee_cap_sats: 15_000,
+        proxy: None,
     };
     match LdkRail::start(config, &[0x5a; 32]) {
         Err(err) => assert!(err.to_string().contains("in the clear"), "{err}"),

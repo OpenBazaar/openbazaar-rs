@@ -12,14 +12,14 @@ Chain data comes from BIP 157/158 compact block filters by default.
 --peer uses only your own node (bitcoind with blockfilterindex=1 and peerblockfilters=1).
 --esplora uses exactly the Esplora servers you name.
 --public-fallback asks public Esplora servers for the tip, fees, and broadcasts while no filter peer answers (default on testnet4 only), and only through --proxy. Addresses are never sent. Without --proxy those servers are not contacted.
---proxy carries filter peer connections, broadcasts, Esplora queries, and exchange rates, and gives each Esplora query its own Tor circuit. Without it, public peers and rate servers are not contacted.
+--proxy carries filter peer connections, broadcasts, Esplora queries, exchange rates, and Lightning peers, chain sync, and gossip, and gives each Esplora query its own Tor circuit. Without it, public peers and rate servers are not contacted, and Lightning stays on this machine or the LAN.
 --xmr-daemon turns on Monero direct pay through monerod RPC: your own node (loopback or LAN, direct), or a remote node through --proxy (required for .onion and for any public daemon). There is no default node. Testnet4 pays on Monero stagenet.
 --remote publishes the node's admin API as a Tor onion service that only paired devices can find (docs/home-node.md); `ob-node pair` prints a one-time pairing code and approves the device; `ob-node devices` lists and removes devices.
 --local-shop serves the web shop export on the loopback listener for a browser on this machine. It does not mark that page as a remote home-node client, and it does not change who can call the onion service.
 --lan adds the encrypted LAN channel on port 8790, mDNS discovery, and the first-run setup page at http://openbazaar.local:8790/.
 --push-gateway sends content-free wake-ups to devices that turned push on, through that gateway over Tor. Off unless set.
 --web-dir serves the web shop export to paired browsers over that onion.
---lightning runs an LDK Lightning node for direct pay (see docs/lightning.md). It starts only when the chain source, LSP, and gossip server are on this machine or the LAN: LDK does not use --proxy, so a public peer would see this machine's IP. Mainnet refuses Lightning until its connections run over Tor. There is no mainnet LSP default.
+--lightning runs an LDK Lightning node for direct pay (see docs/lightning.md). A public peer, Esplora chain source, or gossip server is reached through --proxy, so it does not see this machine's IP. Without --proxy those stay refused. Electrum, bitcoind, and --ln-listen stay direct. Mainnet Lightning requires --proxy and an LSP you name (or --no-lsp). There is no mainnet LSP default.
 --vault passphrase reads OB_VAULT_PASSPHRASE, or asks on the terminal.
 --vault file keeps the key in the data dir; use it only on headless machines and in tests.";
 const PASSPHRASE_ENV: &str = "OB_VAULT_PASSPHRASE";
@@ -112,7 +112,7 @@ fn serve(args: &[String]) -> ExitCode {
         ),
         None => eprintln!("ob-node: Monero is off (no --xmr-daemon)"),
     }
-    let lightning = options.lightning.plan(network).expect("parse already checked the Lightning flags");
+    let lightning = options.lightning.plan(network, options.proxy.as_deref()).expect("parse already checked the Lightning flags");
     match &lightning {
         Some(config) => eprintln!(
             "ob-node: Lightning on {} via {}, LSP {}",
@@ -120,7 +120,7 @@ fn serve(args: &[String]) -> ExitCode {
             config.chain.describe(),
             config.lsp.as_ref().map_or("none (open channels by hand)".to_string(), |lsp| lsp.peer.to_string())
         ),
-        None if network == NetworkMode::Mainnet => eprintln!("ob-node: Lightning is off on mainnet until its connections run over Tor"),
+        None if network == NetworkMode::Mainnet => eprintln!("ob-node: Lightning is off on mainnet (it needs --proxy and an LSP you name; there is no default)"),
         None => eprintln!("ob-node: Lightning is off (no --lightning)"),
     }
     let vault = match vault_mode(&options) {

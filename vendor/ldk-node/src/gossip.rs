@@ -29,6 +29,8 @@ pub(crate) enum GossipSource {
 		server_url: String,
 		latest_sync_timestamp: AtomicU32,
 		logger: Arc<Logger>,
+		/// Set only when the server is public. The fetch then uses this proxy and never a direct client.
+		socks_proxy: Option<String>,
 	},
 }
 
@@ -44,11 +46,12 @@ impl GossipSource {
 
 	pub fn new_rgs(
 		server_url: String, latest_sync_timestamp: u32, network_graph: Arc<Graph>,
-		logger: Arc<Logger>,
+		logger: Arc<Logger>, socks_proxy: Option<String>,
 	) -> Self {
 		let gossip_sync = Arc::new(RapidGossipSync::new(network_graph, Arc::clone(&logger)));
 		let latest_sync_timestamp = AtomicU32::new(latest_sync_timestamp);
-		Self::RapidGossipSync { gossip_sync, server_url, latest_sync_timestamp, logger }
+		let socks_proxy = socks_proxy.filter(|_| !crate::socks::host_is_local(&server_url));
+		Self::RapidGossipSync { gossip_sync, server_url, latest_sync_timestamp, logger, socks_proxy }
 	}
 
 	pub fn is_rgs(&self) -> bool {
@@ -86,13 +89,33 @@ impl GossipSource {
 	pub async fn update_rgs_snapshot(&self) -> Result<u32, Error> {
 		match self {
 			Self::P2PNetwork { gossip_sync: _, .. } => Ok(0),
-			Self::RapidGossipSync { gossip_sync, server_url, latest_sync_timestamp, logger } => {
+			Self::RapidGossipSync {
+				gossip_sync,
+				server_url,
+				latest_sync_timestamp,
+				logger,
+				socks_proxy,
+			} => {
 				let query_timestamp = latest_sync_timestamp.load(Ordering::Acquire);
 				let query_url = format!("{}/{}", server_url, query_timestamp);
+				let client = match socks_proxy {
+					Some(proxy) => {
+						let proxy = reqwest::Proxy::all(proxy).map_err(|e| {
+							log_trace!(logger, "The gossip proxy is not usable: {}", e);
+							Error::GossipUpdateFailed
+						})?;
+						reqwest::Client::builder().proxy(proxy).build().map_err(|e| {
+							log_trace!(logger, "The gossip client could not be built: {}", e);
+							Error::GossipUpdateFailed
+						})?
+					},
+					None => reqwest::Client::new(),
+				};
+				let request = client.get(query_url).send();
 
 				let response = tokio::time::timeout(
 					Duration::from_secs(RGS_SYNC_TIMEOUT_SECS),
-					reqwest::get(query_url),
+					request,
 				)
 				.await
 				.map_err(|e| {
