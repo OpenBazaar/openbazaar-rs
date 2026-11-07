@@ -70,4 +70,4 @@ Each check in \S\ref{sec:escrow-checks} exists because a protocol without it is 
 
 \paragraph{Denial of service on the moderator.} Each letter carries a 50~KB share whose verification costs about 50~ms (\S\ref{sec:evaluation}). The moderator caches letters it has verified and does not repeat the verification on decryption, but an attacker can still send many distinct letters; rate limits per source and batched verification (\S\ref{sec:future}) bound the cost.
 
-\paragraph{Client impersonation on the same machine.} A local process that can read the pairing token can act as the client (\S\ref{sec:architecture}). This is out of scope (A6).
+\paragraph{Client impersonation on the same machine.} A local process that can read the pairing token can act as the client (\S\ref{sec:architecture}). A paired remote device can make the requests its key is allowed to make until the owner removes it. It cannot read the backup phrase, and a spend still requires the wallet passphrase (\S\ref{sec:remote}). A compromised device is out of scope (A6).

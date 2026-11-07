@@ -11,19 +11,19 @@
 \node[head] (hb) at (\xb,0) {Buyer node};
 \node[head] (hv) at (\xv,0) {Vendor node\\\scriptsize mailbox};
 \node[head] (ha) at (\xa,0) {Vendor client};
-\foreach \x in {\xc,\xb,\xv,\xa} { \draw[black!40] (\x,-0.45) -- (\x,-8.6); }
+\foreach \x in {\xc,\xb,\xv,\xa} { \draw[black!40] (\x,-0.45) -- (\x,-9.2); }
 
 \draw[msg] (\xb,-1.0) -- node[note, above]{1. verified catalog} (\xc,-1.0);
-\draw[msg] (\xc,-1.9) -- node[note, above]{2. checkout + pairing token} (\xb,-1.9);
-\node[note, right] at (\xb+0.1,-2.75) {3. check listing hashes; build order;\\\phantom{3. }HPKE-seal to vendor key};
-\draw[msg] (\xb,-3.7) -- node[note, above]{4. sealed letter over onion service} (\xv,-3.7);
-\node[note, left] at (\xv-0.1,-4.35) {5. store ciphertext;\\\phantom{5. }no secret needed};
-\draw[msg] (\xb,-5.0) -- node[note, above]{6. payment terms} (\xc,-5.0);
-\draw[msg] (\xa,-5.7) -- node[note, above]{7. take letter} (\xv,-5.7);
-\node[note, left] at (\xa-0.1,-6.4) {8. open with\\\phantom{8. }mailbox secret};
-\draw[msg] (\xa,-7.2) -- node[note, above]{9. reply sealed to buyer's per-order key} (\xb,-7.2);
-\node[note, right] at (\xb+0.1,-8.1) {10. buyer pays vendor directly;\\\phantom{10. }both nodes watch the chain};
+\draw[msg] (\xc,-1.9) -- node[note, above]{2. checkout} (\xb,-1.9);
+\node[note, right] at (\xb+0.1,-2.7) {3. seal to the seller's mailbox key};
+\draw[msg] (\xb,-3.5) -- node[note, above]{4. letter, retried from an outbox} (\xv,-3.5);
+\node[note, left] at (\xv-0.1,-4.25) {5. price the order;\\\phantom{5. }fresh address};
+\draw[msg] (\xv,-5.15) -- node[note, above]{6. terms, or a decline} (\xb,-5.15);
+\node[note, right] at (\xb+0.1,-5.9) {7. pay, and name the transaction};
+\node[note, left] at (\xv-0.1,-6.6) {8. ``payment sent'' until a block};
+\draw[msg] (\xa,-7.4) -- node[note, above]{9. ship once paid} (\xv,-7.4);
+\draw[msg] (\xb,-8.3) -- node[note, above]{10. buyer confirms} (\xv,-8.3);
 \end{tikzpicture}
-\caption{Order flow for one seller. Steps 4 and 9 travel over Tor to the recipient's onion mailbox. A multi-seller checkout repeats steps 3--10 independently for each seller.}
+\caption{A sale between two nodes (\S\ref{sec:sale}). Steps 4, 6, and 10 are sealed letters to the other node's loopback mail endpoint. The seller shows step 8 because compact filters cannot see the mempool. A multi-seller checkout repeats the exchange once per seller.}
 \label{fig:orderflow}
 \end{figure}

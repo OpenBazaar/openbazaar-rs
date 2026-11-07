@@ -15,7 +15,7 @@ Sign one listing (BIP 340) & 101~$\mu$s & 2{,}000 \\
 Verify one listing & 48~$\mu$s & 2{,}000 \\
 Verify the whole sample catalog & 1.9~ms & 200 \\
 Order plaintext with a four-line US ship-to & 173 bytes & --- \\
-Sealed letter for that order & 230 bytes & --- \\
+Sealed letter, smallest bucket & 2~KiB & format \\
 HPKE seal one order & 115~$\mu$s & 2{,}000 \\
 HPKE open one order & 75~$\mu$s & 2{,}000 \\
 Verifiable moderator share, size (by the serialization format) & 49{,}761 bytes & --- \\
@@ -33,4 +33,4 @@ On-device search, 100{,}000 headers & 49--67~ms/query & 100, two runs \\
 
 The share size follows from the format: one 33-byte point, 256 ciphertext pairs of two 33-byte points each, 256 OR-proofs of four 32-byte scalars each, and a 64-byte DLEQ proof: $33+256\cdot(66+128)+64=49{,}761$. An escrow funding exchange carries two shares (one per dispute branch), so about 100~KB, and a dispute letter carries one. Decryption tests each of the 256 bits against the identity and $G$; because the moderator verifies a letter once and caches the result, decryption costs a few milliseconds rather than a second full verification.
 
-These numbers support three conclusions. Signing and verifying the catalog and sealing orders cost well under a millisecond each, so they are not a bottleneck. On-device search over tens of thousands of headers is interactive on a laptop; we have not measured it on a phone. The verifiable share dominates the escrow's cost in both bytes and time, which is why smaller proofs are the first item of future work (\S\ref{sec:future}).
+These numbers support three conclusions. Signing and verifying the catalog and sealing orders cost well under a millisecond each, so they are not a bottleneck. The seal and open times were measured on a short letter; a letter on the wire is one of the size buckets in \S\ref{sec:orders}. On-device search over tens of thousands of headers is interactive on a laptop; we have not measured it on a phone. The verifiable share dominates the escrow's cost in both bytes and time, which is why smaller proofs are the first item of future work (\S\ref{sec:future}).

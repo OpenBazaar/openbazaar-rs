@@ -9,7 +9,7 @@
   \item[G3. Private orders.] An order's contents, including any ship-to address, are readable only by the vendor it is addressed to. No public relay or index stores a record that a given buyer wrote to a given vendor.
   \item[G4. Bounded moderation.] A moderator can choose between two payouts that buyer and vendor already signed. It cannot sign alone, redirect funds, change amounts, or learn about an order unless a party opens a dispute.
   \item[G5. Liveness without a platform.] A buyer can recover escrowed funds from a vendor who disappears, and a vendor can collect from a buyer who stops responding, without anyone's cooperation beyond broadcasting a presigned transaction.
-  \item[G6. Thin clients.] A phone or browser client does not need to run Tor, hold spend keys, or dial the peer-to-peer network. Those jobs belong to a node the user controls.
+  \item[G6. Thin clients.] A phone client embeds Tor so it can reach the node it is paired with. It does not hold spend keys, and it does not dial other vendors. A browser on the same machine talks to the node on a loopback address. Spending and chain watches stay on the node.
   \item[G7. Honest degradation.] When a privacy mechanism is unavailable (no Tor, no Payjoin partner, no Lightning route), the system says so rather than silently falling back.
 \end{description}
 

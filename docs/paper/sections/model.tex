@@ -1,12 +1,12 @@
 \section{System Model and Actors}
 \label{sec:model}
 
-\paragraph{Devices.} A \emph{client} is the user-facing application: an installed web app on a phone, or the same screens inside a desktop shell. A \emph{node} is a long-running process the user controls, on a desktop computer or an Android device, that holds keys, stores records, talks to the network, and watches the Bitcoin chain. A client is paired with exactly one node. The phone has no Tor client and never dials the peer-to-peer network; it talks only to its paired node and stops working when that node is unreachable.
+\paragraph{Devices.} A \emph{client} is the user-facing application: the native phone app, or the same screens in a desktop shell or a browser on the node machine. A \emph{node} is a long-running process the user controls, on a computer that stays on, that holds keys, stores records, talks to other nodes, and watches the Bitcoin chain. A client is paired with exactly one node. The phone app embeds a Tor client and uses it to reach that node. On the same home network it uses a sealed channel and falls back to Tor when the channel does not answer. The phone does not dial other vendors, and it cannot reach the store when its node is unreachable.
 
 \paragraph{Roles.}
 \begin{description}[leftmargin=1.2em]
   \item[Buyer.] Browses the catalog, sends a sealed order, and pays. For moderated purchases, funds the escrow output and holds a presigned refund.
-  \item[Vendor.] Publishes a signed store and listings, runs a node with an onion-service mailbox, opens letters, ships, and collects payment. For moderated purchases, holds a presigned claim.
+  \item[Vendor.] Publishes a signed store and listings, runs a node that opens sealed letters, ships, and collects payment. For moderated purchases, holds a presigned claim.
   \item[Moderator.] Publishes a record of its keys, fee, payout script, and acceptance policy, and is named in a listing and in the signed escrow terms. Receives nothing unless a party opens a dispute. On a dispute, verifies a self-contained letter and reveals one secret scalar to the party it rules for. Paid a fixed fee by the dispute outcome.
   \item[Labeler.] Publishes signed sets of content labels about stores and listings. Buyers choose which labelers to follow; a labeler cannot change or remove anyone's records.
   \item[Replica.] A node that stores and serves catalog records it did not create, so that a store remains readable while its publisher is offline.

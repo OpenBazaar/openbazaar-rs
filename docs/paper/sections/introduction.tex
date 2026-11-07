@@ -22,11 +22,11 @@ That design had strengths the redesign keeps: listings were signed and an order 
 The redesign keeps the contract between buyer, vendor, and moderator and replaces the machinery underneath. Its main ideas are:
 \begin{enumerate}
   \item \textbf{A public catalog, private orders.} Store and listing records are public, signed, and content-addressed, and replicated by any node (\S\ref{sec:catalog}). Orders are not catalog records; each is a letter sealed to one vendor and carried to that vendor's own mailbox (\S\ref{sec:orders}). Vendors label their own records, and buyers filter what they see on their own devices (\S\ref{sec:labels}).
-  \item \textbf{Clients that only talk to their own node.} The user-facing app never names a peer, seed, onion address, or vendor URL. It sends requests to its owner's node, which verifies records and delivers letters (\S\ref{sec:architecture}).
+  \item \textbf{Clients that only talk to their own node.} The user-facing app sends marketplace requests to its owner's node, which verifies records and delivers letters (\S\ref{sec:architecture}). A phone reaches that node as in \S\ref{sec:remote}.
   \item \textbf{Direct, per-seller payments.} A buyer pays each vendor in a separate transaction, never batching two sellers together (\S\ref{sec:payments}).
   \item \textbf{Scriptless two-party escrow with a bounded moderator.} The escrow output is an ordinary-looking Taproot key-path output. Every non-cooperative outcome is presigned by both parties before the buyer funds it. The moderator only reveals one secret scalar that completes one of two presigned dispute outcomes (\S\ref{sec:escrow}).
 \end{enumerate}
 
 The contributions are: (i) a threat model for a marketplace with this split (\S\ref{sec:threats}); (ii) a precise description of the two-party escrow protocol, its message rounds, the checks each party and the moderator must run, and its block-height timeline (\S\ref{sec:escrow}); (iii) argued security properties, each with its assumptions, and the attacks the checks exist to stop (\S\ref{sec:security}); (iv) a table of what every party and observer learns (\S\ref{sec:privacy}); and (v) measurements of a reference implementation (\S\ref{sec:evaluation}) and a statement of what the design does not achieve (\S\ref{sec:limitations}).
 
-A reference implementation in Rust, with a web and desktop client, is available at \url{https://github.com/OpenBazaar/openbazaar-rs}. It is a testnet prototype; this paper describes the design it implements, not its deployment state.
+A reference implementation in Rust, with a web and desktop client and a native phone app for iOS and Android, is available at \url{https://github.com/OpenBazaar/openbazaar-rs}. This paper describes what that implementation does.

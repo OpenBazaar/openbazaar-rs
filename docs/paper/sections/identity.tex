@@ -24,7 +24,7 @@ The coin type $c$ is 0 on mainnet and 1 on test networks, and each network has i
 
 \subsection{The mailbox key}
 
-Orders are sealed to an X25519 public key belonging to the vendor (\S\ref{sec:orders}). That key must be bound to the store, so that a buyer who verified a listing also knows which key to seal to. The binding is a field in the signed store record, next to the vendor's onion address. The mailbox key is derived from the phrase on its own hardened path under \code{m/1984'} and is never the store signing scalar reinterpreted as an X25519 key: reusing one secret across two groups and two protocols has no known attack in this combination, but there is no reason to rely on that.
+Orders are sealed to an X25519 public key belonging to the vendor (\S\ref{sec:orders}). That key must be bound to the store, so that a buyer who verified a listing also knows which key to seal to. The binding is a field in the signed store record. The record can also carry an onion host; the node does not dial it for orders. The mailbox key is derived from the phrase on its own hardened path under \code{m/1984'} and is never the store signing scalar reinterpreted as an X25519 key: reusing one secret across two groups and two protocols has no known attack in this combination, but there is no reason to rely on that.
 
 \subsection{Encryption at rest}
 
