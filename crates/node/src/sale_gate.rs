@@ -1,7 +1,8 @@
 //! The public sale onion's loopback side.
 //!
 //! Tor accepts the connection and hands the bytes here. Only the catalog,
-//! media, review, and order-mail routes are forwarded to the shop listener,
+//! media, review, order-mail, and escrow-mail routes are forwarded to the
+//! shop listener,
 //! with `Host` rewritten to that listener and `Origin` removed. Every other
 //! path is answered here and is not opened on the shop. The shop's response
 //! is copied back as bytes. A `Location` header is not a new connection.
@@ -39,7 +40,7 @@ pub(crate) fn allowed(method: &str, path: &str) -> bool {
         ("GET", "/public/store") => true,
         ("GET", path) if media(path) => true,
         ("GET" | "POST", "/public/reviews") => true,
-        ("POST", "/mail" | "/mail/reply") => true,
+        ("POST", "/mail" | "/mail/reply" | "/escrow/mail") => true,
         _ => false,
     }
 }
@@ -149,6 +150,12 @@ mod tests {
         assert!(allowed("GET", "/public/reviews"));
         assert!(allowed("POST", "/mail"));
         assert!(allowed("POST", "/mail/reply"));
+        assert!(allowed("POST", "/escrow/mail"));
+        assert!(!allowed("GET", "/escrow/mail"));
+        assert!(!allowed("GET", "/escrow/sales"));
+        assert!(!allowed("POST", "/escrow/bump"));
+        assert!(!allowed("POST", "/wallet"));
+        assert!(!allowed("POST", "/orders/x/pay"));
         assert!(!allowed("GET", "/wallet"));
         assert!(!allowed("GET", "/catalog"));
         assert!(!allowed("GET", "/follows"));

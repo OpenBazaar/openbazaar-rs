@@ -22,7 +22,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use bitcoin::hashes::{sha256, Hash, HashEngine};
 use serde_json::{json, Value};
 
-use crate::escrow_mail::{check_loopback, hex, unhex, Mail};
+use crate::escrow_mail::{hex, unhex, Mail};
 use crate::escrow_store::sync_dir;
 use crate::vault::Vault;
 use crate::Error;
@@ -47,13 +47,27 @@ pub(crate) trait Transport: Send + Sync {
     fn deliver(&self, url: &str, letter: &[u8]) -> Result<(), Refusal>;
 }
 
-/// `POST {url}/escrow/mail` over loopback HTTP.
-pub(crate) struct HttpTransport;
+/// `POST {base}/escrow/mail`. Loopback stays on this machine. A v3 onion is
+/// one request through [`crate::peer_http`]. A clearnet host is refused
+/// before a connection, and a redirect is not followed.
+pub(crate) struct HttpTransport {
+    peers: Arc<crate::peer_http::PeerLink>,
+}
+
+impl HttpTransport {
+    pub(crate) fn new(peers: Arc<crate::peer_http::PeerLink>) -> Self {
+        Self { peers }
+    }
+
+    pub(crate) fn loopback() -> Self {
+        Self::new(Arc::new(crate::peer_http::PeerLink::default()))
+    }
+}
 
 impl Transport for HttpTransport {
     fn deliver(&self, base_url: &str, letter: &[u8]) -> Result<(), Refusal> {
-        check_loopback(base_url).map_err(Refusal::Refused)?;
-        UrlTransport::loopback().deliver(&format!("{}/escrow/mail", base_url.trim_end_matches('/')), letter)
+        let base = crate::peer_http::sale_base(base_url).map_err(Refusal::Refused)?;
+        UrlTransport::new(Arc::clone(&self.peers)).deliver(&format!("{base}/escrow/mail"), letter)
     }
 }
 
@@ -383,8 +397,8 @@ mod tests {
 
     #[test]
     fn http_transport_refuses_non_loopback_peers_without_dialing() {
-        assert!(matches!(HttpTransport.deliver("http://10.0.0.1:1", b"x"), Err(Refusal::Refused(_))));
-        assert!(matches!(HttpTransport.deliver("http://127.0.0.1:9", b"x"), Err(Refusal::Retry(_))));
+        assert!(matches!(HttpTransport::loopback().deliver("http://10.0.0.1:1", b"x"), Err(Refusal::Refused(_))));
+        assert!(matches!(HttpTransport::loopback().deliver("http://127.0.0.1:9", b"x"), Err(Refusal::Retry(_))));
     }
 
     #[test]
@@ -425,5 +439,82 @@ mod tests {
         assert_eq!(hits.load(Ordering::SeqCst), 0, "the redirect was followed: {err:?}");
         let outside = crate::escrow_mail::loopback_request("GET", "http://203.0.113.9/public/store", Duration::from_millis(200)).unwrap_err();
         assert!(outside.contains("loopback"), "{outside}");
+    }
+
+    #[test]
+    fn escrow_mail_does_not_leave_for_clearnet_or_follow_a_redirect() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::{Arc, Mutex};
+        use std::thread;
+        use std::time::Instant;
+
+        use crate::peer_http::{OnionDial, PeerLink};
+
+        const ONION: &str = "25njqamcweflpvkl73j4szahhihoc4xt3ktcgjnpaingr5yhkenl5sid.onion";
+
+        struct Script {
+            hits: AtomicUsize,
+            trap: std::net::SocketAddr,
+            seen: Mutex<Vec<Vec<u8>>>,
+        }
+
+        impl OnionDial for Script {
+            fn exchange(&self, onion: &str, request: &[u8], _max: usize) -> Result<Vec<u8>, String> {
+                let n = self.hits.fetch_add(1, Ordering::SeqCst);
+                self.seen.lock().unwrap().push(request.to_vec());
+                let text = std::str::from_utf8(request).unwrap_or("");
+                assert!(text.contains(onion), "{text}");
+                assert!(!text.contains("127.0.0.1"), "{text}");
+                if n > 0 {
+                    let _ = std::net::TcpStream::connect(self.trap);
+                    return Ok(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec());
+                }
+                let port = self.trap.port();
+                Ok(format!(
+                    "HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:{port}/stolen\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                )
+                .into_bytes())
+            }
+        }
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let trap = listener.local_addr().unwrap();
+        let trap_hits = Arc::new(AtomicUsize::new(0));
+        let counted = trap_hits.clone();
+        thread::spawn(move || {
+            for mut stream in listener.incoming().flatten() {
+                counted.fetch_add(1, Ordering::SeqCst);
+                let mut buf = [0u8; 256];
+                let _ = stream.read(&mut buf);
+                let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+            }
+        });
+        let script = Arc::new(Script {
+            hits: AtomicUsize::new(0),
+            trap,
+            seen: Mutex::new(Vec::new()),
+        });
+        let peers = PeerLink::default();
+        peers.use_fake(script.clone());
+        let transport = HttpTransport::new(Arc::new(peers));
+
+        let started = Instant::now();
+        let refused = transport.deliver("http://203.0.113.9", b"sealed").unwrap_err();
+        assert!(started.elapsed() < Duration::from_millis(200), "escrow mail dialed a clearnet host");
+        assert!(matches!(refused, Refusal::Refused(_)), "{refused:?}");
+        assert_eq!(script.hits.load(Ordering::SeqCst), 0, "escrow mail dialed a clearnet host");
+
+        let err = transport.deliver(&format!("http://{ONION}"), b"sealed-escrow").unwrap_err();
+        thread::sleep(Duration::from_millis(150));
+        let shown = format!("{err:?}");
+        assert!(shown.contains("302") && shown.contains("redirect"), "{shown}");
+        assert_eq!(script.hits.load(Ordering::SeqCst), 1, "a second dial followed the redirect: {shown}");
+        assert_eq!(trap_hits.load(Ordering::SeqCst), 0, "escrow mail followed the redirect: {shown}");
+        let sent = String::from_utf8(script.seen.lock().unwrap()[0].clone()).unwrap();
+        assert!(sent.starts_with("POST /escrow/mail "), "{sent}");
+        assert!(sent.contains(&format!("Host: {ONION}")), "{sent}");
+        assert!(sent.contains("sealed-escrow"), "{sent}");
     }
 }

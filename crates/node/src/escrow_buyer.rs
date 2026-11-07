@@ -112,7 +112,7 @@ impl Node {
             .vendors
             .get(seller)
             .ok_or_else(|| format!("No node for {seller} is set up to take escrow."))?;
-        if self.own_url() == Some(url.trim_end_matches('/')) {
+        if self.own_url() == Some(url.trim_end_matches('/')) || self.sale_reply_url().as_deref() == Some(url.trim_end_matches('/')) {
             return Err("An escrow vendor must be another node.".into());
         }
         Ok(url.clone())

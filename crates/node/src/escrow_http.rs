@@ -1,7 +1,8 @@
 //! Escrow routes.
 //!
-//! `POST /escrow/mail` is the peer mail drop: a loopback caller posts one raw
-//! sealed letter, with no pairing token (peers do not have it). The letter
+//! `POST /escrow/mail` is the peer mail drop: one raw sealed letter, with no
+//! pairing token. The shop accepts it from a loopback peer. The sale onion
+//! reaches it only through the gate, which is that peer. The letter
 //! is only stored; it is opened later by the mail loop. Everything else is
 //! for this node's own shop or operator and needs the pairing token.
 

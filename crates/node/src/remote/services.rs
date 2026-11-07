@@ -9,8 +9,8 @@
 //!   a device that knows only the 8 words can find it. It serves `/pair/*`
 //!   and goes away with the code.
 //! * One public sale service, nickname `ob-sale`, with no client auth. It
-//!   forwards to the sale gate, which allows catalog, media, reviews, and
-//!   order mail and answers everything else itself.
+//!   forwards to the sale gate, which allows catalog, media, reviews, order
+//!   mail, and escrow mail, and answers everything else itself.
 
 use std::collections::HashMap;
 use std::net::SocketAddr;

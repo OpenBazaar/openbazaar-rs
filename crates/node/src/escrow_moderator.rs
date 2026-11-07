@@ -32,7 +32,7 @@ use tormail::StoreKey;
 use crate::chain::ChainSource;
 use crate::escrow_fixture::{moderator_keys, moderator_record};
 use crate::escrow_limits::DisputeLimits;
-use crate::escrow_mail::{check_loopback, hex, id_hex, key_bytes, parse_id, unhex, EscrowId, Kind, Mail, RETRY_LATER};
+use crate::escrow_mail::{hex, id_hex, key_bytes, parse_id, unhex, EscrowId, Kind, Mail, RETRY_LATER};
 use crate::escrow_outbox::now_secs;
 use crate::escrow_rulings::FileRulingStore;
 use crate::escrow_store::{EscrowStore, Role};
@@ -184,8 +184,7 @@ impl Node {
     fn moderator_review(&self, mail: &Mail, writer: Party) -> Result<(), String> {
         let fields = mail.fields(3)?;
         let reply_mail = key_bytes(&fields[1])?;
-        let reply_url = String::from_utf8(fields[2].clone()).map_err(|err| err.to_string())?;
-        check_loopback(&reply_url)?;
+        let reply_url = crate::peer_http::sale_base(&String::from_utf8(fields[2].clone()).map_err(|err| err.to_string())?)?;
         let received = self.chain.tip_height()?;
         let digest = letter_digest(&fields[0]);
         let limits: &DisputeLimits = &self.escrow.limits;
