@@ -49,6 +49,16 @@ fn unsigned_tampered_and_unknown_requests_are_refused() {
             "{status_line}"
         );
     }
+    assert!(
+        device.call(&node, "GET", "/catalog?q=novel", "").0.contains("200"),
+        "the signature covers the query"
+    );
+    let added_query =
+        device.raw("GET", "/catalog", "", now_secs()).replacen("/catalog", "/catalog?q=novel", 1);
+    assert!(
+        send(&node, Entry::Admin, &added_query).0.contains("401"),
+        "a query added after signing"
+    );
     let stranger = Device {
         key: Key::p256(),
         watch: None,

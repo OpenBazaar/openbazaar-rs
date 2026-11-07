@@ -22,6 +22,7 @@ use super::protocol::{lan_open_request, lan_seal_response, words};
 use super::{pair_http, LAN_PORT};
 use crate::http::http_response_cors;
 use crate::http_parse::{self, header};
+use crate::vault_key::{encode_hex, random_bytes};
 use crate::Node;
 
 const PAGE_WINDOW: Duration = Duration::from_secs(10 * 60);
@@ -107,7 +108,7 @@ pub(crate) fn serve(node: &Node, addr: SocketAddr, main_port: u16, stop: &Atomic
     let _mdns = if addr.ip().is_loopback() {
         None
     } else {
-        announce(node, &ips, port)
+        announce(&ips, port)
     };
     eprintln!("ob-node: LAN channel on port {port} (encrypted to the node key); setup page at http://openbazaar.local:{port}/ while no device is paired");
     std::thread::scope(|scope| {
@@ -128,28 +129,15 @@ pub(crate) fn serve(node: &Node, addr: SocketAddr, main_port: u16, stop: &Atomic
     });
 }
 
-/// Announce `_openbazaar._tcp` with the node id, so apps on the LAN find it
-/// without typing. The daemon stops when the returned value is dropped.
-fn announce(node: &Node, ips: &[IpAddr], port: u16) -> Option<mdns_sd::ServiceDaemon> {
-    let daemon = mdns_sd::ServiceDaemon::new()
-        .map_err(|err| eprintln!("ob-node: mDNS is off: {err}"))
-        .ok()?;
-    let node_id = node.remote.node_id();
-    let properties = [("v", "2"), ("id", node_id.as_str())];
-    let info = mdns_sd::ServiceInfo::new(
-        MDNS_SERVICE,
-        &format!("openbazaar-{}", &node_id[..8]),
-        MDNS_HOST,
-        ips,
-        port,
-        &properties[..],
-    )
-    .map_err(|err| eprintln!("ob-node: mDNS is off: {err}"))
-    .ok()?;
-    daemon
-        .register(info)
-        .map_err(|err| eprintln!("ob-node: mDNS is off: {err}"))
-        .ok()?;
+/// Announce `_openbazaar._tcp` under a random instance name with no
+/// identifying data: an app tries the LAN channel and only its own node can
+/// answer it. The daemon stops when the returned value is dropped.
+fn announce(ips: &[IpAddr], port: u16) -> Option<mdns_sd::ServiceDaemon> {
+    let off = |err: mdns_sd::Error| eprintln!("ob-node: mDNS is off: {err}");
+    let daemon = mdns_sd::ServiceDaemon::new().map_err(off).ok()?;
+    let instance = format!("openbazaar-{}", encode_hex(&random_bytes::<4>()));
+    let info = mdns_sd::ServiceInfo::new(MDNS_SERVICE, &instance, MDNS_HOST, ips, port, &[("v", "2")][..]).map_err(off).ok()?;
+    daemon.register(info).map_err(off).ok()?;
     Some(daemon)
 }
 

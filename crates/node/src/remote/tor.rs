@@ -18,6 +18,8 @@ use tormail::{Discovery, OnionAddress, OnionForward};
 
 pub(crate) const ADMIN_PORT: u16 = 80;
 const EXCHANGE_TIMEOUT: Duration = Duration::from_secs(90);
+/// Pause before refetching a descriptor that refused our discovery key.
+const DESCRIPTOR_WAIT: Duration = Duration::from_secs(8);
 
 pub(crate) struct Tor {
     runtime: tokio::runtime::Runtime,
@@ -99,6 +101,9 @@ impl Tor {
         self.exchange_within(onion, request, max, EXCHANGE_TIMEOUT)
     }
 
+    /// One request within `limit`. A refused discovery key is retried with a
+    /// fresh descriptor: the cached one may predate this device, and right
+    /// after approval the node may not have uploaded the new one yet.
     pub(crate) fn exchange_within(
         &self,
         onion: &OnionAddress,
@@ -106,10 +111,35 @@ impl Tor {
         max: usize,
         limit: Duration,
     ) -> Result<Vec<u8>, String> {
+        let deadline = std::time::Instant::now() + limit;
+        let mut result = self.exchange_once(onion, request, max, limit, false);
+        for _ in 0..3 {
+            match &result {
+                Err(err) if err.contains("authentication") => {}
+                _ => break,
+            }
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            if left <= DESCRIPTOR_WAIT {
+                break;
+            }
+            std::thread::sleep(DESCRIPTOR_WAIT);
+            result = self.exchange_once(onion, request, max, left - DESCRIPTOR_WAIT, true);
+        }
+        result
+    }
+
+    fn exchange_once(
+        &self,
+        onion: &OnionAddress,
+        request: &[u8],
+        max: usize,
+        limit: Duration,
+        fresh: bool,
+    ) -> Result<Vec<u8>, String> {
         self.runtime.block_on(async {
             match tokio::time::timeout(
                 limit,
-                tormail::exchange(&self.client, onion, ADMIN_PORT, request, max),
+                tormail::exchange(&self.client, onion, ADMIN_PORT, request, max, fresh),
             )
             .await
             {

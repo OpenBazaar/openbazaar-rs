@@ -266,7 +266,8 @@ pub(crate) fn response(
             }
         }
         (_, path) if path.starts_with(PROXY_PREFIX) => {
-            let target = &path[PROXY_PREFIX.len()..];
+            let full = super::request_target(head).unwrap_or(path);
+            let target = &full[PROXY_PREFIX.len()..];
             if !target.starts_with('/') || !target.bytes().all(|b| b.is_ascii_graphic()) {
                 return json_error(
                     "400 Bad Request",

@@ -191,6 +191,7 @@ fn signed_request(
     main_port: u16,
 ) -> Vec<u8> {
     let now = now_secs();
+    let target = super::request_target(head).unwrap_or(path);
     let device = {
         let mut devices = node.remote.devices();
         let Some((device, watch)) = devices.signer(signed.device) else {
@@ -205,7 +206,7 @@ fn signed_request(
             Some(device.key.clone())
         };
         let device_id = device.id.clone();
-        if !key.is_some_and(|key| signed.verifies(&key, &devices.node_id, method, path, body)) {
+        if !key.is_some_and(|key| signed.verifies(&key, &devices.node_id, method, target, body)) {
             return unauthorized("unsigned", "The request signature did not verify.");
         }
         match node.remote.replay.admit(signed, now) {
@@ -249,7 +250,7 @@ fn signed_request(
     let raw = loopback_request(
         node,
         method,
-        path,
+        target,
         header(head, "content-type"),
         body,
         Some(&device),

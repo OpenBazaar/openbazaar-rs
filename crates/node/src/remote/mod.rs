@@ -355,6 +355,12 @@ pub(crate) fn dispatch_lock() -> MutexGuard<'static, ()> {
     DISPATCH.lock().unwrap_or_else(|err| err.into_inner())
 }
 
+/// The request target with its query string, which `http_parse` leaves out
+/// of `path` but signatures cover.
+pub(crate) fn request_target(head: &str) -> Option<&str> {
+    head.lines().next()?.split(' ').nth(1)
+}
+
 pub(crate) fn now_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

@@ -25,8 +25,10 @@ names are camelCase. All times are unix seconds.
   `bip340:{32-byte x-only, hex}`. This string is the **key text**.
 - `deviceId` = hex of the first 8 bytes of SHA-256(key text).
 - A discovery public key is written as Tor writes it:
-  `descriptor:x25519:{base32 of 32 bytes}`. A discovery secret (for Tor
-  Browser's onion-authentication prompt) is the base32 of the 32 secret bytes.
+  `descriptor:x25519:{base32 of 32 bytes}` (Tor prints the base32 in upper
+  case; either case is accepted). A discovery secret (for Tor Browser's
+  onion-authentication prompt) is the base32 of the 32 secret bytes, clamped
+  as an X25519 secret when used.
 
 ### Signatures
 
@@ -105,7 +107,8 @@ Answer `202`:
 { "requestId": "{32 hex}", "nodeKey": "{nodePublic hex}", "sas": ["🦊","🌵","🚲","🍋"], "sasNames": ["fox","cactus","bicycle","lemon"], "expiresInSecs": 600 }
 ```
 
-The device checks `nodeKey` against `k` when it came from a QR link.
+The device checks `nodeKey` against `k` when it came from a QR link, computes
+the emoji itself, and stops if they differ from `sas`.
 
 **2. Short authentication string.** Both screens show 4 emoji:
 h = SHA-256(`"OBSAS2\n"` ‖ secret ‖ nodePublic ‖ UTF-8(transcript)); emoji
@@ -124,7 +127,8 @@ h = SHA-256(`"OBSAS2\n"` ‖ secret ‖ nodePublic ‖ UTF-8(transcript)); emoji
 
 **3. Approve on the node.** The owner compares the emoji and approves on the
 node: the `ob-node pair` console prompt, the node's own app (loopback),
-another paired device, or the LAN setup page while no device is paired.
+another paired device, or the LAN setup page while no device is paired
+(`POST /setup/decide`, a same-origin form: `id={requestId}&approve=1|0`).
 
 - `GET /remote/pending` → `{ "pending": [{ "requestId", "name", "platform", "sas", "sasNames", "deviceId", "ageSecs" }] }`
 - `POST /remote/pending/{requestId}` `{ "approve": true }` → `{ "device": {…} }`
@@ -144,7 +148,8 @@ another paired device, or the LAN setup page while no device is paired.
 ```
 
 `discoverySecret` is present only when the request had no `discoveryKey` (the
-node made one, for Tor Browser). The `requestId` is a 128-bit bearer secret
+node made one). Apps and client nodes send their own `discoveryKey`, so the
+secret never leaves the device. The `requestId` is a 128-bit bearer secret
 known only to the requester. After approval the device's discovery key is in
 the admin onion's restricted-discovery list; Arti republishes the descriptor,
 which can take a minute.
@@ -168,7 +173,7 @@ Every admin request carries:
 | `X-Ob-Signature` | signature over the preimage, hex |
 
 Preimage: `OBRQ2\n{nodeId}\n{deviceId}\n{time}\n{nonce}\n{METHOD}\n{path}\n{SHA-256(body) hex}`.
-`path` includes the query string.
+`path` is the request target exactly as sent, query string included.
 
 The node takes a time within 120 s of its clock and not before it started, and
 each nonce once per device (kept 240 s, 4096 per device). Refusals are JSON
@@ -182,6 +187,9 @@ each nonce once per device (kept 240 s, 4096 per device). Refusals are JSON
 | 401 | `clock` | time out of window; `serverTime` included, retry once |
 | 403 | `node_only` | not allowed to devices (see home-node.md) |
 | 403 | `watch_only` | a watch key may only call `POST /remote/sync` |
+
+While the node is moving to a new address, every answer to a signed request
+carries `X-Ob-Next-Onion: {new onion}`; the device switches to it.
 
 ## Transports
 
@@ -211,8 +219,9 @@ Clients find the node by mDNS, by `openbazaar.local:8790`, or by the `lan`
 addresses the node reports, and fall back to Tor after 1.5 s.
 
 **Setup page.** `GET /` on the LAN port, only while no device is paired (or
-for 10 minutes after `ob-node pair --lan-page`): the QR, the words, pending
-requests with their emoji, and Approve/Reject (first run only).
+for 10 minutes after `ob-node pair --lan-page`): the QR, the words, and, on
+first run only, pending requests with their emoji and Approve/Reject. It has
+no scripts (`Content-Security-Policy: default-src 'none'`).
 
 ## Sync
 
@@ -230,7 +239,7 @@ Answer:
   "serverTime": 1794063000,
   "node": { "nodeId", "onion", "nextOnion": null, "lan": ["…"], "version": { … } },
   "collections": {
-    "catalog": { "doc": { "etag", "value" } | null, "upsert": [ … ], "remove": [ "{id}" ] },
+    "catalog": { "doc": { "etag", "value" } | null, "upsert": [ { "id", "etag", "value" } ], "remove": [ "{id}" ] },
     "wallet": { "error": { "status": 423, "code": "locked" } }
   }
 }
@@ -240,7 +249,7 @@ Answer:
 |---|---|---|---|
 | `catalog` | `GET /catalog` | `listings` | `hash` |
 | `orders` | `GET /orders` | `orders` | `id` |
-| `stores` | `GET /stores` | `stores` | `id` |
+| `stores` | `GET /stores` | `stores` | `key` |
 | `wallet` | `GET /wallet` | (document) | |
 | `lock` | `GET /lock` | (document) | |
 | `network` | `GET /network` | (document) | |
@@ -291,6 +300,7 @@ node runs both, sends `nextOnion` to every remaining device in sync, and
 retires the old address once every remaining device has synced from the new
 one, or after 7 days.
 
-`ob-node devices` lists devices on the node console, `ob-node devices --remove ID`
+`ob-node devices` lists devices on the node console (it talks to the running
+node on loopback), `ob-node devices --remove ID`
 removes one, and `ob-node devices --remove-all --rotate` is the recovery path
 when every device is lost.

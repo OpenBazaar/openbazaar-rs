@@ -200,12 +200,16 @@ where
 
 /// Send `request` to `onion:port` over a fresh stream on `client` and read
 /// the answer until the far side closes, up to `max` bytes.
+/// `fresh` uses a new isolation group, so Arti fetches the service's
+/// descriptor again instead of reusing a cached one (needed after the
+/// service admitted this client's discovery key).
 pub async fn exchange<R>(
     client: &arti_client::TorClient<R>,
     onion: &OnionAddress,
     port: u16,
     request: &[u8],
     max: usize,
+    fresh: bool,
 ) -> Result<Vec<u8>, Error>
 where
     R: Runtime,
@@ -215,8 +219,12 @@ where
         .bootstrap()
         .await
         .map_err(|err| Error::Arti(err.to_string()))?;
+    let mut prefs = arti_client::StreamPrefs::new();
+    if fresh {
+        prefs.new_isolation_group();
+    }
     let mut stream = client
-        .connect((onion.as_str(), port))
+        .connect_with_prefs((onion.as_str(), port), &prefs)
         .await
         .map_err(|err| Error::Arti(err.to_string()))?;
     stream.write_all(request).await?;
