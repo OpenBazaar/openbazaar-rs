@@ -56,7 +56,7 @@ export function lanAddresses(link: Pick<NodeLink, "lan">, discovered: string[] =
   return [...new Set([...discovered, ...link.lan, `openbazaar.local:${LAN_PORT}`])];
 }
 
-export type RequestOptions = { signer?: Signer; idempotent?: boolean; timeoutMs?: number };
+export type RequestOptions = { signer?: Signer; idempotent?: boolean; timeoutMs?: number; contentType?: string };
 
 export class HomeNodeClient {
   private clockOffset = 0;
@@ -118,7 +118,7 @@ export class HomeNodeClient {
     }
   }
 
-  private async signedBytes(method: string, path: string, body: Uint8Array, signer: Signer, host: string): Promise<Uint8Array> {
+  private async signedBytes(method: string, path: string, body: Uint8Array, signer: Signer, host: string, contentType?: string): Promise<Uint8Array> {
     const time = this.now();
     const nonce = bytesToHex(randomBytes(16));
     const signature = await signer.sign(requestPreimage(this.link.nodeId, signer.deviceId, time, nonce, method, path, body));
@@ -128,7 +128,7 @@ export class HomeNodeClient {
       "X-Ob-Nonce": nonce,
       "X-Ob-Signature": signature,
     };
-    if (body.length) headers["Content-Type"] = "application/json";
+    if (body.length) headers["Content-Type"] = contentType ?? "application/json";
     return encodeRequest(method, path, host, headers, body);
   }
 
@@ -136,7 +136,7 @@ export class HomeNodeClient {
     const signer = options.signer ?? this.signer;
     const address = await this.lanAddress();
     if (address) {
-      const inner = await this.signedBytes(method, path, body, signer, LAN_HOST);
+      const inner = await this.signedBytes(method, path, body, signer, LAN_HOST, options.contentType);
       try {
         return { ...(await lanExchange(this.channels, address, hexToBytes(this.link.nodeKey), inner, options.timeoutMs ?? LAN_TIMEOUT_MS)), via: "lan" };
       } catch {
@@ -145,7 +145,7 @@ export class HomeNodeClient {
         if (method !== "GET" && !options.idempotent) throw new AnswerLostError();
       }
     }
-    const request = await this.signedBytes(method, path, body, signer, `${this.link.onion}.onion`);
+    const request = await this.signedBytes(method, path, body, signer, `${this.link.onion}.onion`, options.contentType);
     const raw = await this.channels.tor(this.link.onion, request, options.timeoutMs ?? TOR_TIMEOUT_MS);
     return { ...decodeResponse(raw), via: "tor" };
   }

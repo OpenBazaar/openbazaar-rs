@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from "react";
-import { bytesToHex, randomBytes, utf8ToBytes } from "@noble/hashes/utils.js";
+import { bytesToHex, randomBytes } from "@noble/hashes/utils.js";
 
 import { deleteKey, signWith } from "../../modules/ob-device-key";
 import { HomeNodeClient, jsonBody, jsonOf, UnknownDeviceError, type Signer, type Via } from "../homeNode/client.ts";
@@ -7,6 +7,7 @@ import { deviceIdOf } from "../homeNode/protocol.ts";
 import { batchBody, emptyQueue, enqueue, nextBatch, settleBatch, type Mutation, type Outcome, type QueueState } from "../homeNode/queue.ts";
 import { applySync, emptyReplica, haveOf, type Replica, type SyncChanges } from "../homeNode/replica.ts";
 import { setNativeHomeFetch } from "../homeNode/transport.ts";
+import { bodyBytes, headerOf, responseFromAnswer } from "./bytes.ts";
 import { channels, ensureTor, insertDiscoveryKey, torStatus } from "./channels.ts";
 import { forgetEverything, loadPairing, readSealed, savePairing, writeSealed, type Pairing } from "./storage.ts";
 
@@ -79,14 +80,14 @@ export function homeClient(): HomeNodeClient {
   return client;
 }
 
-async function nativeFetch(path: string, init: RequestInit): Promise<Response> {
+async function nativeFetch(path: string, init: RequestInit = {}): Promise<Response> {
   const method = (init.method ?? "GET").toUpperCase();
-  const body = typeof init.body === "string" ? utf8ToBytes(init.body) : new Uint8Array();
-  const answer = await homeClient().request(method, path, body);
-  return new Response(new TextDecoder().decode(answer.body), {
-    status: answer.status,
-    headers: { "Content-Type": answer.headers["content-type"] ?? "application/json" },
-  });
+  const body = await bodyBytes(init.body);
+  const contentType = headerOf(init.headers, "content-type");
+  // Uploading the same bytes again stores the same hash, so a lost LAN answer can be retried over Tor.
+  const idempotent = method === "POST" && path === "/media";
+  const answer = await homeClient().request(method, path, body, { ...(contentType ? { contentType } : {}), ...(idempotent ? { idempotent } : {}) });
+  return responseFromAnswer(answer.status, answer.headers, answer.body);
 }
 
 /** Load the pairing, the replica, and the queue, and start Tor. Safe to call again. */

@@ -28,7 +28,7 @@ function DeviceRow({ device, onRemove }: { device: Device; onRemove: () => void 
   );
 }
 
-export function SettingsScreen({ onMarket }: { onMarket: () => void }) {
+export function SettingsScreen() {
   const session = useSession();
   const [devices, setDevices] = useState<Device[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -96,9 +96,6 @@ export function SettingsScreen({ onMarket }: { onMarket: () => void }) {
         {devices === null && !error ? <Text style={ui.muted}>Loading…</Text> : null}
         {devices?.map(device => <DeviceRow key={device.id} device={device} onRemove={() => confirmRemove(device)} />)}
         <Button label="Pair another device" onPress={() => setPairing(true)} />
-      </Card>
-      <Card title="Marketplace">
-        <Button label="Browse and buy" kind="plain" onPress={onMarket} />
       </Card>
       <Card title="This phone">
         <Button
