@@ -19,6 +19,9 @@ mod coin_locks;
 mod commerce_draft;
 mod commerce_http;
 mod coupons;
+mod review_publish;
+mod reviews;
+mod reviews_http;
 mod egress;
 mod escrow_bump;
 mod escrow_buyer;
@@ -94,6 +97,8 @@ mod multinode_durable_tests;
 mod multinode_seller_tests;
 #[cfg(test)]
 mod multinode_variant_tests;
+#[cfg(test)]
+mod multinode_review_tests;
 #[cfg(test)]
 mod own_store_tests;
 #[cfg(test)]
@@ -255,6 +260,7 @@ pub struct Node {
     /// Coupon uses and spent offers.
     pub(crate) order_terms: Mutex<order_terms::TermsLedger>,
     pub(crate) coupons: Mutex<coupons::CouponBook>,
+    pub(crate) reviews: Mutex<reviews::ReviewPool>,
     /// Order letters and replies on their way to other nodes.
     pub(crate) order_outbox: escrow_outbox::Outbox,
     pub(crate) data_dir: PathBuf,
@@ -387,6 +393,7 @@ impl Node {
             stock: Mutex::new(stock::StockLedger::open(&dir, vault.clone())?),
             order_terms: Mutex::new(order_terms::TermsLedger::open(&dir, vault.clone())?),
             coupons: Mutex::new(coupons::CouponBook::open(&dir, vault.clone())?),
+            reviews: Mutex::new(reviews::ReviewPool::open(&dir, vault.clone())?),
             order_outbox: order_mail::open_outbox(&dir, vault.clone())?,
             data_dir: dir.clone(),
             media: media::Media::open(dir.join("media"), network)?,

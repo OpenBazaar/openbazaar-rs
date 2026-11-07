@@ -249,7 +249,7 @@ impl Node {
     /// Fetch every followed store once. Returns how many copies changed.
     pub(crate) fn replicate_once(&self) -> usize {
         let urls: Vec<String> = self.replicas().follows.iter().map(|follow| follow.url.clone()).collect();
-        urls.iter().filter(|url| self.replicate(url)).count()
+        urls.iter().filter(|url| self.replicate(url) | (self.pull_reviews(url) > 0)).count()
     }
 
     /// Fetch the store at `url`, keep it, and serve it. `true` when the copy changed.

@@ -12,11 +12,11 @@ use crate::seller_store_tests::{mug, open_store};
 use crate::watch::{AWAITING_PAYMENT, DECLINED, PAID};
 use crate::EscrowConfig;
 
-fn peer(chain: &MockChain) -> Peer {
+pub(crate) fn peer(chain: &MockChain) -> Peer {
     Peer::spawn(chain, |url| EscrowConfig { mailbox_url: Some(url), ..EscrowConfig::default() })
 }
 
-fn deliver(seller: &Peer, buyer: &Peer) {
+pub(crate) fn deliver(seller: &Peer, buyer: &Peer) {
     for _ in 0..3 {
         buyer.node.flush_order_mail(true);
         seller.node.flush_order_mail(true);
@@ -24,7 +24,7 @@ fn deliver(seller: &Peer, buyer: &Peer) {
 }
 
 /// A mug in two glazes: Sea at the listing's $25.00 (2 left), Sand at $30.00 (3 left).
-fn glazed_mug(seller: &Peer) -> Value {
+pub(crate) fn glazed_mug(seller: &Peer) -> Value {
     let first = open_store(&seller.node);
     let mut body = mug(first["images"][0].as_str().unwrap());
     body["currency"] = json!("USD");
@@ -43,7 +43,7 @@ fn glazed_mug(seller: &Peer) -> Value {
     listing
 }
 
-fn checkout(buyer: &Peer, lines: Value, coupon: &str) -> Value {
+pub(crate) fn checkout(buyer: &Peer, lines: Value, coupon: &str) -> Value {
     let body = json!({
         "shipTo": ship_to(),
         "packages": [{ "settlement": "direct", "lines": lines, "service": 0, "coupon": coupon }],

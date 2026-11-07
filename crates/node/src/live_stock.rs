@@ -133,7 +133,7 @@ impl Node {
         let mut ids: Vec<ListingId> = sale["lines"].as_array().into_iter().flatten().filter_map(line_key).map(|(key, _)| key.0).collect();
         ids.sort();
         ids.dedup();
-        let paid_on = crate::own_store::today();
+        let paid_on = crate::reviews::paid_month(crate::own_store::today());
         let receipts: Vec<String> = ids
             .into_iter()
             .filter_map(|listing_id| {
