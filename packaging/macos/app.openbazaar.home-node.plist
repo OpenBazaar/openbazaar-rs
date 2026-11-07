@@ -12,6 +12,10 @@
     cat ~/Library/Logs/ob-home-node.log     # onion address and first pairing code
     ~/OpenBazaarHome/ob-node pair --data-dir ~/OpenBazaarHome/data
 
+  Pair from a phone on the same network at http://openbazaar.local:8790/
+  (allow incoming connections if the macOS firewall asks). Delete the "lan"
+  argument below to use Tor only.
+
   See docs/home-node.md.
 -->
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -25,6 +29,7 @@
     <string>serve</string>
     <string>8787</string>
     <string>--remote</string>
+    <string>--lan</string>
     <string>--web-dir</string>
     <string>/Users/USER/OpenBazaarHome/web</string>
     <string>--data-dir</string>

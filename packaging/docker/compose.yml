@@ -6,6 +6,13 @@
 #   docker compose exec ob-node ob-node pair --data-dir /data
 #
 # No port is published: devices reach the node over its onion service.
+#
+# LAN fast path and setup page (Linux hosts only): uncomment network_mode and
+# command below. mDNS (openbazaar.local) needs the host network; Docker's
+# bridge network does not carry multicast, and Docker Desktop on macOS and
+# Windows cannot share the host network. Without it, pair with the words or
+# the QR from `docker compose logs` and use Tor.
+#
 # See docs/home-node.md.
 
 services:
@@ -19,6 +26,8 @@ services:
       OB_VAULT_PASSPHRASE: ${OB_VAULT_PASSPHRASE:?set OB_VAULT_PASSPHRASE in .env}
     volumes:
       - ob-node-data:/data
+    # network_mode: host
+    # command: ["serve", "8787", "--remote", "--lan", "--web-dir", "/usr/share/openbazaar/web", "--data-dir", "/data", "--vault", "passphrase"]
     read_only: true
     tmpfs:
       - /tmp

@@ -26,6 +26,7 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_dialog::init())
         .manage(NodeState(Mutex::new(None)))
+        .invoke_handler(tauri::generate_handler![home_node_mode, set_home_node_mode])
         .menu(build::menu)
         .setup(|app| {
             let handle = app.handle().clone();
@@ -43,11 +44,7 @@ pub fn run() {
 }
 
 fn start(app: AppHandle) {
-    let started = app
-        .path()
-        .app_data_dir()
-        .map_err(|err| format!("Could not find the app data folder: {err}"))
-        .and_then(|dir| node::Sidecar::start(&dir));
+    let started = app_data_dir(&app).and_then(|dir| node::Sidecar::start(&dir, None));
     let sidecar = match started {
         Ok(sidecar) => sidecar,
         Err(message) => return fail(&app, message),
@@ -74,6 +71,33 @@ fn open_main_window(app: &AppHandle, origin: &str, token: &str) -> tauri::Result
         ))
         .build()?;
     Ok(())
+}
+
+#[tauri::command]
+fn home_node_mode(app: AppHandle) -> Result<bool, String> {
+    Ok(node::home_mode(&app_data_dir(&app)?))
+}
+
+/// Save the choice and restart the node on the same port, so the window keeps
+/// its origin and token. Remote access runs only while the app is open.
+#[tauri::command]
+fn set_home_node_mode(app: AppHandle, on: bool) -> Result<bool, String> {
+    let dir = app_data_dir(&app)?;
+    node::set_home_mode(&dir, on).map_err(|err| format!("Could not save the setting: {err}"))?;
+    let state = app.state::<NodeState>();
+    let mut slot = state.0.lock().unwrap();
+    let port = slot.as_ref().map(|sidecar| sidecar.port);
+    if let Some(mut old) = slot.take() {
+        old.stop();
+    }
+    *slot = Some(node::Sidecar::start(&dir, port)?);
+    Ok(on)
+}
+
+fn app_data_dir(app: &AppHandle) -> Result<std::path::PathBuf, String> {
+    app.path()
+        .app_data_dir()
+        .map_err(|err| format!("Could not find the app data folder: {err}"))
 }
 
 fn focus_main_window(app: &AppHandle) {

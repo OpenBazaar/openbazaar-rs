@@ -9,6 +9,11 @@
 #   journalctl -u ob-node        # shows the onion address and the first pairing code
 #   sudo -u openbazaar /opt/openbazaar/ob-node pair --data-dir /var/lib/openbazaar
 #
+# --lan opens port 8790 on the home network: an encrypted channel for paired
+# devices, mDNS (openbazaar.local), and the setup page at
+# http://openbazaar.local:8790/ until the first device is paired. Drop it to
+# use Tor only.
+#
 # See docs/home-node.md.
 
 [Unit]
@@ -22,7 +27,7 @@ Type=simple
 User=openbazaar
 Group=openbazaar
 EnvironmentFile=/etc/openbazaar/ob-node.env
-ExecStart=/opt/openbazaar/ob-node serve 8787 --remote --web-dir /opt/openbazaar/web --data-dir /var/lib/openbazaar --vault passphrase
+ExecStart=/opt/openbazaar/ob-node serve 8787 --remote --lan --web-dir /opt/openbazaar/web --data-dir /var/lib/openbazaar --vault passphrase
 Restart=on-failure
 RestartSec=10
 StateDirectory=openbazaar
@@ -37,7 +42,7 @@ PrivateDevices=yes
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectControlGroups=yes
-RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
 RestrictNamespaces=yes
 LockPersonality=yes
 SystemCallArchitectures=native
