@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use ob_node::{LocalConfig, NetworkMode, NodeConfig, RemoteConfig, ServeOptions, VaultChoice, VaultMode};
 
-const USAGE: &str = "ob-node [print | --version | pair [port] [--network N] [--data-dir DIR] | serve [port] [--remote] [--remote-listen 127.0.0.1:PORT] [--web-dir DIR] [--network testnet4|mainnet] [--data-dir DIR] [--peer HOST:PORT[,...] | --esplora URL[,URL...]] [--public-fallback | --no-public-fallback] [--confirmations N] [--poll-secs S] [--escrow-vendor SELLER=URL] [--moderator URL] [--moderate] [--vault keystore|passphrase|file] [--shop-origin URL] [--no-pair-codes] [--proxy socks5h://HOST:PORT] [--no-rates] [--xmr-daemon URL[,URL...]]]
+const USAGE: &str = "ob-node [print | --version | pair [port] [--network N] [--data-dir DIR] [--lan-page] | devices [port] [--remove ID [--rotate] | --remove-all --rotate] | serve [port] [--remote] [--lan] [--lan-listen ADDR] [--remote-listen 127.0.0.1:PORT] [--web-dir DIR] [--push-gateway http://ONION] [--network testnet4|mainnet] [--data-dir DIR] [--peer HOST:PORT[,...] | --esplora URL[,URL...]] [--public-fallback | --no-public-fallback] [--confirmations N] [--poll-secs S] [--escrow-vendor SELLER=URL] [--moderator URL] [--moderate] [--vault keystore|passphrase|file] [--shop-origin URL] [--no-pair-codes] [--proxy socks5h://HOST:PORT] [--no-rates] [--xmr-daemon URL[,URL...]]]
 
 Chain data comes from BIP 157/158 compact block filters by default.
 --peer uses only your own node (bitcoind with blockfilterindex=1 and peerblockfilters=1).
@@ -14,7 +14,9 @@ Chain data comes from BIP 157/158 compact block filters by default.
 --public-fallback asks public Esplora servers while no filter peer answers (default on testnet4 only).
 --proxy also carries filter peer connections and broadcasts, and gives each Esplora query its own Tor circuit.
 --xmr-daemon turns on Monero direct pay through monerod RPC: your own node (loopback or LAN, direct), or a remote node through --proxy (required for .onion, and on mainnet). There is no default node. Testnet4 pays on Monero stagenet.
---remote publishes the node's admin API as a Tor onion service for paired devices (docs/home-node.md); `ob-node pair` prints a one-time pairing code.
+--remote publishes the node's admin API as a Tor onion service that only paired devices can find (docs/home-node.md); `ob-node pair` prints a one-time pairing code and approves the device; `ob-node devices` lists and removes devices.
+--lan adds the encrypted LAN channel on port 8790, mDNS discovery, and the first-run setup page at http://openbazaar.local:8790/.
+--push-gateway sends content-free wake-ups to devices that turned push on, through that gateway over Tor. Off unless set.
 --web-dir serves the web shop export to paired browsers over that onion.
 --vault passphrase reads OB_VAULT_PASSPHRASE, or asks on the terminal.
 --vault file keeps the key in the data dir; use it only on headless machines and in tests.";
@@ -26,6 +28,7 @@ fn main() -> ExitCode {
         None | Some("print") => print_catalog(),
         Some("serve") => serve(&args[1..]),
         Some("pair") => ob_node::pair_command(&args[1..]),
+        Some("devices") => ob_node::devices_command(&args[1..]),
         Some("version") | Some("-V") | Some("--version") => {
             println!("ob-node {}", ob_node::BUILD.summary());
             ExitCode::SUCCESS

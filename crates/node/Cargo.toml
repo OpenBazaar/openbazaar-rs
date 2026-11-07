@@ -16,26 +16,35 @@ path = "src/main.rs"
 
 [dependencies]
 argon2 = "0.5"
-arti-client = { version = "0.48", features = ["onion-service-client", "onion-service-service", "static-sqlite"] }
+arti-client = { version = "0.48", features = ["onion-service-client", "onion-service-service", "static-sqlite", "experimental-api", "keymgr", "restricted-discovery"] }
 bip157 = "0.8.1"
+bip39 = "2.2"
 bdk_esplora = { version = "0.22.3", default-features = false, features = ["std", "async-https-rustls", "tokio"] }
 bdk_wallet = { version = "3.2.0", features = ["keys-bip39"] }
 bitcoin = "0.32.7"
 chacha20poly1305 = "0.10"
+data-encoding = "2"
+hkdf = "0.12"
+hmac = "0.12"
+if-addrs = "0.13"
+mdns-sd = "0.21"
 musig2 = "0.4.1"
+p256 = { version = "0.13", features = ["ecdsa"] }
 openbazaar-escrow = { path = "../escrow" }
 openbazaar-pay = { path = "../pay" }
 openbazaar-protocol = { path = "../protocol" }
 openbazaar-xmr = { path = "../xmr" }
-qrcode = { version = "0.14", default-features = false }
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 rand = "0.9"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "socks"] }
 rpassword = "7.4"
 serde_json = "1"
+sha2 = "0.10"
 tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "time", "net"] }
 tor-rtcompat = "0.48"
 tormail = { path = "../tormail" }
 ureq = { version = "2.12", features = ["socks-proxy"] }
+x25519-dalek = { version = "2", features = ["static_secrets"] }
 zeroize = "1.8"
 
 [target.'cfg(target_os = "macos")'.dependencies]

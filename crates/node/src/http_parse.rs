@@ -41,6 +41,11 @@ const BODY_TOO_LARGE: Refusal = refusal("413 Content Too Large", "request body t
 const CHUNKED: Refusal = refusal("501 Not Implemented", "chunked bodies are not accepted");
 
 pub(crate) fn parse(raw: &[u8]) -> Result<Request<'_>, Refusal> {
+    parse_up_to(raw, MAX_BODY)
+}
+
+/// [`parse`] with a different body limit.
+pub(crate) fn parse_up_to(raw: &[u8], max_body: usize) -> Result<Request<'_>, Refusal> {
     let Some(split) = find_head_end(raw) else {
         return Err(if raw.len() > MAX_HEAD { HEAD_TOO_LARGE } else { BAD });
     };
@@ -88,7 +93,7 @@ pub(crate) fn parse(raw: &[u8]) -> Result<Request<'_>, Refusal> {
         }
     }
     let length = length.unwrap_or(0);
-    if length > MAX_BODY {
+    if length > max_body {
         return Err(BODY_TOO_LARGE);
     }
     if rest.len() < length {
@@ -139,11 +144,16 @@ fn find_head_end(raw: &[u8]) -> Option<usize> {
 /// Read one request within [`READ_DEADLINE`]. Stops early once the head says
 /// the request is too large; [`parse`] then refuses what was read.
 pub(crate) fn read(stream: &mut TcpStream) -> std::io::Result<Vec<u8>> {
+    read_up_to(stream, MAX_BODY)
+}
+
+/// [`read`] with a different body limit.
+pub(crate) fn read_up_to(stream: &mut TcpStream, max_body: usize) -> std::io::Result<Vec<u8>> {
     let deadline = Instant::now() + READ_DEADLINE;
     let mut buf = Vec::new();
     let mut chunk = [0u8; 4096];
     loop {
-        match wanted(&buf) {
+        match wanted(&buf, max_body) {
             Wanted::Done => break,
             Wanted::More => {}
         }
@@ -174,7 +184,7 @@ enum Wanted {
     Done,
 }
 
-fn wanted(buf: &[u8]) -> Wanted {
+fn wanted(buf: &[u8], max_body: usize) -> Wanted {
     let Some(split) = find_head_end(buf) else {
         return if buf.len() > MAX_HEAD { Wanted::Done } else { Wanted::More };
     };
@@ -189,7 +199,7 @@ fn wanted(buf: &[u8]) -> Wanted {
         .find(|(key, _)| key.eq_ignore_ascii_case("content-length"))
         .and_then(|(_, value)| value.trim().parse::<usize>().ok())
         .unwrap_or(0);
-    if length > MAX_BODY || buf.len() - split - 4 >= length {
+    if length > max_body || buf.len() - split - 4 >= length {
         Wanted::Done
     } else {
         Wanted::More
@@ -250,7 +260,7 @@ mod tests {
         #[test]
         fn parse_never_panics_on_bytes(raw in proptest::collection::vec(any::<u8>(), 0..2048)) {
             let _ = parse(&raw);
-            let _ = wanted(&raw);
+            let _ = wanted(&raw, MAX_BODY);
         }
 
         #[test]

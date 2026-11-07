@@ -42,7 +42,7 @@ mod seal;
 mod transport;
 
 pub use error::Error;
-pub use forward::{exchange, start_onion_forward, OnionForward};
+pub use forward::{discovery_public, exchange, insert_discovery_key, onion_for_seed, start_onion_forward, Discovery, OnionForward};
 pub use listen::{start_onion_listener, OnionListener};
 pub use guard::{ReplayGuard, SenderPins};
 pub use letter::{MessageId, Opened, SenderId, SenderKey};

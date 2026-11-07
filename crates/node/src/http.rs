@@ -240,7 +240,7 @@ fn route(node: &Node, request: &Request<'_>, client: Client, origin: Option<&str
         }
         ("POST", "/content-labels") => vendor_labels::response(node, client, head, body, origin),
         (_, path) if path == "/remote" || path.starts_with("/remote/") => {
-            crate::remote::local_response(node, client, head, method, path, origin)
+            crate::remote::local_response(node, client, head, method, path, body, origin)
         }
         (_, path) if path == "/home" || path.starts_with("/home/") => {
             crate::remote::home_response(node, client, head, method, path, body, origin)

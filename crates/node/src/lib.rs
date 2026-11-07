@@ -116,7 +116,7 @@ pub use http::{http_response, serve_on};
 pub use network::{NetworkMode, ServeOptions, VaultChoice};
 pub use orders::OrderError;
 pub use pay_order::PayError;
-pub use remote::{pair_command, RemoteConfig};
+pub use remote::{devices_command, pair_command, RemoteConfig};
 pub use vault_key::VaultMode;
 pub use watch::{
     AWAITING_FUNDING, AWAITING_PAYMENT, AWAITING_TERMS, DISPUTED, FUNDED, FUNDED_WITHOUT_REFUND, FUNDING_SEEN, PAID,

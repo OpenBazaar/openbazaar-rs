@@ -14,7 +14,7 @@ use std::time::Duration;
 use arti_client::config::TorClientConfigBuilder;
 use arti_client::{BootstrapBehavior, TorClient};
 use tor_rtcompat::PreferredRuntime;
-use tormail::{OnionAddress, OnionForward};
+use tormail::{Discovery, OnionAddress, OnionForward};
 
 pub(crate) const ADMIN_PORT: u16 = 80;
 const EXCHANGE_TIMEOUT: Duration = Duration::from_secs(90);
@@ -32,7 +32,10 @@ impl Tor {
             .enable_all()
             .build()
             .map_err(|err| err.to_string())?;
-        let mut builder = TorClientConfigBuilder::from_directories(data_dir.join("tor/state"), data_dir.join("tor/cache"));
+        let mut builder = TorClientConfigBuilder::from_directories(
+            data_dir.join("tor/state"),
+            data_dir.join("tor/cache"),
+        );
         if std::env::var_os("OB_TOR_TRUST_DATA_DIR").is_some() {
             builder.storage().permissions().dangerously_trust_everyone();
         }
@@ -54,22 +57,76 @@ impl Tor {
         Ok(Self { runtime, client })
     }
 
-    /// Publish the admin onion service and pipe it to `target`.
-    pub(crate) fn serve(&self, nickname: &str, target: SocketAddr) -> Result<OnionForward, String> {
+    /// Publish an onion service and pipe port 80 to `target`. It runs until
+    /// the returned [`Service`] is dropped.
+    pub(crate) fn serve(
+        &self,
+        nickname: &str,
+        identity: Option<[u8; 32]>,
+        discovery: Discovery<'_>,
+        target: SocketAddr,
+    ) -> Result<Service, String> {
         let _inside = self.runtime.enter();
-        let (forward, run) =
-            tormail::start_onion_forward(&self.client, nickname, ADMIN_PORT, target).map_err(|err| err.to_string())?;
-        self.runtime.spawn(run);
-        Ok(forward)
+        let (forward, run) = tormail::start_onion_forward(
+            &self.client,
+            nickname,
+            identity,
+            discovery,
+            ADMIN_PORT,
+            target,
+        )
+        .map_err(|err| err.to_string())?;
+        let task = self.runtime.spawn(run);
+        Ok(Service { forward, task })
     }
 
-    /// One request to a home node's onion; the whole answer.
-    pub(crate) fn exchange(&self, onion: &OnionAddress, request: &[u8], max: usize) -> Result<Vec<u8>, String> {
+    /// Let this client find the restricted service `onion`.
+    pub(crate) fn add_discovery_key(
+        &self,
+        onion: &OnionAddress,
+        secret: [u8; 32],
+    ) -> Result<(), String> {
+        tormail::insert_discovery_key(&self.client, onion, secret).map_err(|err| err.to_string())
+    }
+
+    /// One request to an onion service; the whole answer.
+    pub(crate) fn exchange(
+        &self,
+        onion: &OnionAddress,
+        request: &[u8],
+        max: usize,
+    ) -> Result<Vec<u8>, String> {
+        self.exchange_within(onion, request, max, EXCHANGE_TIMEOUT)
+    }
+
+    pub(crate) fn exchange_within(
+        &self,
+        onion: &OnionAddress,
+        request: &[u8],
+        max: usize,
+        limit: Duration,
+    ) -> Result<Vec<u8>, String> {
         self.runtime.block_on(async {
-            match tokio::time::timeout(EXCHANGE_TIMEOUT, tormail::exchange(&self.client, onion, ADMIN_PORT, request, max)).await {
+            match tokio::time::timeout(
+                limit,
+                tormail::exchange(&self.client, onion, ADMIN_PORT, request, max),
+            )
+            .await
+            {
                 Ok(result) => result.map_err(|err| err.to_string()),
                 Err(_) => Err("the home node did not answer over Tor in time".to_string()),
             }
         })
+    }
+}
+
+pub(crate) struct Service {
+    pub forward: OnionForward,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for Service {
+    fn drop(&mut self) {
+        self.task.abort();
     }
 }

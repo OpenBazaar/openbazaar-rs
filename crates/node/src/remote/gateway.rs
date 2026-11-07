@@ -1,41 +1,53 @@
-//! The remote gateway: where onion streams land.
+//! The remote gateways: where onion streams and LAN requests land.
 //!
-//! It listens on loopback only; the onion service pipes its streams here
-//! byte for byte, and Tor has already encrypted the connection and proved
-//! the onion key to the caller. This listener then decides who the caller
-//! is:
+//! Both listen on loopback only. The admin onion pipes its streams to the
+//! admin gateway and each pairing onion to the pairing gateway, byte for
+//! byte; the LAN channel hands over the request it decrypted. Tor (or the
+//! LAN channel) has already encrypted the connection and proved the node's
+//! key to the caller. The gateway then decides who the caller is:
 //!
-//! * `GET /remote/hello` and `POST /remote/pair` (with a one-time code)
-//!   need no signature.
-//! * An unsigned `GET` for a file of the web export gets the file.
-//! * Everything else must be signed by a paired device ([`super::auth`]).
-//!   A signed request passes [`super::policy`], then runs through the
-//!   node's own router as the paired local client, one request at a time
-//!   with the loopback server.
+//! * `/pair/request` and `/pair/status/{id}` need no signature (the pairing
+//!   proof does that work). They are all the pairing gateway serves.
+//! * `GET /remote/hello`, and unsigned `GET`s for files of the web export.
+//! * Everything else must be signed by a paired device ([`super::auth`]),
+//!   pass [`super::policy`], and then runs through the node's own router as
+//!   the paired local client, one request at a time with the loopback server.
 //!
-//! The Host must be this node's onion or this listener's own loopback
-//! address, and a browser `Origin` must match it.
+//! On the admin gateway the Host must be one of this node's admin onions or
+//! the gateway's own loopback address, and a browser `Origin` must match it.
 
 use std::io::{ErrorKind, Write};
 use std::net::{TcpListener, TcpStream};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use serde_json::{json, Value};
+use serde_json::json;
 
-use super::auth::{parse_key, pair_digest, verify, Refused, Signed};
-use super::devices::clean_name;
-use super::offers::Taken;
-use super::{now_secs, policy, web, REMOTE_DEVICE_HEADER};
+use super::auth::{Refused, Signed};
+use super::{
+    now_secs, pair_http, policy, web, NEXT_ONION_HEADER, REMOTE_DEVICE_HEADER, REMOTE_VIA_HEADER,
+};
 use crate::http::{http_response_cors, json_body, json_error};
 use crate::http_parse::{self, header};
 use crate::Node;
 
-const MAX_CONNECTIONS: usize = 16;
-const MAX_PAIR_BODY: usize = 1024;
+const MAX_CONNECTIONS: usize = 24;
 
-pub(crate) fn serve(node: &Node, listener: TcpListener, main_port: u16, stop: &AtomicBool) {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Entry {
+    Admin,
+    Pairing,
+    Lan,
+}
+
+pub(crate) fn serve(
+    node: &Node,
+    listener: TcpListener,
+    entry: Entry,
+    main_port: u16,
+    stop: &AtomicBool,
+) {
     if let Err(err) = listener.set_nonblocking(true) {
         eprintln!("ob-node: remote gateway: {err}");
         return;
@@ -51,11 +63,13 @@ pub(crate) fn serve(node: &Node, listener: TcpListener, main_port: u16, stop: &A
                     active.fetch_add(1, Ordering::Relaxed);
                     let active = &active;
                     scope.spawn(move || {
-                        connection(node, stream, main_port);
+                        connection(node, stream, entry, main_port);
                         active.fetch_sub(1, Ordering::Relaxed);
                     });
                 }
-                Err(err) if err.kind() == ErrorKind::WouldBlock => std::thread::sleep(Duration::from_millis(20)),
+                Err(err) if err.kind() == ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(20))
+                }
                 Err(err) => {
                     eprintln!("ob-node: remote gateway: {err}");
                     std::thread::sleep(Duration::from_millis(200));
@@ -65,61 +79,133 @@ pub(crate) fn serve(node: &Node, listener: TcpListener, main_port: u16, stop: &A
     });
 }
 
-fn connection(node: &Node, mut stream: TcpStream, main_port: u16) {
+fn connection(node: &Node, mut stream: TcpStream, entry: Entry, main_port: u16) {
     if stream.set_nonblocking(false).is_err() {
         return;
     }
-    let raw = match http_parse::read(&mut stream) {
-        Ok(raw) => raw,
-        Err(_) => return,
+    let Ok(raw) = http_parse::read(&mut stream) else {
+        return;
     };
-    let response = catch_unwind(AssertUnwindSafe(|| respond(node, &raw, main_port))).unwrap_or_else(|_| {
-        eprintln!("ob-node: a remote request handler panicked");
-        http_response_cors("500 Internal Server Error", "text/plain", b"internal error", None)
-    });
-    let _ = stream.write_all(&response);
+    let _ = stream.write_all(&answer(node, &raw, entry, main_port));
 }
 
-pub(crate) fn respond(node: &Node, raw: &[u8], main_port: u16) -> Vec<u8> {
+/// [`respond`], with a handler panic turned into a bare 500.
+pub(crate) fn answer(node: &Node, raw: &[u8], entry: Entry, main_port: u16) -> Vec<u8> {
+    catch_unwind(AssertUnwindSafe(|| respond(node, raw, entry, main_port))).unwrap_or_else(|_| {
+        eprintln!("ob-node: a remote request handler panicked");
+        http_response_cors(
+            "500 Internal Server Error",
+            "text/plain",
+            b"internal error",
+            None,
+        )
+    })
+}
+
+pub(crate) fn respond(node: &Node, raw: &[u8], entry: Entry, main_port: u16) -> Vec<u8> {
     let request = match http_parse::parse(raw) {
         Ok(request) => request,
-        Err(refusal) => return http_response_cors(refusal.status, "text/plain", refusal.message.as_bytes(), None),
-    };
-    let Some(host) = header(request.head, "host").map(str::to_ascii_lowercase) else {
-        return misdirected();
-    };
-    if !node.remote.serves_host(&host) {
-        return misdirected();
-    }
-    if let Some(origin) = header(request.head, "origin") {
-        if origin != format!("http://{host}") {
-            return json_error("403 Forbidden", "That page may not call this node.", None);
+        Err(refusal) => {
+            return http_response_cors(
+                refusal.status,
+                "text/plain",
+                refusal.message.as_bytes(),
+                None,
+            )
         }
-    }
+    };
     let (method, path, body) = (request.method, request.path, request.body);
+    if let Some(answer) = pair_http::response(node, method, path, body) {
+        return answer;
+    }
+    let via = match entry {
+        Entry::Pairing => {
+            return json_error("404 Not Found", "This address only pairs devices.", None)
+        }
+        Entry::Lan => "lan".to_string(),
+        Entry::Admin => {
+            let Some(host) = header(request.head, "host").map(str::to_ascii_lowercase) else {
+                return misdirected();
+            };
+            let Some(via) = admin_host(node, &host) else {
+                return misdirected();
+            };
+            if header(request.head, "origin")
+                .is_some_and(|origin| origin != format!("http://{host}"))
+            {
+                return json_error("403 Forbidden", "That page may not call this node.", None);
+            }
+            via
+        }
+    };
     let signed = Signed::read(request.head);
-    match (method, path) {
-        ("GET", "/remote/hello") => json_body("200 OK", &json!({ "service": "openbazaar-home-node", "nodeId": node.remote.node_id() }), None),
-        ("POST", "/remote/pair") => pair(node, body),
-        ("GET", _) if signed.is_none() => match node.remote.web_dir().and_then(|dir| web::response(dir, path)) {
+    match (method, path, signed) {
+        ("GET", "/remote/hello", _) => json_body(
+            "200 OK",
+            &json!({ "service": "openbazaar-home-node", "nodeId": node.remote.node_id() }),
+            None,
+        ),
+        (_, _, Some(signed)) => signed_request(
+            node,
+            request.head,
+            &signed,
+            &via,
+            method,
+            path,
+            body,
+            main_port,
+        ),
+        ("GET", _, None) if entry == Entry::Admin => match node
+            .remote
+            .web_dir()
+            .and_then(|dir| web::response(dir, path))
+        {
             Some(file) => file,
             None => unauthorized("unsigned", "Pair this device with the node first."),
         },
-        _ => match signed {
-            Some(signed) => signed_request(node, request.head, &signed, method, path, body, main_port),
-            None => unauthorized("unsigned", "Pair this device with the node first."),
-        },
+        _ => unauthorized("unsigned", "Pair this device with the node first."),
     }
 }
 
-fn signed_request(node: &Node, head: &str, signed: &Signed<'_>, method: &str, path: &str, body: &[u8], main_port: u16) -> Vec<u8> {
+/// `tor:{generation}` for an admin onion, `loopback` for the gateway's own address.
+fn admin_host(node: &Node, host: &str) -> Option<String> {
+    if let Some(generation) = node.remote.services.generation_of(host) {
+        return Some(format!("tor:{generation}"));
+    }
+    node.remote
+        .gateway
+        .get()
+        .filter(|addr| host == addr.to_string() || host == format!("localhost:{}", addr.port()))
+        .map(|_| "loopback".to_string())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn signed_request(
+    node: &Node,
+    head: &str,
+    signed: &Signed<'_>,
+    via: &str,
+    method: &str,
+    path: &str,
+    body: &[u8],
+    main_port: u16,
+) -> Vec<u8> {
     let now = now_secs();
-    {
+    let device = {
         let mut devices = node.remote.devices();
-        let Some(device) = devices.get(signed.device) else {
-            return unauthorized("unknown_device", "This device is not paired with the node, or was removed.");
+        let Some((device, watch)) = devices.signer(signed.device) else {
+            return unauthorized(
+                "unknown_device",
+                "This device is not paired with the node, or was removed.",
+            );
         };
-        if !signed.verifies(&device.key, &devices.node_id, method, path, body) {
+        let key = if watch {
+            device.watch.clone()
+        } else {
+            Some(device.key.clone())
+        };
+        let device_id = device.id.clone();
+        if !key.is_some_and(|key| signed.verifies(&key, &devices.node_id, method, path, body)) {
             return unauthorized("unsigned", "The request signature did not verify.");
         }
         match node.remote.replay.admit(signed, now) {
@@ -131,71 +217,109 @@ fn signed_request(node: &Node, head: &str, signed: &Signed<'_>, method: &str, pa
                     None,
                 )
             }
-            Err(_) => return unauthorized("replay", "That request was already used."),
+            Err(Refused::Replay) => {
+                return unauthorized("replay", "That request was already used.")
+            }
         }
-        devices.touch(signed.device, now);
-    }
+        if watch && (method, path) != ("POST", "/remote/sync") {
+            return json_body(
+                "403 Forbidden",
+                &json!({ "error": "A watch key may only sync.", "code": "watch_only" }),
+                None,
+            );
+        }
+        let generation = via
+            .strip_prefix("tor:")
+            .and_then(|generation| generation.parse().ok());
+        devices.touch(
+            &device_id,
+            via.split(':').next().unwrap_or(via),
+            generation,
+            now,
+        );
+        device_id
+    };
     if let Some(message) = policy::refusal(method, path, body) {
-        return json_body("403 Forbidden", &json!({ "error": message, "code": "node_only" }), None);
+        return json_body(
+            "403 Forbidden",
+            &json!({ "error": message, "code": "node_only" }),
+            None,
+        );
     }
-    let mut raw = format!(
-        "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{main_port}\r\nX-Ob-Pair: {}\r\n{REMOTE_DEVICE_HEADER}: {}\r\n",
-        node.pairing_token(),
-        signed.device
+    let raw = loopback_request(
+        node,
+        method,
+        path,
+        header(head, "content-type"),
+        body,
+        Some(&device),
+        via,
+        main_port,
     );
-    if let Some(content_type) = header(head, "content-type") {
+    let mut answer = {
+        let _one = super::dispatch_lock();
+        crate::http::respond(
+            node,
+            &raw,
+            crate::http::Client {
+                loopback: true,
+                port: main_port,
+            },
+        )
+    };
+    if node.remote.devices().moving.is_some() {
+        if let (Some(next), Some(end)) = (
+            node.remote.services.onion(),
+            answer.windows(4).position(|window| window == b"\r\n\r\n"),
+        ) {
+            answer.splice(
+                end + 2..end + 2,
+                format!("{NEXT_ONION_HEADER}: {next}\r\n").into_bytes(),
+            );
+        }
+    }
+    answer
+}
+
+/// A request for the node's own router, as the paired local client acting
+/// for `device`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn loopback_request(
+    node: &Node,
+    method: &str,
+    path: &str,
+    content_type: Option<&str>,
+    body: &[u8],
+    device: Option<&str>,
+    via: &str,
+    main_port: u16,
+) -> Vec<u8> {
+    let mut raw = format!("{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{main_port}\r\nX-Ob-Pair: {}\r\n{REMOTE_VIA_HEADER}: {via}\r\n", node.pairing_token());
+    if let Some(device) = device {
+        raw.push_str(&format!("{REMOTE_DEVICE_HEADER}: {device}\r\n"));
+    }
+    if let Some(content_type) = content_type {
         raw.push_str(&format!("Content-Type: {content_type}\r\n"));
     }
     raw.push_str(&format!("Content-Length: {}\r\n\r\n", body.len()));
     let mut raw = raw.into_bytes();
     raw.extend_from_slice(body);
-    let _one = super::dispatch_lock();
-    crate::http::respond(node, &raw, crate::http::Client { loopback: true, port: main_port })
+    raw
 }
 
-/// `POST /remote/pair {secret, publicKey, name, signature}`.
-fn pair(node: &Node, body: &[u8]) -> Vec<u8> {
-    if body.len() > MAX_PAIR_BODY {
-        return json_error("400 Bad Request", "That request is too large.", None);
-    }
-    let Ok(value) = serde_json::from_slice::<Value>(body) else {
-        return json_error("400 Bad Request", "The request could not be read.", None);
-    };
-    let text = |name: &str| value.get(name).and_then(Value::as_str).unwrap_or_default();
-    let (secret, key_hex, raw_name, signature) = (text("secret"), text("publicKey"), text("name"), text("signature"));
-    let Some(name) = clean_name(raw_name) else {
-        return json_error("400 Bad Request", "Name this device in 1 to 40 characters.", None);
-    };
-    let Some(key) = parse_key(key_hex) else {
-        return json_error("400 Bad Request", "The device key could not be read.", None);
-    };
-    if !verify(&key, pair_digest(secret, key_hex, raw_name), signature) {
-        return json_error("400 Bad Request", "The device did not prove it holds its key.", None);
-    }
-    let by = match node.remote.offers().take(secret, Instant::now()) {
-        Taken::Paired(by) => by,
-        Taken::Wrong => return json_error("401 Unauthorized", "That pairing code is wrong, used, or expired.", None),
-        Taken::Paused => {
-            return json_error("429 Too Many Requests", "Too many wrong pairing codes. Try again in a few minutes.", None)
-        }
-    };
-    let mut devices = node.remote.devices();
-    if by.as_deref().is_some_and(|by| devices.get(by).is_none()) {
-        return json_error("401 Unauthorized", "The device that made this code was removed.", None);
-    }
-    match devices.add(key, &name, by, now_secs()) {
-        Ok(device) => {
-            eprintln!("ob-node: paired device {:?} ({})", device.name, device.id);
-            json_body("200 OK", &json!({ "nodeId": devices.node_id, "deviceId": device.id, "name": device.name }), None)
-        }
-        Err(message) => json_error("409 Conflict", &message, None),
-    }
-}
-
-fn unauthorized(code: &str, message: &str) -> Vec<u8> {
-    json_body("401 Unauthorized", &json!({ "error": message, "code": code }), None)
+pub(crate) fn unauthorized(code: &str, message: &str) -> Vec<u8> {
+    json_body(
+        "401 Unauthorized",
+        &json!({ "error": message, "code": code }),
+        None,
+    )
 }
 
 fn misdirected() -> Vec<u8> {
-    http_response_cors("421 Misdirected Request", "text/plain", b"This is not the address of this node.", None)
+    http_response_cors(
+        "421 Misdirected Request",
+        "text/plain",
+        b"This is not the address of this node.",
+        None,
+    )
 }
