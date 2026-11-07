@@ -247,6 +247,91 @@ fn escrow_stores_that_do_not_take_it_and_a_node_without_lightning_refuse_it() {
 }
 
 #[test]
+fn mainnet_refuses_lightning_at_every_entry_point() {
+    let dir = TempDir::new();
+    let btc = MockChain::new();
+    let node = open_node(&dir.0, NetworkMode::Mainnet, &btc, 3, unreachable_escrow());
+    let blocked = super::MAINNET_BLOCKED;
+
+    let mut flags = LnFlags::default();
+    flags.on = true;
+    assert_eq!(flags.plan(NetworkMode::Mainnet).unwrap_err(), blocked);
+    let config = flags.plan(NetworkMode::Testnet4).unwrap().unwrap();
+    assert_eq!(node.enable_lightning(config).unwrap_err(), blocked, "a test-network config does not slip in either");
+    assert_eq!(node.set_lightning(Arc::new(MockRail::new(Network::Bitcoin))).unwrap_err(), blocked);
+    assert!(node.ln.config().is_none() && node.ln.rail().is_none());
+
+    for path in ["/ln/status", "/ln/stores"] {
+        assert_eq!(request(&node, "GET", path, "").1, json!({"enabled": false, "blocked": blocked}), "{path}");
+    }
+    let (_, network) = request(&node, "GET", "/network", "");
+    assert_eq!(network["lightning"]["blocked"], blocked);
+    assert_eq!(network["lightningBackend"]["blocked"], blocked);
+    let posts = [
+        ("PUT", "/ln/stores", json!({"seller": "Marlow Goods", "accept": true, "acknowledgeLsp": true})),
+        ("POST", "/ln/address", json!({})),
+        ("POST", "/ln/channels", json!({"peer": super::options::MUTINYNET_LSP, "sats": 100_000, "passphrase": PASSPHRASE})),
+        ("POST", "/ln/channels/abc/close", json!({"passphrase": PASSPHRASE})),
+        ("POST", "/ln/sweep", json!({"passphrase": PASSPHRASE})),
+        ("POST", "/ln/spend-tickets", json!({"quote": "q", "passphrase": PASSPHRASE})),
+        ("POST", "/ln/orders/abc/pay/quote", json!({})),
+        ("POST", "/ln/orders/abc/pay", json!({"ticket": "t", "confirm": true})),
+    ];
+    for (method, path, body) in posts {
+        let (status, value) = request(&node, method, path, &body.to_string());
+        assert!(status.contains("403") && value["error"] == blocked, "{method} {path}: {status} {value}");
+    }
+    assert!(matches!(node.set_accepts_lightning("Marlow Goods", true, true), Err(super::AcceptError::Mainnet)));
+
+    // A record that claims Lightning is not offered, and checkout refuses it.
+    node.catalog_mut().stores.iter_mut().find(|store| store.name == "Marlow Goods").unwrap().details.as_mut().unwrap().accepts_lightning = true;
+    assert!(!node.accepts_lightning("Marlow Goods"));
+    let (_, catalog) = request(&node, "GET", "/catalog", "");
+    assert_eq!(catalog["lightning"]["blocked"], blocked);
+    assert!(catalog["listings"].as_array().unwrap().iter().all(|listing| listing["acceptsLightning"] == false));
+    let (status, value) = place(&node, "Paperback novel", "Marlow Goods", "direct");
+    assert!(status.contains("400") && value["error"] == blocked, "{status} {value}");
+    assert_eq!(node.orders().on_network().count(), 0, "nothing was placed");
+    assert!(node.ln_payment(1_000, "order").is_err(), "no invoice is issued");
+
+    // The own store does not sign the Lightning flag on mainnet.
+    let secret = node.store_secret(&node.own_store).expect("unlocked");
+    let rails = crate::own_store::Rails { lightning: true, ..crate::own_store::Rails::default() };
+    node.publish_own(openbazaar_protocol::ContentRating::General, rails, &secret).unwrap();
+    let own = node.own_record().expect("the own store is published");
+    assert!(!own.details.as_ref().unwrap().accepts_lightning);
+    own.verify().unwrap();
+}
+
+#[test]
+fn test_networks_still_run_lightning() {
+    let Setup { node, rail: _rail, btc: _btc, dir: _dir } = setup();
+    assert!(!node.ln_blocked());
+    let (_, status) = request(&node, "GET", "/ln/status", "");
+    assert_eq!(status["enabled"], true);
+    assert!(status.get("blocked").is_none());
+    let (_, catalog) = request(&node, "GET", "/catalog", "");
+    assert!(catalog["lightning"].get("blocked").is_none());
+    let (id, payment) = ln_order(&node);
+    assert_eq!(payment["rail"], "ln", "{id}");
+    for network in ["testnet4", "regtest"] {
+        let dir = TempDir::new();
+        let node = open_node(&dir.0, NetworkMode::Testnet4, &MockChain::new(), 1, unreachable_escrow());
+        let mut flags = LnFlags::default();
+        let mut args = vec!["--lightning", "--ln-network", network, "--no-lsp"];
+        if network == "regtest" {
+            args.extend(["--ln-chain", "bitcoind:u:p@127.0.0.1:18443"]);
+        }
+        let mut iter = args.into_iter();
+        while let Some(flag) = iter.next() {
+            flags.take(flag, |_| iter.next().map(String::from).ok_or_else(|| "needs a value".to_string())).unwrap().unwrap();
+        }
+        node.enable_lightning(flags.plan(NetworkMode::Testnet4).unwrap().unwrap()).unwrap();
+        assert_eq!(request(&node, "GET", "/ln/status", "").1["network"], network);
+    }
+}
+
+#[test]
 fn the_lightning_secret_is_written_once_and_readable_while_locked() {
     let Setup { node, rail: _rail, btc: _btc, dir: _dir } = setup();
     assert!(node.ln.secret().unwrap().is_none());

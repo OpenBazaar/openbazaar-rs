@@ -150,3 +150,11 @@ test("Lightning stands only if the store's signed record takes it", () => {
   assert.equal(verifiedListing(listing, new Set([key]), new Set(), new Set([key]))?.acceptsLightning, true);
   assert.equal(verifiedListing(listing, new Set([key]), new Set([key]))?.acceptsLightning, false, "Monero is not Lightning");
 });
+
+test("a catalog from a node that refuses Lightning names why", () => {
+  const blocked = "Lightning on mainnet is disabled until its connections run over Tor.";
+  const catalog = parseCatalog({ ...raw(), lightning: { enabled: false, running: false, network: null, blocked } });
+  assert.equal(catalog.lightningBlocked, blocked);
+  assert.ok(catalog.listings.every((item) => !item.acceptsLightning));
+  assert.equal(parseCatalog(raw()).lightningBlocked, null);
+});

@@ -129,7 +129,7 @@ pub(crate) fn unsigned(
                 created_on,
             },
             accepts_xmr: rails.xmr,
-            accepts_lightning: rails.lightning,
+            accepts_lightning: rails.lightning && network != NetworkMode::Mainnet,
         }),
         signature: [0u8; 64],
     }))
