@@ -4,6 +4,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::json;
 
+use super::super::lan;
 use super::super::pairing::{Pairing, Refusal, CODE_LIFETIME};
 use super::super::protocol::{decode_base32, parse_words, words};
 use super::*;
@@ -307,6 +308,152 @@ fn a_device_can_pair_another_and_the_code_closes_with_it() {
         "requests from a removed device's code close"
     );
     assert!(node.remote.devices().list().is_empty());
+}
+
+#[test]
+fn a_second_pending_attempt_from_the_same_device_replaces_the_first() {
+    let (_dir, node) = home();
+    let fresh = setup_page(&node);
+    assert!(
+        !fresh.contains("wants to pair"),
+        "with nothing waiting, the page is the code alone"
+    );
+    assert!(fresh
+        .contains("One use. It expires in 10 minutes. This page is only on your home network."));
+    assert!(fresh.contains("<style"));
+    assert!(!fresh.contains("<script"));
+
+    let phone = Ask::phone("iPhone");
+    let first_secret = parse_words(&words_on(&fresh)).unwrap();
+    let (_, first) = phone.send(&node, &first_secret);
+    let first_id = first["requestId"].as_str().unwrap().to_string();
+
+    let rotated = setup_page(&node);
+    let second_secret = parse_words(&words_on(&rotated)).unwrap();
+    assert_ne!(first_secret, second_secret, "a taken code leaves the page");
+    let (_, second) = phone.send(&node, &second_secret);
+    let second_id = second["requestId"].as_str().unwrap().to_string();
+    assert_ne!(second_id, first_id);
+
+    let (_, pending) = request(&node, "GET", "/remote/pending", "");
+    assert_eq!(
+        pending_ids(&pending),
+        vec![second_id.as_str()],
+        "the second attempt replaces the first"
+    );
+    assert_eq!(
+        status(&node, &first_id)["state"],
+        "expired",
+        "the replaced attempt is gone"
+    );
+
+    let shown = setup_page(&node);
+    assert_eq!(shown.matches("wants to pair").count(), 1);
+    assert!(shown.contains(&format!("value={second_id}")));
+    assert!(!shown.contains(&format!("value={first_id}")));
+    assert!(shown.contains(">Approve<") && shown.contains(">Reject<"));
+
+    let (_, by_name) =
+        Ask::phone("iPhone").send(&node, &node.remote.issue_code(None).unwrap().secret);
+    let name_id = by_name["requestId"].as_str().unwrap().to_string();
+    let (_, pending) = request(&node, "GET", "/remote/pending", "");
+    assert_eq!(
+        pending_ids(&pending),
+        vec![name_id.as_str()],
+        "the same device name replaces, even with a new key"
+    );
+
+    let pixel = Ask::new(Key::p256(), Some(Key::p256()), None, "Pixel", "android");
+    let (_, other) = pixel.send(&node, &node.remote.issue_code(None).unwrap().secret);
+    let other_id = other["requestId"].as_str().unwrap().to_string();
+    let both = setup_page(&node);
+    assert_eq!(
+        both.matches("wants to pair").count(),
+        2,
+        "two devices can wait"
+    );
+    assert!(both.contains(&format!("value={name_id}")));
+    assert!(both.contains(&format!("value={other_id}")));
+
+    pair_http::decide(&node, &other_id, false).unwrap();
+    let after = setup_page(&node);
+    assert_eq!(status(&node, &other_id)["state"], "rejected");
+    assert_eq!(after.matches("wants to pair").count(), 1);
+    assert!(
+        !after.contains(&format!("value={other_id}")),
+        "a rejected attempt disappears"
+    );
+    assert!(after.contains(&format!("value={name_id}")));
+    assert!(after
+        .contains("One use. It expires in 10 minutes. This page is only on your home network."));
+
+    let mut pairing = Pairing::default();
+    let now = Instant::now();
+    let ask = Ask::phone("iPhone");
+    let code = pairing.issue(None, now);
+    let first = pairing
+        .request(ask.fields.clone(), &ask.fields.proof(&code.secret), now)
+        .unwrap();
+    let mut renamed = ask.fields.clone();
+    renamed.name = "Kitchen iPhone".into();
+    let code = pairing.issue(None, now);
+    let second = pairing
+        .request(renamed.clone(), &renamed.proof(&code.secret), now)
+        .unwrap();
+    assert_eq!(
+        pairing.pending(now).len(),
+        1,
+        "the same device key replaces"
+    );
+    assert_eq!(pairing.pending(now)[0].0.id, second.id);
+    assert!(pairing.get(&first.id, now).is_none());
+
+    let code = pairing.issue(None, now);
+    let late = Ask::phone("Late");
+    pairing
+        .request(late.fields.clone(), &late.fields.proof(&code.secret), now)
+        .unwrap();
+    assert_eq!(
+        pairing.pending(now).len(),
+        2,
+        "a different device stays pending"
+    );
+    assert!(
+        pairing
+            .pending(now + CODE_LIFETIME + Duration::from_secs(1))
+            .is_empty(),
+        "an expired attempt disappears"
+    );
+}
+
+fn setup_page(node: &Node) -> String {
+    let page = String::from_utf8(lan::respond(
+        node,
+        b"GET / HTTP/1.1\r\nHost: openbazaar.local:8790\r\n\r\n",
+        MAIN_PORT,
+    ))
+    .unwrap();
+    assert!(page.starts_with("HTTP/1.1 200"), "{page}");
+    page
+}
+
+fn words_on(page: &str) -> String {
+    page.split("<p class=words>")
+        .nth(1)
+        .unwrap()
+        .split("</p>")
+        .next()
+        .unwrap()
+        .to_string()
+}
+
+fn pending_ids(pending: &serde_json::Value) -> Vec<&str> {
+    pending["pending"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| item["requestId"].as_str().unwrap())
+        .collect()
 }
 
 #[test]

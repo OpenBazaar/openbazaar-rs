@@ -323,18 +323,47 @@ fn the_setup_page_shows_a_code_on_first_run_only() {
         );
     }
     let form = format!("id={}&approve=1", asked["requestId"].as_str().unwrap());
+    let get_decide = String::from_utf8(lan::respond(
+        &node,
+        b"GET /setup/decide HTTP/1.1\r\nHost: openbazaar.local:8790\r\n\r\n",
+        MAIN_PORT,
+    ))
+    .unwrap();
+    assert!(
+        get_decide.starts_with("HTTP/1.1 303"),
+        "opening the decide path returns to the setup page, {get_decide}"
+    );
+    assert!(
+        get_decide.contains("Return to the setup page"),
+        "{get_decide}"
+    );
     let decide = format!("POST /setup/decide HTTP/1.1\r\nHost: openbazaar.local:8790\r\nOrigin: http://evil.example\r\nContent-Length: {}\r\n\r\n{form}", form.len());
     assert!(lan::respond(&node, decide.as_bytes(), MAIN_PORT).starts_with(b"HTTP/1.1 403"));
+    assert!(node.remote.devices().list().is_empty());
     let decide = decide.replace("Origin: http://evil.example\r\n", "");
-    assert!(lan::respond(&node, decide.as_bytes(), MAIN_PORT).starts_with(b"HTTP/1.1 303"));
+    let posted = String::from_utf8(lan::respond(&node, decide.as_bytes(), MAIN_PORT)).unwrap();
+    assert!(posted.starts_with("HTTP/1.1 303"), "{posted}");
+    assert!(posted.contains("Phone was approved"), "{posted}");
+    assert!(posted.contains("Location: /"), "{posted}");
     assert_eq!(node.remote.devices().list().len(), 1);
-    let closed = lan::respond(
+    let closed = String::from_utf8(lan::respond(
         &node,
         b"GET / HTTP/1.1\r\nHost: openbazaar.local:8790\r\n\r\n",
         MAIN_PORT,
-    );
+    ))
+    .unwrap();
+    assert!(closed.starts_with("HTTP/1.1 200"), "{closed}");
+    assert!(closed.contains("Phone was approved"), "{closed}");
     assert!(
-        closed.starts_with(b"HTTP/1.1 404"),
-        "the page closes once a device is paired"
+        !closed.contains("action=/setup/decide") && !closed.contains("class=words"),
+        "a paired node does not offer another code or an approve form"
     );
+    let again = String::from_utf8(lan::respond(
+        &node,
+        b"GET /setup/decide HTTP/1.1\r\nHost: openbazaar.local:8790\r\n\r\n",
+        MAIN_PORT,
+    ))
+    .unwrap();
+    assert!(again.starts_with("HTTP/1.1 303"), "{again}");
+    assert!(again.contains("Phone was approved"), "{again}");
 }

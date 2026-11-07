@@ -5,7 +5,9 @@
 //! `openbazaar://pair` link. It lives [`CODE_LIFETIME`], at most
 //! [`MAX_LIVE`] are open, and the first request that proves the secret takes
 //! it. That request waits until the owner compares its emoji and approves or
-//! rejects it on the node; either way the code is spent. Bad proofs are
+//! rejects it on the node; either way the code is spent. A later attempt from
+//! the same device name or the same device key replaces that pending request.
+//! Rejected and expired attempts leave the pending list. Bad proofs are
 //! counted node-wide, and past [`MAX_FAILURES`] in [`FAILURE_WINDOW`]
 //! pairing pauses.
 
@@ -69,6 +71,12 @@ pub(crate) enum Refusal {
     Paused,
 }
 
+/// A repeat attempt is the same phone when the device key matches or the
+/// name on the setup page matches. A retry can mint a new key and keep the name.
+fn same_device(left: &PairRequest, right: &PairRequest) -> bool {
+    left.key == right.key || left.name == right.name
+}
+
 #[derive(Default)]
 pub(crate) struct Pairing {
     codes: Vec<Code>,
@@ -126,6 +134,10 @@ impl Pairing {
     }
 
     /// Match a request to the code its proof was made with.
+    ///
+    /// One device has one pending attempt. A repeat from the same device name
+    /// or the same device key replaces the previous one. A code a different
+    /// device already took stays taken.
     pub(crate) fn request(
         &mut self,
         fields: PairRequest,
@@ -136,17 +148,24 @@ impl Pairing {
         if self.failures.len() >= MAX_FAILURES {
             return Err(Refusal::Paused);
         }
-        let Some(code) = self
+        let Some(index) = self
             .codes
-            .iter_mut()
-            .find(|code| fields.proves(&code.secret, proof))
+            .iter()
+            .position(|code| fields.proves(&code.secret, proof))
         else {
             self.failures.push_back(now);
             return Err(Refusal::Wrong);
         };
-        if code.taken {
+        let code_id = self.codes[index].id.clone();
+        if self.codes[index].taken && !self.held_by_same_device(&code_id, &fields) {
             return Err(Refusal::Taken);
         }
+        self.supersede(&fields, &code_id);
+        let code = self
+            .codes
+            .iter_mut()
+            .find(|code| code.id == code_id)
+            .expect("the code this attempt proved");
         code.taken = true;
         let request = Request {
             id: encode_hex(&random_bytes::<16>()),
@@ -154,12 +173,41 @@ impl Pairing {
             secret: code.secret,
             by: code.by.clone(),
             state: State::Pending,
-            code: code.id.clone(),
+            code: code_id,
             created: now,
             decided: None,
         };
         self.requests.push(request.clone());
         Ok(request)
+    }
+
+    /// True when this code's pending attempt is the device asking again.
+    fn held_by_same_device(&self, code_id: &str, fields: &PairRequest) -> bool {
+        self.requests.iter().any(|request| {
+            request.code == code_id
+                && request.state == State::Pending
+                && same_device(&request.fields, fields)
+        })
+    }
+
+    /// Drop this device's pending attempts. `keep` is the code the new
+    /// attempt proved, so that code stays open and the older ones close.
+    fn supersede(&mut self, fields: &PairRequest, keep: &str) {
+        let drop_codes: Vec<String> = self
+            .requests
+            .iter()
+            .filter(|request| {
+                request.code != keep
+                    && request.state == State::Pending
+                    && same_device(&request.fields, fields)
+            })
+            .map(|request| request.code.clone())
+            .collect();
+        self.requests.retain(|request| {
+            !(request.state == State::Pending && same_device(&request.fields, fields))
+        });
+        self.codes
+            .retain(|code| code.id == keep || !drop_codes.iter().any(|id| id == &code.id));
     }
 
     pub(crate) fn pending(&mut self, now: Instant) -> Vec<(Request, Duration)> {
