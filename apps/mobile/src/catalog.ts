@@ -66,6 +66,8 @@ export type ListingHeader = {
   images: string[];
   /** The seller's fiat price; `priceSats` is that price at the rate the day it was signed. */
   price: import("./records.ts").FiatPrice | null;
+  /** Version 7 terms; absent or null on older listings. */
+  commerce?: import("./commerce.ts").Commerce | null;
 };
 
 export type Moderator = {
@@ -103,6 +105,8 @@ export type ShipTo = {
 export type CheckoutLine = {
   listingHash: string;
   quantity: number;
+  /** A version 7 listing's variant id. */
+  variant?: string;
 };
 
 export type CheckoutRequest = {
@@ -146,6 +150,8 @@ export type BuyerLine = {
   title: string;
   quantity: number;
   priceSats: number;
+  /** "Navy / M" for a variant. */
+  variantLabel?: string;
 };
 
 export type NetworkName = "testnet4" | "mainnet";
@@ -187,7 +193,15 @@ export type RemoteOrder = {
   sellerSawPayment: boolean;
   sellerCompleted: boolean;
   fulfillment: Fulfillment | null;
+  /** The seller sold out before this order was paid, and owes a refund. */
+  oversold: boolean;
+  /** Signed receipts kept for reviewing this order. */
+  receipts: number;
+  /** The buyer's review of this order, waiting to publish or published. */
+  review: OrderReview | null;
 };
+
+export type OrderReview = { rating: number; text: string; published: boolean; sendAfter: number; writtenOn: number | null };
 
 export type DirectPayment = {
   address: string;
@@ -337,7 +351,7 @@ export async function placeCheckout(order: {
   addressLabel?: string;
   shipTo?: ShipTo & { street2?: string; country?: string };
   deliveryNote?: string;
-  packages: { settlement: "direct" | "escrow"; rail?: "btc" | "xmr" | "ln"; lines: CheckoutLine[] }[];
+  packages: { settlement: "direct" | "escrow"; rail?: "btc" | "xmr" | "ln"; lines: CheckoutLine[]; service?: number | "pickup"; coupon?: string }[];
 }): Promise<CheckoutReceipt> {
   const token = await pairingToken();
   const response = await request("/checkout", {
@@ -709,7 +723,17 @@ function parseRemote(value: unknown): RemoteOrder | null {
     fulfillment: fulfillment
       ? { carrier: text(fulfillment.carrier), tracking: text(fulfillment.tracking), note: text(fulfillment.note), content: text(fulfillment.content) }
       : null,
+    oversold: Array.isArray(remote.oversold) && remote.oversold.length > 0,
+    receipts: Array.isArray(remote.receipts) ? remote.receipts.length : 0,
+    review: parseOrderReview(remote.review),
   };
+}
+
+function parseOrderReview(value: unknown): OrderReview | null {
+  if (!value || typeof value !== "object") return null;
+  const review = value as Record<string, unknown>;
+  const number = (v: unknown) => (typeof v === "number" ? v : 0);
+  return { rating: number(review.rating), text: typeof review.text === "string" ? review.text : "", published: review.published === true, sendAfter: number(review.sendAfter), writtenOn: typeof review.writtenOn === "number" ? review.writtenOn : null };
 }
 
 function parseModerator(value: unknown): Moderator | null {
@@ -812,6 +836,7 @@ function parseLines(value: unknown, fallback: BuyerLine): BuyerLine[] {
       title: requiredString(line.title),
       quantity: requiredNumber(line.quantity),
       priceSats: requiredNumber(line.priceSats),
+      ...(typeof line.variantLabel === "string" ? { variantLabel: line.variantLabel } : {}),
     };
   });
 }

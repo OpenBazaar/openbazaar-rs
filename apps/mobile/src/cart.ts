@@ -1,8 +1,23 @@
 import type { ListingHeader, ShopCatalog } from "./catalog";
+import type { ListingTerms, Service } from "./commerce.ts";
+import { NO_VARIANT, quote, unitToday, type Quote } from "./pricing.ts";
+import { listingSellable, sellable } from "./variants.ts";
 
-export type CartLine = { hash: string; quantity: number };
+/** `variant` is set for a version 7 listing with options; two variants are two lines. */
+export type CartLine = { hash: string; quantity: number; variant?: string };
 
-export type CartItem = { listing: ListingHeader; quantity: number };
+export type CartItem = {
+  listing: ListingHeader;
+  quantity: number;
+  variant?: string;
+  /** The bag's key for this line: listing hash and variant. */
+  key: string;
+  /** "Navy / M" for a variant. */
+  label: string;
+  unitSats: number;
+  /** Units left as of the listing's last publish. */
+  available: number;
+};
 
 export type CartPackage = {
   seller: string;
@@ -15,23 +30,68 @@ export type CartPackage = {
   physical: boolean;
   digital: boolean;
   moderated: boolean;
+  /** Version 7 packages: the shipping services the listings offer, and the fiat quote for `service`. */
+  services: Service[];
+  service: number;
+  quote: Quote | null;
+  /** Why the package cannot be priced as it stands. */
+  problem: string;
 };
 
-export function cartPackages(catalog: ShopCatalog, lines: CartLine[]): CartPackage[] {
+export function lineKey(line: { hash: string; variant?: string }): string {
+  return `${line.hash}:${line.variant ?? ""}`;
+}
+
+export function termsOf(listing: ListingHeader): ListingTerms {
+  return { version: listing.commerce ? 7 : 6, storeId: listing.storeId, kind: listing.kind, stock: listing.stock, listingId: listing.listingId, images: listing.images, price: listing.price, commerce: listing.commerce ?? null };
+}
+
+function itemOf(listing: ListingHeader, line: CartLine): CartItem {
+  const commerce = listing.commerce ?? null;
+  const variant = commerce?.variants.find(v => v.id === line.variant);
+  const available = variant && commerce ? sellable(commerce, variant) : listingSellable(commerce, listing.stock);
+  const ratio = listing.price && listing.price.amount > 0 ? listing.priceSats / listing.price.amount : 0;
+  const unitSats = commerce && ratio ? Math.round(unitToday(termsOf(listing), line.variant ?? NO_VARIANT, today()) * ratio) : listing.priceSats;
+  return { listing, quantity: line.quantity, variant: line.variant, key: lineKey(line), label: variant ? variant.options.join(" / ") : "", unitSats, available };
+}
+
+function today(): number {
+  const now = new Date();
+  return now.getUTCFullYear() * 10_000 + (now.getUTCMonth() + 1) * 100 + now.getUTCDate();
+}
+
+/** The fiat quote for a package with version 7 listings, in sats at the listings' signed rate. */
+function priced(items: CartItem[], service: number): Pick<CartPackage, "quote" | "problem" | "itemsSats" | "shippingSats"> | null {
+  if (!items.some(i => i.listing.commerce)) return null;
+  const first = items[0].listing;
+  const ratio = first.price && first.price.amount > 0 ? first.priceSats / first.price.amount : 0;
+  const lines = items.map(i => ({ listing: termsOf(i.listing), variant: i.variant ?? NO_VARIANT, quantity: i.quantity, delivery: i.listing.kind === "digital" ? "digital" as const : service < 0 ? "pickup" as const : { service } }));
+  const result = quote(lines, null, { today: today(), now: Math.floor(Date.now() / 1000) });
+  if (!result.ok) return { quote: null, problem: result.message, itemsSats: items.reduce((n, i) => n + i.unitSats * i.quantity, 0), shippingSats: 0 };
+  return { quote: result.quote, problem: "", itemsSats: Math.round(result.quote.items * ratio), shippingSats: Math.round(result.quote.shipping * ratio) };
+}
+
+/** `services` maps a seller to the chosen shipping service index (-1 is local pickup). */
+export function cartPackages(catalog: ShopCatalog, lines: CartLine[], services: Record<string, number> = {}): CartPackage[] {
   const groups = new Map<string, CartItem[]>();
   for (const line of lines) {
     const listing = catalog.listings.find((item) => item.hash === line.hash);
     if (!listing || line.quantity < 1) continue;
     const group = groups.get(listing.seller) ?? [];
-    group.push({ listing, quantity: line.quantity });
+    group.push(itemOf(listing, line));
     groups.set(listing.seller, group);
   }
   return [...groups.entries()].map(([seller, items]) => {
-    const itemsSats = items.reduce((sum, item) => sum + item.listing.priceSats * item.quantity, 0);
     const physicalItems = items.filter((item) => item.listing.kind === "physical");
+    const offered = physicalItems.map(i => i.listing.commerce?.shipping.services ?? []).find(s => s.length) ?? [];
+    const service = services[seller] ?? 0;
+    const v7 = priced(items, service);
+    const plainItems = items.reduce((sum, item) => sum + item.unitSats * item.quantity, 0);
     const rate = physicalItems[0]?.listing.shippingSats ?? 0;
     const freeOverSats = physicalItems[0]?.listing.freeOverSats ?? 0;
-    const shippingSats = physicalItems.length === 0 ? 0 : freeOverSats > 0 && itemsSats >= freeOverSats ? 0 : rate;
+    const plainShipping = physicalItems.length === 0 ? 0 : freeOverSats > 0 && plainItems >= freeOverSats ? 0 : rate;
+    const itemsSats = v7 ? v7.itemsSats : plainItems;
+    const shippingSats = v7 ? v7.shippingSats : plainShipping;
     return {
       seller,
       shipFrom: physicalItems[0]?.listing.shipFrom ?? items[0].listing.shipFrom,
@@ -39,10 +99,14 @@ export function cartPackages(catalog: ShopCatalog, lines: CartLine[]): CartPacka
       itemsSats,
       shippingSats,
       totalSats: itemsSats + shippingSats,
-      freeOverSats: physicalItems.length > 0 ? freeOverSats : 0,
+      freeOverSats: physicalItems.length > 0 && !v7 ? freeOverSats : 0,
       physical: physicalItems.length > 0,
       digital: items.some((item) => item.listing.kind === "digital"),
       moderated: items.every((item) => item.listing.acceptsModerator) && catalog.moderator !== null,
+      services: offered,
+      service,
+      quote: v7?.quote ?? null,
+      problem: v7?.problem ?? "",
     };
   });
 }
