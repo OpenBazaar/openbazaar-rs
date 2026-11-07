@@ -127,6 +127,7 @@ impl Node {
         }
         let body: Value = serde_json::from_slice(&opened.body).map_err(|_| refused("that reply could not be read"))?;
         let network = self.network;
+        let review_key = self.order_review_key(&order.checkout_id, &store).ok();
         self.orders()
             .update(&order.id, |order| {
                 let remote = order.remote.get_or_insert_with(|| json!({}));
@@ -136,6 +137,7 @@ impl Node {
                     map.remove("error");
                 }
                 apply_reply(order, &body, network);
+                crate::checkout_terms::keep_receipts(order, &body, review_key);
             })
             .map_err(retry)?;
         Ok(())
@@ -216,8 +218,10 @@ fn apply_reply(order: &mut crate::buyer_orders::BuyerOrder, body: &Value, networ
             let estimate = remote["estimateSats"].as_u64().unwrap_or(0);
             let address = body["address"].as_str().unwrap_or("");
             let limit = ceiling(estimate, remote["fiat"].as_bool().unwrap_or(false));
+            let problem = crate::checkout_terms::quote_problem(&remote, body);
             let accepted = match crate::network::address_for(address, network) {
                 Err(_) => Err("The seller's payment address is not valid here.".to_string()),
+                Ok(_) if problem.is_some() => Err(problem.unwrap_or_default()),
                 Ok(_) if amount == 0 || amount > limit => {
                     Err(format!("The seller asked {amount} sats; checkout showed {estimate}. Nothing was paid."))
                 }
@@ -237,6 +241,9 @@ fn apply_reply(order: &mut crate::buyer_orders::BuyerOrder, body: &Value, networ
                         "watched": ["onchain"],
                     }));
                     order.status = AWAITING_PAYMENT.to_string();
+                    if let Some(remote) = order.remote.as_mut().filter(|_| !body["quote"].is_null()) {
+                        remote["sellerQuote"] = body["quote"].clone();
+                    }
                 }
                 Err(problem) => {
                     order.status = DECLINED.to_string();

@@ -217,12 +217,19 @@ impl Node {
         };
         let checkout_id = random_id();
         let mut remotes = Vec::with_capacity(packages.len());
-        for package in &packages {
-            remotes.push(self.remote_package(package.lines[0].0, package.settlement == Settlement::Direct, package.xmr)?);
+        let mut plans = Vec::with_capacity(packages.len());
+        for (i, package) in packages.iter().enumerate() {
+            let remote = self.remote_package(package.lines[0].0, package.settlement == Settlement::Direct, package.xmr)?;
+            let plan = crate::checkout_terms::plan(&body["packages"][i], &package.lines)?;
+            if plan.is_some() && remote.is_none() {
+                return Err(OrderError::Invalid("Options, shipping choices and coupons are for stores on other nodes."));
+            }
+            remotes.push(remote);
+            plans.push(plan);
         }
         let reply_url = self.own_url().map(str::to_string);
         let mut sealed = Vec::with_capacity(packages.len());
-        for (package, remote) in packages.iter().zip(&remotes) {
+        for ((package, remote), plan) in packages.iter().zip(&remotes).zip(&plans) {
             let letter = self.seal_letter(
                 &catalog,
                 &checkout_id,
@@ -232,6 +239,7 @@ impl Node {
                 package.shipping,
                 &note,
                 remote.as_ref().and(reply_url.as_deref()),
+                plan.as_ref(),
             )?;
             sealed.push(letter);
         }
@@ -239,12 +247,18 @@ impl Node {
         let mut orders = Vec::with_capacity(packages.len());
         let mut items_total = 0u64;
         let mut shipping_total = 0u64;
-        for ((package, letter), remote) in packages.iter().zip(sealed).zip(&remotes) {
+        for (((package, letter), remote), plan) in packages.iter().zip(sealed).zip(&remotes).zip(&plans) {
             let seller = package.lines[0].0.seller.clone();
             let listing = package.lines[0].0;
-            let (items, shipping) = match remote {
-                Some(_) => self.remote_estimate(&package.lines)?,
-                None => (package.items, package.shipping),
+            let mut quote = None;
+            let (items, shipping) = match (remote, plan) {
+                (Some(_), Some(plan)) => {
+                    let (items, shipping, value) = self.terms_estimate(&package.lines, plan)?;
+                    quote = Some(value);
+                    (items, shipping)
+                }
+                (Some(_), None) => self.remote_estimate(&package.lines)?,
+                (None, _) => (package.items, package.shipping),
             };
             let id = match remote {
                 Some(_) => random_id(),
@@ -259,7 +273,8 @@ impl Node {
             shipping_total = shipping_total
                 .checked_add(shipping)
                 .ok_or(OrderError::Invalid("Enter a quantity of at most 99."))?;
-            let lines = line_values(&package.lines)?;
+            let mut lines = line_values(&package.lines)?;
+            crate::checkout_terms::annotate_lines(&mut lines, &package.lines, plan.as_ref());
             let (payment, mut escrow) = if remote.is_some() {
                 (None, None)
             } else if package.xmr {
@@ -270,7 +285,12 @@ impl Node {
                 self.payment_for(package.settlement, total, &seller)?
             };
             let remote_record = match remote {
-                Some(url) => Some(self.remote_record(url, &checkout_id, listing, &package.lines, total)?),
+                Some(url) => Some(self.remote_record(url, &checkout_id, listing, &package.lines, total)?).map(|mut record| {
+                    if let Some(quote) = quote.take() {
+                        record["quote"] = quote;
+                    }
+                    record
+                }),
                 None => None,
             };
             let status = match remote {
@@ -346,7 +366,7 @@ impl Node {
         shipping: u64,
     ) -> Result<String, OrderError> {
         let ship_to = letter_ship(lines, ship_text, note);
-        let letter = self.seal_letter(catalog, checkout_id, lines, settlement, ship_to, shipping, note, None)?;
+        let letter = self.seal_letter(catalog, checkout_id, lines, settlement, ship_to, shipping, note, None, None)?;
         let id = self
             .mailbox
             .accept(&letter)
@@ -477,7 +497,7 @@ const CHECKOUT_FIELDS: &[&str] = &[
     "packages",
 ];
 
-const PACKAGE_FIELDS: &[&str] = &["settlement", "rail", "lines"];
+const PACKAGE_FIELDS: &[&str] = &["settlement", "rail", "lines", "service", "coupon"];
 
 fn checkout_packages<'a>(catalog: &'a Catalog, body: &Value) -> Result<Vec<PackagePlan<'a>>, OrderError> {
     let Some(list) = body.get("packages").and_then(Value::as_array) else {
@@ -605,6 +625,7 @@ fn seal_letter(
     shipping: u64,
     note: &str,
     reply_url: Option<&str>,
+    plan: Option<&crate::checkout_terms::TermsPlan>,
 ) -> Result<SealedLetter, OrderError> {
     let store = catalog
         .store_of(lines[0].0)
@@ -626,7 +647,7 @@ fn seal_letter(
     let first_hash = first
         .content_hash()
         .map_err(|err| OrderError::Failed(err.to_string()))?;
-    for (listing, quantity) in lines.iter().skip(1) {
+    for (listing, quantity) in lines.iter().skip(1).filter(|_| plan.is_none()) {
         let hash = listing
             .content_hash()
             .map_err(|err| OrderError::Failed(err.to_string()))?
@@ -651,6 +672,13 @@ fn seal_letter(
         ReplyPath::sealed_only(reply.public_key(), drop),
     )
     .map_err(|err| OrderError::Failed(err.to_string()))?;
+    let order = match plan {
+        Some(plan) => {
+            let terms = self.letter_terms(checkout_id, &store_key, lines, plan).map_err(not_ready)?;
+            order.with_terms(terms).map_err(|err| OrderError::Failed(err.to_string()))?
+        }
+        None => order,
+    };
     let from = self.order_letter_key(checkout_id, &store_key).map_err(not_ready)?;
     seal_order(&order, &vendor, &from).map_err(|err| OrderError::Failed(err.to_string()))
 }
@@ -706,7 +734,7 @@ fn order_lines<'a>(
             let Some(map) = line.as_object() else {
                 return Err(OrderError::Invalid("The order could not be read."));
             };
-            if map.keys().any(|key| key != "listingHash" && key != "quantity") {
+            if map.keys().any(|key| key != "listingHash" && key != "quantity" && key != crate::checkout_terms::LINE_TERMS_FIELD) {
                 return Err(OrderError::Invalid("That field is not part of an order."));
             }
             let hash = map.get("listingHash").and_then(Value::as_str).unwrap_or("");

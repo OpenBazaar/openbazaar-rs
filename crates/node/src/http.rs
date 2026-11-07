@@ -163,7 +163,7 @@ fn between<'a>(path: &'a str, prefix: &str, suffix: &str) -> Option<&'a str> {
 fn route(node: &Node, request: &Request<'_>, client: Client, origin: Option<&str>) -> Vec<u8> {
     let (method, path, head, body) = (request.method, request.path, request.head, request.body);
     let client = &client;
-    let modules = [crate::store_http::response, crate::sales_http::response, crate::public_http::response];
+    let modules = [crate::store_http::response, crate::sales_http::response, crate::commerce_http::response, crate::reviews_http::response, crate::public_http::response];
     for module in modules {
         if let Some(response) = module(node, client, head, method, path, body, origin) {
             return response;

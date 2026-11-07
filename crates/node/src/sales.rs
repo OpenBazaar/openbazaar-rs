@@ -162,8 +162,21 @@ impl Node {
         let reply_url = order.options.get("replyUrl").cloned().unwrap_or_default();
         check_loopback(&reply_url).map_err(refused)?;
         let route = Route { url: reply_url, key: *order.reply.key.as_bytes(), drop: order.reply.drop.0 };
-        match self.price_order(&order) {
-            Ok(priced) => self.open_sale(id, sender, &order, route, priced),
+        let priced = match order.terms.lines.is_empty() {
+            true => self.price_order(&order),
+            false => self.price_terms_order(&id, &order, &opened.sender.0)?,
+        };
+        match priced {
+            Ok(mut priced) => {
+                let checked = priced.checked.take();
+                let result = self.open_sale(id.clone(), sender, &order, route, priced);
+                match (&result, checked) {
+                    (Ok(()), Some(checked)) => self.record_terms(&id, &checked),
+                    (Err(_), Some(_)) => self.release_units(&id),
+                    _ => {}
+                }
+                result
+            }
             Err(reason) => {
                 self.queue_reply(&route, &json!({ "v": 1, "kind": "declined", "reason": reason })).map_err(retry)?;
                 Ok(())
@@ -201,7 +214,7 @@ impl Node {
         let (items, shipping) = crate::orders::package_shipping(&refs).map_err(|err| err.to_string())?;
         let digital = priced.iter().any(|(listing, _)| listing.kind == ListingKind::Digital);
         let physical = priced.iter().any(|(listing, _)| listing.kind == ListingKind::Physical);
-        Ok(Priced { lines: values, items, shipping, digital, physical })
+        Ok(Priced { lines: values, items, shipping, digital, physical, quote: Value::Null, checked: None })
     }
 
     fn open_sale(&self, id: String, sender: String, order: &Order, route: Route, priced: Priced) -> Result<(), MailError> {
@@ -230,8 +243,9 @@ impl Node {
             "replyUrl": route.url,
             "replyKey": hex(&route.key),
             "buyerSender": sender,
+            "quote": priced.quote,
         });
-        let terms = json!({
+        let mut terms = json!({
             "v": 1,
             "kind": "terms",
             "address": address,
@@ -240,6 +254,9 @@ impl Node {
             "shippingSats": priced.shipping,
             "network": self.network.as_str(),
         });
+        if !priced.quote.is_null() {
+            terms["quote"] = priced.quote;
+        }
         self.sales().insert(sale).map_err(retry)?;
         self.queue_reply(&route, &terms).map_err(retry)
     }
@@ -322,6 +339,7 @@ impl Node {
             "note": fulfillment["note"],
             "content": fulfillment["content"],
         });
+        let reply = self.with_pending_receipts(&sale, reply);
         let route = Route::of(&sale).map_err(|err| StoreError::Failed(format!("{err:?}")))?;
         self.queue_reply(&route, &reply).map_err(StoreError::Failed)?;
         let updated = self
@@ -370,7 +388,7 @@ impl Node {
                 Ok(Some(sale)) => {
                     changed += usize::from(moved);
                     if became_paid {
-                        let reply = json!({ "v": 1, "kind": "paid", "txids": sale["txids"] });
+                        let reply = self.paid_reply(&sale);
                         if let Err(err) = Route::of(&sale).map_err(|err| format!("{err:?}")).and_then(|route| self.queue_reply(&route, &reply)) {
                             eprintln!("ob-node: sale {id}: {err}");
                         }
@@ -395,12 +413,15 @@ impl Node {
     }
 }
 
-struct Priced {
-    lines: Vec<Value>,
-    items: u64,
-    shipping: u64,
-    digital: bool,
-    physical: bool,
+pub(crate) struct Priced {
+    pub lines: Vec<Value>,
+    pub items: u64,
+    pub shipping: u64,
+    pub digital: bool,
+    pub physical: bool,
+    /// The fiat quote of a version 3 order, else null.
+    pub quote: Value,
+    pub checked: Option<crate::order_terms::Checked>,
 }
 
 /// Where replies in one sale go.

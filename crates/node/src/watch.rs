@@ -178,6 +178,8 @@ impl Node {
             }
         }
         changed += self.watch_sales(tip);
+        changed += self.watch_stock();
+        changed += self.publish_reviews(crate::escrow_outbox::now_secs());
         Ok(changed)
     }
 

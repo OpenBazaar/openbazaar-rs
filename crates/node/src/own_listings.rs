@@ -98,6 +98,30 @@ impl OwnListings {
         self.entries.iter().position(|entry| entry.listing.id() == Some(*id))
     }
 
+    pub(crate) fn by_id(&self, id: &ListingId) -> Option<&Listing> {
+        self.position(id).map(|index| &self.entries[index].listing)
+    }
+
+    pub(crate) fn current(&self) -> impl Iterator<Item = &Listing> {
+        self.entries.iter().map(|entry| &entry.listing)
+    }
+
+    /// Keep `listing` as the new version of the listing with its id.
+    pub(crate) fn supersede(&mut self, listing: Listing) -> Result<(), StoreError> {
+        let index = listing.id().and_then(|id| self.position(&id)).ok_or(StoreError::NotFound)?;
+        let before = self.entries[index].clone();
+        let old_hash = before.listing.content_hash().map_err(|err| StoreError::Failed(err.to_string()))?.to_hex();
+        let entry = &mut self.entries[index];
+        entry.superseded.insert(0, old_hash);
+        entry.superseded.truncate(MAX_SUPERSEDED);
+        entry.listing = listing;
+        if let Err(err) = self.save() {
+            self.entries[index] = before;
+            return Err(err);
+        }
+        Ok(())
+    }
+
     /// The current version of the listing whose address is or was `hash`.
     pub(crate) fn by_hash(&self, hash: &str) -> Option<&Listing> {
         self.entries
@@ -141,6 +165,7 @@ const FIELDS: &[&str] = &[
     "shipping",
     "contentRating",
     "contentTags",
+    "commerce",
 ];
 
 fn text(body: &Value, key: &str, max: usize, required: bool) -> Result<String, StoreError> {
@@ -312,6 +337,20 @@ impl Node {
             None => None,
         };
         let listed_on = previous.map_or_else(crate::own_store::today, |index| own.entries[index].listing.listed_on);
+        let commerce = match &body["commerce"] {
+            Value::Null => None,
+            value => {
+                let before = previous.and_then(|index| own.entries[index].listing.commerce.as_ref());
+                Some(crate::commerce_draft::parse(value, before).map_err(StoreError::Invalid)?)
+            }
+        };
+        if commerce.is_some() && fiat.is_none() {
+            return Err(StoreError::invalid("Price a listing with options or shipping services in USD, EUR, GBP, or JPY."));
+        }
+        let stock = match &commerce {
+            Some(commerce) if !commerce.variants.is_empty() => commerce.variants.total_stock().min(u64::from(u32::MAX)) as u32,
+            _ => draft.stock,
+        };
         let unsigned = Listing {
             store_id: self.own_store,
             title: draft.title,
@@ -320,7 +359,7 @@ impl Node {
             ship_from: draft.ship_from,
             description: draft.description,
             seller: store.name.clone(),
-            stock: draft.stock,
+            stock,
             listed_on,
             moderated: false,
             kind: draft.kind,
@@ -329,7 +368,7 @@ impl Node {
             free_over_sats: 0,
             content: Some(draft.content),
             details: Some(ListingDetails { id: id.unwrap_or_else(new_id), images: draft.images, price: fiat }),
-            commerce: None,
+            commerce,
             signature: [0; 64],
         };
         let listing = unsigned.resign(&secret).map_err(|err| StoreError::invalid(capitalize(&err.to_string())))?;
@@ -360,11 +399,12 @@ impl Node {
             return Err(err);
         }
         drop(own);
+        self.sync_shelf(old.as_ref().map(|entry| &entry.listing), &listing);
         self.serve_own_listing(listing.clone());
         crate::listing_value(&self.catalog(), &listing).map_err(|err| StoreError::Failed(err.to_string()))
     }
 
-    fn serve_own_listing(&self, listing: Listing) {
+    pub(crate) fn serve_own_listing(&self, listing: Listing) {
         let mut catalog = self.catalog_mut();
         let id = listing.id();
         match catalog.listings.iter_mut().find(|old| old.store_id == listing.store_id && old.id().is_some() && old.id() == id) {
