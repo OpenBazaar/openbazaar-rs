@@ -20,7 +20,7 @@ mod tests;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use bdk_wallet::chain::BlockId;
 use bdk_wallet::{KeychainKind, Update};
@@ -145,6 +145,17 @@ fn stalled(progress: &mut Option<(u32, Instant)>, height: u32, caught_up: bool, 
     }
 }
 
+/// A caught-up tip older than this is a peer that stopped sending headers.
+/// The scan looks finished, so the "still syncing" stall never starts, and a
+/// payment that confirmed on the real chain stays unseen. Two hours is past
+/// a quiet period between blocks.
+const STALE_TIP: Duration = Duration::from_secs(2 * 60 * 60);
+
+/// `header_time` is the tip block header's timestamp.
+pub(crate) fn stale_tip(header_time: u32, now_secs: u64, after: Duration) -> bool {
+    now_secs.saturating_sub(u64::from(header_time)) > after.as_secs()
+}
+
 /// The compact block filter backend. Nothing runs until [`ChainSource::open`].
 pub struct FilterChain {
     runtime: tokio::runtime::Runtime,
@@ -187,19 +198,27 @@ impl FilterChain {
     }
 
     /// No peer has answered for `after` since the client started or last
-    /// heard from one, or the scan is behind and has not moved for `after`.
-    /// A peer can answer a handshake and still never serve the filters.
+    /// heard from one, the scan is behind and has not moved for `after`, or
+    /// a caught-up tip header is older than [`STALE_TIP`]. A peer can answer a
+    /// handshake, or stop sending headers after the scan looked finished,
+    /// and still never serve the blocks a payment confirmed in. An old header
+    /// while the scan is still moving is historical, not a stall.
     pub(crate) fn unreachable_for(&self, after: Duration) -> bool {
         let Some(started) = *self.started.lock().unwrap_or_else(|err| err.into_inner()) else {
             return false;
         };
         let last = self.shared.last_contact.lock().unwrap_or_else(|err| err.into_inner()).unwrap_or(started);
-        let (height, caught_up) = {
+        let (height, caught_up, header_time) = {
             let index = self.shared.index();
-            (index.processed.height, index.caught_up)
+            let header_time = index.headers.get(&index.processed.height).map(|header| header.time);
+            (index.processed.height, index.caught_up, header_time)
         };
         let mut progress = self.progress.lock().unwrap_or_else(|err| err.into_inner());
-        last.elapsed() > after || stalled(&mut progress, height, caught_up, Instant::now(), after)
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|elapsed| elapsed.as_secs()).unwrap_or(0);
+        // Only a finished scan can be frozen. During sync the processed header
+        // is an old historical block, and that must not turn the fallback on.
+        let frozen = caught_up && header_time.is_some_and(|time| stale_tip(time, now, STALE_TIP));
+        last.elapsed() > after || stalled(&mut progress, height, caught_up, Instant::now(), after) || frozen
     }
 
     fn ready(&self, scripts: &[ScriptBuf]) -> Result<(), String> {

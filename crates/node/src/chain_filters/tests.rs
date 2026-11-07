@@ -9,7 +9,7 @@ use bitcoin::{Network, OutPoint, ScriptBuf};
 use super::index::{FilterCheck, FilterIndex, NEW_SCRIPT_LOOKBACK};
 use super::mock_peer::{pay, spend, MockPeer, SocksRecorder, TestChain};
 use super::store::{decode, encode, ChainStore};
-use super::{FilterChain, FilterConfig};
+use super::{stale_tip, FilterChain, FilterConfig, STALE_TIP};
 use crate::chain::{ChainSource, WalletRequest};
 use crate::harness::TempDir;
 use crate::network::NetworkMode;
@@ -25,6 +25,16 @@ fn genesis(chain: &TestChain) -> BlockId {
 
 fn script(tag: u8) -> ScriptBuf {
     ScriptBuf::new_p2wsh(&bitcoin::WScriptHash::from_byte_array([tag; 32]))
+}
+
+#[test]
+fn a_tip_more_than_two_hours_behind_the_clock_is_stale() {
+    let now = 1_800_000_000u64;
+    let fresh = u32::try_from(now - 30 * 60).unwrap();
+    let old = u32::try_from(now - STALE_TIP.as_secs() - 1).unwrap();
+    assert!(!stale_tip(fresh, now, STALE_TIP));
+    assert!(stale_tip(old, now, STALE_TIP));
+    assert!(!stale_tip(u32::try_from(now).unwrap(), now, STALE_TIP));
 }
 
 /// Feed every block above `from` to the index the way the driver does.
