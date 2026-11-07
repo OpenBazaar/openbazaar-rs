@@ -8,7 +8,7 @@ publish = false
 description = "Sealed OpenBazaar order letters carried to a vendor onion mailbox"
 
 [dependencies]
-arti-client = { version = "0.48", features = ["onion-service-client", "onion-service-service", "static-sqlite"] }
+arti-client = { version = "0.48", features = ["onion-service-client", "onion-service-service", "static-sqlite", "experimental-api", "keymgr", "restricted-discovery"] }
 async-trait = "0.1"
 bitcoin = "0.32.7"
 futures = "0.3"
@@ -17,10 +17,14 @@ rand = "0.9"
 safelog = "0.10"
 thiserror = "2"
 tor-cell = "0.48"
+tor-config = "0.48"
 tor-hscrypto = "0.48"
-tor-hsservice = "0.48"
+tor-hsservice = { version = "0.48", features = ["restricted-discovery"] }
+tor-keymgr = "0.48"
+tor-llcrypto = "0.48"
 tor-proto = { version = "0.48", features = ["hs-service"] }
 tor-rtcompat = "0.48"
+tokio = { version = "1", default-features = false, features = ["net", "io-util", "rt"] }
 zeroize = { version = "1", features = ["derive"] }
 
 [dev-dependencies]

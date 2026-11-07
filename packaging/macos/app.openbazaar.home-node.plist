@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  OpenBazaar home node for an always-on Mac (a Mac mini, say).
+
+  Runs as a launch agent for the logged-in user, so the vault key stays in
+  that user's Keychain. Turn on automatic login if the Mac reboots unattended.
+
+  Install, replacing USER with your short user name:
+    mkdir -p ~/OpenBazaarHome && cp -r ob-node web ~/OpenBazaarHome/
+    sed "s#/Users/USER#$HOME#g" app.openbazaar.home-node.plist > ~/Library/LaunchAgents/app.openbazaar.home-node.plist
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/app.openbazaar.home-node.plist
+    cat ~/Library/Logs/ob-home-node.log     # onion address and first pairing code
+    ~/OpenBazaarHome/ob-node pair --data-dir ~/OpenBazaarHome/data
+
+  Pair from a phone on the same network at http://openbazaar.local:8790/
+  (allow incoming connections if the macOS firewall asks). Delete the "lan"
+  argument below to use Tor only.
+
+  See docs/home-node.md.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>app.openbazaar.home-node</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/USER/OpenBazaarHome/ob-node</string>
+    <string>serve</string>
+    <string>8787</string>
+    <string>--remote</string>
+    <string>--lan</string>
+    <string>--web-dir</string>
+    <string>/Users/USER/OpenBazaarHome/web</string>
+    <string>--data-dir</string>
+    <string>/Users/USER/OpenBazaarHome/data</string>
+    <string>--vault</string>
+    <string>keystore</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+  <key>Umask</key>
+  <integer>63</integer>
+  <key>StandardErrorPath</key>
+  <string>/Users/USER/Library/Logs/ob-home-node.log</string>
+  <key>StandardOutPath</key>
+  <string>/Users/USER/Library/Logs/ob-home-node.log</string>
+  <key>ProcessType</key>
+  <string>Background</string>
+</dict>
+</plist>

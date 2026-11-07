@@ -42,6 +42,7 @@ mod own_store;
 mod pairing;
 mod pay_order;
 mod rates;
+mod remote;
 mod lock_http;
 mod seed;
 mod spend_tickets;
@@ -115,6 +116,7 @@ pub use http::{http_response, serve_on};
 pub use network::{NetworkMode, ServeOptions, VaultChoice};
 pub use orders::OrderError;
 pub use pay_order::PayError;
+pub use remote::{devices_command, pair_command, RemoteConfig};
 pub use vault_key::VaultMode;
 pub use watch::{
     AWAITING_FUNDING, AWAITING_PAYMENT, AWAITING_TERMS, DISPUTED, FUNDED, FUNDED_WITHOUT_REFUND, FUNDING_SEEN, PAID,
@@ -241,6 +243,8 @@ pub struct Node {
     pub(crate) lock: wallet_lock::WalletLock,
     /// Monero direct pay, off until [`Node::set_xmr_chain`].
     pub(crate) xmr: xmr::XmrNode,
+    /// Paired devices and the home node this node is a client of.
+    pub(crate) remote: remote::Remote,
 }
 
 impl Node {
@@ -351,6 +355,7 @@ impl Node {
             pay_jobs: pay_order::PayJobs::new(),
             lock,
             xmr,
+            remote: remote::Remote::open(&dir, vault.clone())?,
         };
         node.drop_uncommitted_spend()?;
         Ok(node)
@@ -416,6 +421,7 @@ impl Node {
             scope.spawn(|| self.run_escrow_mail(&stop));
             scope.spawn(|| self.run_auto_lock(&stop));
             scope.spawn(|| self.run_xmr(poll, &stop));
+            scope.spawn(|| remote::run(self, port, &stop));
             let result = http::serve(self, port);
             stop.store(true, Ordering::Relaxed);
             result

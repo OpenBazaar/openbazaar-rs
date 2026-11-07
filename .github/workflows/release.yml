@@ -1,7 +1,10 @@
 name: release
 
 # Builds the desktop app with the bundled ob-node for macOS (universal),
-# Linux (AppImage, deb), and Windows (NSIS), then writes SHA256SUMS.
+# Linux (AppImage, deb), and Windows (NSIS); the home node (ob-node with the
+# web shop) for Linux x86_64 and arm64 and macOS, and its Docker image for
+# linux/amd64 and linux/arm64; then writes SHA256SUMS. The image is pushed to
+# ghcr.io/<owner>/ob-node only when the release is published.
 #
 # A v* tag publishes a GitHub Release. A manual run builds from any branch and
 # keeps the installers as workflow artifacts; it publishes only when `publish`
@@ -274,9 +277,145 @@ jobs:
           path: dist-release/
           if-no-files-found: error
 
+  home-node:
+    name: home node (${{ matrix.name }})
+    needs: verify
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    env:
+      OB_BUILD_KIND: ${{ (startsWith(github.ref, 'refs/tags/v') || inputs.publish) && 'release' || 'ci' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64
+            os: ubuntu-22.04
+            docker-arch: amd64
+            targets: ""
+          - name: linux-arm64
+            os: ubuntu-22.04-arm
+            docker-arch: arm64
+            targets: ""
+          - name: macos-universal
+            os: macos-latest
+            docker-arch: ""
+            targets: aarch64-apple-darwin x86_64-apple-darwin
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/mobile/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.targets && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: home-node-${{ matrix.name }}
+      - name: install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y pkg-config libssl-dev
+      - run: npm ci
+        working-directory: apps/mobile
+      - name: set the version
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${VERSION#v}"
+          if [ -n "$(git status --porcelain --untracked-files=no)" ]; then dirty=true; else dirty=false; fi
+          echo "OB_BUILD_DIRTY=${dirty}" >> "$GITHUB_ENV"
+          node scripts/version.mjs set "$version"
+          node scripts/version.mjs check
+          echo "APP_VERSION=${version}" >> "$GITHUB_ENV"
+      - name: build ob-node and the web shop
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -n "${{ matrix.targets }}" ]; then
+            for target in ${{ matrix.targets }}; do cargo build --release --locked -p ob-node --target "$target"; done
+            mkdir -p target/release
+            lipo -create -output target/release/ob-node target/aarch64-apple-darwin/release/ob-node target/x86_64-apple-darwin/release/ob-node
+          else
+            cargo build --release --locked -p ob-node
+          fi
+          (cd apps/mobile && npm run build)
+      - name: package
+        shell: bash
+        run: |
+          set -euo pipefail
+          reported="$(target/release/ob-node --version)"
+          echo "ob-node: $reported"
+          case "$reported" in "ob-node ${APP_VERSION} ("*) ;; *) echo "ob-node is not ${APP_VERSION}" >&2; exit 1 ;; esac
+          name="ob-node_${APP_VERSION}_${{ matrix.name }}"
+          mkdir -p "package/$name" dist-release
+          cp target/release/ob-node "package/$name/"
+          cp -R apps/mobile/dist "package/$name/web"
+          cp docs/home-node.md LICENSE "package/$name/"
+          if [ "${RUNNER_OS}" = macOS ]; then
+            cp packaging/macos/app.openbazaar.home-node.plist "package/$name/"
+          else
+            cp packaging/systemd/ob-node.service packaging/systemd/ob-node.env.example packaging/docker/compose.yml "package/$name/"
+          fi
+          tar -C package -czf "dist-release/$name.tar.gz" "$name"
+          if [ -n "${{ matrix.docker-arch }}" ]; then
+            mkdir -p "docker/linux-${{ matrix.docker-arch }}"
+            cp target/release/ob-node "docker/linux-${{ matrix.docker-arch }}/"
+            cp -R apps/mobile/dist docker/web
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: home-node-${{ matrix.name }}
+          path: dist-release/
+          if-no-files-found: error
+      - if: matrix.docker-arch
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-${{ matrix.name }}
+          path: docker/
+          if-no-files-found: error
+
+  docker:
+    name: home node image
+    needs: home-node
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: docker-*
+          path: dist
+          merge-multiple: true
+      - name: image name and tags
+        shell: bash
+        run: |
+          set -euo pipefail
+          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/ob-node"
+          echo "TAGS=${image}:${VERSION#v},${image}:latest" >> "$GITHUB_ENV"
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - if: startsWith(github.ref, 'refs/tags/v') || inputs.publish
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: release
+          platforms: linux/amd64,linux/arm64
+          push: ${{ startsWith(github.ref, 'refs/tags/v') || inputs.publish }}
+          tags: ${{ env.TAGS }}
+
   release:
     name: checksums and release
-    needs: desktop
+    needs: [desktop, home-node, docker]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -284,6 +423,11 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           pattern: desktop-*
+          path: release-assets
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: home-node-*
           path: release-assets
           merge-multiple: true
       - name: write SHA256SUMS
@@ -316,6 +460,8 @@ jobs:
           - macOS (Apple silicon and Intel): the .dmg, or the zipped .app
           - Windows: the -setup.exe
           - Linux: the .AppImage, or the .deb for Debian and Ubuntu
+
+          To run your store on an always-on computer and manage it from your phone or laptop over Tor, use the home node: the ob-node_*.tar.gz for Linux (x86_64, arm64) or macOS, or the Docker image ghcr.io/openbazaar/ob-node:${version}. home-node.md inside each archive explains setup and pairing.
 
           These builds are unsigned, so your system will warn you the first time.
 

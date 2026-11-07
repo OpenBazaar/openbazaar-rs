@@ -17,15 +17,36 @@ pub const NETWORK: &str = "testnet4";
 
 const READY_TIMEOUT: Duration = Duration::from_secs(20);
 
+/// Present when the user chose "Run this computer as a home node".
+const HOME_MODE_FILE: &str = "home-node-mode";
+
 pub struct Sidecar {
     child: Child,
+    pub port: u16,
     pub origin: String,
     /// Read from `pairing.token` after the node starts; handed only to the app's own webview.
     pub token: String,
 }
 
+pub fn home_mode(app_data_dir: &Path) -> bool {
+    app_data_dir.join(HOME_MODE_FILE).is_file()
+}
+
+pub fn set_home_mode(app_data_dir: &Path, on: bool) -> io::Result<()> {
+    let path = app_data_dir.join(HOME_MODE_FILE);
+    if on {
+        fs::write(path, b"")
+    } else if path.exists() {
+        fs::remove_file(path)
+    } else {
+        Ok(())
+    }
+}
+
 impl Sidecar {
-    pub fn start(app_data_dir: &Path) -> Result<Self, String> {
+    /// Start the node on `port` (a free one when `None`). In home mode it
+    /// also publishes its onion service and the LAN channel for paired devices.
+    pub fn start(app_data_dir: &Path, port: Option<u16>) -> Result<Self, String> {
         create_private_dir(app_data_dir)
             .map_err(|err| format!("Could not create {}: {err}", app_data_dir.display()))?;
         let data_dir = app_data_dir.join(NETWORK);
@@ -34,7 +55,10 @@ impl Sidecar {
         let log_path = data_dir.join("node.log");
         let log = open_private_log(&log_path)
             .map_err(|err| format!("Could not open {}: {err}", log_path.display()))?;
-        let port = free_loopback_port().map_err(|err| format!("No free loopback port: {err}"))?;
+        let port = match port {
+            Some(port) => port,
+            None => free_loopback_port().map_err(|err| format!("No free loopback port: {err}"))?,
+        };
         let binary = sidecar_path().map_err(|err| format!("Could not find ob-node: {err}"))?;
 
         let mut command = Command::new(&binary);
@@ -46,6 +70,7 @@ impl Sidecar {
             .arg("--data-dir")
             .arg(app_data_dir)
             .arg("--no-pair-codes")
+            .args(if home_mode(app_data_dir) { &["--remote", "--lan"][..] } else { &[] })
             .current_dir(&data_dir)
             .env("OB_EXIT_ON_STDIN_EOF", "1")
             .stdin(Stdio::piped())
@@ -58,6 +83,7 @@ impl Sidecar {
 
         let mut sidecar = Self {
             child,
+            port,
             origin: format!("http://127.0.0.1:{port}"),
             token: String::new(),
         };

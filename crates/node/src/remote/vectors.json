@@ -1,0 +1,105 @@
+{
+  "comment": "Fixed inputs and the node's outputs for home node protocol v2 (docs/home-node-protocol.md). Hex unless named otherwise.",
+  "discovery": {
+    "public": "descriptor:x25519:74XOIVQB5QNWOMIMO6IEARMFVZUXGMPO4HA7RTZEDFZRYH77HZVQ",
+    "secret": "4444444444444444444444444444444444444444444444444444444444444444",
+    "secretBase32": "irceirceirceirceirceirceirceirceirceirceirceirceirca"
+  },
+  "keys": {
+    "bip340": {
+      "deviceId": "64074756f1161480",
+      "secret": "3333333333333333333333333333333333333333333333333333333333333333",
+      "text": "bip340:3c72addb4fdf09af94f0c94d7fe92a386a7e70cf8a1d85916386bb2535c7b1b1"
+    },
+    "p256": {
+      "deviceId": "ccf6d06dae29d5bc",
+      "secret": "2222222222222222222222222222222222222222222222222222222222222222",
+      "text": "p256:03d65a93977caa3d1b081852ff57a79e465f1660577304baead505dd3a48589cf3"
+    },
+    "watch": {
+      "deviceId": "eda46d80598b7049",
+      "secret": "6666666666666666666666666666666666666666666666666666666666666666",
+      "text": "p256:030bbbc5e8bc84bd33d1d3ce03ffac9a747f4c1993fddb2ec93a4116a86f022a77"
+    }
+  },
+  "lan": {
+    "answer": "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}",
+    "body": "38ab664bd86f77d7e66bdd9ae0792913a94fd8b33a1260027e4b46c1f4884c6715acaeedca034d34d5db64d3dee6a568835b585911927c2c08fd1d81ebc8ecc09f0f7430382a9b30201adcbc0ceb08d6959853847a84e721c6",
+    "ephemeralPublic": "38ab664bd86f77d7e66bdd9ae0792913a94fd8b33a1260027e4b46c1f4884c67",
+    "ephemeralSecret": "5555555555555555555555555555555555555555555555555555555555555555",
+    "request": "GET /remote/hello HTTP/1.1\r\nHost: lan\r\n\r\n",
+    "responseKey": "f7375281c61b4fc8fcebf2b696c040cedeb6d63e638d022d8ed8b499273a7a49",
+    "sealedAnswer": "fd4ba8037b62c2178200f064a590a0783288acbe009cca12f161d9afb57570f3ba16cf31be89ffe03112d5e74bc4a3e51de2ce1fed7d388e"
+  },
+  "node": {
+    "nodeId": "4d790f9d3d514eb284d67ec4f8ddc76e",
+    "public": "7b4e909bbe7ffe44c465a220037d608ee35897d31ef972f07f74892cb0f73f13",
+    "secret": "1111111111111111111111111111111111111111111111111111111111111111"
+  },
+  "pairing": {
+    "link": "openbazaar://pair?v=2&s=aebagbafaydqqcik&k=7b4e909bbe7ffe44c465a220037d608ee35897d31ef972f07f74892cb0f73f13&o=wmjf6wqzd4f5vv2axd4pzulxvh7dk7rddmnomsz7tt4g4hlfov6l2kid&l=192.168.1.20:8790",
+    "onion": "wwffgcy2szac3wnxfsvy3kokf5qktydgubodnorchnu4kpg5ydv76bid.onion",
+    "onionSeed": "03977d8d267e178cd6cea0a5f2bdb833296865f343b95a4e0256365886b794d7",
+    "secret": "0102030405060708090a",
+    "secretBase32": "aebagbafaydqqcik",
+    "typed": "ABSURD - avoi - scissors - ANXIETY - gath - lottery - CATEGORY - flip",
+    "words": [
+      "absurd",
+      "avoid",
+      "scissors",
+      "anxiety",
+      "gather",
+      "lottery",
+      "category",
+      "flip"
+    ]
+  },
+  "request": {
+    "bare": {
+      "fields": {
+        "key": "bip340:3c72addb4fdf09af94f0c94d7fe92a386a7e70cf8a1d85916386bb2535c7b1b1",
+        "name": "Desk",
+        "platform": "desktop"
+      },
+      "proof": "e6dca5ac1f62a4f201b729a9c2d338c1c0188672bcac90da7c49c526586286f8",
+      "transcript": "OBPAIR2\nbip340:3c72addb4fdf09af94f0c94d7fe92a386a7e70cf8a1d85916386bb2535c7b1b1\n\n\nDesk\ndesktop"
+    },
+    "fields": {
+      "discoveryKey": "descriptor:x25519:74XOIVQB5QNWOMIMO6IEARMFVZUXGMPO4HA7RTZEDFZRYH77HZVQ",
+      "key": "p256:03d65a93977caa3d1b081852ff57a79e465f1660577304baead505dd3a48589cf3",
+      "name": "Brian's iPhone",
+      "platform": "ios",
+      "watchKey": "p256:030bbbc5e8bc84bd33d1d3ce03ffac9a747f4c1993fddb2ec93a4116a86f022a77"
+    },
+    "proof": "b9e577b5c5f376d42262a185df4289d80d0a0e4a7063e6cf8bcd72b4c4144ba0",
+    "sas": [
+      "🐸",
+      "👑",
+      "🦀",
+      "🍇"
+    ],
+    "sasNames": [
+      "frog",
+      "crown",
+      "crab",
+      "grapes"
+    ],
+    "signature": "30440220124bb7a9ef7a34755c3e1c4d11c636b2e0ede15e447cabe6c5f470c2c58069230220496265adcbeeaaf2dd133e99a6676ad84f82261b5d7feed114bb63cdfac82c96",
+    "transcript": "OBPAIR2\np256:03d65a93977caa3d1b081852ff57a79e465f1660577304baead505dd3a48589cf3\np256:030bbbc5e8bc84bd33d1d3ce03ffac9a747f4c1993fddb2ec93a4116a86f022a77\ndescriptor:x25519:74XOIVQB5QNWOMIMO6IEARMFVZUXGMPO4HA7RTZEDFZRYH77HZVQ\nBrian's iPhone\nios"
+  },
+  "signedRequest": {
+    "bip340": {
+      "preimage": "OBRQ2\n4d790f9d3d514eb284d67ec4f8ddc76e\n64074756f1161480\n1794063000\n00112233445566778899aabbccddeeff\nPOST\n/remote/sync\n8a95f0022fe6803eb0ec0ab65954408ed092e46a38f452627d5b3534f55bcc73",
+      "signature": "a477904e544287ce881d7aba74711fa99d86a9c3648aec4b70c022ae29146739fd090ffbdae99617aa4a010cf602e5f6769783e573ea21e9e60e621ecefb92ed"
+    },
+    "body": "{\"have\":{}}",
+    "method": "POST",
+    "nonce": "00112233445566778899aabbccddeeff",
+    "p256": {
+      "preimage": "OBRQ2\n4d790f9d3d514eb284d67ec4f8ddc76e\nccf6d06dae29d5bc\n1794063000\n00112233445566778899aabbccddeeff\nPOST\n/remote/sync\n8a95f0022fe6803eb0ec0ab65954408ed092e46a38f452627d5b3534f55bcc73",
+      "signature": "3045022100de33f8b3fdd89c1a3183477147c717e94d495fa2003a553a5aeba4d48e3bf32b022079d9eadf84556f46657cb095e79ecca1ec0a65da4d3eebbabfc253308cac0d06"
+    },
+    "path": "/remote/sync",
+    "time": 1794063000
+  }
+}

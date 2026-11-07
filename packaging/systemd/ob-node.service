@@ -1,0 +1,51 @@
+# OpenBazaar home node for Linux (Raspberry Pi, NAS, small server).
+#
+# Install (from the release tarball, as root):
+#   useradd --system --home /var/lib/openbazaar --shell /usr/sbin/nologin openbazaar
+#   install -d /opt/openbazaar && cp -r ob-node web /opt/openbazaar/
+#   install -d -m 700 /etc/openbazaar
+#   install -m 600 ob-node.env.example /etc/openbazaar/ob-node.env   # then set the passphrase
+#   cp ob-node.service /etc/systemd/system/ && systemctl enable --now ob-node
+#   journalctl -u ob-node        # shows the onion address and the first pairing code
+#   sudo -u openbazaar /opt/openbazaar/ob-node pair --data-dir /var/lib/openbazaar
+#
+# --lan opens port 8790 on the home network: an encrypted channel for paired
+# devices, mDNS (openbazaar.local), and the setup page at
+# http://openbazaar.local:8790/ until the first device is paired. Drop it to
+# use Tor only.
+#
+# See docs/home-node.md.
+
+[Unit]
+Description=OpenBazaar home node
+Documentation=https://github.com/OpenBazaar/openbazaar-rs/blob/main/docs/home-node.md
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=openbazaar
+Group=openbazaar
+EnvironmentFile=/etc/openbazaar/ob-node.env
+ExecStart=/opt/openbazaar/ob-node serve 8787 --remote --lan --web-dir /opt/openbazaar/web --data-dir /var/lib/openbazaar --vault passphrase
+Restart=on-failure
+RestartSec=10
+StateDirectory=openbazaar
+StateDirectoryMode=0700
+UMask=0077
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+RestrictNamespaces=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target
