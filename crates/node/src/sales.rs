@@ -271,6 +271,18 @@ impl Node {
                 }
                 Ok(())
             }
+            Some("sent") => {
+                let txid = body["txid"].as_str().filter(|txid| txid.len() == 64 && txid.bytes().all(|byte| byte.is_ascii_hexdigit()));
+                let txid = txid.ok_or_else(|| refused("that payment note names no transaction"))?;
+                self.sales()
+                    .update(id, |sale| {
+                        if sale["status"] == AWAITING_PAYMENT || sale["status"] == PAYMENT_SEEN {
+                            sale["sentTxid"] = json!(txid);
+                        }
+                    })
+                    .map_err(retry)?;
+                Ok(())
+            }
             _ => Err(refused("that message is not one this store reads")),
         }
     }

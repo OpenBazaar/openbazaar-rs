@@ -404,6 +404,9 @@ impl Node {
         self.orders()
             .update(id, |order| order.pay_txid = Some(txid.to_string()))
             .map_err(|err| PayError::Failed(format!("sent {txid}, but the order could not be updated: {err}")))?;
+        if let Err(err) = self.tell_seller_sent(id, txid) {
+            eprintln!("ob-node: order {id}: sent {txid}, but the seller was not told: {err:?}");
+        }
         Ok(())
     }
 
