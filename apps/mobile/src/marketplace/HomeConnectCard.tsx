@@ -79,7 +79,7 @@ export function HomeConnectCard() {
         <span className={`ob-status-dot ${target === "home" ? "" : "is-loading"}`} aria-hidden="true"/>
         <div>
           <strong>{target === "home" ? "Managing your home node" : "Home node paired"}</strong>
-          <span><code title={link.onion}>{shortAddress(link.onion)}</code> · this device is “{link.name}” · paired {when(link.pairedAt)}</span>
+          <span>{link.onion && <><code title={link.onion}>{shortAddress(link.onion)}</code> · </>}this device is “{link.name}” · paired {when(link.pairedAt)}</span>
         </div>
       </div>
       <div className="ob-form-actions">
