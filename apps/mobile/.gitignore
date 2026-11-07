@@ -1,2 +1,6 @@
-/test-results/
-/playwright-report/
+# `expo prebuild` output and the Rust libraries from scripts/build-mobile-tor.sh
+/ios/
+/android/
+/modules/ob-tor/ios/ObMobileTor.xcframework/
+/modules/ob-tor/android/src/main/jniLibs/
+/modules/*/android/build/

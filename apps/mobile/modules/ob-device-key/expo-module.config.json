@@ -1,0 +1,9 @@
+{
+  "platforms": ["apple", "android"],
+  "apple": {
+    "modules": ["ObDeviceKeyModule"]
+  },
+  "android": {
+    "modules": ["expo.modules.obdevicekey.ObDeviceKeyModule"]
+  }
+}

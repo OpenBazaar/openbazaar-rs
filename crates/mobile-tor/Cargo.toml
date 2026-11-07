@@ -1,0 +1,28 @@
+[package]
+name = "ob-mobile-tor"
+description = "Embedded Arti for the OpenBazaar phone app: C ABI for Swift, JNI for Kotlin"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Host builds make only the rlib (for `cargo test`). scripts/build-mobile-tor.sh
+# asks for a staticlib (iOS) or cdylib (Android) with `cargo rustc --crate-type`.
+[lib]
+name = "ob_mobile_tor"
+crate-type = ["rlib"]
+
+[dependencies]
+arti-client = { version = "0.48", default-features = false, features = ["tokio", "rustls", "compression", "onion-service-client", "static-sqlite", "experimental-api", "keymgr"] }
+futures = "0.3"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "time"] }
+tor-hscrypto = "0.48"
+tor-llcrypto = "0.48"
+tor-rtcompat = { version = "0.48", default-features = false, features = ["tokio", "rustls"] }
+
+[target.'cfg(target_os = "android")'.dependencies]
+jni = { version = "0.21", default-features = false }
+
+[dev-dependencies]
+tempfile = "3"
