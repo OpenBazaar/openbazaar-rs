@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use ob_node::{LocalConfig, NetworkMode, NodeConfig, RemoteConfig, ServeOptions, VaultChoice, VaultMode};
 
-const USAGE: &str = "ob-node [print | --version | pair [port] [--network N] [--data-dir DIR] [--lan-page] | devices [port] [--remove ID [--rotate] | --remove-all --rotate] | serve [port] [--remote] [--lan] [--lan-listen ADDR] [--remote-listen 127.0.0.1:PORT] [--web-dir DIR] [--push-gateway http://ONION] [--network testnet4|mainnet] [--data-dir DIR] [--peer HOST:PORT[,...] | --esplora URL[,URL...]] [--public-fallback | --no-public-fallback] [--confirmations N] [--poll-secs S] [--escrow-vendor SELLER=URL] [--moderator URL] [--moderate] [--vault keystore|passphrase|file] [--shop-origin URL] [--no-pair-codes] [--proxy socks5h://HOST:PORT] [--no-rates] [--xmr-daemon URL[,URL...]]]
+const USAGE: &str = "ob-node [print | --version | pair [port] [--network N] [--data-dir DIR] [--lan-page] | devices [port] [--remove ID [--rotate] | --remove-all --rotate] | serve [port] [--remote] [--lan] [--lan-listen ADDR] [--remote-listen 127.0.0.1:PORT] [--web-dir DIR] [--push-gateway http://ONION] [--network testnet4|mainnet] [--data-dir DIR] [--peer HOST:PORT[,...] | --esplora URL[,URL...]] [--public-fallback | --no-public-fallback] [--confirmations N] [--poll-secs S] [--escrow-vendor SELLER=URL] [--moderator URL] [--moderate] [--vault keystore|passphrase|file] [--shop-origin URL] [--no-pair-codes] [--proxy socks5h://HOST:PORT] [--no-rates] [--xmr-daemon URL[,URL...]] [--lightning [--ln-network signet|testnet4|regtest] [--ln-chain esplora:URL|electrum:URL|bitcoind:USER:PASS@HOST:PORT] [--lsp NODE_ID@HOST:PORT [--lsp-token T] | --no-lsp] [--lsp-max-fee-sats N] [--ln-rgs URL | --ln-p2p-gossip] [--ln-listen HOST:PORT]]]
 
 Chain data comes from BIP 157/158 compact block filters by default.
 --peer uses only your own node (bitcoind with blockfilterindex=1 and peerblockfilters=1).
@@ -18,6 +18,7 @@ Chain data comes from BIP 157/158 compact block filters by default.
 --lan adds the encrypted LAN channel on port 8790, mDNS discovery, and the first-run setup page at http://openbazaar.local:8790/.
 --push-gateway sends content-free wake-ups to devices that turned push on, through that gateway over Tor. Off unless set.
 --web-dir serves the web shop export to paired browsers over that onion.
+--lightning runs an LDK Lightning node for direct pay (see docs/lightning.md). On testnet4 it runs on Mutinynet signet with the public Mutinynet LSP. Mainnet has no defaults: name --ln-chain and --lsp, or --no-lsp. The LSP sees the amount and time of each payment to you; Lightning peers see your IP address (--proxy does not cover them).
 --vault passphrase reads OB_VAULT_PASSPHRASE, or asks on the terminal.
 --vault file keeps the key in the data dir; use it only on headless machines and in tests.";
 const PASSPHRASE_ENV: &str = "OB_VAULT_PASSPHRASE";
@@ -110,6 +111,16 @@ fn serve(args: &[String]) -> ExitCode {
         ),
         None => eprintln!("ob-node: Monero is off (no --xmr-daemon)"),
     }
+    let lightning = options.lightning.plan(network).expect("parse already checked the Lightning flags");
+    match &lightning {
+        Some(config) => eprintln!(
+            "ob-node: Lightning on {} via {}, LSP {}",
+            config.network,
+            config.chain.describe(),
+            config.lsp.as_ref().map_or("none (open channels by hand)".to_string(), |lsp| lsp.peer.to_string())
+        ),
+        None => eprintln!("ob-node: Lightning is off (no --lightning)"),
+    }
     let vault = match vault_mode(&options) {
         Ok(vault) => vault,
         Err(err) => {
@@ -167,6 +178,12 @@ fn serve(args: &[String]) -> ExitCode {
     if let Err(err) = node.set_remote(remote) {
         eprintln!("ob-node: {err}");
         return ExitCode::from(1);
+    }
+    if let Some(config) = lightning {
+        if let Err(err) = node.enable_lightning(config) {
+            eprintln!("ob-node: {err}");
+            return ExitCode::from(1);
+        }
     }
     // First boot only. The token file in the data dir is kept, and a
     // later start does not print it again.

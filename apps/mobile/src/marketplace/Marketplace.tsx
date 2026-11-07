@@ -16,6 +16,8 @@ import { PageHeading } from "./PageHeading";
 import { BuildLine, BuildMismatchWarning, useBuildInfo } from "./BuildInfo";
 import { HomeNodePanel } from "./HomeNodePanel";
 import { HomeNodeBadge } from "./HomeNodeGate";
+import { LightningSettings } from "./LightningSettings";
+import { LightningOrderPayment, LightningWalletCard } from "./LightningPayment";
 
 
 type IconName = "settings" | "wallet" | "sun" | "moon" | "compass" | "heart" | "bag" | "arrow" | "search" | "chevron" | "check" | "shield" | "globe" | "close" | "menu" | "book" | "cup" | "home" | "music" | "shirt" | "tool" | "paper" | "grid" | "pin" | "bolt" | "external";
@@ -62,7 +64,7 @@ function btc(sats: number) { return `${(sats / 1e8).toFixed(8).replace(/0+$/, ""
 export function Money({ sats, rates, currency, large = false }: { sats: number; rates: RateTable; currency: CurrencyCode; large?: boolean }) { const estimate = fiat(sats, rates, currency); return <div className={`ob-money ${large ? "ob-money-large" : ""}`}><span>{sats.toLocaleString("en-US")} <small>sats</small></span>{estimate && <span className="ob-estimate" title={`Estimated value in ${currency}`}>≈ {estimate}</span>}</div>; }
 function Brand() { return <span className="ob-brand"><span className="ob-brand-icon"><img src="brand/ob-market-logo-256.png" alt="" width={42} height={42}/></span><span>OpenBazaar<span className="ob-brand-dot">.</span></span></span>; }
 
-type Section = "discover" | "saved" | "orders" | "bag" | "addresses" | "safety" | "wallet" | "store-labels" | "home-node";
+type Section = "discover" | "saved" | "orders" | "bag" | "addresses" | "safety" | "wallet" | "store-labels" | "home-node" | "lightning";
 type Page = { name: "browse" } | { name: "detail"; listing: ListingHeader } | { name: "checkout"; lines: CartLine[]; returnTo?: ListingHeader } | { name: "receipt"; receipt: CheckoutReceipt };
 
 export default function Marketplace() {
@@ -141,15 +143,15 @@ export default function Marketplace() {
   function navigate(next: Section, nextCategory: string | null = null) { setSettingsOpen(false); content.current?.scrollTo({ top: 0, behavior: "instant" }); setSection(next); setCategory(nextCategory); setFilters({ seller: "", kind: "", shipFrom: "", min: "", max: "" }); setQuery(""); setPage({ name: "browse" }); setMenu(false); }
   function toggleSaved(listing: ListingHeader) { const exists = saved.includes(listing.hash); setSaved(a => exists ? a.filter(x => x !== listing.hash) : [...a, listing.hash]); setToast(exists ? "Removed from saved goods" : "Added to your saved goods"); }
   function open(listing: ListingHeader) { setPage({ name: "detail", listing }); }
-  const activeTitle = section === "saved" ? "Saved goods" : section === "orders" ? "Your orders" : section === "bag" ? "Your bag" : section === "addresses" ? "Your addresses" : section === "wallet" ? "Wallet" : section === "safety" ? "Content filters" : section === "store-labels" ? "Store labels" : section === "home-node" ? "Home node" : "Products";
-  const inSettings = ["safety", "addresses", "store-labels", "home-node"].includes(section);
+  const activeTitle = section === "saved" ? "Saved goods" : section === "orders" ? "Your orders" : section === "bag" ? "Your bag" : section === "addresses" ? "Your addresses" : section === "wallet" ? "Wallet" : section === "safety" ? "Content filters" : section === "store-labels" ? "Store labels" : section === "home-node" ? "Home node" : section === "lightning" ? "Lightning" : "Products";
+  const inSettings = ["safety", "addresses", "store-labels", "home-node", "lightning"].includes(section);
   const browsing = page.name === "browse" && (section === "discover" || (section === "saved" && saved.length > 0));
   const verdictOf = (listing: ListingHeader) => catalog ? safetyVerdict(listing, catalog.store.contentRating, safety, labels) : { action: "show" as const };
   const detailVerdict = page.name === "detail" ? verdictOf(page.listing) : null;
 
   const money = { rates, currency };
   const navSection: Section = page.name === "receipt" ? "orders" : section;
-  const utilityView = page.name !== "browse" ? null : section === "saved" && saved.length === 0 ? <section><PageHeading title="Saved goods"/><Empty illustration="saved" icon="heart" title="No saved products" text="Save products using the heart button."><button className="ob-primary" onClick={() => navigate("discover")}>Browse products <Icon name="arrow" size={17}/></button></Empty></section> : section === "wallet" ? <WalletPanel {...money}/> : section === "home-node" ? <div className="ob-settings-page"><header className="ob-settings-heading"><h1>Home node</h1><p>Run your store on an always-on computer and manage it from anywhere over Tor.</p></header><HomeNodePanel/></div> : section === "addresses" ? <Addresses/> : section === "safety" ? <SafetySettingsPanel settings={safety} onChange={setSafety} labelSources={<LabelersPanel state={labelers} onState={setLabelerState}/>}/> : section === "orders" ? <Orders {...money} onBrowse={() => navigate("discover")}/> : null;
+  const utilityView = page.name !== "browse" ? null : section === "saved" && saved.length === 0 ? <section><PageHeading title="Saved goods"/><Empty illustration="saved" icon="heart" title="No saved products" text="Save products using the heart button."><button className="ob-primary" onClick={() => navigate("discover")}>Browse products <Icon name="arrow" size={17}/></button></Empty></section> : section === "wallet" ? <><WalletPanel {...money}/><LightningWalletCard {...money}/></> : section === "lightning" ? <LightningSettings/> : section === "home-node" ? <div className="ob-settings-page"><header className="ob-settings-heading"><h1>Home node</h1><p>Run your store on an always-on computer and manage it from anywhere over Tor.</p></header><HomeNodePanel/></div> : section === "addresses" ? <Addresses/> : section === "safety" ? <SafetySettingsPanel settings={safety} onChange={setSafety} labelSources={<LabelersPanel state={labelers} onState={setLabelerState}/>}/> : section === "orders" ? <Orders {...money} onBrowse={() => navigate("discover")}/> : null;
   return <NodePaymentsProvider activeWallet={section === "wallet" || section === "orders" || page.name === "receipt"} onWallet={() => navigate("wallet")}><div className={`ob-app ${resizing ? "is-resizing" : ""}`} style={{ "--ob-sidebar": `${!mobile && collapsed ? 72 : sidebarWidth}px` } as CSSProperties}>
     <a className="ob-skip" href="#ob-content">Skip to content</a>
     {menu && <button className="ob-menu-scrim" aria-label="Close navigation" onClick={() => setMenu(false)}/>}
@@ -179,6 +181,7 @@ export default function Marketplace() {
           <NavItem icon="pin" active={section === "addresses"} onClick={() => navigate("addresses")}>Addresses</NavItem>
           <NavItem icon="grid" active={section === "store-labels"} onClick={() => navigate("store-labels")}>Store labels</NavItem>
           <NavItem icon="globe" active={section === "home-node"} onClick={() => navigate("home-node")}>Home node</NavItem>
+          <NavItem icon="bolt" active={section === "lightning"} onClick={() => navigate("lightning")}>Lightning</NavItem>
         </nav>
         <div className="ob-node" title={loading ? "Connecting to your node" : loadError ? "Your node is offline" : "Your node is connected"}><span className={`ob-status-dot ${loadError ? "is-offline" : loading ? "is-loading" : ""}`}/><div><strong>{loading ? "Connecting to your node" : loadError ? "Your node is offline" : "Your node is connected"}</strong></div></div>
         <BuildLine build={build} onCopied={setToast}/>
@@ -224,6 +227,7 @@ function ProductDetail({ listing, rates, currency, saved, onSave, onBack, onBuy,
 }
 export function Payment({ receipt }: { receipt: BuyerOrder | import("../catalog").SellerOrder }) {
   const id = "id" in receipt ? receipt.id : receipt.orderId;
+  if (receipt.payment?.ln) return <LightningOrderPayment key={id} id={id} initial={receipt} invoice={receipt.payment.ln}/>;
   return <OrderPayment key={id} id={id} initial={receipt}/>;
 }
 function Orders({ rates, currency, onBrowse }: { rates: RateTable; currency: CurrencyCode; onBrowse: () => void }) {

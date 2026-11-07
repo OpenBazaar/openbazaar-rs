@@ -166,6 +166,7 @@ fn route(node: &Node, request: &Request<'_>, client: Client, origin: Option<&str
     match (method, path) {
         ("GET", "/catalog") | ("GET", "/") => crate::xmr::catalog_response(node, origin),
         (_, path) if path.starts_with("/xmr/") => crate::xmr::response(node, client, head, method, path, body, origin),
+        (_, path) if path.starts_with("/ln/") => crate::lightning::response(node, client, head, method, path, body, origin),
         ("POST", "/pair") => pairing::response(node, body, origin),
         ("GET", "/rates") => json_body("200 OK", &node.rates_value(), origin),
         ("GET", "/addresses") => addresses_list(node, client, head, origin),

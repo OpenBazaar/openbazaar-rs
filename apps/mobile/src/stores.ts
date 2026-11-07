@@ -64,7 +64,7 @@ export function parseStorePage(value: unknown, key: string): StorePage {
     const moderator = item && typeof item === "object" ? (item as Record<string, unknown>) : {};
     if (typeof moderator.id === "string" && typeof moderator.name === "string") names.set(moderator.id, moderator.name);
   }
-  const { listings, rejected } = verifiedListings(body.listings, new Set([key]), new Set(summary.acceptsXmr ? [key] : []));
+  const { listings, rejected } = verifiedListings(body.listings, new Set([key]), new Set(summary.acceptsXmr ? [key] : []), new Set(summary.acceptsLightning ? [key] : []));
   return {
     store: {
       ...summary,

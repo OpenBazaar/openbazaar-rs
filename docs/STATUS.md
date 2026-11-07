@@ -18,6 +18,7 @@ Last checked against `main` at `b1eb18b` (escrow, payments, and transport code u
 | `sec-escrow-durable` | Durable escrow on the node: sealed sessions, ruling store, coin locks, outbox with retry, vendor disputes, CPFP bumps, presigned fee from the chain source, M3 fee on the claim, M6 limits, moderator funding check on compact filters; [review packet](escrow-review-packet.md) |
 | `home-node` | Home node: remote management over an Arti onion service with restricted discovery, words/QR pairing with an emoji check and approval on the node, per-device keys and signed replay-protected requests, revocation with address rotation, encrypted LAN channel and setup page, delta sync and batches, opt-in content-free push, desktop client and home mode, systemd/launchd/Docker packaging and release builds; [home-node.md](home-node.md) |
 | `sec-identity-letters` | PR #9: seed-derived store keys, store record v3 with a mailbox key, onion, moderators, profile and the signed Monero opt-in, signed letters with replay and sender-pin checks, padded letters and replies, client-side BIP-340 verification, a location/contact text validator, real fixture stores, `/stores` and `/media` |
+| `lightning` | Lightning for direct pay only: embedded LDK node in `crates/lightning`, LSPS2 just-in-time channels from an LSP the operator names, per-order BOLT 11 invoices, keys from the seed, sealed state, wallet-lock gating, store opt-in in the rail-flags byte, seller settings and checkout in the web shop; [lightning.md](lightning.md) |
 
 ## Mechanisms
 
@@ -87,7 +88,7 @@ Labels: **tested** = code on main with automated tests; **demo** = code runs, bu
 | Public Esplora | tested | Never by default on mainnet. `--public-fallback` (default on testnet4 only) asks mempool.space/blockstream.info while no filter peer has answered for 2 minutes. With `--proxy`, each Esplora connection uses a fresh SOCKS username, so Tor gives it its own circuit. `GET /network` reports `chainBackend` (`backend`, `privacy`, `reveals`, `peers`, `scannedHeight`, `syncing`, `fallback`, `fallbackActive`) and `publicChainServer`. |
 | Pay from the node | tested | Mainnet needs `--network mainnet` and `"confirm": true`. |
 | Coin selection avoiding shared ancestry across one checkout | future | Own unconfirmed change is spendable, so consecutive payments can chain. |
-| BOLT 12 offer | encoding only | No Lightning node answers; issuer key is the store key. |
+| BOLT 12 offer | encoding only | No Lightning node answers; issuer key is the store key. Lightning direct pay uses per-order BOLT 11 invoices instead (below). |
 | BIP 352 code | encoding only | No scanning. |
 | Payjoin v2 | library only | Checkout does not start a session. |
 | Chain queries over Tor | demo | `--proxy` also carries filter peer connections and broadcasts through SOCKS5 (P2P v1 only; peers see a Tor exit). No Arti, no onion peers. Without `--proxy`, filter peers see the IP address and which whole blocks it fetches, not which scripts it follows. |
@@ -108,6 +109,21 @@ Labels: **tested** = code on main with automated tests; **demo** = code runs, bu
 | Chain access | tested (mocked) | `--xmr-daemon URL[,URL]`, no default. Loopback or LAN = own monerod, direct; `.onion` needs `--proxy`; any other remote node needs `--proxy` on mainnet. Per-connection SOCKS username (own circuit), no redirects, genesis check, the broadcast goes to a different node when more than one is listed. Only monerod's block, output, fee, and broadcast routes are allowed; light-wallet routes are refused in the transport. `GET /network` `xmrBackend` reports `backend`, `privacy`, `reveals`. Testnet4 nodes use stagenet. |
 | Spend detection | tested | Only spends made by this node: without the spend key the receive tier cannot compute key images. Restoring a seed elsewhere and spending there leaves this balance too high. |
 | Remote sellers | specified | Order status comes from the seller wallet on this node, as with the fixture sellers. |
+
+### Lightning (direct pay only)
+
+| Mechanism | Status | Notes |
+|---|---|---|
+| Node | tested | `crates/lightning`: `ldk-node` 0.7.1 (vendored for a wider `rusqlite` range) behind a `LightningRail` trait, with a mock and a regtest harness. Off unless `--lightning`. [lightning.md](lightning.md) |
+| Keys and state | tested | `m/1984'/c'/6'/0'`, two HMAC-SHA512 labels for the LDK seed and the state key. LDK records sealed with ChaCha20-Poly1305 in `wallets/node/lightning/sealed`; the secret in `ln-keys.obv` (receive tier). |
+| Store opt-in | tested | Bit 1 of the rail-flags byte in store record v3. `PUT /ln/stores` signs the record again; the first opt-in answers `409` with the LSP notice until acknowledged. |
+| Per-order invoice, status | tested | BOLT 11, 1 hour, fresh hash. Paid on settlement with `receivedMsat` and `lspFeeMsat`; works while locked. |
+| LSP (LSPS2 just-in-time channels) | tested | Regtest with real LDK nodes; on Mutinynet the public C= LSP issued JIT invoices through the node and the UI. No completed live payment: the Mutinynet faucet needs a GitHub login. `--lsp`, `--lsp-token`, `--no-lsp`; fee cap 5 % or 10,000 sats. No OpenBazaar LSP; no mainnet default. |
+| Pay from the node | tested | Quote, spend ticket bound to the order, hash, amount, and fee cap, then pay (202). Mainnet needs `"confirm": true`. Channel open, close, and sweep need the passphrase. Invoices this node issued are refused. |
+| Networks | partly | Test mode runs on Mutinynet signet (no public testnet4 LSP); testnet4 and regtest need `--lsp` or `--no-lsp`. Mainnet needs `--ln-chain` and an LSP choice; not tested live. |
+| Escrow | refused | `"rail": "ln"` with escrow is refused. |
+| Tor | future | `ldk-node` has no SOCKS support; peers, the LSP, the chain server, and the gossip server see the IP address. |
+| Remote sellers | specified | Invoices come from a seller wallet on this node, as for Monero. |
 
 ### Escrow
 

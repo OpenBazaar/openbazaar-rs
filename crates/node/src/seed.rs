@@ -12,6 +12,7 @@
 //! | store mailbox | `m/1984'/coin'/3'/0'` (X25519, in the signed store record) |
 //! | letter root   | `m/1984'/coin'/4'/0'` (hashed with a conversation id into one signing key per order, escrow, or dispute) |
 //! | Monero        | `m/1984'/coin'/5'/0'` (secret for `openbazaar_xmr::SpendKey`) |
+//! | Lightning     | `m/1984'/coin'/6'/0'` (secret for `openbazaar_lightning::keys`: LDK entropy and the state key) |
 //! | BIP 352 scan  | `m/352'/coin'/0'/1'/0`       |
 //! | BIP 352 spend | `m/352'/coin'/0'/0'/0`       |
 //!
@@ -91,6 +92,11 @@ impl Seed {
         zeroize::Zeroizing::new(self.derive(&format!("m/1984'/{}'/5'/0'", self.network.coin_type())).secret_bytes())
     }
 
+    /// The secret the LDK node's keys and its state key come from (see `openbazaar_lightning::keys`).
+    pub(crate) fn lightning_secret(&self) -> zeroize::Zeroizing<[u8; 32]> {
+        zeroize::Zeroizing::new(self.derive(&format!("m/1984'/{}'/6'/0'", self.network.coin_type())).secret_bytes())
+    }
+
     /// The X25519 secret of the mailbox key published in this node's store
     /// record. Its own path: never the store signing scalar.
     pub(crate) fn store_mailbox_secret(&self) -> [u8; 32] {
@@ -142,6 +148,7 @@ mod tests {
                 seed.scan_key(),
                 seed.silent_spend_key(),
                 SecretKey::from_slice(&seed.monero_secret()[..]).unwrap(),
+                SecretKey::from_slice(&seed.lightning_secret()[..]).unwrap(),
             ]
         };
         let mut all = roles(&test);

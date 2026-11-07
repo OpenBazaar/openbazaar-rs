@@ -3621,3 +3621,9 @@ svg {
 .ob-sas small { color: var(--ob-muted); font-size: 12px; }
 .ob-pair-words { display: grid; grid-template-columns: repeat(4, auto); gap: 6px 16px; margin: 0; padding-left: 20px; font: 500 14px ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--ob-ink); }
 @media(max-width:719px) { .ob-pairing-offer { flex-direction: column; align-items: center; } .ob-home-gate-card { padding: 24px; } }
+
+/* Lightning settings: the channel form and who sees what. */
+.ob-ln-open { display: grid; grid-template-columns: minmax(0,1fr) 140px auto; gap: 12px; align-items: end; border-top: 1px solid var(--ob-line); padding-top: 19px; margin-top: 4px; }
+.ob-ln-reveals { margin: 0 0 12px; padding-left: 20px; display: grid; gap: 6px; font-size: 14px; line-height: 1.6; color: var(--ob-secondary); }
+.ob-settings-card .ob-spend-terms code { word-break: break-all; }
+@media(max-width:719px) { .ob-ln-open { grid-template-columns: 1fr; } }

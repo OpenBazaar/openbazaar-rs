@@ -31,6 +31,8 @@ export type StoreDetails = {
   createdOn: number;
   /** The store takes Monero direct pay. */
   acceptsXmr: boolean;
+  /** The store takes Lightning direct pay. */
+  acceptsLightning: boolean;
 };
 
 export type StoreRecord = {
@@ -192,10 +194,12 @@ function readStoreDetails(reader: Reader): StoreDetails {
   const processingTime = reader.str();
   const shipsTo = Array.from({ length: reader.u8() }, () => new TextDecoder().decode(reader.take(2)));
   const createdOn = reader.u32();
-  const xmr = reader.u8();
-  if (xmr > 1) throw new Error("flag");
-  const acceptsXmr = xmr === 1;
-  return { mailboxKey, onion: onion || null, moderators, tagline, about, avatar, banner, shippingPolicy, returnsPolicy, processingTime, shipsTo, createdOn, acceptsXmr };
+  // Payment rails: bit 0 Monero, bit 1 Lightning.
+  const rails = reader.u8();
+  if (rails > 3) throw new Error("flag");
+  const acceptsXmr = (rails & 1) === 1;
+  const acceptsLightning = (rails & 2) === 2;
+  return { mailboxKey, onion: onion || null, moderators, tagline, about, avatar, banner, shippingPolicy, returnsPolicy, processingTime, shipsTo, createdOn, acceptsXmr, acceptsLightning };
 }
 
 /// A store record (versions 1 to 3) whose signature checks against its own key.
@@ -263,6 +267,8 @@ export type StoreSummary = {
   contentRating: ContentRating;
   /** From the signed record: the store takes Monero direct pay. */
   acceptsXmr: boolean;
+  /** From the signed record: the store takes Lightning direct pay. */
+  acceptsLightning: boolean;
   listingCount: number;
   own: boolean;
   version: number;
@@ -286,6 +292,7 @@ export function verifiedStore(value: unknown): StoreSummary | null {
     avatar: record.details?.avatar ?? null,
     contentRating: record.contentRating,
     acceptsXmr: record.details?.acceptsXmr ?? false,
+    acceptsLightning: record.details?.acceptsLightning ?? false,
     listingCount: typeof item.listingCount === "number" ? item.listingCount : 0,
     own: item.own === true,
     version: record.version,
@@ -298,11 +305,13 @@ export function verifiedStore(value: unknown): StoreSummary | null {
 /// `acceptsModerator` is the node's check against its moderator, and only
 /// stands if the signed record says the listing takes escrow. `acceptsXmr` is
 /// the node's (Monero is on) and only stands if the store is in `xmrStores`,
-/// the stores whose signed record takes Monero.
+/// the stores whose signed record takes Monero. `acceptsLightning` likewise
+/// with `lnStores`.
 export function verifiedListing(
   value: unknown,
   storeKeys: ReadonlySet<string>,
   xmrStores: ReadonlySet<string> = new Set(),
+  lnStores: ReadonlySet<string> = new Set(),
 ): ListingHeader | null {
   const item = recordOf(value);
   const record = item ? verifyListingRecord(item.record) : null;
@@ -318,6 +327,7 @@ export function verifiedListing(
     kind: record.kind,
     acceptsModerator: item.acceptsModerator === true && record.moderated,
     acceptsXmr: item.acceptsXmr === true && xmrStores.has(record.storeId),
+    acceptsLightning: item.acceptsLightning === true && lnStores.has(record.storeId),
     description: description || undefined,
     seller: record.seller,
     stock: record.stock,
@@ -335,8 +345,9 @@ export function verifiedListings(
   values: unknown,
   storeKeys: ReadonlySet<string>,
   xmrStores: ReadonlySet<string> = new Set(),
+  lnStores: ReadonlySet<string> = new Set(),
 ): { listings: ListingHeader[]; rejected: number } {
   const items = Array.isArray(values) ? values : [];
-  const listings = items.map((item) => verifiedListing(item, storeKeys, xmrStores)).filter((item): item is ListingHeader => item !== null);
+  const listings = items.map((item) => verifiedListing(item, storeKeys, xmrStores, lnStores)).filter((item): item is ListingHeader => item !== null);
   return { listings, rejected: items.length - listings.length };
 }

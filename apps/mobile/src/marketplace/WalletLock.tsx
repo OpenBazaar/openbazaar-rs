@@ -46,7 +46,7 @@ export function useLockState() {
 }
 export type LockResource = ReturnType<typeof useLockState>
 
-function Passphrase({
+export function Passphrase({
   label,
   value,
   onChange,
@@ -73,7 +73,7 @@ function Passphrase({
   )
 }
 
-function useSubmit() {
+export function useSubmit() {
   const [busy, setBusy] = useState(false),
     [error, setError] = useState('')
   async function run(task: () => Promise<void>, fallback: string) {
@@ -91,7 +91,7 @@ function useSubmit() {
   return { busy, error, run }
 }
 
-function FormError({ message }: { message: string }) {
+export function FormError({ message }: { message: string }) {
   return message ? (
     <p className='ob-form-error' role='alert'>
       {message}
@@ -400,7 +400,7 @@ export function WalletLockPanel({ lock }: { lock: LockResource }) {
   )
 }
 
-function Dialog({ label, onCancel, children }: { label: string; onCancel: () => void; children: ReactNode }) {
+export function Dialog({ label, onCancel, children }: { label: string; onCancel: () => void; children: ReactNode }) {
   const dialog = useRef<HTMLDialogElement>(null)
   useEffect(() => {
     const previous = document.activeElement as HTMLElement | null

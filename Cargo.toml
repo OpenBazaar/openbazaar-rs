@@ -7,7 +7,9 @@ members = [
     "crates/tormail",
     "crates/escrow",
     "crates/xmr",
+    "crates/lightning",
 ]
+exclude = ["vendor"]
 
 [workspace.package]
 edition = "2021"
@@ -25,3 +27,7 @@ opt-level = 3
 # Monero tests sign real CLSAG and Bulletproofs+ transactions.
 [profile.dev.package.curve25519-dalek]
 opt-level = 3
+
+# ldk-node 0.7.1 pins rusqlite 0.31; Arti needs 0.36 or later. See vendor/ldk-node/Cargo.toml.
+[patch.crates-io]
+ldk-node = { path = "vendor/ldk-node" }

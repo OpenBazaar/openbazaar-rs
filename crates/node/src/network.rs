@@ -131,6 +131,8 @@ pub struct ServeOptions {
     pub live_rates: bool,
     /// `--xmr-daemon URL`: monerod RPC for Monero direct pay. Empty turns Monero off.
     pub xmr_daemons: Vec<String>,
+    /// `--lightning` and its flags; see `lightning/options.rs`.
+    pub lightning: crate::LnFlags,
 }
 
 impl ServeOptions {
@@ -155,6 +157,7 @@ impl ServeOptions {
         let mut proxy = None;
         let mut live_rates = true;
         let mut xmr_daemons: Vec<String> = Vec::new();
+        let mut lightning = crate::LnFlags::default();
         let mut iter = args.iter();
         while let Some(arg) = iter.next() {
             let mut value = |name: &str| {
@@ -162,6 +165,10 @@ impl ServeOptions {
                     .cloned()
                     .ok_or_else(|| format!("{name} needs a value"))
             };
+            if let Some(taken) = lightning.take(arg, &mut value) {
+                taken?;
+                continue;
+            }
             match arg.as_str() {
                 "--network" => network = Some(NetworkMode::from_flag(&value("--network")?)?),
                 "--data-dir" => data_root = PathBuf::from(value("--data-dir")?),
@@ -248,6 +255,7 @@ impl ServeOptions {
         if !xmr_daemons.is_empty() {
             openbazaar_xmr::DaemonConfig::new(network.monero(), &xmr_daemons, proxy.clone())?;
         }
+        lightning.plan(network)?;
         Ok(Self {
             port,
             network,
@@ -266,6 +274,7 @@ impl ServeOptions {
             proxy,
             live_rates,
             xmr_daemons,
+            lightning,
         })
     }
 
