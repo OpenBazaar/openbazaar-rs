@@ -16,7 +16,7 @@
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use bitcoin::hashes::{sha256, Hash, HashEngine};
@@ -53,27 +53,44 @@ pub(crate) struct HttpTransport;
 impl Transport for HttpTransport {
     fn deliver(&self, base_url: &str, letter: &[u8]) -> Result<(), Refusal> {
         check_loopback(base_url).map_err(Refusal::Refused)?;
-        UrlTransport.deliver(&format!("{}/escrow/mail", base_url.trim_end_matches('/')), letter)
+        UrlTransport::loopback().deliver(&format!("{}/escrow/mail", base_url.trim_end_matches('/')), letter)
     }
 }
 
-/// `POST {url}` over loopback HTTP, the URL naming the route: order mail.
-pub(crate) struct UrlTransport;
+/// `POST {url}`, the URL naming the route: order mail. Loopback stays on this
+/// machine. An onion is one request through [`crate::peer_http`]. A redirect
+/// is not delivery and is not followed.
+pub(crate) struct UrlTransport {
+    peers: Arc<crate::peer_http::PeerLink>,
+}
+
+impl UrlTransport {
+    pub(crate) fn new(peers: Arc<crate::peer_http::PeerLink>) -> Self {
+        Self { peers }
+    }
+
+    pub(crate) fn loopback() -> Self {
+        Self::new(Arc::new(crate::peer_http::PeerLink::default()))
+    }
+}
 
 impl Transport for UrlTransport {
     fn deliver(&self, url: &str, letter: &[u8]) -> Result<(), Refusal> {
-        let request = crate::escrow_mail::loopback_request("POST", url, DELIVERY_TIMEOUT).map_err(Refusal::Refused)?;
-        match request
-            .set("Content-Type", "application/octet-stream")
-            .send_bytes(letter)
-        {
-            // 3xx is not delivery. Following it would open a second connection
-            // and show this machine's IP to whatever host the peer named.
-            Ok(response) if (200..300).contains(&response.status()) => Ok(()),
-            Ok(response) => Err(Refusal::Retry(format!("{url}: {}", response.status()))),
-            Err(ureq::Error::Status(code, _)) if (400..500).contains(&code) && code != 429 => {
-                Err(Refusal::Refused(format!("{url}: {code}")))
+        match crate::peer_http::call(
+            &self.peers,
+            "POST",
+            url,
+            Some(letter),
+            Some("application/octet-stream"),
+            DELIVERY_TIMEOUT,
+            64 * 1024,
+        ) {
+            Ok(answer) if (200..300).contains(&answer.status) => Ok(()),
+            Ok(answer) if (400..500).contains(&answer.status) && answer.status != 429 => {
+                Err(Refusal::Refused(format!("{url}: {}", answer.status)))
             }
+            Ok(answer) => Err(Refusal::Retry(format!("{url}: {}", answer.status))),
+            Err(err) if err.contains("loopback") => Err(Refusal::Refused(err)),
             Err(err) => Err(Refusal::Retry(format!("{url}: {err}"))),
         }
     }
@@ -401,7 +418,9 @@ mod tests {
             }
         });
 
-        let err = UrlTransport.deliver(&format!("http://127.0.0.1:{seller_port}/mail"), b"sealed-letter").unwrap_err();
+        let err = UrlTransport::loopback()
+            .deliver(&format!("http://127.0.0.1:{seller_port}/mail"), b"sealed-letter")
+            .unwrap_err();
         thread::sleep(Duration::from_millis(200));
         assert_eq!(hits.load(Ordering::SeqCst), 0, "the redirect was followed: {err:?}");
         let outside = crate::escrow_mail::loopback_request("GET", "http://203.0.113.9/public/store", Duration::from_millis(200)).unwrap_err();

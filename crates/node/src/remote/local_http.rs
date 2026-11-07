@@ -130,7 +130,7 @@ pub(crate) fn response(
 fn status(node: &Node, this: Option<&str>) -> Value {
     let remote = &node.remote;
     let devices = remote.devices();
-    json!({
+    let mut body = json!({
         "enabled": remote.enabled(),
         "onion": remote.services.onion(),
         "onionState": remote.services.state(),
@@ -142,7 +142,11 @@ fn status(node: &Node, this: Option<&str>) -> Value {
         "webShop": remote.web_dir().is_some(),
         "push": remote.config().push_gateway.is_some(),
         "viaDevice": this,
-    })
+    });
+    if let Some(onion) = remote.services.sale_onion() {
+        body["saleOnion"] = json!(onion);
+    }
+    body
 }
 
 fn devices(node: &Node, this: Option<&str>) -> Value {

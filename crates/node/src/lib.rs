@@ -1,10 +1,12 @@
 //! Local shop node: signed fixture catalog, sealed orders, checkout rails,
 //! a node wallet, and a chain watcher.
 //!
-//! The HTTP server is loopback-only. It does not dial Tor. It broadcasts a
-//! transaction only when `POST /orders/{id}/pay` asks it to, with a spend
-//! ticket the user confirmed, while the wallet is unlocked
-//! ([`wallet_lock`], [`spend_tickets`]).
+//! The HTTP server listens on loopback. Catalog, order mail, and reviews for
+//! a node on another machine go through this process's Tor client to that
+//! node's sale onion (`--remote`). A redirect off that onion is not followed.
+//! The server broadcasts a transaction only when `POST /orders/{id}/pay`
+//! asks it to, with a spend ticket the user confirmed, while the wallet is
+//! unlocked ([`wallet_lock`], [`spend_tickets`]).
 
 #![forbid(unsafe_code)]
 
@@ -54,6 +56,7 @@ mod own_listings;
 mod own_store;
 mod pairing;
 mod pay_bump;
+mod peer_http;
 mod pay_order;
 mod public_http;
 mod rates;
@@ -61,6 +64,7 @@ mod remote;
 mod remote_orders;
 mod replicas;
 mod lock_http;
+mod sale_gate;
 mod sale_terms;
 mod sales;
 mod sales_http;
@@ -119,7 +123,7 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::Duration;
 
 use rand::rngs::StdRng;
@@ -268,6 +272,8 @@ pub struct Node {
     pub(crate) reviews: Mutex<reviews::ReviewPool>,
     /// Order letters and replies on their way to other nodes.
     pub(crate) order_outbox: escrow_outbox::Outbox,
+    /// Loopback or Tor, for catalog, order mail, and reviews.
+    pub(crate) peers: Arc<peer_http::PeerLink>,
     pub(crate) data_dir: PathBuf,
     pub(crate) media: media::Media,
     pub(crate) letter_guard: letter_auth::LetterGuard,
@@ -381,6 +387,7 @@ impl Node {
         let replicas = replicas::Replicas::open(&dir, vault.clone())?;
         let demo_sellers: Vec<String> = store_wallets.keys().cloned().collect();
         Self::serve_replicas_at_boot(&replicas, &mut catalog, &own_store, &demo_sellers);
+        let peers = Arc::new(peer_http::PeerLink::default());
         let lock = wallet_lock::WalletLock::open(&dir, vault.clone(), &local.vault)?;
         let xmr_stores: Vec<(String, String)> =
             store_wallets.keys().map(|seller| (seller.clone(), format!("store-{}", slug(seller)))).collect();
@@ -401,7 +408,8 @@ impl Node {
             order_terms: Mutex::new(order_terms::TermsLedger::open(&dir, vault.clone())?),
             coupons: Mutex::new(coupons::CouponBook::open(&dir, vault.clone())?),
             reviews: Mutex::new(reviews::ReviewPool::open(&dir, vault.clone())?),
-            order_outbox: order_mail::open_outbox(&dir, vault.clone())?,
+            order_outbox: order_mail::open_outbox(&dir, vault.clone(), Arc::clone(&peers))?,
+            peers,
             data_dir: dir.clone(),
             media: media::Media::open(dir.join("media"), network)?,
             letter_guard: letter_auth::LetterGuard::open(&dir)?,

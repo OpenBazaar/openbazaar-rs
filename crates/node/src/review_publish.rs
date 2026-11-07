@@ -8,9 +8,6 @@
 //! replication round also pulls the pools of followed nodes. The seller
 //! signs at most one reply per review with the store key.
 
-use std::io::Read;
-use std::time::Duration;
-
 use openbazaar_protocol::{Reply, Review, SignedReceipt, SignedReply, SignedReview, StoreId, MAX_REVIEW_TEXT};
 use rand::rngs::StdRng;
 use rand::{RngCore, SeedableRng};
@@ -25,8 +22,8 @@ use crate::Node;
 pub(crate) const PUBLIC_REVIEWS: &str = "/public/reviews";
 /// The longest a signed review waits before it is published.
 pub(crate) const MAX_DELAY_SECS: u64 = 3 * 24 * 3600;
-const TIMEOUT: Duration = Duration::from_secs(5);
-const MAX_BODY: u64 = 4 * 1024 * 1024;
+const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+const MAX_BODY: usize = 4 * 1024 * 1024;
 
 fn reviewable(status: &str) -> bool {
     status == PAID || status == SHIPPED || status == COMPLETED
@@ -171,11 +168,16 @@ impl Node {
             .into_iter()
             .filter(|url| !reached.contains(url))
             .filter(|url| {
-                crate::escrow_mail::loopback_request("POST", &format!("{url}{PUBLIC_REVIEWS}"), TIMEOUT)
-                    .and_then(|request| {
-                        request.set("Content-Type", "application/json").send_string(&body).map_err(|err| err.to_string())
-                    })
-                    .is_ok_and(|response| (200..300).contains(&response.status()))
+                crate::peer_http::call(
+                    &self.peers,
+                    "POST",
+                    &format!("{url}{PUBLIC_REVIEWS}"),
+                    Some(body.as_bytes()),
+                    Some("application/json"),
+                    TIMEOUT,
+                    MAX_BODY,
+                )
+                .is_ok_and(|answer| (200..300).contains(&answer.status))
             })
             .collect();
         if sent.is_empty() {
@@ -193,15 +195,10 @@ impl Node {
 
     /// Pull the review pool of the node at `url`. Returns how many records were new.
     pub(crate) fn pull_reviews(&self, url: &str) -> usize {
-        let fetched = crate::escrow_mail::loopback_request("GET", &format!("{url}{PUBLIC_REVIEWS}"), TIMEOUT)
+        let fetched = crate::peer_http::call(&self.peers, "GET", &format!("{url}{PUBLIC_REVIEWS}"), None, None, TIMEOUT, MAX_BODY)
             .ok()
-            .and_then(|request| request.call().ok())
-            .filter(|response| (200..300).contains(&response.status()))
-            .and_then(|response| {
-                let mut body = Vec::new();
-                response.into_reader().take(MAX_BODY).read_to_end(&mut body).ok()?;
-                serde_json::from_slice::<Value>(&body).ok()
-            });
+            .filter(|answer| (200..300).contains(&answer.status))
+            .and_then(|answer| serde_json::from_slice::<Value>(&answer.body).ok());
         fetched.map_or(0, |value| self.take_reviews(&value))
     }
 
