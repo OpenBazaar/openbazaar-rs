@@ -215,13 +215,12 @@ impl ServeOptions {
                     let (seller, url) = text
                         .split_once('=')
                         .ok_or_else(|| "--escrow-vendor needs SELLER=URL".to_string())?;
-                    crate::escrow_mail::check_loopback(url)?;
-                    escrow_vendors.push((seller.trim().to_string(), url.trim().to_string()));
+                    let url = crate::peer_http::sale_base(url)?;
+                    escrow_vendors.push((seller.trim().to_string(), url));
                 }
                 "--moderator" => {
                     let url = value("--moderator")?;
-                    crate::escrow_mail::check_loopback(&url)?;
-                    moderator_url = Some(url);
+                    moderator_url = Some(crate::peer_http::sale_base(&url)?);
                 }
                 "--moderate" => moderate = true,
                 "--vault" => {

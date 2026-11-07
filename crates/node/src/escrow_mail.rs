@@ -2,7 +2,7 @@
 //!
 //! Every escrow round is a tormail [`SealedLetter`] sealed to the recipient's
 //! mailbox key, POSTed to the recipient node's `/escrow/mail` on loopback
-//! HTTP, stored in its `escrow-mail/` mailbox, and opened by
+//! HTTP or that node's sale onion, stored in its `escrow-mail/` mailbox, and opened by
 //! [`Node::process_escrow_mail`]. Which of the node's keys opens a letter
 //! decides the role it is handled in: the node's own mail key (buyer), a
 //! seller's order mailbox key (vendor), or the fixture moderator's key.
@@ -249,14 +249,20 @@ pub(crate) struct Escrow {
 }
 
 impl Escrow {
-    pub fn open(config: EscrowConfig, inbox: Mailbox, dir: &Path, vault: &Vault) -> Result<Self, crate::Error> {
+    pub fn open(
+        config: EscrowConfig,
+        inbox: Mailbox,
+        dir: &Path,
+        vault: &Vault,
+        peers: Arc<crate::peer_http::PeerLink>,
+    ) -> Result<Self, crate::Error> {
         let store = EscrowStore::open(dir, vault.clone())?;
         let vendor = VendorDesk::load(&store);
         let moderator = ModeratorDesk::load(&store);
         Ok(Self {
             config,
             inbox,
-            outbox: Outbox::open(dir, vault.clone(), Box::new(HttpTransport))?,
+            outbox: Outbox::open(dir, vault.clone(), Box::new(HttpTransport::new(peers)))?,
             store,
             locks: OrderLocks::default(),
             coins: CoinLocks::open(dir, vault.clone())?,
@@ -275,14 +281,15 @@ impl Node {
     /// now. [`Sent::Queued`] means the outbox keeps trying; an error means
     /// the peer refused it or it could not be queued.
     pub(crate) fn send_mail(&self, url: &str, to: &StoreKey, mail: &Mail) -> Result<Sent, String> {
-        if self.own_url() == Some(url.trim_end_matches('/')) {
+        let url = crate::peer_http::sale_base(url)?;
+        if self.own_url() == Some(url.as_str()) || self.sale_reply_url().as_deref() == Some(url.as_str()) {
             return Err("an escrow peer must be another node, not this one".into());
         }
         let from = self.escrow_letter_key(mail.kind, &mail.escrow)?;
         let letter = seal_message(&mail.encode(), to, &from).map_err(|err| err.to_string())?;
         self.escrow
             .outbox
-            .send(mail_key(url, mail), url, &letter.to_bytes())
+            .send(mail_key(&url, mail), &url, &letter.to_bytes())
     }
 
     /// Retry queued escrow letters that are due (all of them with `force`).
@@ -298,9 +305,10 @@ impl Node {
             .map(|url| url.trim_end_matches('/'))
     }
 
-    /// The URL peers reply to. Escrow needs one.
-    pub(crate) fn reply_url(&self) -> Result<&str, String> {
-        self.own_url().ok_or_else(|| {
+    /// The URL peers reply to. The sale onion when `--remote` has published
+    /// one, otherwise this node's loopback mailbox.
+    pub(crate) fn reply_url(&self) -> Result<String, String> {
+        self.sale_reply_url().ok_or_else(|| {
             "This node has no escrow mailbox URL, so peers cannot reply.".to_string()
         })
     }

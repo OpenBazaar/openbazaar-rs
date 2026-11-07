@@ -27,7 +27,7 @@ use openbazaar_escrow::{
 use serde_json::{json, Value};
 
 use crate::escrow_buyer::read_attempt;
-use crate::escrow_mail::{check_loopback, hex, id_hex, key_bytes, EscrowId, Kind, Mail};
+use crate::escrow_mail::{hex, id_hex, key_bytes, EscrowId, Kind, Mail};
 use crate::network::NetworkMode;
 use crate::Node;
 
@@ -156,9 +156,8 @@ impl Node {
             .map_err(|_| "bad buyer key")?;
         let buyer_payout = ScriptBuf::from_bytes(fields[1].clone());
         let buyer_mail = key_bytes(&fields[2])?;
-        let buyer_url = String::from_utf8(fields[3].clone()).map_err(failed)?;
-        check_loopback(&buyer_url)?;
-        if self.own_url() == Some(buyer_url.trim_end_matches('/')) {
+        let buyer_url = crate::peer_http::sale_base(&String::from_utf8(fields[3].clone()).map_err(failed)?)?;
+        if self.own_url() == Some(buyer_url.as_str()) || self.sale_reply_url().as_deref() == Some(buyer_url.as_str()) {
             return Err("this node will not sell to itself".into());
         }
         let funding: [u8; 8] = fields[4]

@@ -5,7 +5,7 @@
 //! as a restricted onion service that only paired devices can find
 //! ([`services`]), and pipes it to a loopback [`gateway`]. The same Tor
 //! client publishes a separate public onion that forwards only catalog,
-//! order mail, and review routes. A device pairs
+//! order mail, reviews, and escrow mail. A device pairs
 //! with a one-time code, its request is approved on the node after the owner
 //! compares emoji ([`pairing`]), and it is registered with its own keys
 //! ([`devices`]); from then on it signs every request ([`auth`]). With
@@ -310,7 +310,7 @@ pub(crate) fn run(node: &Node, main_port: u16, stop: &AtomicBool) {
                             remote.services.open_sale(&tor, addr);
                             match remote.services.sale_onion() {
                                 Some(onion) => eprintln!(
-                                    "ob-node: store at http://{onion}/ (Tor only; catalog, order mail, and reviews)"
+                                    "ob-node: store at http://{onion}/ (Tor only; catalog, order mail, reviews, and escrow mail)"
                                 ),
                                 None => eprintln!("ob-node: store onion has no address yet"),
                             }

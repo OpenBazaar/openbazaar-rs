@@ -1,9 +1,10 @@
 //! Local shop node: signed fixture catalog, sealed orders, checkout rails,
 //! a node wallet, and a chain watcher.
 //!
-//! The HTTP server listens on loopback. Catalog, order mail, and reviews for
-//! a node on another machine go through this process's Tor client to that
-//! node's sale onion (`--remote`). A redirect off that onion is not followed.
+//! The HTTP server listens on loopback. Catalog, order mail, reviews, and
+//! escrow mail for a node on another machine go through this process's Tor
+//! client to that node's sale onion (`--remote`). A redirect off that onion
+//! is not followed.
 //! The server broadcasts a transaction only when `POST /orders/{id}/pay`
 //! asks it to, with a spend ticket the user confirmed, while the wallet is
 //! unlocked ([`wallet_lock`], [`spend_tickets`]).
@@ -388,6 +389,7 @@ impl Node {
         let demo_sellers: Vec<String> = store_wallets.keys().cloned().collect();
         Self::serve_replicas_at_boot(&replicas, &mut catalog, &own_store, &demo_sellers);
         let peers = Arc::new(peer_http::PeerLink::default());
+        let escrow_peers = Arc::clone(&peers);
         let lock = wallet_lock::WalletLock::open(&dir, vault.clone(), &local.vault)?;
         let xmr_stores: Vec<(String, String)> =
             store_wallets.keys().map(|seller| (seller.clone(), format!("store-{}", slug(seller)))).collect();
@@ -415,7 +417,7 @@ impl Node {
             letter_guard: letter_auth::LetterGuard::open(&dir)?,
             vendor_labels: Mutex::new(vendor_labels),
             mailbox,
-            escrow: escrow_mail::Escrow::open(config.escrow, escrow_inbox, &dir, &vault)?,
+            escrow: escrow_mail::Escrow::open(config.escrow, escrow_inbox, &dir, &vault, escrow_peers)?,
             pairing_token,
             pairing_fresh,
             pairing_codes: pairing::PairingCodes::new(local.pair_codes),
