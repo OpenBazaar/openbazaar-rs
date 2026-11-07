@@ -131,7 +131,7 @@ fn rulings_are_signed_and_equivocation_is_provable() {
 }
 
 #[test]
-fn moderator_fee_appears_only_in_dispute_outcomes_and_is_signed() {
+fn m3_claim_and_both_dispute_outcomes_pay_the_moderator_fee() {
     let (mut buyer, vendor) = funded();
     let moderator_script = buyer.terms().moderator.payout.clone();
     let pays_moderator = |tx: &bitcoin::Transaction| {
@@ -141,18 +141,34 @@ fn moderator_fee_appears_only_in_dispute_outcomes_and_is_signed() {
     };
 
     assert!(!pays_moderator(buyer.refund().transaction()));
-    assert!(!pays_moderator(vendor.claim().transaction()));
     let release = release(&mut buyer.duplicate(), &mut vendor.duplicate());
     assert!(!pays_moderator(&release));
     assert_eq!(release.output.len(), 1);
     assert_eq!(release.output[0].value, FUNDING - NETWORK_FEE);
 
-    for favored in [Party::Buyer, Party::Vendor] {
-        let outcome = buyer.dispute_outcome(favored);
+    let claim = vendor.claim().transaction();
+    for (outcome, favored) in [
+        (buyer.dispute_outcome(Party::Buyer), Party::Buyer),
+        (buyer.dispute_outcome(Party::Vendor), Party::Vendor),
+        (claim, Party::Vendor),
+    ] {
         assert_eq!(outcome.output.len(), 3);
+        assert_eq!(&outcome.output[0].script_pubkey, buyer.terms().payout(favored));
+        assert_eq!(
+            outcome.output[0].value,
+            FUNDING - NETWORK_FEE - MODERATOR_FEE - ANCHOR_VALUE
+        );
         assert_eq!(outcome.output[1].script_pubkey, moderator_script);
         assert_eq!(outcome.output[1].value, MODERATOR_FEE);
     }
+    // A vendor who won a ruling gets the same from the claim as from the
+    // outcome, so skipping the ruling saves it nothing.
+    assert_eq!(
+        claim.output,
+        buyer.dispute_outcome(Party::Vendor).output,
+        "claim and vendor-wins differ only in nLockTime"
+    );
+    assert_ne!(claim.lock_time, buyer.dispute_outcome(Party::Vendor).lock_time);
 
     let letter = buyer.dispute_letter(b"x").unwrap();
     let ruling = rule(&letter, TIP).unwrap();

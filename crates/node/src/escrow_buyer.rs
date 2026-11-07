@@ -13,15 +13,22 @@
 //!
 //! The buyer's per-order key is `m/1984'/coin'/1'/index'` from this node's
 //! seed. The refund is stored in the order record before the funding is
-//! signed. The live [`BuyerEscrow`] (needed to release or dispute) is kept in
-//! memory only, so a restart after funding leaves just the refund.
+//! signed. The live [`BuyerEscrow`] is stored as a snapshot
+//! ([`crate::escrow_store`]) before anything it signs is sent, and is
+//! restored on demand with the per-order key (so only while unlocked).
+//!
+//! Round 1 holds secret nonces, which are never stored. A buyer that
+//! restarts between `Open` and `Reply` opens again from the stored funding
+//! PSBT with fresh nonces and the next attempt number; a reply to an older
+//! attempt is dropped. The PSBT's inputs are locked from `Open` until the
+//! funding is broadcast ([`crate::coin_locks`]).
 
 use std::collections::HashMap;
 use std::sync::MutexGuard;
 
 use bitcoin::consensus::encode::{deserialize_hex, serialize_hex};
 use bitcoin::secp256k1::{PublicKey, Secp256k1};
-use bitcoin::{Address, Amount, Transaction};
+use bitcoin::{Address, Amount, Psbt, Transaction};
 use musig2::PubNonce;
 use openbazaar_escrow::{
     BuyerAwaitingReply, BuyerEscrow, BuyerSession, EscrowTerms, FundingPlan, ModeratorRuling,
@@ -30,23 +37,37 @@ use openbazaar_escrow::{
 use serde_json::{json, Map, Value};
 
 use crate::buyer_orders::BuyerOrder;
+use crate::coin_locks::OPEN_LOCK_TTL;
 use crate::escrow_fixture::{moderator_mail_key, moderator_record, MODERATOR_FEE_SATS};
 use crate::escrow_mail::{hex, id_hex, parse_id, unhex, EscrowId, Kind, Mail};
+use crate::escrow_outbox::{now_secs, Sent};
 use crate::escrow_vendor::offer_digest;
-use crate::instructions::{ESCROW_DEMO_WARNING, ESCROW_MAINNET_REFUSAL, ESCROW_SPEND_FEE_SATS};
+use crate::instructions::{ESCROW_DEMO_WARNING, ESCROW_MAINNET_REFUSAL};
 use crate::network::{address_for, NetworkMode};
 use crate::pay_order::{check_fee, check_terms, psbt_fee, PayError, TERMS_CHANGED};
 use crate::spend_tickets::SpendTerms;
 use crate::watch::{AWAITING_FUNDING, DISPUTED, FUNDED, RELEASED, SETTLED};
 use crate::{Node, OrderError};
 
+mod state;
+
 const MAX_MEMO: usize = 1_000;
 
+/// Round 1 sessions and restored escrows. Only memory; the record and the
+/// snapshot on disk are the truth.
 #[derive(Default)]
 pub(crate) struct BuyerDesk {
     waiting: HashMap<EscrowId, BuyerAwaitingReply>,
     escrows: HashMap<EscrowId, BuyerEscrow>,
-    nonces: HashMap<EscrowId, PubNonce>,
+}
+
+fn attempt_bytes(attempt: u32) -> Vec<u8> {
+    attempt.to_le_bytes().to_vec()
+}
+
+pub(crate) fn read_attempt(bytes: &[u8]) -> Result<u32, String> {
+    let bytes: [u8; 4] = bytes.try_into().map_err(|_| "bad attempt number")?;
+    Ok(u32::from_le_bytes(bytes))
 }
 
 fn text<'a>(escrow: &'a Value, key: &str) -> Result<&'a str, String> {
@@ -120,9 +141,10 @@ impl Node {
     /// address comes later, from the vendor's terms.
     pub(crate) fn escrow_request(&self, total: u64, seller: &str) -> Result<Value, OrderError> {
         self.escrow_ready(seller)?;
-        moderator_record(self.network).map_err(OrderError::Failed)?;
+        let record = moderator_record(self.network).map_err(OrderError::Failed)?;
+        let spend_fee = crate::escrow_fee::presigned_fee(self.chain.fee_rate().ok(), &record);
         let funding = total
-            .checked_add(ESCROW_SPEND_FEE_SATS)
+            .checked_add(spend_fee)
             .ok_or(OrderError::Invalid("Enter a quantity of at most 99."))?;
         let (index, payout) = {
             let mut wallet = self.buyer_wallet();
@@ -149,7 +171,7 @@ impl Node {
             "id": id_hex(&id),
             "stage": "requested",
             "fundingSats": funding,
-            "spendFeeSats": ESCROW_SPEND_FEE_SATS,
+            "spendFeeSats": spend_fee,
             "moderatorFeeSats": MODERATOR_FEE_SATS,
             "buyerKeyIndex": index,
             "buyerPayout": payout.to_string(),
@@ -160,17 +182,19 @@ impl Node {
         }))
     }
 
-    /// Send the request for a stored order. On failure the error is kept on
-    /// the order and returned.
+    /// Send the request for a stored order. When it is refused or only
+    /// queued, the reason is kept on the order and returned.
     pub(crate) fn send_escrow_request(&self, order_id: &str) -> Result<(), String> {
-        let result = self.try_send_request(order_id);
-        if let Err(err) = &result {
-            let _ = self.update_escrow(order_id, None, json!({ "error": err }));
-        }
-        result
+        let error = match self.try_send_request(order_id) {
+            Ok(Sent::Delivered) => return Ok(()),
+            Ok(Sent::Queued(err)) => format!("The vendor's node could not be reached yet ({err}). This node keeps trying."),
+            Err(err) => err,
+        };
+        let _ = self.update_escrow(order_id, None, json!({ "error": error }));
+        Err(error)
     }
 
-    fn try_send_request(&self, order_id: &str) -> Result<(), String> {
+    fn try_send_request(&self, order_id: &str) -> Result<Sent, String> {
         let order = self
             .orders()
             .get(order_id)
@@ -193,6 +217,7 @@ impl Node {
                 self.buyer_mail_secret().public_key().as_bytes().to_vec(),
                 self.reply_url()?.as_bytes().to_vec(),
                 number(escrow, "fundingSats")?.to_le_bytes().to_vec(),
+                number(escrow, "spendFeeSats")?.to_le_bytes().to_vec(),
             ],
         );
         self.send_mail(
@@ -243,14 +268,6 @@ impl Node {
             .map(|_| ())
     }
 
-    fn expect_stage(escrow: &Value, stage: &str) -> Result<(), String> {
-        let now = text(escrow, "stage")?;
-        if now != stage {
-            return Err(format!("this escrow is {now}"));
-        }
-        Ok(())
-    }
-
     pub(crate) fn buyer_mail(&self, mail: Mail) -> Result<(), String> {
         let order = self.escrow_order(&mail.escrow)?;
         match mail.kind {
@@ -265,7 +282,10 @@ impl Node {
     /// Check the vendor's terms against what this node asked for, and countersign.
     fn buyer_offer(&self, order: &BuyerOrder, mail: &Mail) -> Result<(), String> {
         let escrow = order.escrow.as_ref().ok_or("that order has no escrow")?;
-        Self::expect_stage(escrow, "requested")?;
+        if text(escrow, "stage")? != "requested" {
+            // A repeated offer after this node already countersigned.
+            return Ok(());
+        }
         let fields = mail.fields(3)?;
         let terms = EscrowTerms::decode(&fields[0]).map_err(failed)?;
         let vendor_signature: [u8; 64] = fields[1]
@@ -293,7 +313,7 @@ impl Node {
         if terms.buyer != PublicKey::from_secret_key(&secp, &secret).serialize()
             || terms.buyer_payout != payout.script_pubkey()
             || terms.funding_value != Amount::from_sat(number(escrow, "fundingSats")?)
-            || terms.network_fee != Amount::from_sat(ESCROW_SPEND_FEE_SATS)
+            || terms.network_fee != Amount::from_sat(number(escrow, "spendFeeSats")?)
             || terms.moderator != ctx.moderator
         {
             return Err("the vendor's terms are not the ones this node asked for".into());
@@ -320,6 +340,7 @@ impl Node {
             Some(AWAITING_FUNDING),
             json!({
                 "stage": "offered",
+                "error": null,
                 "terms": hex(&signed.encode()),
                 "address": address.to_string(),
                 "vendorPayout": vendor_payout.to_string(),
@@ -345,6 +366,8 @@ impl Node {
             return Err(PayError::Conflict(format!("This escrow is {stage}.")));
         }
         let id = escrow_id(&escrow).map_err(PayError::Invalid)?;
+        let lock = self.escrow.locks.get(&id);
+        let _held = lock.lock().unwrap_or_else(|err| err.into_inner());
         let signed = unhex(text(&escrow, "terms").map_err(PayError::Invalid)?)
             .and_then(|bytes| SignedTerms::decode(&bytes).map_err(failed))
             .map_err(PayError::Invalid)?;
@@ -365,27 +388,30 @@ impl Node {
                 .map_err(PayError::Failed)?
                 .secret_bytes()
         };
+        let inputs: Vec<_> = psbt.unsigned_tx.input.iter().map(|input| input.previous_output).collect();
+        let stored_psbt = hex(&psbt.serialize());
         let (waiting, open) =
             BuyerSession::start(signed.clone(), &secret, &ctx, FundingPlan::Psbt(psbt))
                 .map_err(|err| PayError::Failed(err.to_string()))?;
         let outpoint = waiting.funding_outpoint();
+        self.escrow
+            .coins
+            .lock(&order.id, &inputs, Some(now_secs() + OPEN_LOCK_TTL.as_secs()))
+            .map_err(PayError::Failed)?;
         self.buyer_desk().waiting.insert(id, waiting);
+        // Attempts only grow, so a late reply to an aborted open never fits a new one.
+        let attempt = escrow.get("openAttempt").and_then(Value::as_u64).unwrap_or(0) as u32 + 1;
         self.update_escrow(
             &order.id,
             None,
-            json!({ "stage": "opened", "outpoint": outpoint.to_string() }),
+            json!({ "stage": "opened", "outpoint": outpoint.to_string(), "psbt": stored_psbt, "openAttempt": attempt }),
         )
         .map_err(PayError::Failed)?;
-        let mail = Mail::new(Kind::Open, id, vec![signed.encode(), open.to_bytes()]);
+        let mail = Mail::new(Kind::Open, id, vec![signed.encode(), open.to_bytes(), attempt_bytes(attempt)]);
         if let Err(err) = self.send_mail(&vendor, &vendor_key, &mail) {
-            self.buyer_desk().waiting.remove(&id);
-            let _ = self.update_escrow(
-                &order.id,
-                None,
-                json!({ "stage": "offered", "outpoint": null }),
-            );
+            self.abort_open(&order.id, &id, &err);
             return Err(PayError::Chain(format!(
-                "The vendor's node could not be reached: {err}"
+                "The vendor's node refused the escrow: {err}"
             )));
         }
         Ok(json!({
@@ -427,23 +453,57 @@ impl Node {
         self.chain.broadcast(tx).map_err(PayError::Chain)?;
         let txid = tx.compute_txid().to_string();
         self.after_broadcast(&order.id, tx.clone(), &txid)?;
+        if let Err(err) = self.escrow.coins.release(&order.id) {
+            eprintln!("ob-node: coin locks for {}: {err}", order.id);
+        }
         self.update_escrow(&order.id, None, json!({ "stage": "funded", "error": null }))
             .map_err(PayError::Failed)
+    }
+
+    /// Round 1 again, after a restart lost the session: fresh nonces on the
+    /// stored PSBT, and the next attempt number.
+    fn reopen(&self, order: &BuyerOrder, escrow: &Value, id: &EscrowId) -> Result<(), String> {
+        let signed = SignedTerms::decode(&unhex(text(escrow, "terms")?)?).map_err(failed)?;
+        let psbt = Psbt::deserialize(&unhex(text(escrow, "psbt")?)?).map_err(failed)?;
+        let attempt = u32::try_from(number(escrow, "openAttempt")?).map_err(failed)? + 1;
+        let secret = {
+            let wallet = self.buyer_wallet();
+            self.escrow_secret(&wallet, key_index(escrow)?)?.secret_bytes()
+        };
+        let ctx = self.escrow_context()?;
+        let (waiting, open) = BuyerSession::start(signed.clone(), &secret, &ctx, FundingPlan::Psbt(psbt)).map_err(failed)?;
+        if waiting.funding_outpoint().to_string() != text(escrow, "outpoint")? {
+            return Err("the stored funding PSBT no longer matches the escrow".into());
+        }
+        self.buyer_desk().waiting.insert(*id, waiting);
+        self.update_escrow(&order.id, None, json!({ "openAttempt": attempt }))?;
+        let mail = Mail::new(Kind::Open, *id, vec![signed.encode(), open.to_bytes(), attempt_bytes(attempt)]);
+        self.send_mail(&self.vendor_url(&order.seller)?, &self.seller_mail_key(&order.seller)?, &mail)
+            .map(|_| ())
     }
 
     /// Round 3: verify the vendor, store the refund, sign, then broadcast.
     fn buyer_reply(&self, order: &BuyerOrder, mail: &Mail) -> Result<(), String> {
         let escrow = order.escrow.as_ref().ok_or("that order has no escrow")?;
-        Self::expect_stage(escrow, "opened")?;
-        let reply = VendorReply::from_bytes(&mail.fields(1)?[0]).map_err(failed)?;
-        let waiting = self
-            .buyer_desk()
-            .waiting
-            .remove(&mail.escrow)
-            .ok_or("this node restarted since it opened the escrow")?;
+        let fields = mail.fields(2)?;
+        let attempt = read_attempt(&fields[1])?;
+        match text(escrow, "stage")? {
+            "opened" => {}
+            // A repeated reply: send the stored signatures again.
+            "signed" | "funded" => return self.resend_signatures(order, escrow, &mail.escrow),
+            stage => return Err(format!("this escrow is {stage}")),
+        }
+        if u64::from(attempt) != number(escrow, "openAttempt")? {
+            return Err(format!("a reply to open attempt {attempt}, not the current one"));
+        }
+        let reply = VendorReply::from_bytes(&fields[0]).map_err(failed)?;
+        let Some(waiting) = self.buyer_desk().waiting.remove(&mail.escrow) else {
+            return self.reopen(order, escrow, &mail.escrow);
+        };
         let (buyer, signatures) = match waiting.receive(&reply) {
             Ok(done) => done,
             Err(err) => {
+                self.abort_open(&order.id, &mail.escrow, &err.to_string());
                 let _ = self.update_escrow(
                     &order.id,
                     None,
@@ -468,6 +528,8 @@ impl Node {
             return Err("signing changed the funding txid".into());
         }
         let refund = buyer.refund();
+        self.save_buyer_snapshot(&mail.escrow, &buyer)?;
+        self.escrow.coins.hold(&order.id)?;
         self.update_escrow(
             &order.id,
             None,
@@ -476,8 +538,10 @@ impl Node {
                 "refund": hex(&refund.to_bytes()),
                 "refundTxid": refund.transaction().compute_txid().to_string(),
                 "fundingTx": serialize_hex(&tx),
+                "signatures": hex(&signatures.to_bytes()),
                 "refundHeld": true,
                 "safeToSend": true,
+                "psbt": null,
             }),
         )?;
         self.buyer_desk().escrows.insert(mail.escrow, buyer);
@@ -497,13 +561,35 @@ impl Node {
         })
     }
 
-    fn buyer_release_nonce(&self, order: &BuyerOrder, mail: &Mail) -> Result<(), String> {
-        let nonce = PubNonce::from_bytes(&mail.fields(1)?[0]).map_err(failed)?;
-        self.buyer_desk().nonces.insert(mail.escrow, nonce);
-        self.update_escrow(&order.id, None, json!({ "releaseReady": true }))
+    fn resend_signatures(&self, order: &BuyerOrder, escrow: &Value, id: &EscrowId) -> Result<(), String> {
+        let signatures = unhex(text(escrow, "signatures")?)?;
+        let mail = Mail::new(Kind::Signatures, *id, vec![signatures]);
+        self.send_mail(&self.vendor_url(&order.seller)?, &self.seller_mail_key(&order.seller)?, &mail)
+            .map(|_| ())
     }
 
-    fn funded_escrow(&self, id: &str) -> Result<(BuyerOrder, EscrowId), PayError> {
+    /// Keep the vendor's release nonce. A nonce that arrives after this node
+    /// signed the release means the vendor lost the old one (it restarted):
+    /// sign again with it.
+    fn buyer_release_nonce(&self, order: &BuyerOrder, mail: &Mail) -> Result<(), String> {
+        let nonce = PubNonce::from_bytes(&mail.fields(1)?[0]).map_err(failed)?;
+        let escrow = order.escrow.as_ref().ok_or("that order has no escrow")?;
+        self.update_escrow(
+            &order.id,
+            None,
+            json!({ "releaseReady": true, "releaseNonce": hex(&nonce.serialize()) }),
+        )?;
+        if text(escrow, "stage")? != "released" {
+            return Ok(());
+        }
+        let signature = self.with_buyer_escrow(order, &mail.escrow, |escrow| escrow.sign_release(&nonce).map_err(failed))?;
+        let release = Mail::new(Kind::Release, mail.escrow, vec![signature.to_bytes()]);
+        self.send_mail(&self.vendor_url(&order.seller)?, &self.seller_mail_key(&order.seller)?, &release)?;
+        self.update_escrow(&order.id, None, json!({ "releaseReady": false }))
+    }
+
+    /// The order and escrow id of an escrow in one of `stages`.
+    fn funded_escrow(&self, id: &str, stages: &[&str]) -> Result<(BuyerOrder, EscrowId), PayError> {
         if self.network != NetworkMode::Testnet4 {
             return Err(PayError::Invalid(ESCROW_MAINNET_REFUSAL.into()));
         }
@@ -512,53 +598,54 @@ impl Node {
             .escrow
             .as_ref()
             .ok_or_else(|| PayError::Invalid("This order has no escrow.".into()))?;
-        if order.status != FUNDED || Self::expect_stage(escrow, "funded").is_err() {
+        let stage = text(escrow, "stage").map_err(PayError::Invalid)?;
+        if ![FUNDED, DISPUTED].contains(&order.status.as_str()) || !stages.contains(&stage) {
             return Err(PayError::Conflict(format!(
                 "This escrow is {}.",
                 order.status
             )));
         }
         let escrow_id = escrow_id(escrow).map_err(PayError::Invalid)?;
-        if !self.buyer_desk().escrows.contains_key(&escrow_id) {
-            return Err(PayError::Conflict(
-                "This node restarted since funding. Only the refund is kept on disk.".into(),
-            ));
-        }
         Ok((order, escrow_id))
     }
 
     /// Sign the happy-path release and send it to the vendor.
     pub fn release_escrow(&self, id: &str) -> Result<Value, PayError> {
         self.lock.spend_key()?;
-        let (order, escrow_id) = self.funded_escrow(id)?;
-        let signature = {
-            let mut desk = self.buyer_desk();
-            let nonce = desk.nonces.remove(&escrow_id).ok_or_else(|| {
-                PayError::Conflict("The vendor has not sent a release nonce yet.".into())
-            })?;
-            let escrow = desk.escrows.get_mut(&escrow_id).ok_or(PayError::NotFound)?;
-            escrow
-                .sign_release(&nonce)
-                .map_err(|err| PayError::Failed(err.to_string()))?
-        };
+        let (order, escrow_id) = self.funded_escrow(id, &["funded"])?;
+        let lock = self.escrow.locks.get(&escrow_id);
+        let _held = lock.lock().unwrap_or_else(|err| err.into_inner());
+        let nonce = order
+            .escrow
+            .as_ref()
+            .and_then(|escrow| escrow.get("releaseNonce"))
+            .and_then(Value::as_str)
+            .and_then(|text| unhex(text).ok())
+            .and_then(|bytes| PubNonce::from_bytes(&bytes).ok())
+            .ok_or_else(|| PayError::Conflict("The vendor has not sent a release nonce yet.".into()))?;
+        let signature = self
+            .with_buyer_escrow(&order, &escrow_id, |escrow| escrow.sign_release(&nonce).map_err(failed))
+            .map_err(PayError::Failed)?;
         let vendor = self.vendor_url(&order.seller).map_err(PayError::Invalid)?;
         let key = self.seller_mail_key(&order.seller).map_err(PayError::Invalid)?;
-        self.send_mail(
-            &vendor,
-            &key,
-            &Mail::new(Kind::Release, escrow_id, vec![signature.to_bytes()]),
-        )
-        .map_err(|err| PayError::Chain(format!("The vendor's node could not be reached: {err}")))?;
         self.update_escrow(
             id,
             Some(RELEASED),
             json!({ "stage": "released", "releaseReady": false }),
         )
         .map_err(PayError::Failed)?;
+        self.send_mail(
+            &vendor,
+            &key,
+            &Mail::new(Kind::Release, escrow_id, vec![signature.to_bytes()]),
+        )
+        .map_err(|err| PayError::Chain(format!("The vendor's node refused the release: {err}")))?;
         self.orders().get_value(id).ok_or(PayError::NotFound)
     }
 
     /// Send a dispute letter for the buyer-wins branch to the moderator.
+    /// Sending again while disputed resends a fresh letter (for example after
+    /// the moderator's rate limit refused the first).
     pub fn dispute_escrow(&self, id: &str, body: &Value) -> Result<Value, PayError> {
         let memo = match body.as_object() {
             Some(map) if map.keys().all(|key| key == "memo") => {
@@ -576,14 +663,13 @@ impl Node {
             PayError::Invalid("This node has no moderator to send a dispute to.".into())
         })?;
         let reply = self.reply_url().map_err(PayError::Invalid)?.to_string();
-        let (order, escrow_id) = self.funded_escrow(id)?;
-        let letter = {
-            let desk = self.buyer_desk();
-            let escrow = desk.escrows.get(&escrow_id).ok_or(PayError::NotFound)?;
-            escrow
-                .dispute_letter(memo.as_bytes())
-                .map_err(|err| PayError::Failed(err.to_string()))?
-        };
+        let (order, escrow_id) = self.funded_escrow(id, &["funded", "disputed"])?;
+        let lock = self.escrow.locks.get(&escrow_id);
+        let _held = lock.lock().unwrap_or_else(|err| err.into_inner());
+        let letter = self
+            .with_buyer_escrow(&order, &escrow_id, |escrow| escrow.dispute_letter(memo.as_bytes()).map_err(failed))
+            .map_err(PayError::Failed)?;
+        let was = order.escrow.as_ref().and_then(|escrow| escrow.get("stage")).cloned();
         self.update_escrow(id, Some(DISPUTED), json!({ "stage": "disputed" }))
             .map_err(PayError::Failed)?;
         let mail = Mail::new(
@@ -596,32 +682,43 @@ impl Node {
             ],
         );
         if let Err(err) = self.send_mail(&moderator, &moderator_mail_key(), &mail) {
-            let _ = self.update_escrow(&order.id, Some(FUNDED), json!({ "stage": "funded" }));
+            if was.as_ref().and_then(Value::as_str) == Some("funded") {
+                let _ = self.update_escrow(&order.id, Some(FUNDED), json!({ "stage": "funded" }));
+            }
             return Err(PayError::Chain(format!(
-                "The moderator's node could not be reached: {err}"
+                "The moderator's node refused the dispute: {err}"
             )));
         }
         self.orders().get_value(id).ok_or(PayError::NotFound)
     }
 
     /// Finish the buyer-wins outcome with the moderator's ruling and broadcast it.
+    ///
+    /// The outcome is stored before the snapshot moves to `Disputed`, so a
+    /// crash in between replays to a broadcast of the stored outcome.
     fn buyer_ruling(&self, order: &BuyerOrder, mail: &Mail) -> Result<(), String> {
         let escrow = order.escrow.as_ref().ok_or("that order has no escrow")?;
-        Self::expect_stage(escrow, "disputed")?;
-        let ruling = ModeratorRuling::from_bytes(&mail.fields(1)?[0]).map_err(failed)?;
-        let tx = {
-            let mut desk = self.buyer_desk();
-            let buyer = desk
-                .escrows
-                .get_mut(&mail.escrow)
-                .ok_or("this node restarted since funding")?;
-            buyer.settle_dispute(&ruling).map_err(failed)?
+        match text(escrow, "stage")? {
+            "disputed" => {}
+            "settled" => return Ok(()),
+            stage => return Err(format!("this escrow is {stage}")),
+        }
+        let tx = match escrow.get("settleTx").and_then(Value::as_str) {
+            Some(stored) => deserialize_hex::<Transaction>(stored).map_err(failed)?,
+            None => {
+                let ruling = ModeratorRuling::from_bytes(&mail.fields(1)?[0]).map_err(failed)?;
+                self.settle_buyer(order, &mail.escrow, &ruling)?
+            }
         };
-        self.chain.broadcast(&tx)?;
+        let txid = tx.compute_txid().to_string();
+        if let Err(err) = self.chain.broadcast(&tx) {
+            let _ = self.update_escrow(&order.id, None, json!({ "error": format!("The outcome {txid} is signed but not broadcast: {err}") }));
+            return Err(err);
+        }
         self.update_escrow(
             &order.id,
             Some(SETTLED),
-            json!({ "stage": "settled", "settleTxid": tx.compute_txid().to_string() }),
+            json!({ "stage": "settled", "settleTxid": txid, "error": null }),
         )
     }
 }

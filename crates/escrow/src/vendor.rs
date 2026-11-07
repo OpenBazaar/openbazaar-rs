@@ -5,12 +5,17 @@ use musig2::secp::{Point, Scalar};
 use musig2::{PubNonce, SecNonce};
 use openbazaar_protocol::EscrowTerms as EnvelopeTerms;
 
+use crate::context::Context;
 use crate::contract::{self, Branch, Contract, SignedClaim};
 use crate::crypto;
 use crate::letter::{self, ModeratorRuling};
 use crate::messages::ReleaseSignature;
+use crate::state;
 use crate::tx::Spend;
+use crate::wire::{Reader, Writer};
 use crate::{Error, EscrowTerms, Party, Phase};
+
+const SNAPSHOT_MAGIC: &[u8; 4] = b"OBSV";
 
 /// Vendor state after funding round 3.
 ///
@@ -192,6 +197,45 @@ impl VendorEscrow {
             self.buyer_wins_point,
             letter,
         ))
+    }
+
+    /// A snapshot for durable storage, without the secret key or any
+    /// release nonce. See *Persistence* in the crate docs.
+    ///
+    /// Store a new snapshot after every call that changes [`Self::phase`],
+    /// before broadcasting its result. Store one before shipping.
+    pub fn snapshot(&self) -> Vec<u8> {
+        let mut w = Writer::new(SNAPSHOT_MAGIC, state::VERSION);
+        state::write_contract(&mut w, &self.contract);
+        w.var(&self.claim.to_bytes());
+        state::write_branch(&mut w, &self.branch);
+        w.point(&self.buyer_wins_point);
+        state::write_phase(&mut w, self.phase);
+        w.finish()
+    }
+
+    /// Reload a [`Self::snapshot`] with the vendor's per-order secret.
+    ///
+    /// Re-verifies the claim, the vendor-wins pre-signature, and the
+    /// vendor's adaptor half. A release nonce never survives a restore: ask
+    /// for a fresh one with [`Self::release_nonce`].
+    pub fn restore(bytes: &[u8], vendor_secret: &[u8; 32], ctx: &Context) -> Result<Self, Error> {
+        let mut r = Reader::new(bytes, SNAPSHOT_MAGIC, state::VERSION)?;
+        let (contract, secret) = state::read_contract(&mut r, vendor_secret, Party::Vendor, ctx)?;
+        let claim = SignedClaim::from_bytes(r.var(usize::MAX)?)?;
+        state::check_template(&contract, Spend::Claim, claim.transaction())?;
+        let branch = state::read_branch(&mut r, &contract, &secret, Party::Vendor)?;
+        let buyer_wins_point = r.point()?;
+        let phase = state::read_phase(&mut r)?;
+        r.finish()?;
+        Ok(Self {
+            contract,
+            secret,
+            claim,
+            branch,
+            buyer_wins_point,
+            phase,
+        })
     }
 
     /// A copy for tests that start many scenarios from one funded escrow.

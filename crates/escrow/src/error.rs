@@ -47,6 +47,11 @@ pub enum Error {
     FundingNotOnChain,
     /// The ruling store failed.
     RulingStore(&'static str),
+    /// The caller's gate refused the letter before its proofs were checked.
+    RateLimited,
+    /// The moderator's chain view cannot answer yet (for example, compact
+    /// block filters are still scanning for the funding script). Try again.
+    ChainNotReady,
 }
 
 impl fmt::Display for Error {
@@ -86,6 +91,8 @@ impl fmt::Display for Error {
             Error::AlreadyRuled => write!(f, "the moderator already ruled for the other branch"),
             Error::FundingNotOnChain => write!(f, "funding output is not on the moderator's chain"),
             Error::RulingStore(msg) => write!(f, "ruling store failed: {msg}"),
+            Error::RateLimited => write!(f, "too many dispute letters; try again later"),
+            Error::ChainNotReady => write!(f, "the moderator's chain view is not ready; try again"),
         }
     }
 }

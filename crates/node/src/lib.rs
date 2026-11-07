@@ -14,12 +14,19 @@ mod buyer_orders;
 mod chain;
 mod chain_backend;
 mod chain_filters;
+mod coin_locks;
 mod egress;
+mod escrow_bump;
 mod escrow_buyer;
+mod escrow_fee;
 mod escrow_fixture;
 mod escrow_http;
+mod escrow_limits;
 mod escrow_mail;
 mod escrow_moderator;
+mod escrow_outbox;
+mod escrow_rulings;
+mod escrow_store;
 mod escrow_vendor;
 mod http;
 mod http_guard;
@@ -60,6 +67,8 @@ mod lock_tests;
 mod lock_receive_tests;
 #[cfg(test)]
 mod multinode_tests;
+#[cfg(test)]
+mod multinode_durable_tests;
 #[cfg(test)]
 mod own_store_tests;
 #[cfg(test)]
@@ -103,7 +112,6 @@ pub use egress::Egress;
 pub use escrow_fixture::MODERATOR_FEE_SATS;
 pub use media::MAX_MEDIA;
 pub use http::{http_response, serve_on};
-pub use instructions::ESCROW_SPEND_FEE_SATS;
 pub use network::{NetworkMode, ServeOptions, VaultChoice};
 pub use orders::OrderError;
 pub use pay_order::PayError;
@@ -323,7 +331,7 @@ impl Node {
             letter_guard: letter_auth::LetterGuard::open(&dir)?,
             vendor_labels: Mutex::new(vendor_labels),
             mailbox,
-            escrow: escrow_mail::Escrow::new(config.escrow, escrow_inbox),
+            escrow: escrow_mail::Escrow::open(config.escrow, escrow_inbox, &dir, &vault)?,
             pairing_token,
             pairing_fresh,
             pairing_codes: pairing::PairingCodes::new(local.pair_codes),

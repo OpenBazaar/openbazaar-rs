@@ -14,38 +14,58 @@
 //!
 //! A node never delivers to its own URL: one process would then hold both
 //! per-order keys, which is exactly what the two-party protocol rules out.
+//!
+//! Outgoing letters go through the persistent outbox
+//! ([`crate::escrow_outbox`]). Each incoming letter runs under its escrow's
+//! lock ([`crate::escrow_store::OrderLocks`]). The replay guard records its
+//! message id only once its step succeeded, and the letter leaves the inbox
+//! only after that, so a letter that was deferred or cut short by a crash
+//! runs again. Every step stores its new state before it sends what that
+//! state produced, and answers a repeated message from what it stored.
 
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use bitcoin::hex::{DisplayHex, FromHex};
+use openbazaar_escrow::LetterCache;
 use tormail::{open_message, seal_message, Mailbox, Opened, SealedLetter, StoreKey, StoreSecret};
 
+use crate::coin_locks::CoinLocks;
 use crate::escrow_buyer::BuyerDesk;
 use crate::escrow_fixture::moderator_mail_secret;
+use crate::escrow_limits::DisputeLimits;
 use crate::escrow_moderator::ModeratorDesk;
+use crate::escrow_outbox::{mail_key, HttpTransport, Outbox, Sent};
+use crate::escrow_rulings::FileRulingStore;
+use crate::escrow_store::{EscrowStore, OrderLocks};
 use crate::escrow_vendor::VendorDesk;
 use crate::network::NetworkMode;
+use crate::vault::Vault;
 use crate::{EscrowConfig, Node};
 
 const MAGIC: &[u8; 4] = b"OBEM";
 const VERSION: u8 = 1;
 const MAX_FIELDS: usize = 8;
-const DELIVERY_TIMEOUT: Duration = Duration::from_secs(10);
 const MAIL_POLL: Duration = Duration::from_millis(250);
+/// A step that fails with an error starting with this leaves its letter in
+/// the inbox to be tried again (the chain view was not ready).
+pub(crate) const RETRY_LATER: &str = "not ready yet: ";
 
 pub(crate) type EscrowId = [u8; 16];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Kind {
-    /// Buyer to vendor: buyer key, payout, mail key, reply URL, funding sats.
+    /// Buyer to vendor: buyer key, payout, mail key, reply URL, funding
+    /// sats, presigned network fee sats.
     Request = 1,
     /// Vendor to buyer: terms, vendor terms signature, store signature.
     Offer = 2,
-    /// Buyer to vendor: signed terms, `BuyerOpen`.
+    /// Buyer to vendor: signed terms, `BuyerOpen`, attempt (u32 LE). A
+    /// buyer that restarted in round 1 opens again with the next attempt.
     Open = 3,
-    /// Vendor to buyer: `VendorReply`.
+    /// Vendor to buyer: `VendorReply`, the attempt it answers.
     Reply = 4,
     /// Buyer to vendor: `BuyerSignatures`.
     Signatures = 5,
@@ -55,8 +75,11 @@ pub(crate) enum Kind {
     Release = 7,
     /// Buyer to moderator: dispute letter, mail key, reply URL.
     Dispute = 8,
-    /// Moderator to buyer: `ModeratorRuling`.
+    /// Moderator to the party that wrote the letter: `ModeratorRuling`.
     Ruling = 9,
+    /// Vendor to moderator: dispute letter, mail key, reply URL. Its own
+    /// kind so the letter is signed and pinned in the vendor's role.
+    VendorDispute = 10,
 }
 
 impl Kind {
@@ -71,6 +94,7 @@ impl Kind {
             7 => Kind::Release,
             8 => Kind::Dispute,
             9 => Kind::Ruling,
+            10 => Kind::VendorDispute,
             _ => return None,
         })
     }
@@ -191,47 +215,63 @@ pub(crate) fn check_loopback(url: &str) -> Result<(), String> {
     }
 }
 
-fn deliver(base_url: &str, letter: &SealedLetter) -> Result<(), String> {
-    check_loopback(base_url)?;
-    let url = format!("{}/escrow/mail", base_url.trim_end_matches('/'));
-    ureq::post(&url)
-        .timeout(DELIVERY_TIMEOUT)
-        .set("Content-Type", "application/octet-stream")
-        .send_bytes(&letter.to_bytes())
-        .map_err(|err| format!("{url}: {err}"))?;
-    Ok(())
-}
-
-/// This node's escrow inbox and the state each role keeps between rounds.
+/// This node's escrow inbox, outbox, durable state, and the state each role
+/// keeps in memory between rounds.
 pub(crate) struct Escrow {
     pub config: EscrowConfig,
     pub inbox: Mailbox,
+    pub outbox: Outbox,
+    pub store: EscrowStore,
+    pub locks: OrderLocks,
+    pub coins: CoinLocks,
+    pub rulings: FileRulingStore,
+    pub limits: DisputeLimits,
+    pub letters: Arc<LetterCache>,
     pub buyer: Mutex<BuyerDesk>,
     pub vendor: Mutex<VendorDesk>,
     pub moderator: Mutex<ModeratorDesk>,
 }
 
 impl Escrow {
-    pub fn new(config: EscrowConfig, inbox: Mailbox) -> Self {
-        Self {
+    pub fn open(config: EscrowConfig, inbox: Mailbox, dir: &Path, vault: &Vault) -> Result<Self, crate::Error> {
+        let store = EscrowStore::open(dir, vault.clone())?;
+        let vendor = VendorDesk::load(&store);
+        let moderator = ModeratorDesk::load(&store);
+        Ok(Self {
             config,
             inbox,
+            outbox: Outbox::open(dir, vault.clone(), Box::new(HttpTransport))?,
+            store,
+            locks: OrderLocks::default(),
+            coins: CoinLocks::open(dir, vault.clone())?,
+            rulings: FileRulingStore::open(dir, vault.clone())?,
+            limits: DisputeLimits::default(),
+            letters: Arc::default(),
             buyer: Mutex::new(BuyerDesk::default()),
-            vendor: Mutex::new(VendorDesk::default()),
-            moderator: Mutex::new(ModeratorDesk::default()),
-        }
+            vendor: Mutex::new(vendor),
+            moderator: Mutex::new(moderator),
+        })
     }
 }
 
 impl Node {
-    /// Seal `mail` to `to` and post it to the node at `url`.
-    pub(crate) fn send_mail(&self, url: &str, to: &StoreKey, mail: &Mail) -> Result<(), String> {
+    /// Seal `mail` to `to` and queue it for the node at `url`, trying it once
+    /// now. [`Sent::Queued`] means the outbox keeps trying; an error means
+    /// the peer refused it or it could not be queued.
+    pub(crate) fn send_mail(&self, url: &str, to: &StoreKey, mail: &Mail) -> Result<Sent, String> {
         if self.own_url() == Some(url.trim_end_matches('/')) {
             return Err("an escrow peer must be another node, not this one".into());
         }
         let from = self.escrow_letter_key(mail.kind, &mail.escrow)?;
         let letter = seal_message(&mail.encode(), to, &from).map_err(|err| err.to_string())?;
-        deliver(url, &letter)
+        self.escrow
+            .outbox
+            .send(mail_key(url, mail), url, &letter.to_bytes())
+    }
+
+    /// Retry queued escrow letters that are due (all of them with `force`).
+    pub(crate) fn flush_escrow_outbox(&self, force: bool) -> usize {
+        self.escrow.outbox.flush(crate::escrow_outbox::now_secs(), force)
     }
 
     pub(crate) fn own_url(&self) -> Option<&str> {
@@ -306,18 +346,19 @@ impl Node {
         handled
     }
 
-    /// Handle escrow mail as it arrives until `stop` is set.
+    /// Handle escrow mail as it arrives, and retry the outbox, until `stop` is set.
     pub(crate) fn run_escrow_mail(&self, stop: &AtomicBool) {
         while !stop.load(Ordering::Relaxed) {
             self.process_escrow_mail();
+            self.flush_escrow_outbox(false);
             std::thread::sleep(MAIL_POLL);
         }
     }
 
     /// Open a letter with the receive tier, then handle it, or defer it
     /// when its step signs with a spend-tier key and the wallet is locked.
-    /// A deferred letter is not yet admitted, so the replay guard does not
-    /// refuse it when it is read again after the unlock.
+    /// The replay guard is only checked before the step and records the
+    /// letter after it, so a deferred letter is read again later.
     pub(crate) fn handle_letter(&self, letter: &SealedLetter) -> Result<Handled, String> {
         let unlocked = self.lock.state() == crate::wallet_lock::State::Unlocked;
         let (desk, opened) = self.open_letter(letter)?;
@@ -331,15 +372,20 @@ impl Node {
         if signs && !unlocked {
             return Ok(Handled::Deferred);
         }
-        self.letter_guard.admit(&opened, &mail.escrow, mail.kind)?;
         let (escrow, kind) = (mail.escrow, mail.kind);
-        match desk {
+        let lock = self.escrow.locks.get(&escrow);
+        let _held = lock.lock().unwrap_or_else(|err| err.into_inner());
+        self.letter_guard.check(&opened, &escrow, kind)?;
+        let done = handled(match desk {
             Desk::Buyer => self.buyer_mail(mail),
             Desk::Vendor(seller) => self.vendor_mail(&seller, mail),
             Desk::Moderator => self.moderator_mail(mail),
-        }?;
-        self.letter_guard.pin(&opened, &escrow, kind)?;
-        Ok(Handled::Done)
+        })?;
+        if done == Handled::Done {
+            self.letter_guard.admit(&opened, &escrow, kind)?;
+            self.letter_guard.pin(&opened, &escrow, kind)?;
+        }
+        Ok(done)
     }
 
     /// Open `letter` with the first of this node's mail keys that fits. A
@@ -378,10 +424,19 @@ pub(crate) enum Handled {
     Deferred,
 }
 
+fn handled(result: Result<(), String>) -> Result<Handled, String> {
+    match result {
+        Ok(()) => Ok(Handled::Done),
+        Err(err) if err.starts_with(RETRY_LATER) => Ok(Handled::Deferred),
+        Err(err) => Err(err),
+    }
+}
+
 /// Buyer rounds that sign or broadcast: countersigning terms, signing the
-/// funding, and settling a ruling. A release nonce is only stored.
+/// funding, signing the release again for a vendor's fresh nonce, and
+/// settling a ruling.
 fn buyer_step_signs(kind: Kind) -> bool {
-    matches!(kind, Kind::Offer | Kind::Reply | Kind::Ruling)
+    matches!(kind, Kind::Offer | Kind::Reply | Kind::ReleaseNonce | Kind::Ruling)
 }
 
 enum Desk {

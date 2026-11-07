@@ -11,8 +11,9 @@
 //! letter for the other branch of the same escrow is refused.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex};
 
-use bitcoin::{Amount, OutPoint, ScriptBuf, TxOut};
+use bitcoin::{Amount, OutPoint, Script, ScriptBuf, TxOut};
 use musig2::secp::{Point, Scalar, G};
 
 use crate::context::Context;
@@ -127,14 +128,27 @@ impl ModeratorKeys {
 
 /// The moderator's view of the chain. Implementations must answer from a
 /// node or index the moderator trusts, not from data in the letter.
+///
+/// `script` is the funding script the signed terms commit to, and
+/// `not_before` the lowest height the funding can have confirmed at
+/// (`refund_height` minus the policy's `max_refund_horizon`). A backend that
+/// cannot look a transaction up by txid, such as compact block filters,
+/// follows `script` from `not_before` and finds the output among the
+/// transactions that pay it.
 pub trait FundingChain {
-    /// The unspent or spent output created at `outpoint`, if it exists on chain.
-    fn funding_output(&self, outpoint: &OutPoint) -> Option<TxOut>;
+    /// The confirmed output created at `outpoint`, if it exists on chain.
+    /// [`Error::ChainNotReady`] means "ask again later", not "absent".
+    fn funding_output(
+        &self,
+        outpoint: &OutPoint,
+        script: &Script,
+        not_before: u32,
+    ) -> Result<Option<TxOut>, Error>;
 }
 
 impl FundingChain for HashMap<OutPoint, TxOut> {
-    fn funding_output(&self, outpoint: &OutPoint) -> Option<TxOut> {
-        self.get(outpoint).cloned()
+    fn funding_output(&self, outpoint: &OutPoint, _: &Script, _: u32) -> Result<Option<TxOut>, Error> {
+        Ok(self.get(outpoint).cloned())
     }
 }
 
@@ -166,13 +180,32 @@ impl RulingStore for InMemoryRulingStore {
 
 const VERIFIED_CACHE_MAX: usize = 1024;
 
+/// Hashes of letters whose proofs already verified. Share one between the
+/// short-lived [`Moderator`] values a server builds per request.
+#[derive(Debug, Default)]
+pub struct LetterCache(Mutex<HashSet<[u8; 32]>>);
+
+impl LetterCache {
+    fn contains(&self, hash: &[u8; 32]) -> bool {
+        self.0.lock().unwrap_or_else(|err| err.into_inner()).contains(hash)
+    }
+
+    fn insert(&self, hash: [u8; 32]) {
+        let mut set = self.0.lock().unwrap_or_else(|err| err.into_inner());
+        if set.len() >= VERIFIED_CACHE_MAX {
+            set.clear();
+        }
+        set.insert(hash);
+    }
+}
+
 /// A moderator able to review letters and issue at most one ruling per escrow.
 pub struct Moderator<C, S> {
     keys: ModeratorKeys,
     record: ModeratorRecord,
     chain: C,
     store: S,
-    verified: HashSet<[u8; 32]>,
+    verified: Arc<LetterCache>,
 }
 
 impl<C: FundingChain, S: RulingStore> Moderator<C, S> {
@@ -193,8 +226,14 @@ impl<C: FundingChain, S: RulingStore> Moderator<C, S> {
             record,
             chain,
             store,
-            verified: HashSet::new(),
+            verified: Arc::default(),
         })
+    }
+
+    /// Use `cache` for verified letters instead of this value's own.
+    pub fn with_cache(mut self, cache: Arc<LetterCache>) -> Self {
+        self.verified = cache;
+        self
     }
 
     pub fn record(&self) -> &ModeratorRecord {
@@ -203,6 +242,10 @@ impl<C: FundingChain, S: RulingStore> Moderator<C, S> {
 
     pub fn store(&self) -> &S {
         &self.store
+    }
+
+    pub fn chain(&self) -> &C {
+        &self.chain
     }
 
     fn context(&self, received_height: u32) -> Context {
@@ -218,14 +261,25 @@ impl<C: FundingChain, S: RulingStore> Moderator<C, S> {
     /// The expensive proof checks are skipped for a letter whose exact bytes
     /// already passed them. The cheap checks (terms, deadline, chain) always run.
     pub fn review(&mut self, letter: &[u8], received_height: u32) -> Result<DisputeCase, Error> {
+        self.review_gated(letter, received_height, &mut |_, _| Ok(()))
+    }
+
+    /// [`Self::review`], with `gate` called for a letter not yet verified,
+    /// after the parse, terms, and claimant signature checks and before the
+    /// chain lookup and the proof checks. A gate that returns an error (for
+    /// example [`Error::RateLimited`]) stops the review there, so a rate
+    /// limit costs the moderator neither a chain scan nor a proof check.
+    pub fn review_gated(
+        &mut self,
+        letter: &[u8],
+        received_height: u32,
+        gate: &mut dyn FnMut(&RulingKey, Party) -> Result<(), Error>,
+    ) -> Result<DisputeCase, Error> {
         let ctx = self.context(received_height);
         let hash = DisputeCase::letter_hash(letter);
         let cached = self.verified.contains(&hash);
-        let case = DisputeCase::verify(letter, &ctx, &self.chain, cached)?;
+        let case = DisputeCase::verify(letter, &ctx, &self.chain, cached, gate)?;
         if !cached {
-            if self.verified.len() >= VERIFIED_CACHE_MAX {
-                self.verified.clear();
-            }
             self.verified.insert(hash);
         }
         Ok(case)

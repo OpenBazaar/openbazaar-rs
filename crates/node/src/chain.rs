@@ -17,7 +17,7 @@ use bdk_esplora::EsploraAsyncExt;
 use bdk_wallet::chain::spk_client::{FullScanRequest, SyncRequest};
 use bdk_wallet::{KeychainKind, Update};
 use bitcoin::constants::genesis_block;
-use bitcoin::{Address, BlockHash, Network, OutPoint, Transaction, TxOut, Txid};
+use bitcoin::{Address, BlockHash, Network, OutPoint, Script, Transaction, TxOut, Txid};
 
 use crate::egress::Egress;
 
@@ -118,6 +118,11 @@ pub trait ChainSource: Send + Sync {
     }
     fn tip_height(&self) -> Result<u32, String>;
     fn address_txs(&self, address: &Address) -> Result<Vec<AddressTx>, String>;
+    /// Transactions paying `script`. A backend that finds transactions only
+    /// by the scripts it follows (compact block filters) starts following
+    /// `script` from block `from`, and answers with an error until that scan
+    /// is done. Escrow funding checks use this instead of [`Self::output`].
+    fn script_txs(&self, script: &Script, from: u32) -> Result<Vec<AddressTx>, String>;
     /// Fee estimate in sat/vB for a few blocks out.
     fn fee_rate(&self) -> Result<f64, String>;
     fn broadcast(&self, tx: &Transaction) -> Result<(), String>;
@@ -272,10 +277,13 @@ impl ChainSource for EsploraChain {
     }
 
     fn address_txs(&self, address: &Address) -> Result<Vec<AddressTx>, String> {
-        let script = address.script_pubkey();
-        let txs = self.each(|client| {
-            let address = address.clone();
-            async move { client.get_address_txs(&address, None).await.map_err(|err| err.to_string()) }
+        self.script_txs(&address.script_pubkey(), 0)
+    }
+
+    /// Esplora indexes every script, so `from` is not needed.
+    fn script_txs(&self, script: &Script, _from: u32) -> Result<Vec<AddressTx>, String> {
+        let txs = self.each(|client| async move {
+            client.scripthash_txs(script, None).await.map_err(|err| err.to_string())
         })?;
         Ok(txs
             .into_iter()
@@ -285,7 +293,7 @@ impl ChainSource for EsploraChain {
                     .vout
                     .iter()
                     .enumerate()
-                    .filter(|(_, out)| out.scriptpubkey == script)
+                    .filter(|(_, out)| out.scriptpubkey.as_script() == script)
                     .map(|(vout, out)| (vout as u32, out.value))
                     .collect(),
                 height: if tx.status.confirmed { tx.status.block_height } else { None },
@@ -350,6 +358,9 @@ impl ChainSource for OfflineChain {
         Err(offline())
     }
     fn address_txs(&self, _: &Address) -> Result<Vec<AddressTx>, String> {
+        Err(offline())
+    }
+    fn script_txs(&self, _: &Script, _: u32) -> Result<Vec<AddressTx>, String> {
         Err(offline())
     }
     fn fee_rate(&self) -> Result<f64, String> {

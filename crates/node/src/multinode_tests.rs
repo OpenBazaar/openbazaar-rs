@@ -14,19 +14,19 @@ use crate::escrow_mail::unhex;
 use crate::harness::{checkout, fund_node_wallet, order, pay, request, Market};
 use crate::network::{address_for, NetworkMode};
 use crate::{
-    Node, AWAITING_FUNDING, AWAITING_TERMS, DISPUTED, ESCROW_SPEND_FEE_SATS, FUNDED,
+    Node, AWAITING_FUNDING, AWAITING_TERMS, DISPUTED, FUNDED,
     FUNDED_WITHOUT_REFUND, MODERATOR_FEE_SATS, RELEASED, SETTLED,
 };
 
 const SELLER: &str = "Marlow Goods";
 
-fn script_of(text: &Value) -> bitcoin::ScriptBuf {
+pub(crate) fn script_of(text: &Value) -> bitcoin::ScriptBuf {
     address_for(text.as_str().unwrap(), NetworkMode::Testnet4)
         .unwrap()
         .script_pubkey()
 }
 
-fn sale(node: &Node) -> Value {
+pub(crate) fn sale(node: &Node) -> Value {
     let (status, value) = request(node, "GET", "/escrow/sales", "");
     assert!(status.contains("200"), "{status} {value}");
     assert_eq!(value["sales"].as_array().unwrap().len(), 1, "{value}");
@@ -34,7 +34,7 @@ fn sale(node: &Node) -> Value {
 }
 
 /// Check out one escrow order and run the rounds until the vendor's terms are back.
-fn offered(market: &Market) -> (String, Value) {
+pub(crate) fn offered(market: &Market) -> (String, Value) {
     let buyer = &market.buyer.node;
     let placed = checkout(buyer, &[("Paperback novel", SELLER, "escrow")]);
     let id = placed[0]["orderId"].as_str().unwrap().to_string();
@@ -57,7 +57,7 @@ fn offered(market: &Market) -> (String, Value) {
     assert!(escrow["address"].as_str().unwrap().starts_with("tb1p"));
     assert_eq!(
         escrow["fundingSats"],
-        offered["totalSats"].as_u64().unwrap() + ESCROW_SPEND_FEE_SATS
+        offered["totalSats"].as_u64().unwrap() + escrow["spendFeeSats"].as_u64().unwrap()
     );
     let deadline = market.chain.tip() + crate::escrow_vendor::DELIVERY_BLOCKS;
     assert_eq!(escrow["disputeDeadline"], deadline);
@@ -91,7 +91,7 @@ fn assert_keys_are_split(market: &Market, escrow: &Value) {
 }
 
 /// Pay an offered escrow from the buyer's wallet and run the funding rounds.
-fn funded(market: &Market, id: &str) -> Value {
+pub(crate) fn funded(market: &Market, id: &str) -> Value {
     let buyer = &market.buyer.node;
     let (status, opened) = pay(buyer, id, "{}");
     assert!(status.contains("202"), "{status} {opened}");
@@ -116,7 +116,7 @@ fn funded(market: &Market, id: &str) -> Value {
     after
 }
 
-fn funding_tx(market: &Market, escrow: &Value) -> (Transaction, OutPoint) {
+pub(crate) fn funding_tx(market: &Market, escrow: &Value) -> (Transaction, OutPoint) {
     let outpoint: OutPoint = escrow["outpoint"].as_str().unwrap().parse().unwrap();
     let tx = market
         .chain
@@ -127,7 +127,7 @@ fn funding_tx(market: &Market, escrow: &Value) -> (Transaction, OutPoint) {
     (tx, outpoint)
 }
 
-fn spends(tx: &Transaction, outpoint: OutPoint) -> bool {
+pub(crate) fn spends(tx: &Transaction, outpoint: OutPoint) -> bool {
     tx.input.len() == 1 && tx.input[0].previous_output == outpoint
 }
 
@@ -199,7 +199,7 @@ fn escrow_released_to_the_vendor_across_three_nodes() {
     );
     assert_eq!(
         release.output[0].value.to_sat(),
-        funding - ESCROW_SPEND_FEE_SATS
+        funding - escrow["spendFeeSats"].as_u64().unwrap()
     );
     let sold = sale(&market.vendor.node);
     assert_eq!(sold["stage"], "released");
@@ -268,7 +268,7 @@ fn escrow_dispute_ruled_for_the_buyer() {
         json!(outcome.compute_txid().to_string())
     );
     assert!(spends(&outcome, outpoint));
-    let winner = funding - ESCROW_SPEND_FEE_SATS - ANCHOR_VALUE.to_sat() - MODERATOR_FEE_SATS;
+    let winner = funding - escrow["spendFeeSats"].as_u64().unwrap() - ANCHOR_VALUE.to_sat() - MODERATOR_FEE_SATS;
     assert_eq!(
         outcome.output[0].script_pubkey,
         script_of(&escrow["buyerPayout"])

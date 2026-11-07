@@ -53,6 +53,13 @@ impl ReplayGuard {
         })
     }
 
+    /// Whether `id` was recorded. Check with this before handling a letter
+    /// and [`Self::admit`] after, so a letter whose handling was cut short is
+    /// not refused when it is read again.
+    pub fn contains(&self, id: &MessageId) -> Result<bool, Error> {
+        Ok(lock(&self.seen)?.contains(id))
+    }
+
     /// Record `id`, or refuse it with [`Error::Replay`] if it was recorded before.
     pub fn admit(&self, id: &MessageId) -> Result<(), Error> {
         let mut seen = lock(&self.seen)?;

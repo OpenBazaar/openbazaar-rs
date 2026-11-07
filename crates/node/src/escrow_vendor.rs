@@ -6,25 +6,35 @@
 //! terms, and runs round 2 and the funding finish. Its key never leaves
 //! this node and it never sees the buyer's.
 //!
-//! Sales live in memory. The claim is kept as bytes in the sale, but the
-//! live [`VendorEscrow`] (needed for the release) is lost on restart.
+//! Every sale is a durable record ([`crate::escrow_store`]) holding the
+//! terms, the round 2 snapshot, the funded escrow's snapshot and the claim.
+//! Each step stores the record before it sends what it produced, and
+//! answers a repeated message with what it stored, so a restart at any
+//! round picks up where it was. The secret key is never stored; it is
+//! derived again from the seed, so a restored sale needs the spend tier.
+//! A release nonce lives only in memory: after a restart the vendor sends a
+//! fresh one and the buyer signs again.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
+use bitcoin::consensus::encode::{deserialize_hex, serialize_hex};
 use bitcoin::hashes::{sha256, Hash, HashEngine};
 use bitcoin::secp256k1::{Keypair, Message, PublicKey, Secp256k1};
-use bitcoin::{Address, Amount, OutPoint, ScriptBuf, Txid};
+use bitcoin::{Address, Amount, ScriptBuf, Transaction};
 use openbazaar_escrow::{
-    BuyerOpen, BuyerSignatures, EscrowTerms, ReleaseNonce, ReleaseSignature, SignedTerms,
-    VendorAwaitingSignatures, VendorEscrow, VendorSession,
+    BuyerOpen, BuyerSignatures, EscrowTerms, ReleaseSignature, SignedTerms, VendorSession,
 };
 use serde_json::{json, Value};
-use tormail::StoreKey;
 
+use crate::escrow_buyer::read_attempt;
 use crate::escrow_mail::{check_loopback, hex, id_hex, key_bytes, EscrowId, Kind, Mail};
-use crate::instructions::ESCROW_SPEND_FEE_SATS;
 use crate::network::NetworkMode;
 use crate::Node;
+
+mod dispute;
+mod sale;
+
+use sale::{Live, Sale};
 
 /// Blocks from the vendor's tip to the dispute deadline (about two weeks).
 pub(crate) const DELIVERY_BLOCKS: u32 = 2_016;
@@ -43,24 +53,11 @@ pub(crate) fn offer_digest(id: &EscrowId, terms: &EscrowTerms) -> Message {
     Message::from_digest(sha256::Hash::from_engine(engine).to_byte_array())
 }
 
-struct Sale {
-    seller: String,
-    index: u32,
-    terms: EscrowTerms,
-    buyer_mail: StoreKey,
-    buyer_url: String,
-    stage: &'static str,
-    outpoint: Option<OutPoint>,
-    awaiting: Option<VendorAwaitingSignatures>,
-    escrow: Option<VendorEscrow>,
-    nonce: Option<ReleaseNonce>,
-    claim: Option<Vec<u8>>,
-    release_txid: Option<Txid>,
-}
-
+/// Sales from disk, and the funded escrows restored in this process.
 #[derive(Default)]
 pub(crate) struct VendorDesk {
     sales: BTreeMap<EscrowId, Sale>,
+    live: HashMap<EscrowId, Live>,
 }
 
 impl VendorDesk {
@@ -79,6 +76,7 @@ impl VendorDesk {
                     "seller": sale.seller,
                     "stage": sale.stage,
                     "fundingSats": sale.terms.funding_value.to_sat(),
+                    "networkFeeSats": sale.terms.network_fee.to_sat(),
                     "address": sale.terms.funding_output().ok().and_then(|out| address(&out.script_pubkey)),
                     "outpoint": sale.outpoint.map(|outpoint| outpoint.to_string()),
                     "vendorKeyIndex": sale.index,
@@ -89,6 +87,8 @@ impl VendorDesk {
                     "claimHeld": sale.claim.is_some(),
                     "claim": sale.claim.as_deref().map(hex),
                     "releaseTxid": sale.release_txid.map(|txid| txid.to_string()),
+                    "settleTxid": sale.settle_txid.map(|txid| txid.to_string()),
+                    "error": sale.error,
                 })
             })
             .collect();
@@ -117,19 +117,39 @@ impl Node {
         Ok(self.escrow_secret(&wallet, index)?.secret_bytes())
     }
 
+    /// The sale for `id`, checked to belong to `seller`, with what `read` takes from it.
+    fn sale_of<T>(&self, seller: &str, id: &EscrowId, read: impl FnOnce(&Sale) -> T) -> Result<T, String> {
+        let desk = self.vendor_desk();
+        let sale = desk.sales.get(id).ok_or("no sale for that escrow")?;
+        if sale.seller != seller {
+            return Err("that sale belongs to another seller".into());
+        }
+        Ok(read(sale))
+    }
+
+    fn send_to_buyer(&self, id: &EscrowId, kind: Kind, fields: Vec<Vec<u8>>) -> Result<(), String> {
+        let (url, to) = {
+            let desk = self.vendor_desk();
+            let sale = desk.sales.get(id).ok_or("no sale for that escrow")?;
+            (sale.buyer_url.clone(), sale.buyer_mail)
+        };
+        self.send_mail(&url, &to, &Mail::new(kind, *id, fields)).map(|_| ())
+    }
+
     pub(crate) fn vendor_mail(&self, seller: &str, mail: Mail) -> Result<(), String> {
         match mail.kind {
             Kind::Request => self.vendor_request(seller, &mail),
             Kind::Open => self.vendor_open(seller, &mail),
             Kind::Signatures => self.vendor_signatures(seller, &mail),
             Kind::Release => self.vendor_release(seller, &mail),
+            Kind::Ruling => self.vendor_ruling(seller, &mail),
             other => Err(format!("a vendor does not take {other:?}")),
         }
     }
 
     /// Round 0: answer a request with terms signed by the vendor's per-order key.
     fn vendor_request(&self, seller: &str, mail: &Mail) -> Result<(), String> {
-        let fields = mail.fields(5)?;
+        let fields = mail.fields(6)?;
         let buyer: [u8; 33] = fields[0]
             .as_slice()
             .try_into()
@@ -145,8 +165,12 @@ impl Node {
             .as_slice()
             .try_into()
             .map_err(|_| "bad funding amount")?;
-        if self.vendor_desk().sales.contains_key(&mail.escrow) {
-            return Err("that escrow already has terms".into());
+        let fee: [u8; 8] = fields[5]
+            .as_slice()
+            .try_into()
+            .map_err(|_| "bad network fee")?;
+        if let Some(offer) = self.repeated_request(seller, &mail.escrow, &buyer)? {
+            return self.send_to_buyer(&mail.escrow, Kind::Offer, offer);
         }
         let ctx = self.escrow_context()?;
         let (index, secret, payout) = {
@@ -164,7 +188,8 @@ impl Node {
             vendor: PublicKey::from_secret_key(&Secp256k1::new(), &secret).serialize(),
             moderator: ctx.moderator.clone(),
             funding_value: Amount::from_sat(u64::from_le_bytes(funding)),
-            network_fee: Amount::from_sat(ESCROW_SPEND_FEE_SATS),
+            // The buyer's pick; validate() holds it between the policy's floor and cap.
+            network_fee: Amount::from_sat(u64::from_le_bytes(fee)),
             dispute_deadline,
             vendor_claim_height: dispute_deadline + RULING_BLOCKS,
             refund_height: dispute_deadline + RULING_BLOCKS + CLAIM_BLOCKS,
@@ -184,137 +209,180 @@ impl Node {
                 &Keypair::from_secret_key(&secp, &store),
             )
             .serialize();
-        let offer = Mail::new(
-            Kind::Offer,
-            mail.escrow,
-            vec![
-                terms.encode(),
-                vendor_signature.to_vec(),
-                store_signature.to_vec(),
-            ],
-        );
-        self.send_mail(&buyer_url, &buyer_mail, &offer)?;
-        self.vendor_desk().sales.insert(
-            mail.escrow,
+        let offer = vec![
+            terms.encode(),
+            vendor_signature.to_vec(),
+            store_signature.to_vec(),
+        ];
+        self.save_sale(
+            &mail.escrow,
             Sale {
                 seller: seller.to_string(),
                 index,
                 terms,
                 buyer_mail,
                 buyer_url,
-                stage: "offered",
+                stage: "offered".into(),
+                offer: offer.clone(),
                 outpoint: None,
+                open_attempt: 0,
+                reply: None,
                 awaiting: None,
                 escrow: None,
-                nonce: None,
                 claim: None,
+                outcome_tx: None,
                 release_txid: None,
+                settle_txid: None,
+                error: None,
             },
-        );
-        Ok(())
+        )?;
+        self.send_to_buyer(&mail.escrow, Kind::Offer, offer)
+    }
+
+    /// The stored offer when this escrow already has terms for the same buyer key.
+    fn repeated_request(&self, seller: &str, id: &EscrowId, buyer: &[u8; 33]) -> Result<Option<Vec<Vec<u8>>>, String> {
+        let desk = self.vendor_desk();
+        let Some(sale) = desk.sales.get(id) else {
+            return Ok(None);
+        };
+        if sale.seller != seller || &sale.terms.buyer != buyer {
+            return Err("that escrow already has terms".into());
+        }
+        if sale.stage != "offered" {
+            return Err(format!("that sale is {}", sale.stage));
+        }
+        Ok(Some(sale.offer.clone()))
     }
 
     /// Round 2: check the buyer's opening and sign the vendor's half.
+    ///
+    /// A buyer that lost its round 1 session opens again with a higher
+    /// attempt (fresh nonces on its own side); the vendor answers each new
+    /// attempt with fresh nonces of its own and replaces the stored round.
+    /// The same attempt again gets the stored reply.
     fn vendor_open(&self, seller: &str, mail: &Mail) -> Result<(), String> {
-        let fields = mail.fields(2)?;
+        let fields = mail.fields(3)?;
+        let attempt = read_attempt(&fields[2])?;
+        let (stage, stored_attempt, stored_reply, terms, index) = self.sale_of(seller, &mail.escrow, |sale| {
+            (sale.stage.clone(), sale.open_attempt, sale.reply.clone(), sale.terms.clone(), sale.index)
+        })?;
+        match stage.as_str() {
+            "offered" => {}
+            "replied" if attempt == stored_attempt => {
+                let reply = stored_reply.ok_or("the stored reply is missing")?;
+                return self.send_to_buyer(&mail.escrow, Kind::Reply, vec![reply, fields[2].clone()]);
+            }
+            "replied" if attempt > stored_attempt => {}
+            "replied" => return Err(format!("open attempt {attempt} is older than {stored_attempt}")),
+            other => return Err(format!("that sale is {other}")),
+        }
         let signed = SignedTerms::decode(&fields[0]).map_err(failed)?;
         let open = BuyerOpen::from_bytes(&fields[1]).map_err(failed)?;
-        let (index, url, to) = {
-            let desk = self.vendor_desk();
-            let sale = desk
-                .sales
-                .get(&mail.escrow)
-                .ok_or("no sale for that escrow")?;
-            if sale.seller != seller || sale.stage != "offered" {
-                return Err(format!("that sale is {}", sale.stage));
-            }
-            if signed.terms() != &sale.terms {
-                return Err("the buyer signed different terms".into());
-            }
-            (sale.index, sale.buyer_url.clone(), sale.buyer_mail)
-        };
+        if signed.terms() != &terms {
+            return Err("the buyer signed different terms".into());
+        }
         let secret = self.vendor_secret(seller, index)?;
         let ctx = self.escrow_context()?;
         let (awaiting, reply) =
             VendorSession::accept(signed, &secret, &ctx, &open).map_err(failed)?;
-        self.send_mail(
-            &url,
-            &to,
-            &Mail::new(Kind::Reply, mail.escrow, vec![reply.to_bytes()]),
-        )?;
-        let mut desk = self.vendor_desk();
-        let sale = desk
-            .sales
-            .get_mut(&mail.escrow)
-            .ok_or("no sale for that escrow")?;
-        sale.awaiting = Some(awaiting);
-        sale.outpoint = Some(open.funding_outpoint);
-        sale.stage = "replied";
-        Ok(())
+        let reply = reply.to_bytes();
+        self.update_sale(&mail.escrow, |sale| {
+            sale.stage = "replied".into();
+            sale.outpoint = Some(open.funding_outpoint);
+            sale.open_attempt = attempt;
+            sale.reply = Some(reply.clone());
+            sale.awaiting = Some(awaiting.snapshot());
+        })?;
+        self.send_to_buyer(&mail.escrow, Kind::Reply, vec![reply, fields[2].clone()])
     }
 
-    /// Funding finish: keep the claim, then offer a release nonce.
+    /// Funding finish: store the claim and the funded escrow, then offer a
+    /// release nonce. Signatures again (the buyer saw no nonce) get a fresh one.
     fn vendor_signatures(&self, seller: &str, mail: &Mail) -> Result<(), String> {
         let fields = mail.fields(1)?;
         let signatures = BuyerSignatures::from_bytes(&fields[0]).map_err(failed)?;
-        let (url, to, nonce) = {
-            let mut desk = self.vendor_desk();
-            let sale = desk
-                .sales
-                .get_mut(&mail.escrow)
-                .ok_or("no sale for that escrow")?;
-            if sale.seller != seller || sale.stage != "replied" {
-                return Err(format!("that sale is {}", sale.stage));
-            }
-            let awaiting = sale.awaiting.take().ok_or("that sale has no open round")?;
-            let escrow = match awaiting.receive(&signatures) {
-                Ok(escrow) => escrow,
-                Err(err) => {
-                    sale.stage = "failed";
-                    return Err(err.to_string());
-                }
-            };
-            let nonce = escrow.release_nonce().map_err(failed)?;
-            let public = nonce.public().serialize().to_vec();
-            sale.claim = Some(escrow.claim().to_bytes());
-            sale.escrow = Some(escrow);
-            sale.nonce = Some(nonce);
-            sale.stage = "funded";
-            (sale.buyer_url.clone(), sale.buyer_mail, public)
-        };
-        self.send_mail(
-            &url,
-            &to,
-            &Mail::new(Kind::ReleaseNonce, mail.escrow, vec![nonce]),
-        )
+        match self.sale_of(seller, &mail.escrow, |sale| sale.stage.clone())?.as_str() {
+            "replied" => {}
+            "funded" => return self.send_release_nonce(&mail.escrow),
+            other => return Err(format!("that sale is {other}")),
+        }
+        let awaiting = self.restore_awaiting(&mail.escrow)?;
+        // A failure leaves the stored round as it was: the buyer may still
+        // send the signatures for it.
+        let escrow = awaiting.receive(&signatures).map_err(failed)?;
+        let (claim, snapshot) = (escrow.claim().to_bytes(), escrow.snapshot());
+        self.update_sale(&mail.escrow, |sale| {
+            sale.stage = "funded".into();
+            sale.claim = Some(claim);
+            sale.escrow = Some(snapshot);
+            sale.awaiting = None;
+            sale.reply = None;
+        })?;
+        self.vendor_desk().live.insert(mail.escrow, Live { escrow, nonce: None });
+        self.send_release_nonce(&mail.escrow)
     }
 
-    /// Happy path: finish the release with the buyer's signature and broadcast it.
+    /// Make a fresh release nonce, replacing any held one, and send it.
+    fn send_release_nonce(&self, id: &EscrowId) -> Result<(), String> {
+        let public = self.with_vendor_escrow(
+            id,
+            |live| {
+                let nonce = live.escrow.release_nonce().map_err(failed)?;
+                let public = nonce.public().serialize().to_vec();
+                live.nonce = Some(nonce);
+                Ok(public)
+            },
+            |_, _| {},
+        )?;
+        self.send_to_buyer(id, Kind::ReleaseNonce, vec![public])
+    }
+
+    /// Happy path: finish the release with the buyer's signature and
+    /// broadcast it. Without a matching nonce (the vendor restarted, or
+    /// the buyer signed an older one) the buyer gets a fresh nonce instead.
     fn vendor_release(&self, seller: &str, mail: &Mail) -> Result<(), String> {
         let fields = mail.fields(1)?;
         let signature = ReleaseSignature::from_bytes(&fields[0]).map_err(failed)?;
-        let tx = {
-            let mut desk = self.vendor_desk();
-            let sale = desk
-                .sales
-                .get_mut(&mail.escrow)
-                .ok_or("no sale for that escrow")?;
-            if sale.seller != seller || sale.stage != "funded" {
-                return Err(format!("that sale is {}", sale.stage));
-            }
-            let nonce = sale.nonce.take().ok_or("no release nonce is open")?;
-            let escrow = sale
-                .escrow
-                .as_mut()
-                .ok_or("this node restarted since funding")?;
-            escrow.complete_release(nonce, &signature).map_err(failed)?
-        };
-        self.chain.broadcast(&tx)?;
-        let mut desk = self.vendor_desk();
-        if let Some(sale) = desk.sales.get_mut(&mail.escrow) {
-            sale.stage = "released";
-            sale.release_txid = Some(tx.compute_txid());
+        match self.sale_of(seller, &mail.escrow, |sale| sale.stage.clone())?.as_str() {
+            "funded" => {}
+            "released" => return self.broadcast_outcome(&mail.escrow),
+            other => return Err(format!("that sale is {other}")),
         }
-        Ok(())
+        let done = self.with_vendor_escrow(
+            &mail.escrow,
+            |live| match live.nonce.take() {
+                Some(nonce) => Ok(live.escrow.complete_release(nonce, &signature).ok()),
+                None => Ok(None),
+            },
+            |sale, tx| {
+                if let Some(tx) = tx {
+                    sale.stage = "released".into();
+                    sale.outcome_tx = Some(serialize_hex(tx));
+                    sale.release_txid = Some(tx.compute_txid());
+                }
+            },
+        )?;
+        if done.is_none() {
+            eprintln!("ob-node: escrow {}: the release does not fit a held nonce; sending a fresh one", id_hex(&mail.escrow));
+            return self.send_release_nonce(&mail.escrow);
+        }
+        self.broadcast_outcome(&mail.escrow)
+    }
+
+    /// Broadcast the stored release or dispute outcome.
+    fn broadcast_outcome(&self, id: &EscrowId) -> Result<(), String> {
+        let stored = self.vendor_desk().sales.get(id).and_then(|sale| sale.outcome_tx.clone());
+        let Some(stored) = stored else {
+            return Ok(());
+        };
+        let tx: Transaction = deserialize_hex(&stored).map_err(failed)?;
+        let result = self.chain.broadcast(&tx);
+        self.update_sale(id, |sale| {
+            sale.error = result
+                .as_ref()
+                .err()
+                .map(|err| format!("The outcome {} is signed but not broadcast: {err}", tx.compute_txid()));
+        })?;
+        result
     }
 }

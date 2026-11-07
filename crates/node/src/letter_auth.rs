@@ -29,7 +29,7 @@ use crate::{Error, Node};
 pub(crate) fn sender_role(kind: Kind) -> u8 {
     match kind {
         Kind::Request | Kind::Open | Kind::Signatures | Kind::Release | Kind::Dispute => 1,
-        Kind::Offer | Kind::Reply | Kind::ReleaseNonce => 2,
+        Kind::Offer | Kind::Reply | Kind::ReleaseNonce | Kind::VendorDispute => 2,
         Kind::Ruling => 3,
     }
 }
@@ -48,7 +48,20 @@ impl LetterGuard {
         })
     }
 
-    /// Refuse a replayed letter or one from a key this escrow is not pinned to.
+    /// Refuse a replayed letter or one from a key this escrow is not pinned
+    /// to, without recording it: a letter whose step is deferred or fails
+    /// is read again.
+    pub(crate) fn check(&self, opened: &Opened<Vec<u8>>, escrow: &EscrowId, kind: Kind) -> Result<(), String> {
+        self.pins
+            .check(escrow, sender_role(kind), &opened.sender)
+            .map_err(|err| err.to_string())?;
+        if self.seen.contains(&opened.message_id).map_err(|err| err.to_string())? {
+            return Err(tormail::Error::Replay.to_string());
+        }
+        Ok(())
+    }
+
+    /// Record the letter's message id, refusing a replay.
     pub(crate) fn admit(&self, opened: &Opened<Vec<u8>>, escrow: &EscrowId, kind: Kind) -> Result<(), String> {
         self.pins
             .check(escrow, sender_role(kind), &opened.sender)

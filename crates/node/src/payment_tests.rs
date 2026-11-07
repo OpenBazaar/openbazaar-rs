@@ -13,7 +13,7 @@ use crate::harness::{
 };
 use crate::http::dispatch;
 use crate::network::{address_for, NetworkMode, ServeOptions};
-use crate::{load_catalog, EscrowConfig, Node, NodeConfig, ESCROW_SPEND_FEE_SATS};
+use crate::{load_catalog, EscrowConfig, Node, NodeConfig};
 
 fn open(dir: &Path, network: NetworkMode, chain: &MockChain, confirmations: u32) -> Node {
     open_node(dir, network, chain, confirmations, unreachable_escrow())
@@ -317,7 +317,7 @@ fn mainnet_refuses_escrow_and_testnet4_labels_it_an_unsafe_demo() {
     assert_eq!(terms["demo"], true);
     assert_eq!(terms["unsafe"], true);
     assert!(terms["warning"].as_str().unwrap().contains("testnet4 coins only"));
-    assert_eq!(terms["fundingSats"], placed[0]["totalSats"].as_u64().unwrap() + ESCROW_SPEND_FEE_SATS);
+    assert_eq!(terms["fundingSats"], placed[0]["totalSats"].as_u64().unwrap() + terms["spendFeeSats"].as_u64().unwrap());
     assert!(terms["error"].as_str().unwrap().contains("127.0.0.1:9"), "the unreachable vendor is reported: {terms}");
     assert_eq!(placed[0]["status"], crate::AWAITING_TERMS);
     let (status, value) = ticket(&test, placed[0]["orderId"].as_str().unwrap()).unwrap_err();

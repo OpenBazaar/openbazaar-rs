@@ -200,6 +200,11 @@ fn route(node: &Node, request: &Request<'_>, client: Client, origin: Option<&str
             Err(response) => response,
         },
         ("GET", "/escrow/sales") => escrow_http::sales_response(node, client, head, origin),
+        ("POST", path) if between(path, "/escrow/sales/", "/dispute").is_some() => {
+            let id = between(path, "/escrow/sales/", "/dispute").unwrap_or_default();
+            escrow_http::action_response(node, client, head, Action::SaleDispute(id), body, origin)
+        }
+        ("POST", "/escrow/bump") => escrow_http::action_response(node, client, head, Action::Bump, body, origin),
         ("GET", "/moderator/disputes") => escrow_http::disputes_response(node, client, head, origin),
         ("POST", path) if between(path, "/moderator/disputes/", "/rule").is_some() => {
             let id = between(path, "/moderator/disputes/", "/rule").unwrap_or_default();

@@ -33,10 +33,12 @@ use crate::contract::{self, Branch, Contract, Role, SignedClaim, SignedRefund};
 use crate::crypto::{self, random_scalar, scalar_key};
 use crate::messages::{BuyerOpen, BuyerSignatures, FundingNonces, VendorReply};
 use crate::proofs::Pok;
+use crate::state;
 use crate::terms::SignedTerms;
 use crate::tx::Spend;
 use crate::vencrypt::VerifiableShare;
 use crate::vendor::VendorEscrow;
+use crate::wire::{Reader, Writer};
 use crate::{Error, Party};
 
 /// How the buyer will fund the escrow output.
@@ -93,15 +95,15 @@ fn generate_nonces(
     Ok((secret_nonces, public))
 }
 
-struct AggNonces {
-    refund: AggNonce,
-    claim: AggNonce,
-    buyer_wins: AggNonce,
-    vendor_wins: AggNonce,
+pub(crate) struct AggNonces {
+    pub refund: AggNonce,
+    pub claim: AggNonce,
+    pub buyer_wins: AggNonce,
+    pub vendor_wins: AggNonce,
 }
 
 impl AggNonces {
-    fn new(buyer: &FundingNonces, vendor: &FundingNonces) -> Self {
+    pub(crate) fn new(buyer: &FundingNonces, vendor: &FundingNonces) -> Self {
         Self {
             refund: crypto::aggregate_nonce(&buyer.refund, &vendor.refund),
             claim: crypto::aggregate_nonce(&buyer.claim, &vendor.claim),
@@ -154,7 +156,7 @@ fn sign_all(
     })
 }
 
-fn verify_counterparty_partial(
+pub(crate) fn verify_counterparty_partial(
     contract: &Contract,
     signer: Party,
     partial: PartialSignature,
@@ -174,7 +176,7 @@ fn verify_counterparty_partial(
     )
 }
 
-fn own_secret(contract: &Contract, secret: &[u8; 32], party: Party) -> Result<Scalar, Error> {
+pub(crate) fn own_secret(contract: &Contract, secret: &[u8; 32], party: Party) -> Result<Scalar, Error> {
     let scalar = scalar_key(secret)?;
     if scalar * G != contract.key(party) {
         return Err(Error::WrongKey);
@@ -458,7 +460,7 @@ impl VendorSession {
             vendor_wins_point,
         )?;
         let reply = VendorReply {
-            nonces: public,
+            nonces: public.clone(),
             vendor_half,
             vendor_half_proof,
             buyer_wins_share,
@@ -471,6 +473,7 @@ impl VendorSession {
                 secret,
                 agg,
                 buyer_nonces: open.nonces.clone(),
+                vendor_nonces: public.clone(),
                 claim_partial: ours.claim,
                 vendor_wins_partial: ours.vendor_wins,
                 vendor_half,
@@ -484,18 +487,89 @@ impl VendorSession {
 
 /// Vendor after round 2. Holds only its own partials, never a secret nonce.
 pub struct VendorAwaitingSignatures {
-    contract: Contract,
-    secret: Scalar,
-    agg: AggNonces,
-    buyer_nonces: FundingNonces,
-    claim_partial: PartialSignature,
-    vendor_wins_partial: PartialSignature,
-    vendor_half: Point,
-    vendor_wins_share: VerifiableShare,
-    buyer_wins_point: Point,
+    pub(crate) contract: Contract,
+    pub(crate) secret: Scalar,
+    pub(crate) agg: AggNonces,
+    pub(crate) buyer_nonces: FundingNonces,
+    pub(crate) vendor_nonces: FundingNonces,
+    pub(crate) claim_partial: PartialSignature,
+    pub(crate) vendor_wins_partial: PartialSignature,
+    pub(crate) vendor_half: Point,
+    pub(crate) vendor_wins_share: VerifiableShare,
+    pub(crate) buyer_wins_point: Point,
 }
 
+const AWAITING_MAGIC: &[u8; 4] = b"OBSA";
+
 impl VendorAwaitingSignatures {
+    pub fn funding_outpoint(&self) -> OutPoint {
+        self.contract.outpoint
+    }
+
+    /// A snapshot for durable storage. It holds the vendor's two unsent
+    /// partials and both parties' public nonces; the vendor's secret nonces
+    /// were consumed in round 2 and are not in it. Store it before sending
+    /// the [`VendorReply`], so a restart can still finish funding.
+    pub fn snapshot(&self) -> Vec<u8> {
+        let mut w = Writer::new(AWAITING_MAGIC, state::VERSION);
+        state::write_contract(&mut w, &self.contract);
+        self.buyer_nonces.write(&mut w);
+        self.vendor_nonces.write(&mut w);
+        w.partial(&self.claim_partial);
+        w.partial(&self.vendor_wins_partial);
+        w.point(&self.vendor_half);
+        self.vendor_wins_share.write(&mut w);
+        w.point(&self.buyer_wins_point);
+        w.finish()
+    }
+
+    /// Reload a [`Self::snapshot`] with the vendor's per-order secret. The
+    /// stored partials must verify as the vendor's own.
+    pub fn restore(bytes: &[u8], vendor_secret: &[u8; 32], ctx: &Context) -> Result<Self, Error> {
+        let mut r = Reader::new(bytes, AWAITING_MAGIC, state::VERSION)?;
+        let (contract, secret) = state::read_contract(&mut r, vendor_secret, Party::Vendor, ctx)?;
+        let buyer_nonces = FundingNonces::read(&mut r)?;
+        let vendor_nonces = FundingNonces::read(&mut r)?;
+        let claim_partial = r.partial()?;
+        let vendor_wins_partial = r.partial()?;
+        let vendor_half = r.point()?;
+        let vendor_wins_share = VerifiableShare::read(&mut r)?;
+        let buyer_wins_point = r.point()?;
+        r.finish()?;
+        state::check_half(&contract, &secret, Party::Vendor, &vendor_half)?;
+        let agg = AggNonces::new(&buyer_nonces, &vendor_nonces);
+        verify_counterparty_partial(
+            &contract,
+            Party::Vendor,
+            claim_partial,
+            &agg.claim,
+            &vendor_nonces.claim,
+            Spend::Claim,
+            None,
+        )?;
+        verify_counterparty_partial(
+            &contract,
+            Party::Vendor,
+            vendor_wins_partial,
+            &agg.vendor_wins,
+            &vendor_nonces.vendor_wins,
+            Spend::VendorWins,
+            Some(contract::adaptor_point(vendor_half, vendor_wins_share.point())?),
+        )?;
+        Ok(Self {
+            contract,
+            secret,
+            agg,
+            buyer_nonces,
+            vendor_nonces,
+            claim_partial,
+            vendor_wins_partial,
+            vendor_half,
+            vendor_wins_share,
+            buyer_wins_point,
+        })
+    }
+
     /// Finish funding on the vendor side.
     pub fn receive(self, signatures: &BuyerSignatures) -> Result<VendorEscrow, Error> {
         let contract = self.contract;

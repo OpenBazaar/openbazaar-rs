@@ -25,7 +25,7 @@ use std::time::{Duration, Instant};
 use bdk_wallet::chain::BlockId;
 use bdk_wallet::{KeychainKind, Update};
 use bitcoin::constants::genesis_block;
-use bitcoin::{Address, BlockHash, Network, OutPoint, ScriptBuf, Transaction, TxOut};
+use bitcoin::{Address, BlockHash, Network, OutPoint, Script, ScriptBuf, Transaction, TxOut};
 use tokio::sync::Notify;
 
 use crate::buyer_orders::now_secs;
@@ -284,6 +284,15 @@ impl ChainSource for FilterChain {
     fn address_txs(&self, address: &Address) -> Result<Vec<AddressTx>, String> {
         let script = address.script_pubkey();
         self.watch(vec![script.clone()]);
+        self.ready(std::slice::from_ref(&script))?;
+        Ok(self.shared.index().address_txs(&script))
+    }
+
+    fn script_txs(&self, script: &Script, from: u32) -> Result<Vec<AddressTx>, String> {
+        let script = script.to_owned();
+        if self.shared.index().watch_from([script.clone()], from) {
+            self.shared.wake.notify_one();
+        }
         self.ready(std::slice::from_ref(&script))?;
         Ok(self.shared.index().address_txs(&script))
     }

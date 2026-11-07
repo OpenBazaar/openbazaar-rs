@@ -133,9 +133,9 @@ impl Node {
         if let Err(err) = self.sync_buyer_wallet() {
             eprintln!("ob-node: wallet sync: {err}");
         }
+        let mut changed = self.expire_escrow_opens(crate::escrow_outbox::now_secs());
         let tip = self.chain.tip_height()?;
         let targets = self.watch_targets();
-        let mut changed = 0;
         for target in targets {
             let Ok(address) = address_for(&target.address, self.network) else {
                 continue;

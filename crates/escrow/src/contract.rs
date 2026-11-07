@@ -34,6 +34,9 @@ pub(crate) enum Role {
     Party,
     /// Moderator reviewing a letter: `ctx.tip` is the height it arrived.
     Moderator,
+    /// A party reloading its own stored state: the heights were checked at
+    /// funding and are not checked against `ctx.tip` again.
+    Restore,
 }
 
 impl Contract {
@@ -63,7 +66,7 @@ impl Contract {
             Role::Moderator if ctx.tip > terms.dispute_deadline => {
                 return Err(Error::DisputeWindowClosed);
             }
-            Role::Moderator => {}
+            Role::Moderator | Role::Restore => {}
         }
         let buyer = terms.key(Party::Buyer)?;
         let vendor = terms.key(Party::Vendor)?;
