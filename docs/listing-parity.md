@@ -16,38 +16,38 @@ These come first because they decide several rows below.
 
 ## Parity matrix
 
-Status: **have** = on main or in the seller PR; **now** = this work; **later** = designed here, built after; **won't** = deliberately not built.
+Status: **have** = on main or in the seller PR (#27); **built** = in the listing-parity PRs (#28 protocol, #30 node, #31 web shop); **built (editor later)** = signed, priced and shown to buyers, but the seller editor cannot set it yet; **later** = designed here, built after; **won't** = deliberately not built. The recorded product decisions are in [Decisions](#decisions).
 
 ### Quantities and stock
 
 | Feature | Amazon | eBay | Mercari | OpenBazaar | Notes |
 |---|---|---|---|---|---|
-| Quantity on hand | yes | yes | single item | have / now | v5 has one `stock`; v7 moves stock per variant. |
-| Low stock / sold out state | "Only 3 left" | "Last one", "Out of stock" | "Sold" | now | Client derives it from signed stock: 0 = sold out, at most 3 = low. Shown as "as of" the publish date. |
-| Per-order maximum | quantity limits | per-buyer limit | n/a | now | `max_per_order` in the signed listing; seller node enforces it again. A per-buyer limit is **won't**: buyers have no stable identity across orders by design. |
-| Quantity selector in cart and checkout | yes | yes | n/a | now | Capped at min(stock, max_per_order). |
-| Stock reserved at order time | yes | yes | yes | now | Seller node is the authority; see [Overselling](#overselling-policy). |
+| Quantity on hand | yes | yes | single item | have / built | v5 has one `stock`; v7 moves stock per variant. |
+| Low stock / sold out state | "Only 3 left" | "Last one", "Out of stock" | "Sold" | built | Client derives it from signed stock: 0 = sold out, at most 3 = low. The record carries no publish date, so it reads "as of the seller's last update". |
+| Per-order maximum | quantity limits | per-buyer limit | n/a | built | `max_per_order` in the signed listing, set in the editor; the seller node enforces it again across every line of the listing in one order. A per-buyer limit is **won't** (decided): it would need a buyer identity across orders, which this design does not have. |
+| Quantity selector in cart and checkout | yes | yes | n/a | built | Capped at min(stock, max_per_order). |
+| Stock reserved at order time | yes | yes | yes | built | Seller node is the authority; see [Overselling](#overselling-policy). |
 
 ### Variants
 
 | Feature | Amazon | eBay | Mercari | OpenBazaar | Notes |
 |---|---|---|---|---|---|
-| Multi-dimension options | variation themes (SizeColor…) | up to 5 aspects, 250 variations | no | now | Up to 3 axes, 16 values each, 100 variants. |
-| Per-variant SKU, price, stock | yes | yes | n/a | now | Price override in the listing's currency; SKU is seller text. |
-| Per-variant image | yes | per-aspect photos | n/a | now | Index into the listing's images. |
-| Per-variant weight | yes | yes | n/a | now | Grams; falls back to the package weight. |
-| Picker greys out unavailable combinations | yes | yes | n/a | now | Missing combination or zero stock. |
-| Stable variant ids across edits | child ASIN | variation SKU | n/a | now | Random 8-byte id, kept by the editor; orders name it. |
+| Multi-dimension options | variation themes (SizeColor…) | up to 5 aspects, 250 variations | no | built | Up to 3 axes, 16 values each, 100 variants. |
+| Per-variant SKU, price, stock | yes | yes | n/a | built | Price override in the listing's currency; SKU is seller text. |
+| Per-variant image | yes | per-aspect photos | n/a | built | Index into the listing's images. |
+| Per-variant weight | yes | yes | n/a | built (editor later) | Grams; falls back to the package weight. |
+| Picker greys out unavailable combinations | yes | yes | n/a | built | Missing combination or zero stock. |
+| Stable variant ids across edits | child ASIN | variation SKU | n/a | built | Random 8-byte id, kept by the editor; orders name it. |
 
 ### Item description
 
 | Feature | Amazon | eBay | Mercari | OpenBazaar | Notes |
 |---|---|---|---|---|---|
-| Condition grades | New, Renewed, Used (4) | New, Open box, Used, Refurbished grades, For parts | New, Like new, Good, Fair, Poor | now | Six grades: New, Open box, Like new, Good, Fair, For parts or not working. Mercari's "Poor" maps to For parts. |
-| Condition notes | yes | yes | in description | now | Short free text, `public_text`-checked. |
-| Category taxonomy | browse tree | category tree | category tree | have / now | Free-text category exists. v7 adds a fixed top-level taxonomy id; the free text stays as a subcategory. |
-| Item specifics (brand, model, size, color, MPN, GTIN/UPC/ISBN) | yes | yes, per category | brand, size | now | Up to 24 key/value pairs; well-known keys get typed checks (GTIN check digit). |
-| Search and filter on specifics, condition, price | yes | yes | yes | now | Client-side over the verified catalog. |
+| Condition grades | New, Renewed, Used (4) | New, Open box, Used, Refurbished grades, For parts | New, Like new, Good, Fair, Poor | built | Six grades: New, Open box, Like new, Good, Fair, For parts or not working. Mercari's "Poor" maps to For parts. |
+| Condition notes | yes | yes | in description | built | Short free text, `public_text`-checked. |
+| Category taxonomy | browse tree | category tree | category tree | have / built (editor later) | Free-text category exists. v7 adds a fixed top-level taxonomy id; the free text stays as a subcategory. |
+| Item specifics (brand, model, size, color, MPN, GTIN/UPC/ISBN) | yes | yes, per category | brand, size | built (editor later) | Up to 24 key/value pairs; well-known keys get typed checks (GTIN check digit). Shown on the listing page. |
+| Search and filter on specifics, condition, price | yes | yes | yes | later | Client-side over the verified catalog. Search covers title, category, description and seller today. |
 | Product catalog matching (one page, many sellers) | yes | product IDs | auto-fill | have | `product` key and "also sold by". |
 
 ### Media
@@ -55,34 +55,34 @@ Status: **have** = on main or in the seller PR; **now** = this work; **later** =
 | Feature | Amazon | eBay | Mercari | OpenBazaar | Notes |
 |---|---|---|---|---|---|
 | Multiple photos | 9 | 24 | 12 | have | v6: 8 images by hash. Raising it to 12 is a one-line change once media chunking lands. |
-| Reorder, cover image | yes | yes | yes | have / now | The first image is the cover; the editor reorders. |
-| Zoom | yes | yes | yes | now | Lightbox in the buyer view. |
+| Reorder, cover image | yes | yes | yes | have / later | The first image is the cover; reordering in the editor is later. |
+| Zoom | yes | yes | yes | later | Lightbox in the buyer view. |
 | Video | yes | 1 video | 1 video | later | Media cap is 2 MiB per object and the loopback HTTP body cap is 72 KiB; video needs chunked, content-addressed media first. |
 
 ### Pricing and promotions
 
 | Feature | Amazon | eBay | Mercari | OpenBazaar | Notes |
 |---|---|---|---|---|---|
-| Compare-at / list price | reference price strikethrough | "Was" price (STP) | n/a | now | Signed `compare_at`; must be above the price. The client shows the strikethrough without a percentage claim beyond what is signed. |
-| Scheduled sale price | price discounts up to 30 days | markdown sale | time-limited sale | now | Signed percentage off every variant, with start and end days. The client applies it by date; the seller node applies it by its own clock at order time. |
-| Multi-buy / volume discount | quantity discounts (B2B) | volume pricing | bundle offers | now | Up to 4 signed tiers: buy at least N, get P% off. |
-| Coupons / promo codes | coupons | coded coupons | promo codes | now | `OBCP` record signed by the store key and kept on the seller's node; the buyer types the code and sees the discount in the seller's quote before paying. |
-| Make an offer, accept / counter / decline | n/a | Best Offer | Offers | now (records), later (transport polish) | Buyer sends a bid letter; seller answers with a store-signed offer the buyer can check offline. Auto-accept and auto-decline floors stay private on the seller node. |
-| Price drop to watchers | n/a | send offers to watchers | offer to likers, promote | now (price drop), won't (targeted) | Watchlists stay on the buyer's device, so the seller cannot know who watches. The buyer's client notices a lower signed price on refresh and tells its own user. Targeted offers to watchers would need the seller to learn watchers: **won't**. |
+| Compare-at / list price | reference price strikethrough | "Was" price (STP) | n/a | built (editor later) | Signed `compare_at`; must be above the price. The client shows the strikethrough without a percentage claim beyond what is signed. |
+| Scheduled sale price | price discounts up to 30 days | markdown sale | time-limited sale | built (editor later) | Signed percentage off every variant, with start and end days. The client applies it by date; the seller node applies it by its own clock at order time. |
+| Multi-buy / volume discount | quantity discounts (B2B) | volume pricing | bundle offers | built (editor later) | Up to 4 signed tiers: buy at least N, get P% off. |
+| Coupons / promo codes | coupons | coded coupons | promo codes | built | `OBCP` record signed by the store key and kept on the seller's node; the buyer types the code at checkout and sees the discount in the seller's quote before paying. Sellers manage codes through `/coupons`; a coupon screen in the app is later. |
+| Make an offer, accept / counter / decline | n/a | Best Offer | Offers | built (records and order checks), later (sending bids and answers) | Buyer sends a bid letter; seller answers with a store-signed offer the buyer can check offline. Auto-accept and auto-decline floors stay private on the seller node. |
+| Price drop to watchers | n/a | send offers to watchers | offer to likers, promote | later (device-local notice), won't (targeted) | Not built. When built, the watchlist stays on the buyer's device and the buyer's own client notices a lower signed price on refresh; the seller is never told who watches. Notices sent by the seller to watchers would point at those buyers: **won't** (decided). |
 | Smart pricing (automatic drops) | automate pricing | n/a | smart pricing | later | A seller-node schedule that re-signs the listing. Small once republish exists. |
 
 ### Shipping
 
 | Feature | Amazon | eBay | Mercari | OpenBazaar | Notes |
 |---|---|---|---|---|---|
-| Package weight and dimensions | yes | yes | weight tiers | now | Grams and millimetres, signed. Used for display and future rate tables. |
-| Multiple shipping services with prices | yes | up to 4 domestic + 5 intl | prepaid labels | now | Up to 6 services: name, price, extra-item price, delivery estimate, ships-to regions. |
-| Free shipping threshold | yes | promoted | free shipping option | have / now | v5 had a sats threshold; v7 adds it in fiat. |
-| Handling time | yes | yes | ships within N days | now | Days, signed. |
-| Ships-to regions | yes | yes | domestic | have / now | Store-level country list exists; services name regions (country codes or "worldwide"). |
-| Combined shipping (one seller, many items) | yes | combined shipping rules | bundles | now | Per service: first item at `price`, each extra item at `extra_item`; one package per seller in the cart. |
+| Package weight and dimensions | yes | yes | weight tiers | built (editor later) | Grams and millimetres, signed. Used for display and future rate tables. |
+| Multiple shipping services with prices | yes | up to 4 domestic + 5 intl | prepaid labels | built | Up to 6 services: name, price, extra-item price, delivery estimate, ships-to regions. |
+| Free shipping threshold | yes | promoted | free shipping option | have / built (editor later) | v5 had a sats threshold; v7 adds it in fiat. |
+| Handling time | yes | yes | ships within N days | built (editor later) | Days, signed. |
+| Ships-to regions | yes | yes | domestic | have / built (editor later) | Store-level country list exists; services name regions (country codes or "worldwide"). |
+| Combined shipping (one seller, many items) | yes | combined shipping rules | bundles | built | Per service: first item at `price`, each extra item at `extra_item`; one package per seller in the cart. |
 | Digital delivery | Kindle etc. | digital goods | n/a | have | `ListingKind::Digital`; no shipping. |
-| Local pickup | n/a | local pickup | n/a | now (opt-in, coarse) | See [Local pickup](#local-pickup). Region names only; meeting arranged in private messages. |
+| Local pickup | n/a | local pickup | n/a | built (opt-in, coarse) | See [Local pickup](#local-pickup). A city or region only, never a street address (decided); meeting arranged in private messages. |
 | Shipping labels, tracking integration | yes | yes | yes | won't | Carrier APIs would learn both parties. A tracking number can go in the private order reply. |
 
 ### Policies
@@ -90,19 +90,19 @@ Status: **have** = on main or in the seller PR; **now** = this work; **later** =
 | Feature | Amazon | eBay | Mercari | OpenBazaar | Notes |
 |---|---|---|---|---|---|
 | Store return policy | A-to-z | business policies | platform-wide | have | Store record text. |
-| Per-listing returns override | yes | per listing | n/a | now | Signed: no returns, or N days with who pays return shipping. Absent = store policy. |
+| Per-listing returns override | yes | per listing | n/a | built (editor later) | Signed: no returns, or N days with who pays return shipping. Absent = store policy. |
 | Buyer protection | A-to-z guarantee | Money Back Guarantee | platform | have | Moderated escrow (testnet4). |
 
 ### Buyer side
 
 | Feature | Amazon | eBay | Mercari | OpenBazaar | Notes |
 |---|---|---|---|---|---|
-| Watchlist / favorites | lists | watchlist | likes | now | Device-local, never sent anywhere. |
-| Saved searches | n/a | saved searches | saved searches | now | Device-local; matches are counted on refresh. |
-| Similar items | yes | yes | yes | now | Client-side: same category and overlapping specifics. |
-| Notify me when back in stock | yes | n/a | n/a | now | Device-local, same mechanism as price drops. |
-| Reviews tied to completed orders | verified purchase | feedback | ratings | now | Pseudonymous per-order review keys; see [Reviews](#reviews). |
-| Seller ratings | seller feedback | feedback score | seller rating | now | Aggregated on the client from verified reviews. |
+| Watchlist / favorites | lists | watchlist | likes | have / later | "Save for later" is device-local and never sent anywhere. Watching for changes is later. |
+| Saved searches | n/a | saved searches | saved searches | later | Device-local; matches are counted on refresh. |
+| Similar items | yes | yes | yes | later | Client-side: same category and overlapping specifics. |
+| Notify me when back in stock | yes | n/a | n/a | later | Device-local, same mechanism as price-drop notices. |
+| Reviews tied to completed orders | verified purchase | feedback | ratings | built (records, keys, receipts), next (posting and display) | Pseudonymous per-order review keys; the seller signs a receipt on payment and the buyer's node keeps it. See [Reviews](#reviews). |
+| Seller ratings | seller feedback | feedback score | seller rating | next, with reviews | Aggregated on the client from verified reviews. |
 | Q&A on listings | yes | ask a question | comments | later | Private questions already work through order mail once messaging lands; public Q&A needs a moderation story. |
 
 ### Listing lifecycle
@@ -110,14 +110,14 @@ Status: **have** = on main or in the seller PR; **now** = this work; **later** =
 | Feature | Amazon | eBay | Mercari | OpenBazaar | Notes |
 |---|---|---|---|---|---|
 | Create, edit, delete | yes | yes | yes | have | Seller PR. |
-| Drafts | yes | yes | drafts | now | Kept on the seller node, never signed or published. |
-| Duplicate listing | "copy" | sell similar | n/a | now | New listing id, new variant ids. |
-| Bulk edit (price, stock, pause) | flat files | bulk edit | n/a | now | One request, one re-sign per listing. |
+| Drafts | yes | yes | drafts | later | Kept on the seller node, never signed or published. |
+| Duplicate listing | "copy" | sell similar | n/a | later | New listing id, new variant ids. |
+| Bulk edit (price, stock, pause) | flat files | bulk edit | n/a | later | One request, one re-sign per listing. |
 | Scheduled listing, relist | n/a | schedule, relist | relist | later | Needs a node scheduler; relist is just "set stock" today. |
-| Vacation mode | yes | time away | vacation | now | Store-level flag in the node; listings are served as paused and orders refused with a message. Signed in the next store record version (later); until then a paused listing is republished with stock 0 and `away` availability. |
-| Pre-order / made-to-order | pre-order | n/a | n/a | now | Availability: in stock, pre-order (ships on a day), made to order (N days). |
-| Bundles / lots | bundles | lots | bundles | now (lots), later (cross-listing bundles) | `lot_size`: one unit is N pieces. Bundles of different listings at one price are a coupon scoped to listings with a minimum subtotal. |
-| Auctions | n/a | auction format | n/a | later | See [Auctions](#auctions). |
+| Vacation mode | yes | time away | vacation | later | Not built. Planned as a store-level flag in the node; listings are served as paused and orders refused with a message. Signed in the next store record version (later); until then a paused listing is republished with stock 0 and `away` availability. |
+| Pre-order / made-to-order | pre-order | n/a | n/a | built (editor later) | Availability: in stock, pre-order (ships on a day), made to order (N days). |
+| Bundles / lots | bundles | lots | bundles | built (lots, editor later), later (cross-listing bundles) | `lot_size`: one unit is N pieces. Bundles of different listings at one price are a coupon scoped to listings with a minimum subtotal. |
+| Auctions | n/a | auction format | n/a | later | Decided: no seller-run auctions for now. See [Auctions](#auctions). |
 
 ## Design
 
@@ -222,11 +222,11 @@ A review key is derived per order from the buyer's letter root (`m/1984'/c'/4'/0
 
 A client counts a review as a verified purchase when the receipt verifies under the store key, the review verifies under the receipt's review key, and no other review uses the same key (one review per receipt; a later one by the same key replaces it). Dates are days, not timestamps, and the client waits a random 0 to 3 days before publishing, so the review can't be matched to a payment on chain by time.
 
-What this does not stop, stated plainly: the seller learns which of their orders wrote which review (they issued the receipt to that order), which is no more than they already know about their own buyers. A seller can mint receipts for keys they control and review themselves; a client can't tell that apart from real buyers without payment proofs, which would link reviews to the chain. A seller that refuses receipts gets no reviews at all, which the client shows as "no verified reviews" next to the order count. Reviews are published with the seller's catalog and by the buyer's own node; until replication lands, a seller could drop reviews it serves. That is the main thing to fix later, and the main open decision.
+What this does not stop, stated plainly: the seller learns which of their orders wrote which review (they issued the receipt to that order), which is no more than they already know about their own buyers. A seller can mint receipts for keys they control and review themselves; a client can't tell that apart from real buyers without payment proofs, which would link reviews to the chain. A seller that refuses receipts gets no reviews at all, which the client shows as "no verified reviews" next to the order count. Reviews live with the seller's catalog, and the buyer's node checks each one against its signed receipt (decided; there is no third-party review relay). Until catalog replication lands, a seller could drop reviews it serves; that is the main thing to fix later. Posting and display are the next build.
 
 ### Overselling policy
 
-The catalog is replicated and readable while the seller is offline, so stock shown to buyers is "as of last publish", and the client says so ("8 left as of 3 Nov").
+The catalog is replicated and readable while the seller is offline, so stock shown to buyers is "as of last publish", and the client says so ("8 in stock as of the seller's last update"; the record carries no publish date to show).
 
 1. **The seller's node is the only authority on stock.** It keeps a shelf count per variant (`stock.obv`): what the seller last set, less what has sold. The signed listing publishes the shelf count; units held for unpaid quotes are not taken off it, because a hold lasts an hour.
 2. **Reserve on order receipt.** When the node reads an order letter (in arrival order), it checks the listing id, the variant id, `max_per_order`, availability and live stock. If the units are there, it reserves them for the payment window (the quote's expiry, 1 hour by default) and replies with the quote. If not, it replies "unavailable" before anything is paid.
@@ -241,7 +241,7 @@ The seller sets every amount in one fiat currency per listing. At order time the
 
 ### Local pickup
 
-Off by default, per listing. The only public data is a region name that passes `check_region` (a state, a country, or a city name on its own), never a neighbourhood, a street or a map pin. The client shows "Local pickup available in Oregon" and nothing finer. Choosing pickup puts no address in the order; the time and place are agreed in private messages, which are sealed per order. Sellers are warned in the editor that meeting in person reveals them to the buyer.
+Off by default, per listing. The only public data is a region name that passes `check_region` (a state, a country, or a city name on its own), never a neighbourhood, a street or a map pin. The client shows "Local pickup available in Oregon" and nothing finer. Choosing pickup puts no address in the order; the time and place are agreed in private messages, which are sealed per order. The order never carries a street address. The editor asks for a city or region only, and the buyer's checkout says that meeting in person shows each of them to the other.
 
 ### Auctions
 
@@ -251,7 +251,7 @@ Off by default, per listing. The only public data is a region name that passes `
 - The seller's node is often offline, so bids arrive late or in batches, and "ends at 20:00" can't be enforced by anyone else.
 - A binding bid needs a deposit or escrow per bidder, and on-chain deposits link bidders to the chain.
 
-A sealed-bid (second-price) auction, where bids are commitments revealed after the close and the seller signs the result, avoids sniping and most clock issues, but it still lets the seller shill-bid and needs deposits. Best Offer plus a scheduled sale price covers most of what sellers use auctions for. This is a product decision; see [Open decisions](#open-decisions).
+A sealed-bid (second-price) auction, where bids are commitments revealed after the close and the seller signs the result, avoids sniping and most clock issues, but it still lets the seller shill-bid and needs deposits. Best Offer plus a scheduled sale price covers most of what sellers use auctions for. Decided: later, with no seller-run auctions for now; see [Decisions](#decisions).
 
 ### Node APIs (seller, paired client only)
 
@@ -261,12 +261,13 @@ Building on the seller PR's `own_listings`:
 - `GET/POST /coupons`, `DELETE /coupons/{code}`. (Built.)
 - `POST /checkout` lines take `variant`, packages take `service` (an index or `"pickup"`) and `coupon`. (Built.)
 - Later: `POST /store/listings/{id}/duplicate`, bulk edit, drafts, `GET /offers`, `POST /offers/{id}/answer`.
-- `GET /stores/{key}/reviews`; buyer: `POST /orders/{id}/review`.
+- Next, with reviews: `GET /stores/{key}/reviews`; buyer: `POST /orders/{id}/review`.
+- Later: vacation mode (a store-level pause).
 
 ### Client
 
-- **Seller editor**: condition, specifics, axes and values, a variant grid (SKU, price, stock, image, weight per row) generated from the axes, shipping services, pickup toggle, returns override, sale and tiers, offers toggle; drafts, duplicate, bulk edit.
-- **Buyer**: variant picker that greys out missing or sold-out combinations and swaps price, stock and image; quantity selector; shipping service choice in the cart; coupon field; make-an-offer sheet; condition and specifics on the listing page; strikethrough and sale badge; low-stock and sold-out badges with "as of"; watchlist, saved searches, back-in-stock and price-drop notices on the device; similar items; reviews and seller rating.
+- **Seller editor** (built): condition and condition note, axes and values, a variant grid (SKU, price, stock, image per row) generated from the axes, per-order limit, shipping services (price, extra-item price, delivery days), pickup area. Later: specifics, taxonomy, per-variant weight, package weight and dimensions, handling time, ships-to regions, free-shipping threshold, returns override, compare-at, sale and tiers, availability, lot size, offers toggle, a coupon screen; drafts, duplicate, bulk edit, vacation mode.
+- **Buyer** (built): variant picker that greys out missing combinations and strikes through sold-out values, with price and stock for the chosen variant; quantity selector capped by stock and the per-order limit; bag lines per variant; shipping service or local pickup and a coupon field at checkout; condition, specifics, shipping and returns on the listing page; strikethrough and sale badge; low-stock and sold-out notes "as of the seller's last update"; variant labels, oversold refund notice and kept receipts on orders. Next: reviews and seller rating. Later: variant image swap, make-an-offer sheet, zoom, watching saved items, saved searches, back-in-stock and price-drop notices on the device, similar items, the native app checkout.
 - **Fiat display**: amounts shown in the listing's currency, converted to the viewer's chosen currency with the node's rates when they differ, and sats only as the payment amount.
 
 ## Build order
@@ -276,9 +277,12 @@ Building on the seller PR's `own_listings`:
 3. **Seller UI**: the editor and listing management additions.
 4. **Buyer UI**: picker, cart, checkout, coupons, offers, watchlist and reviews.
 
-## Open decisions
+Steps 1 and 2 are in #28 and #30, except sending offers and reviews. Steps 3 and 4 are in #31 as listed under [Client](#client). Reviews are next, once #27 merges and this stack is rebased onto main.
 
-1. **Auctions**: later (recommended; Best Offer and scheduled sales now), or seller-run sealed-bid auctions now with the shill-bidding caveat.
-2. **Where reviews live** until catalog replication exists: with the seller's catalog plus the buyer's node (recommended; a seller can drop reviews it serves), or also pushed to an opt-in third-party review relay (like labelers), which resists censorship but is another service to run.
-3. **Local pickup**: opt-in coarse region as above (recommended), or leave it out entirely.
-4. **Per-buyer purchase limits**: won't build (recommended; it needs a buyer identity), or limit per checkout only, which is what `max_per_order` already does.
+## Decisions
+
+1. **Auctions**: later. Best Offer and scheduled sale prices cover what sellers use auctions for. No seller-run auctions, sealed-bid or otherwise, for now.
+2. **Reviews**: they live with the seller's catalog and the buyer's node checks each one against the store-signed receipt. No third-party review relay.
+3. **Local pickup**: kept, opt-in, as a city or region only. The app never collects a street address for pickup.
+4. **Per-buyer limits**: won't build. `max_per_order` caps each order; a per-buyer limit would need a buyer identity.
+5. **Vacation mode and price-drop notices**: later. Notices sent by the seller to watchers would point at those buyers, so a price-drop notice, when built, comes from the buyer's own client.
