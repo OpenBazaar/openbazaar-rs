@@ -12,6 +12,18 @@ import { deviceKey, signedHeaders, type DeviceKey } from "./signing.ts";
 // - Otherwise: the app's own node, as before.
 
 export type NodeTarget = "local" | "home";
+
+// The native app reaches its paired home node through src/native/session.ts.
+type HomeFetch = (path: string, init: RequestInit) => Promise<Response>;
+let nativeHomeFetch: HomeFetch | null = null;
+
+export function setNativeHomeFetch(fetcher: HomeFetch | null): void {
+  nativeHomeFetch = fetcher;
+}
+
+export function homeFetch(): HomeFetch | null {
+  return nativeHomeFetch;
+}
 const TARGET_KEY = "ob-node-target";
 const DEVICE_KEY = "ob-home-device";
 

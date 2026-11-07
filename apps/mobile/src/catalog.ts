@@ -1,6 +1,6 @@
 import { verifiedListings, verifiedStore, type StoreSummary } from "./records.ts";
 import type { LabelerLabel } from "./safety/filter";
-import { servedByHomeNode, signedFetch, targetPrefix } from "./homeNode/transport.ts";
+import { homeFetch, servedByHomeNode, signedFetch, targetPrefix } from "./homeNode/transport.ts";
 import { lnBlockedReason, lnStoreKeys, parseLnInvoice, type LnInvoice } from "./lightning.ts";
 
 // The shop dials only this origin. A query parameter, settings field, seed,
@@ -427,7 +427,7 @@ function parseLabelers(value: unknown): LabelerState {
 let pairing: Promise<string> | null = null;
 
 async function pairingToken(): Promise<string> {
-  if (servedByHomeNode()) {
+  if (servedByHomeNode() || homeFetch()) {
     return "";
   }
   if (typeof DESKTOP_TOKEN === "string" && TOKEN_PATTERN.test(DESKTOP_TOKEN)) {
@@ -552,6 +552,8 @@ export class NodeApiError extends Error {
 // The proxy to a home node is paired even for endpoints that are open locally.
 async function nodeFetch(path: string, init: RequestInit): Promise<Response> {
   if (servedByHomeNode()) return signedFetch(path, init);
+  const native = homeFetch();
+  if (native) return native(path, init);
   const prefix = targetPrefix();
   if (!prefix) return fetch(`${NODE_ORIGIN}${path}`, init);
   const headers = new Headers(init.headers);

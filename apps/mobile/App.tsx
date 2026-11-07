@@ -47,6 +47,7 @@ import { readSafety, writeSafety } from "./src/safety/storage";
 
 import { NativeNetworkBadge, NativeOrderPayment, NativeWallet } from "./src/NativePayments";
 import { NodePaymentsProvider } from "./src/marketplace/NodePayments";
+import { HomeNodeApp } from "./src/native/HomeNodeApp";
 
 type SortKey = "relevance" | "price-asc" | "price-desc" | "newest";
 type Filters = {
@@ -145,7 +146,12 @@ function addressReady(input: AddressInput): boolean {
   );
 }
 
+// The native app manages a paired home node; the shop below is its marketplace.
 export default function App() {
+  return <HomeNodeApp Market={ShopApp} />;
+}
+
+function ShopApp() {
   const { width } = useWindowDimensions();
   const compact = width < 860;
   const [catalog, setCatalog] = useState<ShopCatalog | null>(null);

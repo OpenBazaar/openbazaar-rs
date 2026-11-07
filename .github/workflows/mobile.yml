@@ -1,0 +1,349 @@
+name: mobile
+
+# Builds the phone app that manages a home node: the Android APK (with the
+# embedded Arti library from crates/mobile-tor) and an iOS simulator build.
+# No Expo account or EAS is involved: `expo prebuild` writes the native
+# projects and Gradle / Xcode build them here.
+#
+# Pull requests build both and keep them as workflow artifacts. A v* tag, or a
+# manual run with `publish` checked, also signs a release APK and attaches
+# OpenBazaar_<version>_android.apk and its .sha256 to the GitHub release
+# v<version>. On a tag the release is the one release.yml creates; this
+# workflow waits for it and creates it only if it never appears.
+#
+# APK signing uses these repository secrets:
+#   ANDROID_KEYSTORE_BASE64      base64 of the upload .jks keystore
+#   ANDROID_KEYSTORE_PASSWORD    keystore password
+#   ANDROID_KEY_ALIAS            key alias inside the keystore
+#   ANDROID_KEY_PASSWORD         key password
+# Without them a throwaway key is generated, and the run warns: phones cannot
+# update an APK signed with a different key, so never publish one for real.
+#
+# An App Store .ipa is built only when these secrets exist:
+#   APPLE_IOS_CERTIFICATE           base64 of the Apple Distribution .p12
+#   APPLE_IOS_CERTIFICATE_PASSWORD  password of that .p12
+#   APPLE_IOS_PROVISIONING_PROFILE  base64 of the App Store .mobileprovision
+#                                   for app.openbazaar.mobile
+#   APPLE_TEAM_ID                   10-character team ID
+
+on:
+  pull_request:
+    paths:
+      - "apps/mobile/**"
+      - "crates/mobile-tor/**"
+      - "scripts/build-mobile-tor.sh"
+      - "Cargo.lock"
+      - ".github/workflows/mobile.yml"
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "App version (semver, e.g. 0.1.0-alpha.1)"
+        required: true
+        default: "0.1.0-dev"
+      publish:
+        description: "Attach the signed APK to the GitHub release v<version>"
+        type: boolean
+        default: false
+
+concurrency:
+  group: mobile-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_type == 'tag' && github.ref_name || '' }}
+  PUBLISH: ${{ startsWith(github.ref, 'refs/tags/v') || inputs.publish == true }}
+  NDK_VERSION: 27.1.12297006
+  CARGO_PROFILE_RELEASE_DEBUG: "0"
+
+jobs:
+  test:
+    name: typecheck and tests
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/mobile/package-lock.json
+      - run: npm ci
+        working-directory: apps/mobile
+      - run: npm run typecheck
+        working-directory: apps/mobile
+      - run: npm test
+        working-directory: apps/mobile
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: mobile-tor-host
+      - run: cargo test --locked -p ob-mobile-tor
+
+  android:
+    name: android apk
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/mobile/package-lock.json
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,x86_64-linux-android
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: mobile-tor-android
+      - name: install the NDK
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;${NDK_VERSION}" >/dev/null
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/${NDK_VERSION}" >> "$GITHUB_ENV"
+      - name: set the app version
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${VERSION#v}"
+          [ -n "$version" ] && node scripts/version.mjs set "$version"
+          version="$(node scripts/version.mjs)"
+          echo "APP_VERSION=${version}" >> "$GITHUB_ENV"
+          node -e '
+            const fs = require("fs"); const path = "apps/mobile/app.json";
+            const app = JSON.parse(fs.readFileSync(path, "utf8"));
+            app.expo.android.versionCode = Number(process.env.GITHUB_RUN_NUMBER);
+            fs.writeFileSync(path, JSON.stringify(app, null, 2) + "\n");'
+      - name: build the Tor library
+        run: scripts/build-mobile-tor.sh android arm64-v8a x86_64
+      - run: npm ci
+        working-directory: apps/mobile
+      - run: npx expo prebuild --platform android --no-install
+        working-directory: apps/mobile
+      - name: build the release APK
+        working-directory: apps/mobile/android
+        run: ./gradlew assembleRelease --no-daemon -PreactNativeArchitectures=arm64-v8a,x86_64
+      - name: sign the APK
+        shell: bash
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          keystore="$RUNNER_TEMP/release.jks"
+          if [ -n "$ANDROID_KEYSTORE_BASE64" ]; then
+            echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$keystore"
+          else
+            echo "::warning title=Unofficial APK signature::ANDROID_KEYSTORE_BASE64 is not set, so this APK is signed with a key generated for this run only. Phones that installed an APK signed with any other key cannot update to it. Do not publish it as a real release."
+            ANDROID_KEYSTORE_PASSWORD="$(openssl rand -hex 16)"
+            ANDROID_KEY_PASSWORD="$ANDROID_KEYSTORE_PASSWORD"
+            ANDROID_KEY_ALIAS=ci
+            keytool -genkeypair -keystore "$keystore" -storepass "$ANDROID_KEYSTORE_PASSWORD" \
+              -keypass "$ANDROID_KEY_PASSWORD" -alias "$ANDROID_KEY_ALIAS" -keyalg RSA -keysize 4096 \
+              -validity 10000 -dname "CN=OpenBazaar CI (unofficial)"
+          fi
+          tools="$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 | sort -V | tail -1)"
+          out="OpenBazaar_${APP_VERSION}_android.apk"
+          "$tools/apksigner" sign --ks "$keystore" --ks-pass env:ANDROID_KEYSTORE_PASSWORD \
+            --ks-key-alias "$ANDROID_KEY_ALIAS" --key-pass env:ANDROID_KEY_PASSWORD \
+            --out "$out" apps/mobile/android/app/build/outputs/apk/release/app-release.apk
+          "$tools/apksigner" verify --print-certs "$out"
+          sha256sum "$out" > "$out.sha256"
+          cat "$out.sha256"
+          rm -f "$keystore"
+          echo "APK=$out" >> "$GITHUB_ENV"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-apk
+          path: |
+            ${{ env.APK }}
+            ${{ env.APK }}.sha256
+          if-no-files-found: error
+      - name: attach the APK to the GitHub release
+        if: env.PUBLISH == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          tag="v${APP_VERSION}"
+          # On a tag, release.yml creates the release once its slower builds finish.
+          tries=1
+          [ "${GITHUB_REF_TYPE}" = tag ] && tries=60
+          for i in $(seq "$tries"); do
+            if gh release view "$tag" >/dev/null 2>&1; then
+              for _ in 1 2 3; do
+                gh release upload "$tag" "$APK" "$APK.sha256" --clobber && exit 0
+                sleep 20
+              done
+              exit 1
+            fi
+            [ "$i" -lt "$tries" ] && sleep 60
+          done
+          flags=()
+          case "$APP_VERSION" in *-*) flags+=(--prerelease) ;; esac
+          gh release create "$tag" "$APK" "$APK.sha256" --target "$GITHUB_SHA" \
+            --title "OpenBazaar ${APP_VERSION} (testnet4)" \
+            --notes "OpenBazaar ${APP_VERSION} for Android, to manage your home node from your phone. It runs on Bitcoin testnet4, not mainnet." \
+            "${flags[@]}" \
+            || gh release upload "$tag" "$APK" "$APK.sha256" --clobber
+
+  ios-simulator:
+    name: ios simulator build
+    needs: test
+    runs-on: macos-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/mobile/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios-sim
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: mobile-tor-ios-sim
+      - name: build the Tor library
+        run: scripts/build-mobile-tor.sh ios aarch64-apple-ios-sim
+      - run: npm ci
+        working-directory: apps/mobile
+      - run: npx expo prebuild --platform ios
+        working-directory: apps/mobile
+      - name: build for the simulator
+        working-directory: apps/mobile/ios
+        run: |
+          set -euo pipefail
+          xcodebuild -workspace OpenBazaar.xcworkspace -scheme OpenBazaar -configuration Release \
+            -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' -derivedDataPath build \
+            ARCHS=arm64 CODE_SIGNING_ALLOWED=NO COMPILER_INDEX_STORE_ENABLE=NO build
+          ditto -c -k --keepParent build/Build/Products/Release-iphonesimulator/OpenBazaar.app "$GITHUB_WORKSPACE/OpenBazaar-simulator.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ios-simulator-app
+          path: OpenBazaar-simulator.zip
+          if-no-files-found: error
+
+  ios-ipa:
+    name: ios app store build
+    needs: test
+    runs-on: macos-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    env:
+      APPLE_IOS_CERTIFICATE: ${{ secrets.APPLE_IOS_CERTIFICATE }}
+      APPLE_IOS_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_IOS_CERTIFICATE_PASSWORD }}
+      APPLE_IOS_PROVISIONING_PROFILE: ${{ secrets.APPLE_IOS_PROVISIONING_PROFILE }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+    steps:
+      - name: check for signing secrets
+        id: secrets
+        run: |
+          if [ -n "$APPLE_IOS_CERTIFICATE" ] && [ -n "$APPLE_IOS_PROVISIONING_PROFILE" ] && [ -n "$APPLE_TEAM_ID" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No APPLE_IOS_* secrets, so no .ipa is built."
+          fi
+      - if: steps.secrets.outputs.present == 'true'
+        uses: actions/checkout@v4
+      - if: steps.secrets.outputs.present == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/mobile/package-lock.json
+      - if: steps.secrets.outputs.present == 'true'
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios
+      - if: steps.secrets.outputs.present == 'true'
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: mobile-tor-ios
+      - name: set the app version
+        if: steps.secrets.outputs.present == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${VERSION#v}"
+          [ -n "$version" ] && node scripts/version.mjs set "$version"
+          version="$(node scripts/version.mjs)"
+          echo "APP_VERSION=${version}" >> "$GITHUB_ENV"
+          # The App Store takes only numeric versions, so 0.1.0-alpha.1 ships as 0.1.0.
+          node -e '
+            const fs = require("fs"); const path = "apps/mobile/app.json";
+            const app = JSON.parse(fs.readFileSync(path, "utf8"));
+            app.expo.ios.version = process.argv[1].split(/[-+]/)[0];
+            app.expo.ios.buildNumber = process.env.GITHUB_RUN_NUMBER;
+            fs.writeFileSync(path, JSON.stringify(app, null, 2) + "\n");' "$version"
+      - name: install the signing certificate and profile
+        if: steps.secrets.outputs.present == 'true'
+        run: |
+          set -euo pipefail
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          password="$(openssl rand -hex 16)"
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 3600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          echo "$APPLE_IOS_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/dist.p12"
+          security import "$RUNNER_TEMP/dist.p12" -P "$APPLE_IOS_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$keychain"
+          security set-key-partition-list -S apple-tool:,apple: -k "$password" "$keychain"
+          security list-keychains -d user -s "$keychain" login.keychain-db
+          profile="$RUNNER_TEMP/app.mobileprovision"
+          echo "$APPLE_IOS_PROVISIONING_PROFILE" | base64 --decode > "$profile"
+          uuid="$(security cms -D -i "$profile" | plutil -extract UUID raw -)"
+          mkdir -p "$HOME/Library/MobileDevice/Provisioning Profiles"
+          cp "$profile" "$HOME/Library/MobileDevice/Provisioning Profiles/$uuid.mobileprovision"
+          echo "PROFILE_UUID=$uuid" >> "$GITHUB_ENV"
+          rm -f "$RUNNER_TEMP/dist.p12"
+      - name: build the Tor library
+        if: steps.secrets.outputs.present == 'true'
+        run: scripts/build-mobile-tor.sh ios aarch64-apple-ios
+      - if: steps.secrets.outputs.present == 'true'
+        run: npm ci && npx expo prebuild --platform ios
+        working-directory: apps/mobile
+      - name: archive and export the .ipa
+        if: steps.secrets.outputs.present == 'true'
+        working-directory: apps/mobile/ios
+        run: |
+          set -euo pipefail
+          xcodebuild -workspace OpenBazaar.xcworkspace -scheme OpenBazaar -configuration Release \
+            -destination 'generic/platform=iOS' -archivePath build/OpenBazaar.xcarchive \
+            CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM="$APPLE_TEAM_ID" CODE_SIGN_IDENTITY="Apple Distribution" \
+            PROVISIONING_PROFILE_SPECIFIER="$PROFILE_UUID" COMPILER_INDEX_STORE_ENABLE=NO archive
+          cat > build/ExportOptions.plist <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+            <key>method</key><string>app-store-connect</string>
+            <key>teamID</key><string>${APPLE_TEAM_ID}</string>
+            <key>signingStyle</key><string>manual</string>
+            <key>provisioningProfiles</key><dict><key>app.openbazaar.mobile</key><string>${PROFILE_UUID}</string></dict>
+          </dict></plist>
+          EOF
+          xcodebuild -exportArchive -archivePath build/OpenBazaar.xcarchive \
+            -exportOptionsPlist build/ExportOptions.plist -exportPath build/ipa
+          mv build/ipa/*.ipa "$GITHUB_WORKSPACE/OpenBazaar_${APP_VERSION}_ios.ipa"
+      - if: steps.secrets.outputs.present == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-ipa
+          path: OpenBazaar_*_ios.ipa
+          if-no-files-found: error

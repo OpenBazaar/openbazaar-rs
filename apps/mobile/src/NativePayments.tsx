@@ -78,7 +78,7 @@ function Copy({ label, value }: { label: string; value: string }) {
     </View>
   )
 }
-function Qr({ value }: { value: string }) {
+export function Qr({ value }: { value: string }) {
   const matrix = useMemo(() => {
     try {
       return QRCode.create(value, { errorCorrectionLevel: 'M' }).modules

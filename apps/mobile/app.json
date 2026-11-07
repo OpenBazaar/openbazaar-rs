@@ -3,6 +3,7 @@
     "name": "OpenBazaar",
     "slug": "openbazaar",
     "version": "0.1.0-alpha.1",
+    "scheme": "openbazaar",
     "icon": "./public/brand/ob-market-logo.png",
     "orientation": "portrait",
     "backgroundColor": "#063853",
@@ -10,9 +11,44 @@
     "experiments": {
       "baseUrl": "."
     },
+    "ios": {
+      "bundleIdentifier": "app.openbazaar.mobile",
+      "supportsTablet": false,
+      "infoPlist": {
+        "NSCameraUsageDescription": "Scan the pairing QR code your home node shows.",
+        "NSFaceIDUsageDescription": "Unlock OpenBazaar and sign requests to your home node.",
+        "NSLocalNetworkUsageDescription": "Reach your home node directly when this phone is on the same Wi-Fi.",
+        "NSBonjourServices": ["_openbazaar._tcp"],
+        "NSAppTransportSecurity": { "NSAllowsLocalNetworking": true },
+        "UIBackgroundModes": ["remote-notification"],
+        "ITSAppUsesNonExemptEncryption": false
+      }
+    },
+    "android": {
+      "package": "app.openbazaar.mobile",
+      "permissions": ["android.permission.CAMERA", "android.permission.USE_BIOMETRIC", "android.permission.POST_NOTIFICATIONS"],
+      "blockedPermissions": ["android.permission.RECORD_AUDIO"]
+    },
     "web": {
       "bundler": "metro",
       "favicon": "./public/brand/ob-market-logo-256.png"
-    }
+    },
+    "plugins": [
+      ["expo-secure-store", { "faceIDPermission": "Unlock OpenBazaar and sign requests to your home node." }],
+      ["expo-local-authentication", { "faceIDPermission": "Unlock OpenBazaar and sign requests to your home node." }],
+      ["expo-camera", { "cameraPermission": "Scan the pairing QR code your home node shows.", "recordAudioAndroid": false, "microphonePermission": false }],
+      ["expo-notifications", { "enableBackgroundRemoteNotifications": true }],
+      "expo-background-task",
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "usesCleartextTraffic": true,
+            "extraProguardRules": "-keep class * extends androidx.room.RoomDatabase { <init>(); }"
+          },
+          "ios": { "deploymentTarget": "16.4" }
+        }
+      ]
+    ]
   }
 }
