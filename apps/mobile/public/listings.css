@@ -70,3 +70,11 @@
   .ob-variant-row { grid-template-columns: 36px 1fr 1fr; }
   .ob-variant-name { grid-column: span 2; }
 }
+
+.ob-bag-variant { display: block; margin: 2px 0 6px; font-size: 13px; color: var(--ob-secondary); }
+.ob-package-terms { display: grid; gap: 10px; margin: 4px 0 14px; }
+.ob-package-terms select, .ob-package-terms input { width: 100%; }
+.ob-pickup-note { margin: 0; padding: 10px 12px; border-radius: 8px; background: var(--ob-subtle); color: var(--ob-secondary); font-size: 13px; line-height: 1.45; }
+.ob-service-row { display: grid; grid-template-columns: minmax(140px, 2fr) repeat(2, minmax(90px, 1fr)) repeat(2, minmax(80px, .7fr)) auto; gap: 10px; align-items: end; margin-bottom: 12px; }
+.ob-service-row .ob-text-link { padding-bottom: 12px; }
+@media (max-width: 760px) { .ob-service-row { grid-template-columns: 1fr 1fr; } }

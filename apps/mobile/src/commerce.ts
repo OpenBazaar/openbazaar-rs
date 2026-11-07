@@ -97,8 +97,11 @@ function times<T>(n: number, read: () => T): T[] {
   return Array.from({ length: n }, read);
 }
 
+/// What `readCommerce` needs of a reader; `records.ts` passes its own.
+export type FieldReader = Pick<ByteReader, "take" | "u8" | "u16" | "u32" | "u64" | "hex" | "str">;
+
 /// The commerce block of a version 7 listing.
-export function readCommerce(r: ByteReader): Commerce {
+export function readCommerce(r: FieldReader): Commerce {
   const condition = CONDITIONS[r.u8()];
   if (!condition) throw new Error("condition");
   const conditionNote = r.str();

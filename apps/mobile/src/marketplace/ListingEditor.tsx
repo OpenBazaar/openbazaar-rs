@@ -2,6 +2,8 @@ import { useState, type FormEvent } from "react";
 import type { CurrencyCode, ListingHeader, RateTable } from "../catalog";
 import { CONTENT_TAGS, MAX_LISTING_IMAGES, PRICE_CURRENCIES, draftOf, formatPrice, fromMinorUnits, saveListing, toMinorUnits, type ListingDraft, type PriceCurrency } from "../seller";
 import { ImageUpload, MediaImage, useLockedAction } from "./SellerKit";
+import { emptyCommerce, rowsOf, axesProblem } from "../commerceDraft";
+import { CommerceFields } from "./CommerceFields";
 
 type Form = Omit<ListingDraft, "price" | "shipping" | "stock"> & { price: string; shipping: string; stock: string };
 
@@ -22,6 +24,12 @@ function draftFrom(form: Form): ListingDraft | string {
   if (shipping === null) return "Enter shipping as a plain amount, or leave it empty for free shipping.";
   if (!Number.isInteger(stock) || stock < 0 || stock > 1_000_000) return "Enter how many you have, from 0 to 1,000,000.";
   if (form.kind === "physical" && !form.shipFrom.trim()) return "Say where it ships from.";
+  if (form.commerce) {
+    if (form.currency === "SAT") return "Price a listing with options or shipping services in USD, EUR, GBP, or JPY.";
+    const problem = axesProblem(form.commerce.axes, rowsOf(form.commerce));
+    if (problem) return problem;
+    if (form.commerce.shipping.services.some(s => !s.name.trim() || s.daysMin > s.daysMax)) return "Name each shipping service and give its delivery days, fastest first.";
+  }
   return { ...form, price, shipping, stock };
 }
 
@@ -57,6 +65,8 @@ export function ListingEditor({ listing, categories, rates, onSaved, onCancel }:
     setBusy(false);
   }
   const unit = form.currency === "SAT" ? "sats" : form.currency;
+  const variants = (form.commerce?.variants.length ?? 0) > 0;
+  const services = (form.commerce?.shipping.services.length ?? 0) > 0;
   return <form className="ob-listing-editor" onSubmit={e => void save(e)} aria-label={listing ? `Edit ${listing.title}` : "New listing"}>
     <fieldset className="ob-store-section">
       <legend>Photos</legend>
@@ -84,11 +94,13 @@ export function ListingEditor({ listing, categories, rates, onSaved, onCancel }:
       <div className="ob-field-grid">
         <label className="ob-field"><span>Price currency</span><select value={form.currency} onChange={e => set("currency", e.target.value as PriceCurrency)}>{PRICE_CURRENCIES.map(c => <option key={c} value={c}>{c === "SAT" ? "Bitcoin (sats)" : c}</option>)}</select></label>
         <label className="ob-field"><span>Price ({unit})</span><input inputMode="decimal" value={form.price} placeholder={form.currency === "SAT" ? "25000" : "12.50"} onChange={e => set("price", e.target.value)}/><small className="ob-field-hint">{satsHint(toMinorUnits(form.price, form.currency), form.currency, rates) ?? (form.currency === "SAT" ? "Buyers pay exactly this many sats." : "Buyers pay the sats this is worth when they order.")}</small></label>
-        {form.kind === "physical" && <label className="ob-field"><span>Shipping ({unit})</span><input inputMode="decimal" value={form.shipping} placeholder="Free" onChange={e => set("shipping", e.target.value)}/></label>}
+        {form.kind === "physical" && !services && <label className="ob-field"><span>Shipping ({unit})</span><input inputMode="decimal" value={form.shipping} placeholder="Free" onChange={e => set("shipping", e.target.value)}/></label>}
         {form.kind === "physical" && <label className="ob-field"><span>Ships from</span><input value={form.shipFrom} maxLength={40} placeholder="US" onChange={e => set("shipFrom", e.target.value)}/></label>}
-        <label className="ob-field"><span>In stock</span><input inputMode="numeric" value={form.stock} onChange={e => set("stock", e.target.value)}/></label>
+        {!variants && <label className="ob-field"><span>In stock</span><input inputMode="numeric" value={form.stock} onChange={e => set("stock", e.target.value)}/></label>}
       </div>
+      <label className="ob-default-address"><input type="checkbox" checked={!!form.commerce} onChange={e => set("commerce", e.target.checked ? emptyCommerce() : null)}/>Add condition, options like size or color, and shipping services</label>
     </fieldset>
+    {form.commerce && <CommerceFields commerce={form.commerce} kind={form.kind} currency={form.currency === "SAT" ? "USD" : form.currency} basePrice={toMinorUnits(form.price, form.currency) ?? 0} images={form.images} onChange={c => set("commerce", c)}/>}
     <fieldset className="ob-store-section">
       <legend>Content label</legend>
       <div className="ob-field-grid">

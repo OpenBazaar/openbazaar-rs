@@ -9,6 +9,7 @@ import { schnorr } from "@noble/curves/secp256k1.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 
 import type { ContentRating, ListingHeader, ListingKind } from "./catalog";
+import { readCommerce, type Commerce } from "./commerce.ts";
 
 const STORE_TAG = "ob/store/v1";
 const LISTING_TAG = "ob/listing/v1";
@@ -69,6 +70,8 @@ export type ListingRecord = {
   listingId: string | null;
   images: string[];
   price: FiatPrice | null;
+  /** Version 7: condition, variants, pricing rules, shipping services and returns. */
+  commerce: Commerce | null;
 };
 
 /** A seller's price in a fiat currency, in minor units (cents; yen for JPY). */
@@ -238,13 +241,13 @@ function readListingDetails(reader: Reader): { listingId: string; images: string
   return { listingId, images, price };
 }
 
-/// A listing record (versions 4 to 6) whose signature checks against its store key.
+/// A listing record (versions 4 to 7) whose signature checks against its store key.
 /// `hash` is SHA-256 of the signed body: the listing's address.
 export function verifyListingRecord(hex: unknown): ListingRecord | null {
   const bytes = typeof hex === "string" ? hexToBytes(hex) : null;
   if (!bytes) return null;
   const result = signed(bytes, LISTING_TAG, (reader) => {
-    const version = reader.magic("OBLS", [4, 5, 6]);
+    const version = reader.magic("OBLS", [4, 5, 6, 7]);
     const storeId = reader.hex(32);
     const title = reader.str();
     const category = reader.str();
@@ -268,8 +271,9 @@ export function verifyListingRecord(hex: unknown): ListingRecord | null {
       const bits = reader.u16();
       contentTags = TAGS.filter((_, i) => bits & (1 << i));
     }
-    const details = version === 6 ? readListingDetails(reader) : { listingId: null, images: [], price: null };
-    return { version, hash: "", storeId, title, category, priceSats, shipFrom, description, seller, stock, listedOn, moderated, kind, product, shippingSats, freeOverSats, contentRating, contentTags, ...details };
+    const details = version >= 6 ? readListingDetails(reader) : { listingId: null, images: [], price: null };
+    const commerce = version === 7 ? readCommerce(reader) : null;
+    return { version, hash: "", storeId, title, category, priceSats, shipFrom, description, seller, stock, listedOn, moderated, kind, product, shippingSats, freeOverSats, contentRating, contentTags, ...details, commerce };
   });
   if (!result) return null;
   return { ...result.record, hash: sha256Hex(result.body) };
@@ -359,6 +363,7 @@ export function verifiedListing(
     listingId: record.listingId,
     images: record.images,
     price: record.price,
+    commerce: record.commerce,
   };
 }
 

@@ -3,6 +3,8 @@
 // signed records the node serves and are checked here like any other.
 import { paired, pairedResponse, type BuyerOrder, type ContentRating, type ListingHeader, type ListingKind, parseBuyerOrder } from "./catalog.ts";
 import { verifiedListings } from "./records.ts";
+import type { Commerce } from "./commerce.ts";
+import { forKind } from "./commerceDraft.ts";
 
 export type Role = "buyer" | "seller";
 
@@ -56,6 +58,8 @@ export type ListingDraft = {
   shipping: number;
   contentRating: Exclude<ContentRating, "unrated">;
   contentTags: string[];
+  /** Options, condition and shipping services; signing with these makes a version 7 listing. */
+  commerce?: Commerce | null;
 };
 
 export type SaleLine = { listingHash: string; listingId: string | null; title: string; kind: ListingKind; quantity: number; priceSats: number };
@@ -224,6 +228,7 @@ export function draftOf(listing: ListingHeader): ListingDraft {
     shipping: fiat ? fiat.shipping : listing.shippingSats,
     contentRating: listing.contentRating === "unrated" ? "general" : listing.contentRating,
     contentTags: listing.contentTags,
+    commerce: listing.commerce ?? null,
   };
 }
 
@@ -256,7 +261,7 @@ export async function fetchOwnListings(storeKey: string): Promise<ListingHeader[
 }
 
 export async function saveListing(id: string | null, draft: ListingDraft): Promise<void> {
-  const body = draft.kind === "digital" ? { ...draft, shipFrom: "", shipping: 0 } : draft;
+  const body = draft.kind === "digital" ? { ...draft, shipFrom: "", shipping: 0, commerce: draft.commerce ? forKind(draft.commerce, "digital") : null } : draft;
   await paired(id ? `/store/listings/${id}` : "/store/listings", json(id ? "PUT" : "POST", body));
 }
 

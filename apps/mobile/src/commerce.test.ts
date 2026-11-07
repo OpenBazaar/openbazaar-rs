@@ -4,6 +4,7 @@ import { test } from "node:test";
 
 import { decodeListingTerms, fromHex, verifyCoupon, type Commerce } from "./commerce.ts";
 import { quote, type Delivery } from "./pricing.ts";
+import { verifyListingRecord } from "./records.ts";
 import { choose, initialSelection, maxQuantity, optionStates, selectedVariant, stockNote } from "./variants.ts";
 
 type Vector = {
@@ -33,6 +34,17 @@ test("the client prices every golden vector exactly as the Rust rules do", () =>
       const { currency, units, subtotals, items, couponOff, shipping, total } = result.quote;
       assert.deepEqual({ currency, units, subtotals, items, couponOff, shipping, total }, v.expect, v.name);
     }
+  }
+});
+
+test("the app's record check accepts signed v7 listings and keeps their terms", () => {
+  for (const hex of vectors().flatMap(v => v.records)) {
+    const record = verifyListingRecord(hex);
+    assert.ok(record, "a v7 record verifies");
+    assert.deepEqual(record.commerce, decodeListingTerms(fromHex(hex)).commerce);
+    const bytes = fromHex(hex);
+    bytes[bytes.length - 100] ^= 1;
+    assert.equal(verifyListingRecord(Buffer.from(bytes).toString("hex")), null, "a changed commerce byte fails the signature");
   }
 });
 

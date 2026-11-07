@@ -1,7 +1,7 @@
 import { useEffect } from "react";
 import { CONDITION_LABELS, type Commerce, type FiatPrice } from "../commerce";
 import { formatMinor, off } from "../pricing";
-import { choose, maxQuantity, optionStates, selectedVariant, sellable, stockNote, type Selection } from "../variants";
+import { choose, listingSellable, maxQuantity, optionStates, selectedVariant, sellable, stockNote, type Selection } from "../variants";
 
 export function useListingStyles() {
   useEffect(() => {
@@ -34,13 +34,14 @@ export function PriceTag({ commerce, price, unit, today }: { commerce: Commerce 
 
 /// The buyer's choice of variant and quantity. Values that are not offered
 /// with the other choices are greyed out; sold-out values are struck through.
-export function VariantPicker({ commerce, selection, onSelect, quantity, onQuantity, asOf }: { commerce: Commerce; selection: Selection; onSelect: (s: Selection) => void; quantity: number; onQuantity: (n: number) => void; asOf: number }) {
+export function VariantPicker({ commerce, stock = 0, selection, onSelect, quantity, onQuantity, asOf }: { commerce: Commerce; stock?: number; selection: Selection; onSelect: (s: Selection) => void; quantity: number; onQuantity: (n: number) => void; asOf: number }) {
   useListingStyles();
   const states = optionStates(commerce, selection);
   const variant = selectedVariant(commerce, selection);
-  const available = variant ? sellable(commerce, variant) : 0;
-  const note = variant ? stockNote(available, commerce.availability, asOf) : null;
-  const max = variant ? maxQuantity(commerce, available) : 0;
+  const chosen = variant !== null || commerce.axes.length === 0;
+  const available = variant ? sellable(commerce, variant) : chosen ? listingSellable(commerce, stock) : 0;
+  const note = chosen ? stockNote(available, commerce.availability, asOf) : null;
+  const max = chosen ? maxQuantity(commerce, available) : 0;
   const tier = [...commerce.tiers].reverse().find(t => t.minQty <= quantity);
   const next = commerce.tiers.find(t => t.minQty > quantity && t.minQty <= max);
   return (
@@ -71,7 +72,7 @@ export function VariantPicker({ commerce, selection, onSelect, quantity, onQuant
       ))}
       {commerce.axes.length > 0 && !variant && <p className="ob-stock-note is-info">Choose {commerce.axes.filter((_, a) => selection[a] === null).map(x => x.name.toLowerCase()).join(" and ")}.</p>}
       {note && <p className={`ob-stock-note is-${note.tone}`} role="status">{note.text}</p>}
-      {variant && max > 0 && (
+      {chosen && max > 0 && (
         <div className="ob-buy-quantity">
           <span>Quantity</span>
           <div className="ob-stepper">

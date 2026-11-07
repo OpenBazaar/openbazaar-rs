@@ -77,12 +77,13 @@ function dayLabel(day: number): string {
 
 export type StockNote = { tone: "ok" | "low" | "out" | "info"; text: string };
 
-/// How the listing page words stock. `asOf` is the listing's signing day.
+/// How the listing page words stock. `asOf` is the day the listing was
+/// signed, or 0 when that is not known.
 export function stockNote(available: number, availability: Availability, asOf: number): StockNote {
   if (availability.kind === "away") return { tone: "out", text: "The seller is away and not taking orders" };
   if (availability.kind === "made-to-order" && available === Infinity) return { tone: "info", text: `Made to order · ships in ${availability.days} days` };
   if (available <= 0) return { tone: "out", text: "Sold out" };
-  const when = `as of ${dayLabel(asOf)}`;
+  const when = asOf ? `as of ${dayLabel(asOf)}` : "as of the seller's last update";
   if (availability.kind === "pre-order") return { tone: "info", text: `Pre-order · ships ${dayLabel(availability.shipsOn)} · ${available} left ${when}` };
   if (available <= LOW_STOCK) return { tone: "low", text: `Only ${available} left ${when}` };
   return { tone: "ok", text: `${available} in stock ${when}` };

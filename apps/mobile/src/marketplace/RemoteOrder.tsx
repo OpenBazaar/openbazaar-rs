@@ -25,6 +25,8 @@ export function RemoteOrderStatus({ order, onChange }: { order: BuyerOrder; onCh
     {order.status === "Awaiting seller" && <p className="ob-page-intro">{remote.delivered ? `${order.seller} has your order. Waiting for the seller's node to send payment terms.` : remote.error ?? "Sending your order to the seller's node…"}</p>}
     {order.status === "Declined by the seller" && <p className="ob-form-error" role="alert">{remote.reason ?? "The seller declined this order."} Nothing was paid.</p>}
     {remote.sellerSawPayment && order.status !== "Completed" && <p className="ob-page-intro">The seller's node confirmed your payment.</p>}
+    {remote.oversold && <p className="ob-form-error" role="alert">The seller sold out before your payment arrived. Message {order.seller} to arrange your refund.</p>}
+    {remote.receipts > 0 && <p className="ob-page-intro">The seller signed a receipt for this order. You can review it later without showing who you are.</p>}
     {sent && <div className="ob-remote-fulfillment">
       <strong>{sent.content ? "Delivered" : "Shipped"}</strong>
       {(sent.carrier || sent.tracking) && <span>{[sent.carrier, sent.tracking].filter(Boolean).join(" · ")}</span>}
