@@ -6,7 +6,7 @@
     "scheme": "openbazaar",
     "icon": "./public/brand/ob-market-logo.png",
     "orientation": "portrait",
-    "backgroundColor": "#063853",
+    "backgroundColor": "#0b1724",
     "userInterfaceStyle": "light",
     "experiments": {
       "baseUrl": "."

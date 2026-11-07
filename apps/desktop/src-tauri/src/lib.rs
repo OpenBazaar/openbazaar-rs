@@ -106,7 +106,7 @@ fn open_main_window(
         .title("OpenBazaar")
         .inner_size(960.0, 720.0)
         .resizable(true)
-        .background_color(tauri::window::Color(0x06, 0x38, 0x53, 0xff))
+        .background_color(tauri::window::Color(0x0b, 0x17, 0x24, 0xff))
         .initialization_script(format!(
             "window.__OB_NODE_ORIGIN__ = {origin:?}; if ({APP_ORIGINS}.includes(window.location.origin)) {{ window.__OB_PAIR_TOKEN__ = {token:?}; {} }}",
             build::init_script()
