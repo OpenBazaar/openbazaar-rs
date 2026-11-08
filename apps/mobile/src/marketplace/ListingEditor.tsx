@@ -2,18 +2,19 @@ import { useState, type FormEvent } from "react";
 import type { CurrencyCode, ListingHeader, RateTable } from "../catalog";
 import { CONTENT_TAGS, MAX_LISTING_IMAGES, PRICE_CURRENCIES, draftOf, formatPrice, fromMinorUnits, saveListing, toMinorUnits, type ListingDraft, type PriceCurrency } from "../seller";
 import { ImageUpload, MediaImage, useLockedAction } from "./SellerKit";
-import { axesProblem, compareAtText, emptyCommerce, listingFacts, packageFieldsOf, priceTerms, purchaseFields, purchaseTerms, returnsDraft, rowsOf, saleFieldsOf, scheduledSale, shippingTerms, specificRows, withFacts, withPackage, withPrice, withPurchase, withSale, type AvailabilityDraft, type PackageInput, type ReturnsDraft, type SpecificRow } from "../commerceDraft";
+import { axesProblem, compareAtText, emptyCommerce, listingFacts, packageFieldsOf, priceTerms, purchaseFields, purchaseTerms, returnsDraft, rowsOf, saleFieldsOf, scheduledSale, shippingTerms, specificRows, tierRows, volumeTiers, withFacts, withPackage, withPrice, withPurchase, withSale, withTiers, withVariantWeights, type AvailabilityDraft, type PackageInput, type ReturnsDraft, type SpecificRow, type TierRow } from "../commerceDraft";
 import { CommerceFields } from "./CommerceFields";
 
 type PackageFields = Omit<PackageInput, "regions">;
-type Form = Omit<ListingDraft, "price" | "shipping" | "stock"> & PackageFields & { price: string; shipping: string; stock: string; salePrice: string; saleStarts: string; saleEnds: string; compareAt: string; acceptsOffers: boolean; lotSize: string; availability: AvailabilityDraft; specifics: SpecificRow[]; returns: ReturnsDraft };
+type Form = Omit<ListingDraft, "price" | "shipping" | "stock"> & PackageFields & { price: string; shipping: string; stock: string; salePrice: string; saleStarts: string; saleEnds: string; compareAt: string; acceptsOffers: boolean; lotSize: string; availability: AvailabilityDraft; tiers: TierRow[]; variantWeights: string[]; specifics: SpecificRow[]; returns: ReturnsDraft };
 
 const EMPTY: ListingDraft = { title: "", description: "", category: "", kind: "physical", shipFrom: "", stock: 1, images: [], currency: "USD", price: 0, shipping: 0, contentRating: "general", contentTags: [] };
 
 function formOf(draft: ListingDraft): Form {
   const sale = saleFieldsOf(draft.price, draft.commerce?.sale ?? null, draft.currency);
   const purchase = purchaseFields(draft.commerce);
-  return { ...draft, ...packageFieldsOf(draft.commerce?.shipping, draft.currency), specifics: specificRows(draft.commerce?.specifics), returns: returnsDraft(draft.commerce?.returns), price: draft.price ? fromMinorUnits(draft.price, draft.currency) : "", shipping: draft.shipping ? fromMinorUnits(draft.shipping, draft.currency) : "", stock: String(draft.stock), salePrice: sale.price, saleStarts: sale.startsOn, saleEnds: sale.endsOn, compareAt: compareAtText(draft.commerce?.compareAt ?? 0, draft.currency), acceptsOffers: draft.commerce?.acceptsOffers ?? false, lotSize: purchase.lotSize, availability: purchase.availability };
+  const rows = draft.commerce ? rowsOf(draft.commerce) : [];
+  return { ...draft, ...packageFieldsOf(draft.commerce?.shipping, draft.currency), specifics: specificRows(draft.commerce?.specifics), returns: returnsDraft(draft.commerce?.returns), price: draft.price ? fromMinorUnits(draft.price, draft.currency) : "", shipping: draft.shipping ? fromMinorUnits(draft.shipping, draft.currency) : "", stock: String(draft.stock), salePrice: sale.price, saleStarts: sale.startsOn, saleEnds: sale.endsOn, compareAt: compareAtText(draft.commerce?.compareAt ?? 0, draft.currency), acceptsOffers: draft.commerce?.acceptsOffers ?? false, lotSize: purchase.lotSize, availability: purchase.availability, tiers: tierRows(draft.price, draft.commerce?.tiers ?? [], draft.currency), variantWeights: rows.map(row => row.weightG ? String(row.weightG) : "") };
 }
 
 /// The draft the node takes, or what to fix first.
@@ -50,13 +51,23 @@ function draftFrom(form: Form): ListingDraft | string {
   const purchase = purchaseTerms(form.lotSize, form.availability);
   if (typeof purchase === "string") return purchase;
   commerce = withPurchase(commerce, purchase);
+  const tiers = volumeTiers(price, form.currency, form.tiers);
+  if (typeof tiers === "string") return tiers;
+  commerce = withTiers(commerce, tiers);
+  if (commerce?.variants.length) {
+    const rows = rowsOf(commerce);
+    const weights = form.variantWeights.length === rows.length ? rows.flatMap((row, index) => (row.offered ? [form.variantWeights[index] ?? ""] : [])) : form.variantWeights;
+    const variants = withVariantWeights(commerce.variants, weights);
+    if (typeof variants === "string") return variants;
+    commerce = { ...commerce, variants };
+  }
   if (commerce && form.currency === "SAT") return "Price a listing with options or shipping services in USD, EUR, GBP, or JPY.";
   if (commerce) {
     const problem = axesProblem(commerce.axes, rowsOf(commerce));
     if (problem) return problem;
     if (commerce.shipping.services.some(s => !s.name.trim() || s.daysMin > s.daysMax)) return "Name each shipping service and give its delivery days, fastest first.";
   }
-  const { salePrice: _salePrice, saleStarts: _saleStarts, saleEnds: _saleEnds, compareAt: _compareAt, acceptsOffers: _acceptsOffers, lotSize: _lotSize, availability: _availability, weightG: _weightG, lengthMm: _lengthMm, widthMm: _widthMm, heightMm: _heightMm, handlingDays: _handlingDays, freeOver: _freeOver, specifics: _specifics, returns: _returns, ...rest } = form;
+  const { salePrice: _salePrice, saleStarts: _saleStarts, saleEnds: _saleEnds, compareAt: _compareAt, acceptsOffers: _acceptsOffers, lotSize: _lotSize, availability: _availability, tiers: _tiers, variantWeights: _variantWeights, weightG: _weightG, lengthMm: _lengthMm, widthMm: _widthMm, heightMm: _heightMm, handlingDays: _handlingDays, freeOver: _freeOver, specifics: _specifics, returns: _returns, ...rest } = form;
   return { ...rest, price, shipping, stock, commerce };
 }
 
@@ -135,6 +146,13 @@ export function ListingEditor({ listing, categories, rates, onSaved, onCancel }:
           <label className="ob-field"><span>Availability</span><select value={form.availability.kind} onChange={e => set("availability", { ...form.availability, kind: e.target.value })}><option value="in-stock">In stock</option><option value="pre-order">Pre-order</option><option value="made-to-order">Made to order</option><option value="away">Away</option></select></label>
           {form.availability.kind === "pre-order" && <label className="ob-field"><span>Ships on</span><input type="date" value={form.availability.shipsOn} onChange={e => set("availability", { ...form.availability, shipsOn: e.target.value })}/></label>}
           {form.availability.kind === "made-to-order" && <label className="ob-field"><span>Ready in (days)</span><input inputMode="numeric" value={form.availability.days} placeholder="14" onChange={e => set("availability", { ...form.availability, days: e.target.value })}/></label>}
+          {form.tiers.map((tier, index) => <div className="ob-service-row" key={index}>
+            <label className="ob-field"><span>Buy at least</span><input inputMode="numeric" value={tier.qty} placeholder="3" onChange={e => set("tiers", form.tiers.map((item, at) => at === index ? { ...item, qty: e.target.value } : item))}/></label>
+            <label className="ob-field"><span>Each ({unit})</span><input inputMode="decimal" value={tier.price} placeholder="20.00" onChange={e => set("tiers", form.tiers.map((item, at) => at === index ? { ...item, price: e.target.value } : item))}/></label>
+            {form.tiers.length > 1 && <button type="button" className="ob-text-link" onClick={() => set("tiers", form.tiers.filter((_, at) => at !== index))}>Remove</button>}
+          </div>)}
+          {form.tiers.length < 4 && <button type="button" className="ob-secondary" onClick={() => set("tiers", [...form.tiers, { qty: "", price: "" }])}>Add a volume tier</button>}
+          <p className="ob-shipping-note ob-field-wide">A blank tier row is left off the listing. Each price is below the regular price, and each quantity is higher than the one before it.</p>
         </>}
       </div>
       <label className="ob-default-address"><input type="checkbox" checked={!!form.commerce} onChange={e => {
@@ -143,7 +161,7 @@ export function ListingEditor({ listing, categories, rates, onSaved, onCancel }:
         setForm(current => ({ ...current, commerce, ...packageFieldsOf(commerce.shipping, current.currency) }));
       }}/>Add condition, options like size or color, and shipping services</label>
     </fieldset>
-    {form.commerce && <CommerceFields commerce={form.commerce} kind={form.kind} currency={form.currency === "SAT" ? "USD" : form.currency} basePrice={toMinorUnits(form.price, form.currency) ?? 0} images={form.images} packageFields={form} onPackage={patch => setForm(current => ({ ...current, ...patch }))} specifics={form.specifics} onSpecifics={specifics => set("specifics", specifics)} returns={form.returns} onReturns={patch => setForm(current => ({ ...current, returns: { ...current.returns, ...patch } }))} onChange={c => set("commerce", c)}/>}
+    {form.commerce && <CommerceFields commerce={form.commerce} kind={form.kind} currency={form.currency === "SAT" ? "USD" : form.currency} basePrice={toMinorUnits(form.price, form.currency) ?? 0} images={form.images} packageFields={form} onPackage={patch => setForm(current => ({ ...current, ...patch }))} specifics={form.specifics} onSpecifics={specifics => set("specifics", specifics)} returns={form.returns} onReturns={patch => setForm(current => ({ ...current, returns: { ...current.returns, ...patch } }))} variantWeights={form.variantWeights} onVariantWeights={variantWeights => set("variantWeights", variantWeights)} onChange={c => set("commerce", c)}/>}
     <fieldset className="ob-store-section">
       <legend>Content label</legend>
       <div className="ob-field-grid">

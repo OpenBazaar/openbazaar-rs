@@ -56,6 +56,7 @@ export function VariantEditor({ axes, rows, currency, basePrice, images, onChang
             <span role="columnheader">SKU</span>
             <span role="columnheader">Price ({currency})</span>
             <span role="columnheader">Stock</span>
+            <span role="columnheader">Weight (g)</span>
             <span role="columnheader">Photo</span>
           </div>
           {rows.map((row, i) => {
@@ -76,6 +77,7 @@ export function VariantEditor({ axes, rows, currency, basePrice, images, onChang
                   />
                 </span>
                 <span role="cell"><input aria-label={`Stock for ${label}`} inputMode="numeric" value={row.stock} disabled={!row.offered} onChange={e => setRow(i, { stock: Math.max(0, Math.min(1_000_000, Number(e.target.value.replace(/\D/g, "")) || 0)) })}/></span>
+                <span role="cell"><input aria-label={`Weight for ${label}`} inputMode="numeric" placeholder="Package" value={row.weight ?? ""} disabled={!row.offered} onChange={e => setRow(i, { weight: e.target.value })}/></span>
                 <span role="cell">
                   <select aria-label={`Photo for ${label}`} value={row.image} disabled={!row.offered} onChange={e => setRow(i, { image: Number(e.target.value) })}>
                     <option value={0}>Cover</option>

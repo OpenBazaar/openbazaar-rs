@@ -3,7 +3,7 @@ import { Alert, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 
 import { File } from "expo-file-system";
 
 import type { ListingHeader } from "../../catalog.ts";
-import { compareAtText, listingFacts, packageFieldsOf, priceTerms, purchaseFields, purchaseTerms, returnsDraft, saleFieldsOf, scheduledSale, shippingTerms, specificRows, withFacts, withPackage, withPrice, withPurchase, withSale, type AvailabilityDraft, type PackageInput, type ReturnsDraft, type SpecificRow } from "../../commerceDraft.ts";
+import { compareAtText, listingFacts, packageFieldsOf, priceTerms, purchaseFields, purchaseTerms, returnsDraft, saleFieldsOf, scheduledSale, shippingTerms, specificRows, tierRows, volumeTiers, withFacts, withPackage, withPrice, withPurchase, withSale, withTiers, withVariantWeights, type AvailabilityDraft, type PackageInput, type ReturnsDraft, type SpecificRow, type TierRow } from "../../commerceDraft.ts";
 import { CONTENT_TAGS, MAX_LISTING_IMAGES, PRICE_CURRENCIES, deleteListing, draftOf, fromMinorUnits, saveListing, toMinorUnits, uploadImage, type ListingDraft, type PriceCurrency } from "../../seller.ts";
 import { isLocked, passphraseError, unlockWallet } from "../../walletLock.ts";
 import { sync } from "../session.ts";
@@ -11,7 +11,7 @@ import { ListingPhoto } from "../ListingPhoto.tsx";
 import { Button, Card, NAVY, Notice, SOFT, ui } from "../ui.tsx";
 
 type PackageFields = Omit<PackageInput, "regions">;
-type Fields = Omit<ListingDraft, "price" | "shipping" | "stock"> & PackageFields & { price: string; shipping: string; stock: string; salePrice: string; saleStarts: string; saleEnds: string; compareAt: string; acceptsOffers: boolean; lotSize: string; availability: AvailabilityDraft; shipsTo: string[]; specifics: SpecificRow[]; returns: ReturnsDraft };
+type Fields = Omit<ListingDraft, "price" | "shipping" | "stock"> & PackageFields & { price: string; shipping: string; stock: string; salePrice: string; saleStarts: string; saleEnds: string; compareAt: string; acceptsOffers: boolean; lotSize: string; availability: AvailabilityDraft; tiers: TierRow[]; variantWeights: string[]; shipsTo: string[]; specifics: SpecificRow[]; returns: ReturnsDraft };
 
 const EMPTY: ListingDraft = {
   title: "",
@@ -45,6 +45,8 @@ function fieldsOf(listing: ListingHeader | null): Fields {
     acceptsOffers: draft.commerce?.acceptsOffers ?? false,
     lotSize: purchaseFields(draft.commerce).lotSize,
     availability: purchaseFields(draft.commerce).availability,
+    tiers: tierRows(draft.price, draft.commerce?.tiers ?? [], draft.currency),
+    variantWeights: draft.commerce?.variants.map(variant => (variant.weightG ? String(variant.weightG) : "")) ?? [],
     shipsTo: draft.commerce?.shipping.services.map(service => service.regions.join(", ")) ?? [],
     specifics: specificRows(draft.commerce?.specifics),
     returns: returnsDraft(draft.commerce?.returns),
@@ -82,6 +84,14 @@ function draftFrom(form: Fields): ListingDraft | string {
   const purchase = purchaseTerms(form.lotSize, form.availability);
   if (typeof purchase === "string") return purchase;
   commerce = withPurchase(commerce, purchase);
+  const tiers = volumeTiers(price, form.currency, form.tiers);
+  if (typeof tiers === "string") return tiers;
+  commerce = withTiers(commerce, tiers);
+  if (commerce?.variants.length) {
+    const variants = withVariantWeights(commerce.variants, form.variantWeights);
+    if (typeof variants === "string") return variants;
+    commerce = { ...commerce, variants };
+  }
   if (commerce && form.currency === "SAT") return "Price a listing with options or shipping services in USD, EUR, GBP, or JPY.";
   return {
     title: form.title.trim(),
@@ -250,7 +260,24 @@ export function ListingEdit({ listing, categories, onClose }: { listing: Listing
             </View>
             {form.availability.kind === "pre-order" ? <Field label="Ships on" value={form.availability.shipsOn} onChangeText={(shipsOn) => set("availability", { ...form.availability, shipsOn })} /> : null}
             {form.availability.kind === "made-to-order" ? <Field label="Ready in (days)" value={form.availability.days} onChangeText={(days) => set("availability", { ...form.availability, days })} keyboard="number-pad" /> : null}
-            <Text style={ui.muted}>Leave the sale empty to sell at the regular price. Use days like 2026-11-01. Compare-at is a struck-through price above the price buyers pay. A lot is the pieces in one unit. These are signed with the listing.</Text>
+            {form.tiers.map((tier, index) => (
+              <View key={index} style={styles.field}>
+                <Field label={`Buy at least ${index + 1}`} value={tier.qty} onChangeText={(qty) => set("tiers", form.tiers.map((item, at) => (at === index ? { ...item, qty } : item)))} keyboard="number-pad" />
+                <Field label={`Each (${unit})`} value={tier.price} onChangeText={(tierPrice) => set("tiers", form.tiers.map((item, at) => (at === index ? { ...item, price: tierPrice } : item)))} keyboard="decimal-pad" />
+                {form.tiers.length > 1 ? <Button label="Remove tier" kind="plain" onPress={() => set("tiers", form.tiers.filter((_, at) => at !== index))} /> : null}
+              </View>
+            ))}
+            {form.tiers.length < 4 ? <Button label="Add a volume tier" kind="plain" onPress={() => set("tiers", [...form.tiers, { qty: "", price: "" }])} /> : null}
+            {form.variantWeights.map((weight, index) => (
+              <Field
+                key={form.commerce?.variants[index]?.id || `weight-${index}`}
+                label={`Weight (g) · ${form.commerce?.variants[index]?.options.join(" / ") || "variant"}`}
+                value={weight}
+                onChangeText={(next) => set("variantWeights", form.variantWeights.map((item, at) => (at === index ? next : item)))}
+                keyboard="number-pad"
+              />
+            ))}
+            <Text style={ui.muted}>Leave the sale empty to sell at the regular price. Use days like 2026-11-01. Compare-at is above the price buyers pay. A blank tier row is left off the listing, and each tier price is below the regular price. Variant weight is grams; leave it empty to use the package weight. These are signed with the listing.</Text>
           </>
         ) : null}
         {form.kind === "physical" && !services ? <Field label={`Shipping (${unit})`} value={form.shipping} onChangeText={(shipping) => set("shipping", shipping)} keyboard="decimal-pad" /> : null}

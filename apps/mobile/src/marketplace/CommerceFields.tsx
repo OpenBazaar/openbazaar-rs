@@ -17,14 +17,16 @@ type Props = {
   onSpecifics: (rows: SpecificRow[]) => void;
   returns: ReturnsDraft;
   onReturns: (patch: Partial<ReturnsDraft>) => void;
+  variantWeights: string[];
+  onVariantWeights: (weights: string[]) => void;
   onChange: (commerce: Commerce) => void;
 };
 
 const MAX_SERVICES = 8;
 
 /// Condition, options, per-order limit and shipping services for a version 7 listing.
-export function CommerceFields({ commerce, kind, currency, basePrice, images, packageFields, onPackage, specifics, onSpecifics, returns, onReturns, onChange }: Props) {
-  const [rows, setRows] = useState<VariantRow[]>(() => rowsOf(commerce));
+export function CommerceFields({ commerce, kind, currency, basePrice, images, packageFields, onPackage, specifics, onSpecifics, returns, onReturns, variantWeights, onVariantWeights, onChange }: Props) {
+  const [rows, setRows] = useState<VariantRow[]>(() => rowsOf(commerce).map((row, index) => ({ ...row, weight: variantWeights[index] ?? (row.weightG ? String(row.weightG) : "") })));
   const [regionDrafts, setRegionDrafts] = useState(() => commerce.shipping.services.map(service => service.regions.join(", ")));
   const set = (patch: Partial<Commerce>) => onChange({ ...commerce, ...patch });
   const shipping = commerce.shipping;
@@ -43,7 +45,7 @@ export function CommerceFields({ commerce, kind, currency, basePrice, images, pa
         <label className="ob-field"><span>Most per order</span><input inputMode="numeric" value={commerce.maxPerOrder || ""} placeholder="No limit" onChange={e => set({ maxPerOrder: Math.min(999, Number(e.target.value.replace(/\D/g, "")) || 0) })}/></label>
         {commerce.condition !== "new" && <label className="ob-field ob-field-wide"><span>Condition note</span><input value={commerce.conditionNote} maxLength={200} placeholder="Light scuff on the lid" onChange={e => set({ conditionNote: e.target.value })}/></label>}
       </div>
-      <VariantEditor axes={commerce.axes} rows={rows} currency={currency} basePrice={basePrice} images={images} onChange={(axes, next) => { setRows(next); onChange(withRows(commerce, axes, next)); }}/>
+      <VariantEditor axes={commerce.axes} rows={rows} currency={currency} basePrice={basePrice} images={images} onChange={(axes, next) => { setRows(next); onVariantWeights(next.map(row => row.weight ?? "")); onChange(withRows(commerce, axes, next)); }}/>
       <div className="ob-field-grid">
         {specifics.map((row, index) => <div className="ob-service-row" key={index}>
           <label className="ob-field"><span>Specific</span><input value={row.key} maxLength={32} placeholder="Brand" onChange={e => onSpecifics(specifics.map((item, at) => at === index ? { ...item, key: e.target.value } : item))}/></label>
