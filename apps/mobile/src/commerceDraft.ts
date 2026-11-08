@@ -6,7 +6,7 @@
 // "not offered"). Existing rows keep their id, so orders placed against an
 // earlier version still find their variant after an edit.
 
-import type { Axis, Commerce, Returns, Sale, Service, Variant } from "./commerce.ts";
+import type { Availability, Axis, Commerce, Returns, Sale, Service, Variant } from "./commerce.ts";
 import { fromMinor, toMinor } from "./pricing.ts";
 
 export const MAX_AXES = 3;
@@ -167,6 +167,51 @@ export function priceTerms(regular: number, currency: string, compareAt: string,
 export function withPrice(commerce: Commerce | null, terms: PriceTerms): Commerce | null {
   if (!commerce && terms.compareAt === 0 && !terms.acceptsOffers) return null;
   return { ...(commerce ?? emptyCommerce()), compareAt: terms.compareAt, acceptsOffers: terms.acceptsOffers };
+}
+
+export type AvailabilityDraft = { kind: string; shipsOn: string; days: string };
+export type PurchaseTerms = { lotSize: number; availability: Availability };
+
+function knownAvailability(kind: string): kind is Availability["kind"] {
+  return kind === "in-stock" || kind === "pre-order" || kind === "made-to-order" || kind === "away";
+}
+
+/// Lot size and availability to show. An empty listing is one piece, in stock.
+export function purchaseFields(commerce: Commerce | null | undefined): { lotSize: string; availability: AvailabilityDraft } {
+  const lotSize = String(commerce?.lotSize || 1);
+  const availability = commerce?.availability;
+  if (availability?.kind === "pre-order") return { lotSize, availability: { kind: "pre-order", shipsOn: isoDay(availability.shipsOn), days: "" } };
+  if (availability?.kind === "made-to-order") return { lotSize, availability: { kind: "made-to-order", shipsOn: "", days: String(availability.days) } };
+  if (availability?.kind === "away") return { lotSize, availability: { kind: "away", shipsOn: "", days: "" } };
+  return { lotSize, availability: { kind: "in-stock", shipsOn: "", days: "" } };
+}
+
+/// The lot size and availability the listing signs. An empty lot is one piece.
+/// Zero is refused, and so is a size or an availability the record cannot store.
+export function purchaseTerms(lotSize: string, availability: AvailabilityDraft): PurchaseTerms | string {
+  const text = lotSize.trim();
+  if (text === "0") return "A unit is at least one piece.";
+  if (text && (!/^\d+$/.test(text) || Number(text) > 65_535)) return "The lot size must be a whole number up to 65535.";
+  const pieces = text ? Number(text) : 1;
+  if (!knownAvailability(availability.kind)) return "Availability is in-stock, pre-order, made-to-order, or away.";
+  if (availability.kind === "pre-order") {
+    const shipsOn = dayNumber(availability.shipsOn.trim());
+    if (shipsOn == null) return "The pre-order ship date must be a date written YYYYMMDD.";
+    return { lotSize: pieces, availability: { kind: "pre-order", shipsOn } };
+  }
+  if (availability.kind === "made-to-order") {
+    const daysText = availability.days.trim();
+    if (!/^\d+$/.test(daysText) || Number(daysText) > 365) return "The making time must be a whole number up to 365.";
+    return { lotSize: pieces, availability: { kind: "made-to-order", days: Number(daysText) } };
+  }
+  if (availability.kind === "away") return { lotSize: pieces, availability: { kind: "away" } };
+  return { lotSize: pieces, availability: { kind: "in-stock" } };
+}
+
+/// Put the lot size and availability on the commerce block the existing sign path already accepts.
+export function withPurchase(commerce: Commerce | null, terms: PurchaseTerms): Commerce | null {
+  if (!commerce && terms.lotSize === 1 && terms.availability.kind === "in-stock") return null;
+  return { ...(commerce ?? emptyCommerce()), lotSize: terms.lotSize, availability: terms.availability };
 }
 
 export type PackageInput = {

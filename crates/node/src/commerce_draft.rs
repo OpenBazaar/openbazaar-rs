@@ -83,9 +83,15 @@ pub(crate) fn parse(body: &Value, previous: Option<&Commerce>) -> Result<Commerc
         },
         purchase: Purchase {
             max_per_order: uint(&body["maxPerOrder"], "per-order limit", u64::from(u16::MAX))? as u16,
-            lot_size: match uint(&body["lotSize"], "lot size", u64::from(u16::MAX))? {
-                0 => 1,
-                n => n as u16,
+            lot_size: match &body["lotSize"] {
+                Value::Null => 1,
+                value => {
+                    let pieces = uint(value, "lot size", u64::from(u16::MAX))?;
+                    if pieces == 0 {
+                        return fail("A unit is at least one piece.");
+                    }
+                    pieces as u16
+                }
             },
             availability: availability(&body["availability"])?,
         },
