@@ -10,6 +10,10 @@
 //! | order             | `order` ‖ checkout id ‖ store key   |
 //! | escrow mail       | `escrow` ‖ sender role ‖ escrow id  |
 //!
+//! The reply onion is a different derivation (`reply-onion` or
+//! `escrow-reply-onion`). It is not the store's `ob-sale` onion, so a seller
+//! or moderator who sees two reply addresses cannot tell they are one node.
+//!
 //! On receipt, escrow mail must carry a message id this node has not seen
 //! (`letters-seen`) and, after the first letter of an escrow from a given
 //! peer role was handled, the same sender key as that letter
@@ -109,6 +113,17 @@ impl Node {
             .ok_or_else(|| "no review key".to_string())
     }
 
+    /// Seed for this order's reply onion. The same inputs always yield the
+    /// same onion, and a different checkout or store yields a different one.
+    pub(crate) fn order_reply_onion_seed(&self, checkout_id: &str, store: &[u8; 32]) -> Result<[u8; 32], String> {
+        Ok(reply_onion_seed(&*self.letter_root()?, "reply-onion", &Self::order_conversation(checkout_id, store)))
+    }
+
+    /// Seed for this escrow's reply onion. It is not the store onion.
+    pub(crate) fn escrow_reply_onion_seed(&self, escrow: &EscrowId) -> Result<[u8; 32], String> {
+        Ok(reply_onion_seed(&*self.letter_root()?, "escrow-reply-onion", escrow))
+    }
+
     /// The buyer's per-order reply secret and drop id. Derived again from
     /// the order record when a reply arrives; never stored.
     pub(crate) fn order_reply_secret(&self, checkout_id: &str, store: &[u8; 32]) -> Result<(ReplySecret, tormail::DropId), String> {
@@ -120,5 +135,84 @@ impl Node {
             ReplySecret::from_bytes(secret).expect("any 32 bytes are an X25519 secret"),
             tormail::DropId(drop[..16].try_into().expect("16 bytes")),
         ))
+    }
+
+    /// Republish reply onions for orders and escrows already on this node.
+    /// Called once the sale gate is up, so a restart still receives replies.
+    pub(crate) fn republish_reply_onions(&self) {
+        if self.remote.services.sale_onion().is_none() {
+            return;
+        }
+        let open: Vec<(String, Option<[u8; 32]>, Option<crate::escrow_mail::EscrowId>)> = self
+            .orders()
+            .on_network()
+            .map(|order| {
+                let store = order.remote.is_some().then(|| crate::stores::unhex32(&order.store_id)).flatten();
+                let escrow = order.escrow.as_ref().and_then(crate::escrow_buyer::escrow_id_of);
+                (order.checkout_id.clone(), store, escrow)
+            })
+            .collect();
+        let mut seeds = Vec::new();
+        for (checkout_id, store, escrow) in open {
+            if let Some(store) = store {
+                if let Ok(seed) = self.order_reply_onion_seed(&checkout_id, &store) {
+                    seeds.push(seed);
+                }
+            }
+            if let Some(id) = escrow {
+                if let Ok(seed) = self.escrow_reply_onion_seed(&id) {
+                    seeds.push(seed);
+                }
+            }
+        }
+        for id in self.vendor_escrow_ids() {
+            if let Ok(seed) = self.escrow_reply_onion_seed(&id) {
+                seeds.push(seed);
+            }
+        }
+        for seed in seeds {
+            if let Err(err) = self.remote.publish_reply_onion(&self.data_dir, &seed) {
+                eprintln!("ob-node: reply onion: {err}");
+            }
+        }
+    }
+}
+
+/// 32 bytes that [`tormail::onion_for_seed`] turns into this conversation's onion.
+pub(crate) fn reply_onion_seed(root: &[u8; 32], purpose: &str, conversation: &[u8]) -> [u8; 32] {
+    derive_secret(root, purpose, conversation, 0)
+}
+
+/// `http://….onion` for `seed`. No port: the virtual port is 80.
+pub(crate) fn reply_onion_url(seed: &[u8; 32]) -> String {
+    format!("http://{}", tormail::onion_for_seed(seed))
+}
+
+/// The address a remote peer is told. A per-order onion wins over the node's
+/// mailbox, which is the store onion once `--remote` has published it.
+pub(crate) fn choose_reply(per_order: Option<&str>, mailbox: Option<&str>) -> Option<String> {
+    per_order.or(mailbox).map(str::to_string)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{choose_reply, reply_onion_seed, reply_onion_url};
+
+    #[test]
+    fn two_orders_do_not_share_a_reply_onion() {
+        let root = [4u8; 32];
+        let store = [8u8; 32];
+        let store_onion = "http://store.example.onion";
+        let a = reply_onion_url(&reply_onion_seed(&root, "reply-onion", b"checkout-a"));
+        let b = reply_onion_url(&reply_onion_seed(&root, "reply-onion", b"checkout-b"));
+        let again = reply_onion_url(&reply_onion_seed(&root, "reply-onion", b"checkout-a"));
+        let other_store = reply_onion_url(&reply_onion_seed(&root, "reply-onion", &[&b"checkout-a"[..], &store].concat()));
+        assert_ne!(a, b, "two checkouts shared a reply onion");
+        assert_eq!(a, again, "the same order must keep its onion across a restart");
+        assert_ne!(a, other_store, "two stores in one checkout shared a reply onion");
+        assert!(a.strip_prefix("http://").is_some_and(|host| host.ends_with(".onion") && !host.contains(':')), "{a}");
+        assert_eq!(choose_reply(Some(&a), Some(store_onion)).as_deref(), Some(a.as_str()));
+        assert_ne!(choose_reply(Some(&a), Some(store_onion)).as_deref(), Some(store_onion));
+        assert_eq!(choose_reply(None, Some("http://127.0.0.1:9")).as_deref(), Some("http://127.0.0.1:9"));
     }
 }

@@ -227,9 +227,18 @@ impl Node {
             remotes.push(remote);
             plans.push(plan);
         }
-        let reply_url = self.sale_reply_url();
+        let mailbox = self.sale_reply_url();
         let mut sealed = Vec::with_capacity(packages.len());
         for ((package, remote), plan) in packages.iter().zip(&remotes).zip(&plans) {
+            let per_order = match remote {
+                Some(_) if self.remote.services.sale_onion().is_some() => {
+                    let store = *package.lines[0].0.store_id.as_bytes();
+                    let seed = self.order_reply_onion_seed(&checkout_id, &store).map_err(OrderError::Failed)?;
+                    Some(self.remote.publish_reply_onion(&self.data_dir, &seed).map_err(OrderError::Failed)?)
+                }
+                _ => None,
+            };
+            let reply_url = crate::letter_auth::choose_reply(per_order.as_deref(), remote.as_ref().and(mailbox.as_deref()));
             let letter = self.seal_letter(
                 &catalog,
                 &checkout_id,
@@ -238,7 +247,7 @@ impl Node {
                 letter_ship(&package.lines, &ship_text, &note),
                 package.shipping,
                 &note,
-                remote.as_ref().and(reply_url.as_deref()),
+                reply_url.as_deref(),
                 plan.as_ref(),
             )?;
             sealed.push(letter);

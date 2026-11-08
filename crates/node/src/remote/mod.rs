@@ -200,6 +200,13 @@ impl Remote {
         self.config().onion
     }
 
+    /// Publish one reply onion on the Tor client `--remote` already started.
+    /// Returns `http://….onion`.
+    pub(crate) fn publish_reply_onion(&self, _data_dir: &Path, seed: &[u8; 32]) -> Result<String, String> {
+        let tor = self.running_tor().ok_or_else(|| "Tor is not running".to_string())?;
+        self.services.open_reply(&tor, seed)
+    }
+
     /// Publish the Lightning onion on the existing Tor client. Virtual port
     /// [`tor::LIGHTNING_PORT`] forwards to `local`. Returns `host.onion:port`.
     pub(crate) fn open_ln_onion(&self, data_dir: &Path, local: SocketAddr) -> Result<String, String> {
@@ -330,7 +337,12 @@ pub(crate) fn run(node: &Node, main_port: u16, stop: &AtomicBool) {
                                 ),
                                 None => eprintln!("ob-node: store onion has no address yet"),
                             }
-                            remote.services.has_sale().then_some(listener)
+                            if remote.services.has_sale() {
+                                node.republish_reply_onions();
+                                Some(listener)
+                            } else {
+                                None
+                            }
                         }
                         Err(err) => {
                             eprintln!("ob-node: store onion: {err}");

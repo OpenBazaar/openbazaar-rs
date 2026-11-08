@@ -84,6 +84,10 @@ fn number(escrow: &Value, key: &str) -> Result<u64, String> {
         .ok_or_else(|| format!("this escrow has no {key}"))
 }
 
+pub(crate) fn escrow_id_of(escrow: &Value) -> Option<EscrowId> {
+    escrow_id(escrow).ok()
+}
+
 fn escrow_id(escrow: &Value) -> Result<EscrowId, String> {
     parse_id(text(escrow, "id")?).ok_or_else(|| "this escrow id is not valid".into())
 }
@@ -215,7 +219,7 @@ impl Node {
                 buyer.to_vec(),
                 payout.script_pubkey().to_bytes(),
                 self.buyer_mail_secret().public_key().as_bytes().to_vec(),
-                self.reply_url()?.as_bytes().to_vec(),
+                self.escrow_reply_url(&id)?.as_bytes().to_vec(),
                 number(escrow, "fundingSats")?.to_le_bytes().to_vec(),
                 number(escrow, "spendFeeSats")?.to_le_bytes().to_vec(),
             ],
@@ -662,8 +666,8 @@ impl Node {
         let moderator = self.escrow.config.moderator_url.clone().ok_or_else(|| {
             PayError::Invalid("This node has no moderator to send a dispute to.".into())
         })?;
-        let reply = self.reply_url().map_err(PayError::Invalid)?.to_string();
         let (order, escrow_id) = self.funded_escrow(id, &["funded", "disputed"])?;
+        let reply = self.escrow_reply_url(&escrow_id).map_err(PayError::Invalid)?.to_string();
         let lock = self.escrow.locks.get(&escrow_id);
         let _held = lock.lock().unwrap_or_else(|err| err.into_inner());
         let letter = self

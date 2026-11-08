@@ -26,7 +26,7 @@ use super::devices::Move;
 use super::now_secs;
 use super::pairing::Code;
 use super::protocol::pairing_onion_seed;
-use super::tor::{Service, Tor, LIGHTNING_PORT};
+use super::tor::{Service, Tor, ADMIN_PORT, LIGHTNING_PORT};
 use crate::Node;
 
 pub(crate) const MOVE_GRACE_SECS: u64 = 7 * 24 * 3600;
@@ -36,7 +36,10 @@ pub(crate) struct Services {
     admin: Mutex<Vec<(u32, Service)>>,
     pairing: Mutex<HashMap<String, Service>>,
     sale: Mutex<Option<Service>>,
+    /// Loopback address the sale gate is listening on. Reply onions forward here.
+    sale_target: Mutex<Option<SocketAddr>>,
     lightning: Mutex<Option<Service>>,
+    replies: Mutex<HashMap<String, Service>>,
 }
 
 fn admin_nickname(generation: u32) -> String {
@@ -49,6 +52,12 @@ fn admin_nickname(generation: u32) -> String {
 
 fn pairing_nickname(code_id: &str) -> String {
     format!("ob-pair-{code_id}")
+}
+
+/// Slug for one reply onion. Ten seed bytes keep it unique and a valid slug.
+fn reply_nickname(seed: &[u8; 32]) -> String {
+    let hex: String = seed.iter().take(10).map(|byte| format!("{byte:02x}")).collect();
+    format!("r{hex}")
 }
 
 impl Services {
@@ -66,6 +75,14 @@ impl Services {
 
     fn lightning(&self) -> MutexGuard<'_, Option<Service>> {
         self.lightning.lock().unwrap_or_else(|err| err.into_inner())
+    }
+
+    fn sale_target(&self) -> MutexGuard<'_, Option<SocketAddr>> {
+        self.sale_target.lock().unwrap_or_else(|err| err.into_inner())
+    }
+
+    fn replies(&self) -> MutexGuard<'_, HashMap<String, Service>> {
+        self.replies.lock().unwrap_or_else(|err| err.into_inner())
     }
 
     pub(crate) fn open_admin(
@@ -129,9 +146,40 @@ impl Services {
     /// under the nickname `ob-sale`, so the address survives a restart.
     pub(crate) fn open_sale(&self, tor: &Tor, target: SocketAddr) {
         match tor.serve("ob-sale", None, Discovery::Open, target) {
-            Ok(service) => *self.sale() = Some(service),
+            Ok(service) => {
+                *self.sale_target() = Some(target);
+                *self.sale() = Some(service);
+            }
             Err(err) => eprintln!("ob-node: store onion: {err}"),
         }
+    }
+
+    /// Publish one reply onion on the existing Tor client. Virtual port 80
+    /// forwards to the sale gate, the same allowlist as the store onion.
+    /// The address is `onion_for_seed(seed)`. A second call with the same
+    /// seed keeps the service already running.
+    pub(crate) fn open_reply(&self, tor: &Tor, seed: &[u8; 32]) -> Result<String, String> {
+        let target = (*self.sale_target()).ok_or_else(|| "the sale gate is not listening".to_string())?;
+        let expected = tormail::onion_for_seed(seed).to_string();
+        let nickname = reply_nickname(seed);
+        if let Some(service) = self.replies().get(&nickname) {
+            let got = service.forward.onion_address().map(|onion| onion.to_string()).unwrap_or_default();
+            if got != expected {
+                return Err(format!("reply onion {nickname} is {got}, not {expected}"));
+            }
+            return Ok(format!("http://{expected}"));
+        }
+        let service = tor.serve_on(&nickname, Some(*seed), Discovery::Open, ADMIN_PORT, target)?;
+        let got = service
+            .forward
+            .onion_address()
+            .map(|onion| onion.to_string())
+            .ok_or_else(|| "reply onion has no address yet".to_string())?;
+        if got != expected {
+            return Err(format!("reply onion came up as {got}, not {expected}"));
+        }
+        self.replies().insert(nickname, service);
+        Ok(format!("http://{expected}"))
     }
 
     /// A public onion for inbound Lightning. Its keys stay under `ob-ln`.
