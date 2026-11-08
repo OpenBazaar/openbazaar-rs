@@ -28,6 +28,7 @@ impl Pair {
         let seller = peer(&chain);
         let buyer = peer(&chain);
         let listing = open_store(&seller.node);
+        seller.node.record_finished_escrow_sale().expect("an established store has one finished escrow");
         let (status, follows) = request(&buyer.node, "POST", "/follows", &json!({ "url": seller.url }).to_string());
         assert!(status.contains("200"), "{status} {follows}");
         assert_eq!(follows["follows"][0]["name"], "Brook and Pine", "{follows}");

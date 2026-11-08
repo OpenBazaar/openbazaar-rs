@@ -572,6 +572,7 @@ impl Market {
             .map(|seller| (seller.to_string(), vendor.url.clone()))
             .collect();
         let moderator_url = moderator.url.clone();
+        vendor.node.publish_store_bond("Marlow Goods").expect("the demo vendor posts a reputation bond");
         let buyer = Peer::spawn(&chain, move |url| EscrowConfig {
             mailbox_url: Some(url),
             vendors,

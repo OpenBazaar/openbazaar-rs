@@ -143,7 +143,7 @@ impl Node {
             "status": settlement.initial_status(),
             "network": self.network.as_str(),
         });
-        let (payment, escrow) = self.payment_for(settlement, total, &seller)?;
+        let (payment, escrow) = self.payment_for(settlement, total, &seller, listing.id().map(|id| id.0))?;
         if let Some(payment) = &payment {
             response["payment"] = payment.clone();
         }
@@ -291,7 +291,7 @@ impl Node {
             } else if package.ln {
                 (Some(self.ln_payment(total, &id)?), None)
             } else {
-                self.payment_for(package.settlement, total, &seller)?
+                self.payment_for(package.settlement, total, &seller, listing.id().map(|id| id.0))?
             };
             let remote_record = match remote {
                 Some(url) => Some(self.remote_record(url, &checkout_id, listing, &package.lines, total)?).map(|mut record| {
@@ -405,10 +405,11 @@ impl Node {
         settlement: Settlement,
         total: u64,
         seller: &str,
+        listing_id: Option<[u8; 16]>,
     ) -> Result<(Option<Value>, Option<Value>), OrderError> {
         match settlement {
             Settlement::Direct => Ok((Some(self.direct_payment(total, seller)?), None)),
-            Settlement::Escrow => Ok((None, Some(self.escrow_request(total, seller)?))),
+            Settlement::Escrow => Ok((None, Some(self.escrow_request(total, seller, listing_id)?))),
         }
     }
 

@@ -41,7 +41,7 @@ use crate::coin_locks::OPEN_LOCK_TTL;
 use crate::escrow_fixture::{moderator_mail_key, moderator_record, MODERATOR_FEE_SATS};
 use crate::escrow_mail::{hex, id_hex, parse_id, unhex, EscrowId, Kind, Mail};
 use crate::escrow_outbox::{now_secs, Sent};
-use crate::escrow_vendor::offer_digest;
+use crate::escrow_vendor::{offer_digest, offer_digest_with_listing};
 use crate::instructions::{ESCROW_DEMO_WARNING, ESCROW_MAINNET_REFUSAL};
 use crate::network::{address_for, NetworkMode};
 use crate::pay_order::{check_fee, check_terms, psbt_fee, PayError, TERMS_CHANGED};
@@ -143,7 +143,7 @@ impl Node {
 
     /// The escrow record for a new order: a fresh buyer key and payout. The
     /// address comes later, from the vendor's terms.
-    pub(crate) fn escrow_request(&self, total: u64, seller: &str) -> Result<Value, OrderError> {
+    pub(crate) fn escrow_request(&self, total: u64, seller: &str, listing_id: Option<[u8; 16]>) -> Result<Value, OrderError> {
         self.escrow_ready(seller)?;
         let record = moderator_record(self.network).map_err(OrderError::Failed)?;
         let spend_fee = crate::escrow_fee::presigned_fee(self.chain.fee_rate().ok(), &record);
@@ -167,7 +167,7 @@ impl Node {
             &mut <rand::rngs::StdRng as rand::SeedableRng>::from_os_rng(),
             &mut id,
         );
-        Ok(json!({
+        let mut value = json!({
             "network": self.network.as_str(),
             "demo": true,
             "unsafe": true,
@@ -183,7 +183,11 @@ impl Node {
             "refundHeld": false,
             "safeToSend": false,
             "fundWith": "node",
-        }))
+        });
+        if let Some(id) = listing_id {
+            value["listingId"] = json!(hex(&id));
+        }
+        Ok(value)
     }
 
     /// Send the request for a stored order. When it is refused or only
@@ -212,18 +216,18 @@ impl Node {
             PublicKey::from_secret_key(&Secp256k1::new(), &secret).serialize()
         };
         let payout = address_for(text(escrow, "buyerPayout")?, self.network)?;
-        let mail = Mail::new(
-            Kind::Request,
-            id,
-            vec![
-                buyer.to_vec(),
-                payout.script_pubkey().to_bytes(),
-                self.buyer_mail_secret().public_key().as_bytes().to_vec(),
-                self.escrow_reply_url(&id)?.as_bytes().to_vec(),
-                number(escrow, "fundingSats")?.to_le_bytes().to_vec(),
-                number(escrow, "spendFeeSats")?.to_le_bytes().to_vec(),
-            ],
-        );
+        let mut fields = vec![
+            buyer.to_vec(),
+            payout.script_pubkey().to_bytes(),
+            self.buyer_mail_secret().public_key().as_bytes().to_vec(),
+            self.escrow_reply_url(&id)?.as_bytes().to_vec(),
+            number(escrow, "fundingSats")?.to_le_bytes().to_vec(),
+            number(escrow, "spendFeeSats")?.to_le_bytes().to_vec(),
+        ];
+        if let Some(listing) = listing_bytes(escrow.get("listingId"))? {
+            fields.push(listing.to_vec());
+        }
+        let mail = Mail::new(Kind::Request, id, fields);
         self.send_mail(
             &self.vendor_url(&order.seller)?,
             &self.seller_mail_key(&order.seller)?,
@@ -290,7 +294,10 @@ impl Node {
             // A repeated offer after this node already countersigned.
             return Ok(());
         }
-        let fields = mail.fields(3)?;
+        let fields = mail.as_fields();
+        if fields.len() != 3 && fields.len() != 4 {
+            return Err("an Offer message carries 3 fields".into());
+        }
         let terms = EscrowTerms::decode(&fields[0]).map_err(failed)?;
         let vendor_signature: [u8; 64] = fields[1]
             .as_slice()
@@ -301,12 +308,14 @@ impl Node {
 
         let secp = Secp256k1::new();
         let store_key = self.seller_store_key(&order.seller)?;
-        secp.verify_schnorr(
-            &store_signature,
-            &offer_digest(&mail.escrow, &terms),
-            &store_key,
-        )
-        .map_err(|_| "the offer is not signed by the seller's store key")?;
+        let listing_id = listing_bytes(escrow.get("listingId"))?;
+        let digest = match (listing_id, fields.get(3)) {
+            (Some(id), Some(sent)) if sent.as_slice() == id.as_slice() => offer_digest_with_listing(&mail.escrow, &terms, &id),
+            (None, None) => offer_digest(&mail.escrow, &terms),
+            _ => return Err("the offer's listing is not the one this order asked for".into()),
+        };
+        secp.verify_schnorr(&store_signature, &digest, &store_key)
+            .map_err(|_| "the offer is not signed by the seller's store key")?;
 
         let secret = {
             let wallet = self.buyer_wallet();
@@ -351,6 +360,8 @@ impl Node {
                 "disputeDeadline": terms.dispute_deadline,
                 "vendorClaimHeight": terms.vendor_claim_height,
                 "refundHeight": terms.refund_height,
+                "storeSignature": hex(&fields[2]),
+                "storeKey": hex(&store_key.serialize()),
             }),
         )
     }
@@ -676,15 +687,22 @@ impl Node {
         let was = order.escrow.as_ref().and_then(|escrow| escrow.get("stage")).cloned();
         self.update_escrow(id, Some(DISPUTED), json!({ "stage": "disputed" }))
             .map_err(PayError::Failed)?;
-        let mail = Mail::new(
-            Kind::Dispute,
-            escrow_id,
-            vec![
-                letter,
-                self.buyer_mail_secret().public_key().as_bytes().to_vec(),
-                reply.into_bytes(),
-            ],
+        let mut fields = vec![
+            letter,
+            self.buyer_mail_secret().public_key().as_bytes().to_vec(),
+            reply.into_bytes(),
+        ];
+        let cited = (
+            listing_bytes(order.escrow.as_ref().and_then(|escrow| escrow.get("listingId"))).map_err(PayError::Invalid)?,
+            bytes_of(&order, "storeKey", 32).map_err(PayError::Invalid)?,
+            bytes_of(&order, "storeSignature", 64).map_err(PayError::Invalid)?,
         );
+        if let (Some(listing), Some(store_key), Some(store_signature)) = cited {
+            fields.push(listing.to_vec());
+            fields.push(store_key);
+            fields.push(store_signature);
+        }
+        let mail = Mail::new(Kind::Dispute, escrow_id, fields);
         if let Err(err) = self.send_mail(&moderator, &moderator_mail_key(), &mail) {
             if was.as_ref().and_then(Value::as_str) == Some("funded") {
                 let _ = self.update_escrow(&order.id, Some(FUNDED), json!({ "stage": "funded" }));
@@ -725,4 +743,23 @@ impl Node {
             json!({ "stage": "settled", "settleTxid": txid, "error": null }),
         )
     }
+}
+
+fn listing_bytes(value: Option<&Value>) -> Result<Option<[u8; 16]>, String> {
+    let Some(text) = value.and_then(Value::as_str) else {
+        return Ok(None);
+    };
+    let bytes = unhex(text)?;
+    bytes.as_slice().try_into().map(Some).map_err(|_| "bad listing id".into())
+}
+
+fn bytes_of(order: &BuyerOrder, key: &str, len: usize) -> Result<Option<Vec<u8>>, String> {
+    let Some(text) = order.escrow.as_ref().and_then(|escrow| escrow.get(key)).and_then(Value::as_str) else {
+        return Ok(None);
+    };
+    let bytes = unhex(text)?;
+    if bytes.len() != len {
+        return Err(format!("bad {key}"));
+    }
+    Ok(Some(bytes))
 }

@@ -167,6 +167,10 @@ impl Mail {
         })
     }
 
+    pub fn as_fields(&self) -> &[Vec<u8>] {
+        &self.fields
+    }
+
     /// The fields, refusing a message that does not carry exactly `count`.
     pub fn fields(&self, count: usize) -> Result<&[Vec<u8>], String> {
         if self.fields.len() != count {
