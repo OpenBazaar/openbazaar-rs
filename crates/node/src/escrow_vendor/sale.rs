@@ -35,6 +35,9 @@ pub(super) struct Sale {
     pub release_txid: Option<Txid>,
     pub settle_txid: Option<Txid>,
     pub error: Option<String>,
+    /// The listing the store signature covers. Absent on an offer signed
+    /// before that field existed.
+    pub listing_id: Option<[u8; 16]>,
 }
 
 fn opt_hex(bytes: &Option<Vec<u8>>) -> Value {
@@ -68,6 +71,7 @@ impl Sale {
             "releaseTxid": self.release_txid.map(|txid| txid.to_string()),
             "settleTxid": self.settle_txid.map(|txid| txid.to_string()),
             "error": self.error,
+            "listingId": self.listing_id.map(|id| hex(&id)),
         })
     }
 
@@ -101,6 +105,10 @@ impl Sale {
             release_txid: txid("releaseTxid")?,
             settle_txid: txid("settleTxid")?,
             error: value["error"].as_str().map(str::to_string),
+            listing_id: match value["listingId"].as_str() {
+                Some(text) => Some(unhex(text).ok()?.as_slice().try_into().ok()?),
+                None => None,
+            },
         })
     }
 }

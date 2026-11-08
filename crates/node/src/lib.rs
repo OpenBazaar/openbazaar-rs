@@ -68,6 +68,7 @@ mod public_http;
 mod rates;
 mod remote;
 mod remote_orders;
+mod reputation;
 mod replicas;
 mod lock_http;
 mod sale_gate;

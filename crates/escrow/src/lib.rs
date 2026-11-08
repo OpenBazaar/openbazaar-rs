@@ -162,6 +162,7 @@ mod messages;
 mod moderator;
 mod policy;
 mod proofs;
+mod public_ruling;
 mod state;
 mod terms;
 mod tx;
@@ -183,6 +184,7 @@ pub use moderator::{
     RulingKey, RulingStore,
 };
 pub use policy::{payout_dust_limit, Policy, ANCHOR_VALUE};
+pub use public_ruling::{read_published_ruling, PublishedSale};
 pub use proofs::Pok;
 pub use terms::{order_public_key, order_secret_key, EscrowTerms, SignedTerms};
 pub use tx::{anchor_script, is_final_at_height, max_spend_vsize};

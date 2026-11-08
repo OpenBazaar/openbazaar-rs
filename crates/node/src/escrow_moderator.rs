@@ -24,6 +24,7 @@ use std::collections::BTreeMap;
 use std::sync::MutexGuard;
 
 use bitcoin::hashes::{sha256, Hash};
+use bitcoin::secp256k1::{schnorr, Secp256k1, XOnlyPublicKey};
 use bitcoin::{OutPoint, Script, TxOut};
 use openbazaar_escrow::{Error as EscrowError, FundingChain, Moderator, ModeratorRuling, Party};
 use serde_json::{json, Value};
@@ -31,6 +32,7 @@ use tormail::StoreKey;
 
 use crate::chain::ChainSource;
 use crate::escrow_fixture::{moderator_keys, moderator_record};
+use crate::escrow_vendor::offer_digest_with_listing;
 use crate::escrow_limits::DisputeLimits;
 use crate::escrow_mail::{hex, id_hex, key_bytes, parse_id, unhex, EscrowId, Kind, Mail, RETRY_LATER};
 use crate::escrow_outbox::now_secs;
@@ -38,6 +40,13 @@ use crate::escrow_rulings::FileRulingStore;
 use crate::escrow_store::{EscrowStore, Role};
 use crate::pay_order::PayError;
 use crate::Node;
+
+#[derive(Clone, Copy)]
+struct Citation {
+    listing_id: [u8; 16],
+    store_key: [u8; 32],
+    store_signature: [u8; 64],
+}
 
 struct Case {
     letter: Vec<u8>,
@@ -47,6 +56,8 @@ struct Case {
     reply_mail: StoreKey,
     reply_url: String,
     ruling: Option<Vec<u8>>,
+    citation: Option<Citation>,
+    public_ruling: Option<Vec<u8>>,
 }
 
 impl Case {
@@ -59,6 +70,10 @@ impl Case {
             "replyMail": hex(self.reply_mail.as_bytes()),
             "replyUrl": self.reply_url,
             "ruling": self.ruling.as_deref().map(hex),
+            "listingId": self.citation.map(|citation| hex(&citation.listing_id)),
+            "storeKey": self.citation.map(|citation| hex(&citation.store_key)),
+            "storeSignature": self.citation.map(|citation| hex(&citation.store_signature)),
+            "publicRuling": self.public_ruling.as_deref().map(hex),
         })
     }
 
@@ -71,6 +86,11 @@ impl Case {
             reply_mail: key_bytes(&unhex(value["replyMail"].as_str()?).ok()?).ok()?,
             reply_url: value["replyUrl"].as_str()?.to_string(),
             ruling: match value["ruling"].as_str() {
+                Some(text) => Some(unhex(text).ok()?),
+                None => None,
+            },
+            citation: citation_from(value),
+            public_ruling: match value["publicRuling"].as_str() {
                 Some(text) => Some(unhex(text).ok()?),
                 None => None,
             },
@@ -182,7 +202,12 @@ impl Node {
 
     /// Review a letter from `writer`, who must be the party it favors.
     fn moderator_review(&self, mail: &Mail, writer: Party) -> Result<(), String> {
-        let fields = mail.fields(3)?;
+        let fields = mail.as_fields();
+        let citation = match fields.len() {
+            3 => None,
+            6 => Some(citation_from_fields(fields)?),
+            _ => return Err("a Dispute message carries 3 fields".into()),
+        };
         let reply_mail = key_bytes(&fields[1])?;
         let reply_url = crate::peer_http::sale_base(&String::from_utf8(fields[2].clone()).map_err(|err| err.to_string())?)?;
         let received = self.chain.tip_height()?;
@@ -197,6 +222,9 @@ impl Node {
         if case.favored() != writer {
             return Err("a dispute letter must ask for its writer's branch".into());
         }
+        if let Some(citation) = citation {
+            check_citation(&mail.escrow, case.terms(), &citation)?;
+        }
         let key = (mail.escrow, case.favored() as u8);
         let mut desk = self.moderator_desk();
         if desk.cases.contains_key(&key) {
@@ -210,6 +238,8 @@ impl Node {
             reply_mail,
             reply_url,
             ruling: None,
+            citation,
+            public_ruling: None,
         };
         self.escrow
             .store
@@ -292,9 +322,44 @@ impl Node {
         let mut desk = self.moderator_desk();
         let case = desk.cases.get_mut(&(*id, favor as u8)).ok_or("the case is gone")?;
         case.ruling = Some(ruling.to_bytes());
+        if let Some(citation) = case.citation {
+            let keys = moderator_keys(self.network)?;
+            case.public_ruling = Some(
+                keys.sign_public_ruling(&ruling.to_bytes(), citation.store_key, citation.listing_id)
+                    .map_err(|err| err.to_string())?,
+            );
+        }
         self.escrow.store.save(Role::Moderator, &case_name(id, favor), &case.to_record())?;
         Ok((case.reply_url.clone(), case.reply_mail))
     }
+}
+
+fn fixed<const N: usize>(text: &str) -> Option<[u8; N]> {
+    unhex(text).ok().and_then(|bytes| bytes.as_slice().try_into().ok())
+}
+
+fn citation_from(value: &Value) -> Option<Citation> {
+    Some(Citation {
+        listing_id: fixed(value["listingId"].as_str()?)?,
+        store_key: fixed(value["storeKey"].as_str()?)?,
+        store_signature: fixed(value["storeSignature"].as_str()?)?,
+    })
+}
+
+fn citation_from_fields(fields: &[Vec<u8>]) -> Result<Citation, String> {
+    Ok(Citation {
+        listing_id: fields[3].as_slice().try_into().map_err(|_| "bad listing id")?,
+        store_key: fields[4].as_slice().try_into().map_err(|_| "bad store key")?,
+        store_signature: fields[5].as_slice().try_into().map_err(|_| "bad store signature")?,
+    })
+}
+
+fn check_citation(id: &EscrowId, terms: &openbazaar_escrow::EscrowTerms, citation: &Citation) -> Result<(), String> {
+    let key = XOnlyPublicKey::from_slice(&citation.store_key).map_err(|err| err.to_string())?;
+    let signature = schnorr::Signature::from_slice(&citation.store_signature).map_err(|err| err.to_string())?;
+    Secp256k1::new()
+        .verify_schnorr(&signature, &offer_digest_with_listing(id, terms, &citation.listing_id), &key)
+        .map_err(|_| "the store signature does not cover this listing".to_string())
 }
 
 #[cfg(test)]

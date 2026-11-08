@@ -53,6 +53,18 @@ pub(crate) fn offer_digest(id: &EscrowId, terms: &EscrowTerms) -> Message {
     Message::from_digest(sha256::Hash::from_engine(engine).to_byte_array())
 }
 
+const OFFER_LISTING_TAG: &[u8] = b"ob-node/escrow-offer/v2";
+
+/// The store signature once the offer also names the listing.
+pub(crate) fn offer_digest_with_listing(id: &EscrowId, terms: &EscrowTerms, listing_id: &[u8; 16]) -> Message {
+    let mut engine = sha256::Hash::engine();
+    engine.input(OFFER_LISTING_TAG);
+    engine.input(id);
+    engine.input(&terms.digest());
+    engine.input(listing_id);
+    Message::from_digest(sha256::Hash::from_engine(engine).to_byte_array())
+}
+
 /// Sales from disk, and the funded escrows restored in this process.
 #[derive(Default)]
 pub(crate) struct VendorDesk {
@@ -151,9 +163,38 @@ impl Node {
         }
     }
 
+    fn seller_has_listing(&self, seller: &str, id: &[u8; 16]) -> bool {
+        let id = openbazaar_protocol::ListingId(*id);
+        if self.own_listings().by_id(&id).is_some() {
+            return true;
+        }
+        let Ok(store) = self.seller_store(seller) else {
+            return false;
+        };
+        self.catalog().listings.iter().any(|listing| listing.id() == Some(id) && listing.store_id == store.id)
+    }
+
+    pub(crate) fn finished_escrow_sales(&self) -> u32 {
+        let desk = self.vendor_desk();
+        crate::reputation::finished_escrow_count(
+            &desk
+                .sales
+                .values()
+                .map(|sale| crate::reputation::Finish {
+                    payout: sale.release_txid.is_some() || sale.settle_txid.is_some(),
+                    self_pay: sale.terms.buyer_payout == sale.terms.vendor_payout,
+                    direct: false,
+                })
+                .collect::<Vec<_>>(),
+        )
+    }
+
     /// Round 0: answer a request with terms signed by the vendor's per-order key.
     fn vendor_request(&self, seller: &str, mail: &Mail) -> Result<(), String> {
-        let fields = mail.fields(6)?;
+        let fields = mail.as_fields();
+        if fields.len() != 6 && fields.len() != 7 {
+            return Err("a Request message carries 6 fields".into());
+        }
         let buyer: [u8; 33] = fields[0]
             .as_slice()
             .try_into()
@@ -172,9 +213,19 @@ impl Node {
             .as_slice()
             .try_into()
             .map_err(|_| "bad network fee")?;
+        let listing_id = if fields.len() == 7 {
+            let id: [u8; 16] = fields[6].as_slice().try_into().map_err(|_| "bad listing id")?;
+            if !self.seller_has_listing(seller, &id) {
+                return Err("that listing is not this store's".into());
+            }
+            Some(id)
+        } else {
+            None
+        };
         if let Some(offer) = self.repeated_request(seller, &mail.escrow, &buyer)? {
             return self.send_to_buyer(&mail.escrow, Kind::Offer, offer);
         }
+        crate::reputation::escrow_start_allowed(self.finished_escrow_sales(), self.passing_bond())?;
         let ctx = self.escrow_context()?;
         let (index, secret, payout) = {
             let mut wallet = self.store_wallet(seller).map_err(failed)?;
@@ -206,17 +257,21 @@ impl Node {
         let vendor_signature = terms.sign(&secret.secret_bytes()).map_err(failed)?;
         let store = self.seller_store_secret(seller)?;
         let secp = Secp256k1::new();
+        let digest = match listing_id {
+            Some(id) => offer_digest_with_listing(&mail.escrow, &terms, &id),
+            None => offer_digest(&mail.escrow, &terms),
+        };
         let store_signature = secp
-            .sign_schnorr_no_aux_rand(
-                &offer_digest(&mail.escrow, &terms),
-                &Keypair::from_secret_key(&secp, &store),
-            )
+            .sign_schnorr_no_aux_rand(&digest, &Keypair::from_secret_key(&secp, &store))
             .serialize();
-        let offer = vec![
+        let mut offer = vec![
             terms.encode(),
             vendor_signature.to_vec(),
             store_signature.to_vec(),
         ];
+        if let Some(id) = listing_id {
+            offer.push(id.to_vec());
+        }
         self.save_sale(
             &mail.escrow,
             Sale {
@@ -237,6 +292,7 @@ impl Node {
                 release_txid: None,
                 settle_txid: None,
                 error: None,
+                listing_id,
             },
         )?;
         self.send_to_buyer(&mail.escrow, Kind::Offer, offer)
@@ -387,5 +443,55 @@ impl Node {
                 .map(|err| format!("The outcome {} is signed but not broadcast: {err}", tx.compute_txid()));
         })?;
         result
+    }
+
+    /// One finished escrow payout, so tests of an established store can take direct pay.
+    #[cfg(test)]
+    pub(crate) fn record_finished_escrow_sale(&self) -> Result<(), String> {
+        use bitcoin::secp256k1::SecretKey;
+        use bitcoin::Txid;
+        let secp = Secp256k1::new();
+        let buyer = SecretKey::from_slice(&[0x11; 32]).map_err(failed)?;
+        let vendor = SecretKey::from_slice(&[0x22; 32]).map_err(failed)?;
+        let payout = |byte: u8| {
+            let key = SecretKey::from_slice(&[byte; 32]).unwrap();
+            let (xonly, _) = key.x_only_public_key(&secp);
+            ScriptBuf::new_p2tr(&secp, xonly, None)
+        };
+        let terms = EscrowTerms {
+            buyer: PublicKey::from_secret_key(&secp, &buyer).serialize(),
+            vendor: PublicKey::from_secret_key(&secp, &vendor).serialize(),
+            moderator: crate::escrow_fixture::moderator_record(self.network)?,
+            funding_value: Amount::from_sat(50_000),
+            network_fee: Amount::from_sat(1_000),
+            dispute_deadline: 100_000,
+            vendor_claim_height: 100_144,
+            refund_height: 100_288,
+            buyer_payout: payout(0x41),
+            vendor_payout: payout(0x42),
+        };
+        self.save_sale(
+            &[0xee; 16],
+            Sale {
+                seller: "established".into(),
+                index: 0,
+                terms,
+                buyer_mail: self.buyer_mail_secret().public_key(),
+                buyer_url: "http://127.0.0.1:1".into(),
+                stage: "released".into(),
+                offer: Vec::new(),
+                outpoint: None,
+                open_attempt: 0,
+                reply: None,
+                awaiting: None,
+                escrow: None,
+                claim: None,
+                outcome_tx: None,
+                release_txid: Some(Txid::from_byte_array([0xcd; 32])),
+                settle_txid: None,
+                error: None,
+                listing_id: None,
+            },
+        )
     }
 }

@@ -25,6 +25,7 @@ pub(crate) fn deliver(seller: &Peer, buyer: &Peer) {
 
 /// A mug in two glazes: Sea at the listing's $25.00 (2 left), Sand at $30.00 (3 left).
 pub(crate) fn glazed_mug(seller: &Peer) -> Value {
+    seller.node.record_finished_escrow_sale().expect("an established store has one finished escrow");
     let first = open_store(&seller.node);
     let mut body = mug(first["images"][0].as_str().unwrap());
     body["currency"] = json!("USD");
