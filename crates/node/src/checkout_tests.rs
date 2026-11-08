@@ -238,6 +238,11 @@ fn moderated_order_records_the_buyer_side_and_asks_the_vendor_node() {
     assert_eq!(receipt["settlement"], "escrow");
     assert_eq!(receipt["escrow"]["fundingSats"], 4_000 + receipt["escrow"]["spendFeeSats"].as_u64().unwrap());
     assert_eq!(receipt["escrow"]["signaturesRequired"], 2);
+    assert_eq!(receipt["escrow"]["moderatorFeeSats"], crate::MODERATOR_FEE_SATS);
+    assert!(receipt["escrow"]["moderatorFeeSats"].is_u64());
+    for private in ["name", "email", "phone", "buyerId", "street"] {
+        assert!(receipt["escrow"].get(private).is_none(), "{private} is not on the fee");
+    }
     assert_eq!(receipt["escrow"]["stage"], "requested");
     assert!(receipt["escrow"]["buyerPayout"].as_str().unwrap().starts_with("tb1p"));
     assert!(receipt["escrow"].get("address").is_none(), "the address comes with the vendor's terms");

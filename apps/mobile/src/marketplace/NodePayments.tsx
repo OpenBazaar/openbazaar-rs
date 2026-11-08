@@ -467,9 +467,16 @@ export function OrderPayment({
         </p>
       )}
       {escrow ? (
-        <p className='ob-page-intro'>
-          Escrow payment is not available here yet. You can track this order’s status here.
-        </p>
+        <>
+          {order.escrow?.moderatorFeeSats ? (
+            <p className='ob-page-intro'>
+              Moderator fee {order.escrow.moderatorFeeSats.toLocaleString()} sats, paid from the escrow to the moderator key in the terms.
+            </p>
+          ) : null}
+          <p className='ob-page-intro'>
+            Escrow payment is not available here yet. You can track this order’s status here.
+          </p>
+        </>
       ) : (
         <>
           {mismatch && (

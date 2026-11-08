@@ -225,6 +225,8 @@ export type EscrowReceipt = {
   address: string;
   outpoint: string;
   signaturesRequired: number;
+  /** Signed moderator fee, in sats. A number, with no name or address. */
+  moderatorFeeSats?: number;
 };
 
 export type SellerOrder = OrderTracking & {
@@ -885,6 +887,7 @@ function parseEscrow(value: unknown): EscrowReceipt | null {
     address: typeof escrow.address === "string" ? escrow.address : "",
     outpoint: typeof escrow.outpoint === "string" ? escrow.outpoint : "",
     signaturesRequired: typeof escrow.signaturesRequired === "number" ? requiredNumber(escrow.signaturesRequired) : 0,
+    ...(typeof escrow.moderatorFeeSats === "number" ? { moderatorFeeSats: requiredNumber(escrow.moderatorFeeSats) } : {}),
   };
 }
 
