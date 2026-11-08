@@ -161,6 +161,47 @@ fn listings_keep_their_id_across_edits_and_old_addresses_still_resolve() {
 }
 
 #[test]
+fn an_edit_replaces_the_public_listing_with_the_new_signed_fields() {
+    let (_dir, node) = seller();
+    let listing = open_store(&node);
+    let id = listing["listingId"].as_str().unwrap();
+    node.fix_rates(&[("USD", 100_000.0)]);
+    let mut edit = mug(listing["images"][0].as_str().unwrap());
+    edit["title"] = json!("Edited mug");
+    edit["currency"] = json!("USD");
+    edit["price"] = json!(2_500);
+    edit["shipping"] = json!(0);
+    edit["commerce"] = json!({ "condition": "new", "compareAt": 3_200, "acceptsOffers": true });
+    let (status, edited) = request(&node, "PUT", &format!("/store/listings/{id}"), &edit.to_string());
+    assert!(status.contains("200"), "{status} {edited}");
+
+    let (_, catalog) = request(&node, "GET", "/catalog", "");
+    let shown: Vec<&Value> = catalog["listings"].as_array().unwrap().iter().filter(|item| item["listingId"] == id).collect();
+    assert_eq!(shown.len(), 1, "the catalog serves one version");
+    assert_eq!(shown[0]["title"], "Edited mug");
+    assert_eq!(shown[0]["commerce"]["compareAt"], 3_200);
+    assert_eq!(shown[0]["commerce"]["acceptsOffers"], true);
+
+    let (status, body) = peer_request(&node, "/public/store");
+    assert!(status.contains("200"), "{status}");
+    let value: Value = serde_json::from_slice(&body).unwrap();
+    let signed = value["listings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| openbazaar_protocol::Listing::decode(&crate::escrow_mail::unhex(item.as_str().unwrap()).unwrap()).unwrap())
+        .find(|item| item.title == "Edited mug")
+        .expect("the public store serves the edited listing");
+    signed.verify().unwrap();
+    let pricing = signed.commerce.unwrap().pricing;
+    assert_eq!(
+        (pricing.compare_at, pricing.accepts_offers),
+        (3_200, true),
+        "a buyer copying the store sees the signed fields the editor saved"
+    );
+}
+
+#[test]
 fn listings_survive_a_restart_and_need_the_unlocked_wallet_to_change() {
     let dir = TempDir::new();
     let chain = MockChain::new();
