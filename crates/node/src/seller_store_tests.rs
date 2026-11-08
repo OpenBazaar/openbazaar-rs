@@ -7,10 +7,12 @@ use crate::http::dispatch;
 use crate::network::NetworkMode;
 use crate::{EscrowConfig, Node};
 
-/// A tiny PNG: the node checks the signature bytes, not the pixels.
+/// A tiny PNG with no text chunks. The seed changes the pixel so two calls
+/// do not share a hash. It round-trips through image cleaning unchanged.
 pub(crate) fn png(seed: u8) -> Vec<u8> {
-    let mut bytes = b"\x89PNG\r\n\x1a\n".to_vec();
-    bytes.extend_from_slice(&[seed; 32]);
+    let image = image::RgbaImage::from_pixel(1, 1, image::Rgba([seed, seed.wrapping_add(1), seed.wrapping_add(2), 255]));
+    let mut bytes = Vec::new();
+    image::DynamicImage::ImageRgba8(image).write_to(&mut std::io::Cursor::new(&mut bytes), image::ImageFormat::Png).unwrap();
     bytes
 }
 
@@ -755,4 +757,23 @@ fn uploads_must_be_images() {
     let raw = format!("POST /media HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: {}\r\n\r\n", 4);
     let response = String::from_utf8_lossy(&dispatch(&node, [raw.as_bytes(), b"\x89PNG"].concat().as_slice())).to_string();
     assert!(response.starts_with("HTTP/1.1 403"), "unpaired uploads are refused: {response}");
+}
+
+#[test]
+fn an_upload_drops_a_gps_note_before_it_is_hashed() {
+    use bitcoin::hashes::Hash;
+    let (_dir, node) = seller();
+    let secret = "GPS 37.7749,-122.4194 Canon-SECRET";
+    let dirty = crate::image_sanitize::jpeg_with_note(2, 1, secret, 1);
+    let (status, image) = upload(&node, &dirty);
+    assert!(status.contains("200"), "{status} {image}");
+    assert_eq!(image["contentType"], "image/jpeg");
+    let text = image["hash"].as_str().unwrap();
+    let mut hash = [0u8; 32];
+    for (i, byte) in hash.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&text[i * 2..i * 2 + 2], 16).unwrap();
+    }
+    let (_, served) = node.media.get(&hash).unwrap();
+    assert!(!served.windows(secret.len()).any(|window| window == secret.as_bytes()));
+    assert_eq!(bitcoin::hashes::sha256::Hash::hash(&served).to_byte_array(), hash);
 }

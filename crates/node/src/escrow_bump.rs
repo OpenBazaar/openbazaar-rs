@@ -28,12 +28,22 @@ struct Bump<'a> {
     rate: f64,
     max_fee: u64,
     passphrase: &'a str,
+    link_coins: bool,
 }
 
 fn parse(body: &Value) -> Result<Bump<'_>, PayError> {
     let invalid = |message: &str| PayError::Invalid(message.into());
-    let known = ["escrow", "spend", "feeRateSatVb", "maxFeeSats", "passphrase"];
-    let map = body.as_object().ok_or_else(|| invalid("Send a JSON object."))?;
+    let known = [
+        "escrow",
+        "spend",
+        "feeRateSatVb",
+        "maxFeeSats",
+        "passphrase",
+        "linkCoins",
+    ];
+    let map = body
+        .as_object()
+        .ok_or_else(|| invalid("Send a JSON object."))?;
     if map.keys().any(|key| !known.contains(&key.as_str())) {
         return Err(invalid("That bump has a field this node does not know."));
     }
@@ -55,12 +65,18 @@ fn parse(body: &Value) -> Result<Bump<'_>, PayError> {
     let passphrase = body["passphrase"]
         .as_str()
         .ok_or_else(|| invalid("Enter the wallet passphrase to pay a bump."))?;
+    let link_coins = match body.get("linkCoins") {
+        None => false,
+        Some(Value::Bool(flag)) => *flag,
+        Some(_) => return Err(invalid("linkCoins must be true or false.")),
+    };
     Ok(Bump {
         escrow,
         spend,
         rate,
         max_fee,
         passphrase,
+        link_coins,
     })
 }
 
@@ -85,7 +101,10 @@ impl Node {
         // The parent goes out even if no child can be paid for: it was entered.
         if let Err(err) = self.chain.broadcast(&parent) {
             // Already in the mempool or mined: the child still applies.
-            eprintln!("ob-node: escrow bump parent {}: {err}", parent.compute_txid());
+            eprintln!(
+                "ob-node: escrow bump parent {}: {err}",
+                parent.compute_txid()
+            );
         }
         self.sync_buyer_wallet().map_err(PayError::Chain)?;
         let child = self.sign_bump(&parent, parent_fee(&parent, funding), &bump)?;
@@ -95,7 +114,9 @@ impl Node {
             wallet
                 .wallet
                 .apply_unconfirmed_txs([(child.tx.clone(), crate::escrow_outbox::now_secs())]);
-            wallet.persist().map_err(|err| PayError::Failed(err.to_string()))?;
+            wallet
+                .persist()
+                .map_err(|err| PayError::Failed(err.to_string()))?;
         }
         Ok(json!({
             "parentTxid": parent.compute_txid().to_string(),
@@ -105,7 +126,11 @@ impl Node {
         }))
     }
 
-    fn bump_parent(&self, id: &EscrowId, spend: &str) -> Result<Option<(Transaction, u64)>, PayError> {
+    fn bump_parent(
+        &self,
+        id: &EscrowId,
+        spend: &str,
+    ) -> Result<Option<(Transaction, u64)>, PayError> {
         let found = match spend {
             "refund" => self.buyer_bump_parent(id, spend),
             "claim" => self.vendor_bump_parent(id, spend),
@@ -117,12 +142,38 @@ impl Node {
         found.map_err(PayError::Conflict)
     }
 
-    fn sign_bump(&self, parent: &Transaction, parent_fee: u64, bump: &Bump<'_>) -> Result<Child, PayError> {
+    fn sign_bump(
+        &self,
+        parent: &Transaction,
+        parent_fee: u64,
+        bump: &Bump<'_>,
+    ) -> Result<Child, PayError> {
         let locked = self.escrow.coins.outpoints();
         let mut wallet = self.buyer_wallet();
+        let allowed = self.funding_script(&bump.escrow);
+        let blocked = crate::coin_provenance::blocked_coins(
+            &wallet.wallet,
+            allowed.as_deref(),
+            bump.link_coins,
+        );
+        let unspendable: Vec<_> = locked.into_iter().chain(blocked.iter().copied()).collect();
         let seed = self.spend_seed(&wallet)?;
-        let child = cpfp_child(&mut wallet, &seed, parent, parent_fee, bump.rate, &locked)
-            .map_err(PayError::Invalid)?;
+        let child = cpfp_child(
+            &mut wallet,
+            &seed,
+            parent,
+            parent_fee,
+            bump.rate,
+            &unspendable,
+        )
+        .map_err(|err| {
+            let mut message = err;
+            if !blocked.is_empty() {
+                message.push(' ');
+                message.push_str(crate::coin_provenance::LINK_EXPLANATION);
+            }
+            PayError::Invalid(message)
+        })?;
         if child.fee_sats > bump.max_fee {
             return Err(PayError::Conflict(format!(
                 "That bump needs {} sats, more than the {} allowed.",
@@ -130,5 +181,25 @@ impl Node {
             )));
         }
         Ok(child)
+    }
+
+    /// The escrow funding address, when this node has the order. Change from
+    /// funding that escrow may pay its fee bump. Anything else stays blocked
+    /// unless the caller set `linkCoins`.
+    fn funding_script(&self, id: &crate::escrow_mail::EscrowId) -> Option<bitcoin::ScriptBuf> {
+        let wanted = crate::escrow_mail::id_hex(id);
+        let orders = self.orders().list_value();
+        let orders = orders.get("orders")?.as_array()?;
+        for order in orders {
+            let escrow = order.get("escrow")?;
+            if escrow.get("id").and_then(Value::as_str) != Some(wanted.as_str()) {
+                continue;
+            }
+            let address = escrow.get("address").and_then(Value::as_str)?;
+            return crate::network::address_for(address, self.network)
+                .ok()
+                .map(|address| address.script_pubkey());
+        }
+        None
     }
 }

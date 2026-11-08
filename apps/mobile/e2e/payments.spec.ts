@@ -140,6 +140,10 @@ test('testnet4 wallet, setup, real checkout, and a real quote request', async ({
     page.getByText('Testnet4 · test coins, no value', { exact: true })
   ).toBeVisible()
   await protect(page)
+  await expect(page.locator('.ob-wallet-note').first()).toContainText('--proxy')
+  await expect(page.locator('.ob-wallet-note').first()).toContainText(
+    'Only your own Esplora server sees the addresses'
+  )
   await page.locator('.ob-wallet-fund').filter({ has: page.getByRole('heading', { name: 'Wallet unlocked', exact: true }) }).screenshot({ path: testInfo.outputPath('wallet-unlocked.png') })
   const receive = page.locator('.ob-wallet-receive code')
   await expect(receive).toHaveText(/^tb1/)
@@ -351,10 +355,9 @@ test('partial payment QR, confirmations, tx links, and status polling', async ({
     'data-payment-uri',
     `bitcoin:${order.payment.address}?amount=${(due / 1e8).toFixed(8)}`
   )
-  await expect(page.locator('.ob-transaction-link')).toHaveAttribute(
-    'href',
-    `https://mempool.space/testnet4/tx/${'a'.repeat(64)}`
-  )
+  await expect(page.getByText('a'.repeat(64))).toBeVisible()
+  await expect(page.locator('a[href*="mempool.space"]')).toHaveCount(0)
+  await expect(page.getByText(/does not inherit this node's Tor/)).toBeVisible()
   state = { ...state, receivedSats: order.totalSats, status: 'Payment seen' }
   await page.clock.fastForward(13000)
   await expect(page.locator('.ob-payment-progress strong')).toHaveText(

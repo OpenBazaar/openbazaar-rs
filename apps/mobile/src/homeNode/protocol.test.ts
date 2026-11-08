@@ -8,7 +8,7 @@ import { bytesToHex, concatBytes, hexToBytes, utf8ToBytes } from "@noble/hashes/
 import { chacha20poly1305 } from "@noble/ciphers/chacha.js";
 
 import { decodeResponse, encodeRequest } from "./http1.ts";
-import { lanSeal } from "./lan.ts";
+import { lanSeal, lanSealResponse } from "./lan.ts";
 import {
   base32,
   deviceIdOf,
@@ -112,9 +112,14 @@ test("the LAN channel seals for the node key only", () => {
   const aad = utf8ToBytes("OBLAN1");
   assert.deepEqual(chacha20poly1305(K.slice(0, 32), new Uint8Array(12), aad).decrypt(sealed.body.slice(32)), inner);
   const answer = utf8ToBytes("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}");
-  const reply = chacha20poly1305(K.slice(32), new Uint8Array(12), aad).encrypt(answer);
+  const nonce = new Uint8Array(24).fill(7);
+  const reply = lanSealResponse(K.slice(32), answer, nonce);
   assert.deepEqual(sealed.open(reply), answer);
-  assert.throws(() => sealed.open(chacha20poly1305(K.slice(0, 32), new Uint8Array(12), aad).encrypt(answer)));
+  assert.throws(() => sealed.open(chacha20poly1305(K.slice(32), new Uint8Array(12), aad).encrypt(answer)), /not sealed/);
+  assert.throws(() => lanSealResponse(K.slice(32), answer, new Uint8Array(24)));
+  const zeroNonce = concatBytes(new Uint8Array([2]), new Uint8Array(24), reply.slice(25));
+  assert.throws(() => sealed.open(zeroNonce), /not sealed/);
+  assert.throws(() => sealed.open(new Uint8Array([1])), /not sealed/);
 });
 
 test("HTTP/1.1 framing", () => {

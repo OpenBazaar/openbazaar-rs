@@ -6,13 +6,31 @@ import {
   type NetworkName
 } from './catalog'
 
+export type ChainBackend = {
+  backend: string
+  privacy: string
+  reveals: string
+  peers: number | null
+  scannedHeight: number | null
+  syncing: boolean
+  error: string | null
+  fallback: string | null
+  fallbackActive: boolean
+}
 export type NetworkInfo = {
   network: NetworkName
   confirmations: number
   publicChainServer: boolean
   lightning: string
   silentPayments: string
+  proxy: string | null
+  clearnet: boolean
+  privacyWarning: string | null
+  chainBackend: ChainBackend | null
 }
+/** Copying stays on this device. Opening an explorer does not use the node's Tor settings. */
+export const EXTERNAL_TX_NOTE =
+  "Copying a transaction ID stays on this device. A browser does not inherit this node's Tor or proxy settings, so a public explorer would see the transaction ID and the browser's address."
 export type NodeWallet = {
   network: NetworkName
   balance: {
@@ -43,6 +61,38 @@ function network(value: unknown): NetworkName {
     )
   return name
 }
+function textOrNull(value: unknown): string | null {
+  return typeof value === 'string' && value ? value : null
+}
+function chainBackend(value: unknown): ChainBackend | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const backend = value as Record<string, unknown>
+  return {
+    backend: typeof backend.backend === 'string' ? backend.backend : '',
+    privacy: typeof backend.privacy === 'string' ? backend.privacy : '',
+    reveals: typeof backend.reveals === 'string' ? backend.reveals : '',
+    peers: typeof backend.peers === 'number' ? backend.peers : null,
+    scannedHeight:
+      typeof backend.scannedHeight === 'number' ? backend.scannedHeight : null,
+    syncing: backend.syncing === true,
+    error: textOrNull(backend.error),
+    fallback: textOrNull(backend.fallback),
+    fallbackActive: backend.fallbackActive === true
+  }
+}
+/** A configured proxy is not a verified connection. Peers or a chain error are. */
+export function privacyStatus(info: NetworkInfo): string {
+  const backend = info.chainBackend
+  if (backend?.error) return 'Chain transport failed'
+  if (backend?.fallbackActive) return 'Public fallback active'
+  if (info.privacyWarning) return 'Private route unavailable'
+  if (info.proxy) {
+    return backend && (backend.peers ?? 0) > 0
+      ? `Proxy reached ${backend.peers} peers`
+      : 'Proxy configured, not verified'
+  }
+  return ''
+}
 export async function fetchNetwork(): Promise<NetworkInfo> {
   const r = record(await paired('/network'))
   return {
@@ -50,7 +100,11 @@ export async function fetchNetwork(): Promise<NetworkInfo> {
     confirmations: number(r.confirmations),
     publicChainServer: r.publicChainServer === true,
     lightning: String(r.lightning ?? 'unavailable'),
-    silentPayments: String(r.silentPayments ?? 'unavailable')
+    silentPayments: String(r.silentPayments ?? 'unavailable'),
+    proxy: textOrNull(r.proxy),
+    clearnet: r.clearnet === true,
+    privacyWarning: textOrNull(r.privacyWarning),
+    chainBackend: chainBackend(r.chainBackend)
   }
 }
 export async function fetchWallet(): Promise<NodeWallet> {
@@ -129,7 +183,4 @@ export function bitcoinAmount(sats: number): string {
 }
 export function bitcoinUri(address: string, sats?: number): string {
   return `bitcoin:${address}${sats === undefined ? '' : `?amount=${bitcoinAmount(sats)}`}`
-}
-export function txUrl(network: NetworkName, txid: string): string {
-  return `https://mempool.space/${network === 'testnet4' ? 'testnet4/' : ''}tx/${txid}`
 }

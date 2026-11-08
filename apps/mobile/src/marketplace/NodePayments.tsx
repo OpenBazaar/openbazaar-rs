@@ -22,7 +22,9 @@ import {
   fetchWallet,
   newWalletAddress,
   payOrder,
-  txUrl
+  privacyStatus,
+  EXTERNAL_TX_NOTE,
+  type NetworkInfo
 } from '../nodeWallet'
 import { paymentStatusView } from '../paymentStatus'
 import { useNodeResource } from '../useNodeResource'
@@ -72,14 +74,39 @@ export function NetworkBadge() {
   return (
     <div className={`ob-network-badge ${state}`} role='status'>
       <span className='ob-status-dot' aria-hidden='true' />
-      {network.error
-        ? 'Network unavailable · payments disabled'
-        : !network.data
-          ? 'Checking bitcoin network…'
-          : network.data.network === 'testnet4'
-            ? 'Testnet4 · test coins, no value'
-            : 'Mainnet'}
+      <span>
+        {network.error
+          ? 'Network unavailable · payments disabled'
+          : !network.data
+            ? 'Checking bitcoin network…'
+            : network.data.network === 'testnet4'
+              ? 'Testnet4 · test coins, no value'
+              : 'Mainnet'}
+      </span>
+      {network.data && privacyStatus(network.data) ? (
+        <span>{privacyStatus(network.data)}</span>
+      ) : null}
     </div>
+  )
+}
+function PrivacyNotice({ info }: { info: NetworkInfo }) {
+  const status = privacyStatus(info)
+  const backend = info.chainBackend
+  if (!status && !info.privacyWarning && !backend?.reveals && !backend?.error)
+    return null
+  return (
+    <p className='ob-wallet-note' role='status'>
+      {status ? `${status}. ` : null}
+      {info.privacyWarning}
+      {backend?.reveals ? ` ${backend.reveals}` : null}
+      {backend?.error ? ` ${backend.error}` : null}
+      {backend?.fallbackActive
+        ? ` Public fallback${backend.fallback ? `: ${backend.fallback}` : ''} is active.`
+        : null}
+      {info.proxy
+        ? ` Configured proxy: ${info.proxy}. A configured proxy is not a verified connection.`
+        : null}
+    </p>
   )
 }
 export function WalletAmount({
@@ -230,6 +257,7 @@ export function WalletPanel({
           Wallet and node networks do not match. Payments are disabled.
         </p>
       )}
+      {network.data && <PrivacyNotice info={network.data} />}
       {!current ? (
         <p className='ob-page-intro' role='status'>
           {wallet.loading
@@ -294,12 +322,6 @@ export function WalletPanel({
               </div>
             )}
           </section>
-          {network.data?.publicChainServer && (
-            <p className='ob-wallet-note'>
-              This node uses a public chain server, which can see the wallet
-              addresses it queries.
-            </p>
-          )}
         </>
       )}
     </section>
@@ -431,22 +453,14 @@ export function OrderPayment({
         )}
         <span>{view.confirmations}</span>
       </div>
-      {txids.map(txid =>
-        orderNetwork ? (
-          <a
-            className='ob-transaction-link'
-            key={txid}
-            href={txUrl(orderNetwork, txid)}
-            target='_blank'
-            rel='noreferrer noopener'
-          >
-            {order.payTxid === txid ? 'Sent transaction: ' : 'Transaction: '}
-            {txid}
-          </a>
-        ) : (
-          <code key={txid}>{txid}</code>
-        )
-      )}
+      {txids.map(txid => (
+        <CopyPaymentValue
+          key={txid}
+          label={order.payTxid === txid ? 'Sent transaction' : 'Transaction'}
+          value={txid}
+        />
+      ))}
+      {txids.length > 0 && <p className='ob-wallet-note'>{EXTERNAL_TX_NOTE}</p>}
       {(error || order.payError || resource.error) && (
         <p role='alert' className='ob-form-error'>
           {error || order.payError || resource.error}

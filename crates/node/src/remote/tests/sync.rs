@@ -3,8 +3,9 @@
 use serde_json::{json, Map, Value};
 use x25519_dalek::StaticSecret;
 
+use super::super::auth::ReplayGuard;
 use super::super::lan;
-use super::super::protocol::{lan_open_response, lan_seal_request};
+use super::super::protocol::{lan_open_response, lan_response_nonce, lan_seal_request};
 use super::super::sync::{diff, etag};
 use super::*;
 use crate::harness::hash_of;
@@ -273,6 +274,115 @@ fn the_lan_channel_carries_signed_requests_sealed_to_the_node_key() {
     assert!(
         split(answer).0.contains("401"),
         "the LAN adds speed, not trust"
+    );
+}
+
+/// XOR a captured answer with a later answer and a known plaintext, the way a
+/// reused zero nonce would reveal the first response.
+fn recovered_prefix(captured: &[u8], later: &[u8], known: &[u8]) -> Vec<u8> {
+    captured
+        .iter()
+        .zip(later)
+        .zip(known)
+        .map(|((&first, &second), &plain)| first ^ second ^ plain)
+        .collect()
+}
+
+fn seal_to(node: &Node, phone: &Device, path: &str) -> (Vec<u8>, [u8; 32]) {
+    let inner = phone.raw("GET", path, "", now_secs());
+    let (body, key) = lan_seal_request(
+        &node.remote.devices().node_public,
+        &StaticSecret::from(random_bytes::<32>()),
+        inner.as_bytes(),
+    );
+    (body, key)
+}
+
+#[test]
+fn a_captured_lan_envelope_cannot_reveal_an_earlier_answer() {
+    let (dir, mut node) = home();
+    let phone = first_device(&node);
+    let (body, key) = seal_to(&node, &phone, "/remote/devices");
+    let first = body_of(&lan_post(&node, &body)).to_vec();
+    let success = lan_open_response(&key, &first).unwrap();
+    assert!(
+        success.starts_with(b"HTTP/1.1 200"),
+        "{}",
+        String::from_utf8_lossy(&success)
+    );
+    let device_id = phone.id();
+    assert!(String::from_utf8_lossy(&success).contains(&device_id));
+
+    let replay = body_of(&lan_post(&node, &body)).to_vec();
+    let rejected = lan_open_response(&key, &replay).unwrap();
+    let rejected_text = String::from_utf8_lossy(&rejected);
+    assert!(rejected_text.contains("replay"), "{rejected_text}");
+    let first_nonce = lan_response_nonce(&first).unwrap();
+    let replay_nonce = lan_response_nonce(&replay).unwrap();
+    assert_ne!(first_nonce, replay_nonce);
+    assert_ne!(
+        first_nonce[16..],
+        replay_nonce[16..],
+        "the stored counter must move"
+    );
+    let stolen = recovered_prefix(&first, &replay, &rejected);
+    assert_ne!(&success[..stolen.len()], stolen.as_slice());
+    assert!(!String::from_utf8_lossy(&stolen).contains(&device_id));
+
+    node.remote.replay = ReplayGuard::new(now_secs() + 1200);
+    let aged = body_of(&lan_post(&node, &body)).to_vec();
+    let clock = String::from_utf8(lan_open_response(&key, &aged).unwrap()).unwrap();
+    assert!(clock.contains("clock"), "{clock}");
+    let clock_nonce = lan_response_nonce(&aged).unwrap();
+    assert_ne!(clock_nonce, first_nonce);
+    assert_ne!(clock_nonce, replay_nonce);
+    let stolen = recovered_prefix(&first, &aged, clock.as_bytes());
+    assert!(!String::from_utf8_lossy(&stolen).contains(&device_id));
+
+    node.remote.replay = ReplayGuard::new(0);
+    node.remote.revoke(&device_id).unwrap();
+    let (revoked_body, revoked_key) = seal_to(&node, &phone, "/remote/devices");
+    let revoked = body_of(&lan_post(&node, &revoked_body)).to_vec();
+    let removed = String::from_utf8(lan_open_response(&revoked_key, &revoked).unwrap()).unwrap();
+    assert!(removed.contains("unknown_device"), "{removed}");
+    assert_ne!(lan_response_nonce(&revoked).unwrap(), clock_nonce);
+
+    let counter = dir.0.join("lan-response-counter");
+    let before = u64::from_le_bytes(std::fs::read(&counter).unwrap().try_into().unwrap());
+    assert!(
+        before >= 4,
+        "success, replay, clock, and revoke each took a nonce"
+    );
+    drop(node);
+    let node = open_home(&dir);
+    let phone = first_device(&node);
+    let (again_body, again_key) = seal_to(&node, &phone, "/remote/devices");
+    let restarted = body_of(&lan_post(&node, &again_body)).to_vec();
+    assert!(lan_open_response(&again_key, &restarted)
+        .unwrap()
+        .starts_with(b"HTTP/1.1 200"));
+    let after = u64::from_le_bytes(std::fs::read(&counter).unwrap().try_into().unwrap());
+    assert!(after > before);
+    let restarted_nonce = lan_response_nonce(&restarted).unwrap();
+    assert_eq!(
+        u64::from_le_bytes(restarted_nonce[16..].try_into().unwrap()),
+        after
+    );
+    assert_ne!(restarted_nonce, first_nonce);
+
+    assert!(lan_open_response(&key, &[]).is_none());
+    assert!(lan_open_response(&key, &[2]).is_none());
+    assert!(lan_open_response(&key, &[1; 40]).is_none());
+    let mut zeros = vec![2];
+    zeros.extend_from_slice(&[0; 24]);
+    zeros.extend_from_slice(&first[25..]);
+    assert!(
+        lan_open_response(&key, &zeros).is_none(),
+        "an all-zero nonce is not a version-2 envelope"
+    );
+    assert!(
+        lan_open_response(&key, &first[25..]).is_none(),
+        "the previous raw ciphertext is not decrypted"
     );
 }
 

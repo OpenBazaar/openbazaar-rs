@@ -1,6 +1,5 @@
 import { useMemo, useRef, useState } from 'react'
 import {
-  Linking,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -21,9 +20,11 @@ import {
   amountDue,
   bitcoinAmount,
   bitcoinUri,
+  EXTERNAL_TX_NOTE,
   newWalletAddress,
   payOrder,
-  txUrl
+  privacyStatus,
+  type NetworkInfo
 } from './nodeWallet'
 import { paymentStatusView } from './paymentStatus'
 import { useNodeResource } from './useNodeResource'
@@ -161,6 +162,29 @@ export function NativeNetworkBadge() {
           : network.data.network === 'testnet4'
             ? 'Testnet4 · test coins, no value'
             : 'Mainnet'}
+      {network.data && privacyStatus(network.data)
+        ? ` · ${privacyStatus(network.data)}`
+        : ''}
+    </Text>
+  )
+}
+function PrivacyLines({ info }: { info: NetworkInfo }) {
+  const status = privacyStatus(info)
+  const backend = info.chainBackend
+  if (!status && !info.privacyWarning && !backend?.reveals && !backend?.error)
+    return null
+  return (
+    <Text accessibilityRole='text' style={s.body}>
+      {status ? `${status}. ` : ''}
+      {info.privacyWarning ?? ''}
+      {backend?.reveals ? ` ${backend.reveals}` : ''}
+      {backend?.error ? ` ${backend.error}` : ''}
+      {backend?.fallbackActive
+        ? ` Public fallback${backend.fallback ? `: ${backend.fallback}` : ''} is active.`
+        : ''}
+      {info.proxy
+        ? ` Configured proxy: ${info.proxy}. A configured proxy is not a verified connection.`
+        : ''}
     </Text>
   )
 }
@@ -212,6 +236,7 @@ export function NativeWallet({
           {error || wallet.error || network.error}
         </Text>
       ) : null}
+      {network.data ? <PrivacyLines info={network.data} /> : null}
       {current ? (
         <>
           <Text style={s.section}>Spendable</Text>
@@ -253,12 +278,6 @@ export function NativeWallet({
           </Text>
           {current.syncError && (
             <Text style={s.error}>Wallet sync: {current.syncError}</Text>
-          )}
-          {network.data?.publicChainServer && (
-            <Text style={s.body}>
-              The public chain server can see wallet addresses queried by this
-              node.
-            </Text>
           )}
         </>
       ) : (
@@ -386,16 +405,13 @@ export function NativeOrderPayment({
       </Text>
       <Text style={s.body}>{view.confirmations}</Text>
       {txids.map(txid => (
-        <Pressable
+        <Copy
           key={txid}
-          accessibilityRole='link'
-          onPress={() => {
-            if (orderNet) void Linking.openURL(txUrl(orderNet, txid))
-          }}
-        >
-          <Text style={s.link}>Transaction: {txid}</Text>
-        </Pressable>
+          label={order.payTxid === txid ? 'Sent transaction' : 'Transaction'}
+          value={txid}
+        />
       ))}
+      {txids.length > 0 ? <Text style={s.body}>{EXTERNAL_TX_NOTE}</Text> : null}
       {error ||
       order.payError ||
       resource.error ||

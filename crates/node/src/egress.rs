@@ -77,7 +77,7 @@ impl Egress {
     pub(crate) fn value(&self, public_chain_server: bool) -> Value {
         let skipped = self.proxy.is_none() && (public_chain_server || self.live_rates);
         let warning = skipped.then(|| {
-            "Rates and public chain servers are not contacted without --proxy, so they do not see this machine's IP. Pass --proxy socks5h://127.0.0.1:9050 to fetch them over Tor."
+            "Rates and public chain servers are not contacted without --proxy, so they do not see this machine's IP. Pass --proxy socks5h://127.0.0.1:9050 to fetch them over Tor (9150 is Tor Browser's port). HTTP_PROXY, HTTPS_PROXY, and ALL_PROXY are ignored."
                 .to_string()
         });
         json!({

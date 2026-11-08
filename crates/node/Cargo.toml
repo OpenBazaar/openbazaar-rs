@@ -26,6 +26,7 @@ chacha20poly1305 = "0.10"
 data-encoding = "2"
 hkdf = "0.12"
 hmac = "0.12"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp"] }
 if-addrs = "0.13"
 mdns-sd = "0.21"
 musig2 = "0.4.1"
@@ -45,6 +46,7 @@ tokio = { version = "1", default-features = false, features = ["rt-multi-thread"
 tor-rtcompat = "0.48"
 tormail = { path = "../tormail" }
 ureq = { version = "2.12", features = ["socks-proxy"] }
+url = "2"
 x25519-dalek = { version = "2", features = ["static_secrets"] }
 zeroize = "1.8"
 

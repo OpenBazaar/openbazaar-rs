@@ -3,6 +3,8 @@
 //! The node serves a file only if its bytes hash to the name asked for, are
 //! at most [`MAX_MEDIA`] bytes, and start like a PNG, JPEG, GIF, or WebP
 //! image; the content type comes from those bytes, not from a file name.
+//! Identifying metadata is removed before a new image is hashed. A file
+//! already stored with that metadata is cleaned again on the way out.
 //! Files live in `media/<hex>` in the data directory. On testnet4 the demo
 //! stores' images are built in. Hosting and replicating images is not done
 //! here.
@@ -55,18 +57,16 @@ impl Media {
         Ok(Self { dir, builtin })
     }
 
-    /// Keep an image under its SHA-256. Only the image types [`image_type`]
-    /// knows, up to [`MAX_MEDIA`] bytes.
+    /// Keep an image under the SHA-256 of its cleaned bytes. Only the image
+    /// types [`image_type`] knows, up to [`MAX_MEDIA`] bytes, inside the
+    /// decoder limits.
     pub(crate) fn put(&self, bytes: &[u8]) -> Result<([u8; 32], &'static str), String> {
-        if bytes.len() > MAX_MEDIA {
-            return Err("That image is larger than 2 MiB.".into());
-        }
-        let kind = image_type(bytes).ok_or("Upload a PNG, JPEG, GIF, or WebP image.")?;
-        let hash = sha256::Hash::hash(bytes).to_byte_array();
-        if self.get(&hash).is_none() {
+        let (clean, kind) = crate::image_sanitize::prepare_image(bytes)?;
+        let hash = sha256::Hash::hash(&clean).to_byte_array();
+        if self.stored(&hash).is_none() {
             let name: String = hash.iter().map(|byte| format!("{byte:02x}")).collect();
             let tmp = self.dir.join(format!("{name}.tmp"));
-            fs::write(&tmp, bytes)
+            fs::write(&tmp, &clean)
                 .and_then(|_| fs::rename(&tmp, self.dir.join(&name)))
                 .map_err(|err| err.to_string())?;
         }
@@ -88,7 +88,12 @@ impl Media {
         if bytes.len() > MAX_MEDIA || sha256::Hash::hash(&bytes).to_byte_array() != *hash {
             return None;
         }
-        Some((image_type(&bytes)?, bytes))
+        crate::image_sanitize::serve_stored(&bytes)
+    }
+
+    /// The stored bytes for `hash`, before they are cleaned for a response.
+    fn stored(&self, hash: &[u8; 32]) -> Option<Vec<u8>> {
+        self.get(hash).map(|(_, bytes)| bytes)
     }
 }
 
@@ -124,7 +129,7 @@ mod tests {
         let jpeg_hash = sha256::Hash::hash(&jpeg).to_byte_array();
         let name = |hash: &[u8; 32]| hash.iter().map(|b| format!("{b:02x}")).collect::<String>();
         fs::write(dir.join(name(&jpeg_hash)), jpeg).unwrap();
-        assert_eq!(media.get(&jpeg_hash).unwrap().0, "image/jpeg");
+        assert!(media.get(&jpeg_hash).is_none(), "an image that does not decode is not served");
 
         let swapped = [0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n', 9];
         fs::write(dir.join(name(&jpeg_hash)), swapped).unwrap();
@@ -143,9 +148,7 @@ mod tests {
         let mainnet = Media::open(dir.clone(), NetworkMode::Mainnet).unwrap();
         assert!(mainnet.get(&hash).is_none(), "demo images are testnet4 only");
 
-        let (put, kind) = mainnet.put(&jpeg).unwrap();
-        assert_eq!((put, kind), (jpeg_hash, "image/jpeg"));
-        assert_eq!(mainnet.get(&jpeg_hash).unwrap().1, jpeg.to_vec());
+        assert!(mainnet.put(&jpeg).is_err(), "an image that does not decode is not kept");
         assert!(mainnet.put(script).is_err(), "only images are kept");
         assert!(mainnet.put(&big).is_err(), "nothing above the cap is kept");
         let _ = fs::remove_dir_all(dir);

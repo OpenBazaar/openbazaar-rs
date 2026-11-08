@@ -3,11 +3,14 @@
 //!
 //! `POST /lan` carries one request sealed to the node key and gets the answer
 //! sealed back ([`super::protocol::lan_open_request`]); inside, the request is
-//! signed exactly as over Tor, so the LAN adds speed and nothing else. The only
-//! plaintext is the setup page (`GET /`), served while no device is paired or
-//! for 10 minutes after `ob-node pair --lan-page`. It shows a pairing code
-//! and, on first run only, lets whoever sees it approve a request. That is the
-//! LAN setup risk `docs/home-node.md` describes.
+//! signed exactly as over Tor, so the LAN adds speed and nothing else. Every
+//! answer, including an error, uses a new response nonce. The counter half of
+//! that nonce is stored in the data directory, so a restart cannot seal the
+//! next answer with a nonce this node already used. The only plaintext is the
+//! setup page (`GET /`), served while no device is paired or for 10 minutes
+//! after `ob-node pair --lan-page`. It shows a pairing code and, on first run
+//! only, lets whoever sees it approve a request. That is the LAN setup risk
+//! `docs/home-node.md` describes.
 
 use std::io::{ErrorKind, Write};
 use std::net::{IpAddr, SocketAddr, TcpListener, TcpStream};
@@ -18,7 +21,7 @@ use std::time::{Duration, Instant};
 use super::gateway::{self, Entry};
 use super::pair_cli::qr_svg;
 use super::pairing::{Code, State};
-use super::protocol::{lan_open_request, lan_seal_response, words};
+use super::protocol::{lan_open_request, lan_seal_response_with_nonce, words};
 use super::{pair_http, LAN_PORT};
 use crate::http::http_response_cors;
 use crate::http_parse::{self, header};
@@ -42,6 +45,8 @@ struct Inner {
     page_code: Option<Code>,
     /// Shown after Approve or Reject, including once the pairing form has closed.
     decision: Option<String>,
+    /// Highest response-nonce counter issued by this process.
+    counter: u64,
 }
 
 impl LanState {
@@ -56,6 +61,40 @@ impl LanState {
 
     pub(crate) fn show_page_for_a_while(&self) {
         self.inner().page_until = Some(Instant::now() + PAGE_WINDOW);
+    }
+
+    /// 16 random bytes plus an 8-byte counter that survives a restart.
+    /// The counter is never zero, and the nonce is never all zeros.
+    pub(crate) fn next_response_nonce(&self, dir: &std::path::Path) -> [u8; 24] {
+        let counter = self.allocate_counter(dir);
+        let mut nonce = random_bytes::<24>();
+        nonce[16..].copy_from_slice(&counter.to_le_bytes());
+        if nonce == [0; 24] {
+            nonce[0] = 1;
+        }
+        nonce
+    }
+
+    fn allocate_counter(&self, dir: &std::path::Path) -> u64 {
+        let mut inner = self.inner();
+        let path = dir.join("lan-response-counter");
+        let disk = std::fs::read(&path)
+            .ok()
+            .filter(|bytes| bytes.len() == 8)
+            .and_then(|bytes| <[u8; 8]>::try_from(bytes).ok())
+            .map(u64::from_le_bytes)
+            .unwrap_or(0);
+        let next = inner.counter.max(disk).saturating_add(1).max(1);
+        inner.counter = next;
+        match std::fs::OpenOptions::new().create(true).write(true).truncate(true).open(&path) {
+            Ok(mut file) => {
+                if file.write_all(&next.to_le_bytes()).and_then(|()| file.sync_all()).is_err() {
+                    eprintln!("ob-node: the LAN response nonce counter could not be saved; this process still will not reuse one");
+                }
+            }
+            Err(err) => eprintln!("ob-node: the LAN response nonce counter could not be saved ({err}); this process still will not reuse one"),
+        }
+        next
     }
 }
 
@@ -174,18 +213,21 @@ pub(crate) fn respond(node: &Node, raw: &[u8], main_port: u16) -> Vec<u8> {
                 return bare("400 Bad Request");
             };
             let answer = gateway::answer(node, &inner, Entry::Lan, main_port);
+            let nonce = node.remote.lan.next_response_nonce(&node.data_dir);
             http_response_cors(
                 "200 OK",
                 "application/octet-stream",
-                &lan_seal_response(&response_key, &answer),
+                &lan_seal_response_with_nonce(&response_key, &answer, &nonce),
                 None,
             )
         }
         ("GET", "/") if page_open(node) => page(node),
         ("GET", "/") if decision(node).is_some() => closed_result(node),
-        ("GET", "/setup/decide") => see_other(decision(node).as_deref().unwrap_or(
-            "Return to the setup page.",
-        )),
+        ("GET", "/setup/decide") => see_other(
+            decision(node)
+                .as_deref()
+                .unwrap_or("Return to the setup page."),
+        ),
         ("POST", "/setup/decide") if first_run(node) => {
             let host = header(request.head, "host").unwrap_or_default();
             if header(request.head, "origin")

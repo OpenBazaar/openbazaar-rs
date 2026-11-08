@@ -208,12 +208,19 @@ node. Nothing on this port is plaintext except the setup page. A request is
 - `K` = HKDF-SHA256(ikm = X25519(e, nodePublic), salt = `"OBLAN1"`, info = `E ‖ nodePublic`, 64 bytes); `Kreq` = K[0..32], `Kres` = K[32..64].
 - `C` = ChaCha20-Poly1305(`Kreq`, nonce = 12 zero bytes, aad = `"OBLAN1"`, plaintext = the complete inner HTTP/1.1 request, signed as above).
 
-The answer is `200` with body ChaCha20-Poly1305(`Kres`, zero nonce, aad =
-`"OBLAN1"`, the complete inner HTTP/1.1 response). Any failure to decrypt is a
-bare `400`. Only the holder of the node key can read the request or produce
-the answer, so a device that pinned `nodePublic` at pairing knows it reached
-its node. Replays fail on the inner nonce. `/pair/*` works on the LAN channel
-too (the inner request is unsigned and the proof does the work).
+The answer is `200` with body `0x02 ‖ N ‖ XChaCha20-Poly1305(Kres, N, aad =
+"OBLAN2", the complete inner HTTP/1.1 response)`. `N` is 24 bytes, never all
+zeros, and never reused under that `Kres`, including for an error and after
+the node restarts. A body that is not version `0x02`, is too short, uses an
+all-zero nonce, or fails the authenticator is rejected. A raw
+ChaCha20-Poly1305 body (the previous response layout, which used a zero nonce)
+is not decrypted. The request layout is unchanged: each request uses a fresh
+ephemeral, so `Kreq` encrypts only one plaintext. Any failure to decrypt the
+request is a bare `400`. Only the holder of the node key can read the request
+or produce the answer, so a device that pinned `nodePublic` at pairing knows
+it reached its node. Replays fail on the inner nonce and still get a new
+response nonce. `/pair/*` works on the LAN channel too (the inner request is
+unsigned and the proof does the work).
 
 Clients find the node by mDNS, by `openbazaar.local:8790`, or by the `lan`
 addresses the node reports, and fall back to Tor after 1.5 s.

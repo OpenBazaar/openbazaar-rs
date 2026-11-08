@@ -113,7 +113,9 @@ fn no_receive_address_is_reused_across_orders_or_restarts() {
 #[test]
 fn multi_seller_checkout_gets_separate_wallets_and_separate_transactions() {
     let (_dir, chain, node) = testnet();
-    fund_node_wallet(&node, &chain, 200_000);
+    fund_node_wallet(&node, &chain, 100_000);
+    fund_node_wallet(&node, &chain, 100_000);
+    fund_node_wallet(&node, &chain, 100_000);
     let placed = checkout(
         &node,
         &[
@@ -147,6 +149,10 @@ fn multi_seller_checkout_gets_separate_wallets_and_separate_transactions() {
     }
     let sent = chain.broadcasts();
     assert_eq!(sent.len(), 3);
+    let sent_ids: Vec<_> = sent.iter().map(|tx| tx.compute_txid()).collect();
+    for tx in &sent {
+        assert!(tx.input.iter().all(|input| !sent_ids.contains(&input.previous_output.txid)), "a payment spent another payment");
+    }
     for (tx, (order, address)) in sent.iter().zip(placed.iter().zip(&addresses)) {
         let to_orders: Vec<_> = tx
             .output
@@ -244,10 +250,52 @@ fn unconfirmed_coins_from_others_are_not_spent_but_own_change_is() {
     let change = wallet["balance"]["spendableSats"].as_u64().unwrap();
     assert!(change > 0 && wallet["balance"]["confirmedSats"] == 0, "{wallet}");
 
+    let address = address_for(placed[0]["payment"]["address"].as_str().unwrap(), NetworkMode::Testnet4).unwrap();
+    let again = node.build_payment(&address, 1_000, node.pay_fee_rate().unwrap(), false, false).unwrap();
+    assert!(
+        again.unsigned_tx.input.iter().any(|input| input.previous_output.txid == chain.broadcasts()[0].compute_txid()),
+        "change linked to the same recipient is spendable"
+    );
+
     let other = checkout(&node, &[("Letterpress cards", "Hale Paper", "direct")]);
-    let (_, second) = pay(&node, other[0]["orderId"].as_str().unwrap(), "{}");
-    assert!(second["payTxid"].is_string(), "unconfirmed change is spendable: {second}");
+    let (status, refused) = pay(&node, other[0]["orderId"].as_str().unwrap(), "{}");
+    assert!(status.contains("400"), "{status} {refused}");
+    assert!(refused["error"].as_str().unwrap().contains("link the two"), "{refused}");
+    assert_eq!(chain.broadcasts().len(), 1);
+}
+
+#[test]
+fn linked_change_survives_a_restart_and_an_explicit_opt_in() {
+    let (dir, chain, node) = testnet();
+    fund_node_wallet(&node, &chain, 100_000);
+    let first = checkout(&node, &[("Paperback novel", "Marlow Goods", "direct")]);
+    pay(&node, first[0]["orderId"].as_str().unwrap(), "{}");
+    let other = checkout(&node, &[("Letterpress cards", "Hale Paper", "direct")]);
+    let other_id = other[0]["orderId"].as_str().unwrap();
+    let (status, refused) = request(&node, "POST", &format!("/orders/{other_id}/pay/quote"), "");
+    assert!(status.contains("400"), "{status} {refused}");
+    assert!(refused["error"].as_str().unwrap().contains("do not make those purchases unlinkable"), "{refused}");
+
+    let (status, quote) = request(&node, "POST", &format!("/orders/{other_id}/pay/quote"), r#"{"linkCoins":true}"#);
+    assert!(status.contains("200"), "{status} {quote}");
+    let ticket_body = json!({"quote": quote["quote"], "passphrase": crate::harness::PASSPHRASE}).to_string();
+    let (status, ticket) = request(&node, "POST", "/spend-tickets", &ticket_body);
+    assert!(status.contains("200"), "{status} {ticket}");
+    let pay_body = json!({"ticket": ticket["ticket"], "linkCoins": true}).to_string();
+    let (status, queued) = request(&node, "POST", &format!("/orders/{other_id}/pay"), &pay_body);
+    assert!(status.contains("202"), "{status} {queued}");
+    assert_eq!(node.run_pay_jobs(), 1);
+    assert_eq!(chain.broadcasts().len(), 2);
     assert_eq!(chain.broadcasts()[1].input[0].previous_output.txid, chain.broadcasts()[0].compute_txid());
+
+    drop(node);
+    let node = open(&dir.0, NetworkMode::Testnet4, &chain, 1);
+    let third = checkout(&node, &[("Whole bean coffee, 12 oz", "North Kitchen", "direct")]);
+    let third_id = third[0]["orderId"].as_str().unwrap();
+    let (status, refused) = request(&node, "POST", &format!("/orders/{third_id}/pay/quote"), "");
+    assert!(status.contains("400"), "{status} {refused}");
+    assert!(refused["error"].as_str().unwrap().contains("link the two"), "{refused}");
+    assert_eq!(chain.broadcasts().len(), 2);
 }
 
 #[test]
@@ -558,6 +606,45 @@ fn live_testnet4() {
     }
 }
 
+#[test]
+fn an_escrow_fee_bump_does_not_spend_another_sellers_change() {
+    use bitcoin::absolute::LockTime;
+    use bitcoin::transaction::Version;
+    use bitcoin::{Amount, OutPoint, ScriptBuf, Sequence, TxIn, TxOut, Witness};
+    use openbazaar_escrow::anchor_script;
+
+    use crate::coin_provenance::blocked_coins;
+    use crate::escrow_fee::cpfp_child;
+
+    let (_dir, chain, node) = testnet();
+    fund_node_wallet(&node, &chain, 100_000);
+    let first = checkout(&node, &[("Paperback novel", "Marlow Goods", "direct")]);
+    let seller = address_for(first[0]["payment"]["address"].as_str().unwrap(), NetworkMode::Testnet4).unwrap();
+    pay(&node, first[0]["orderId"].as_str().unwrap(), "{}");
+    fund_node_wallet(&node, &chain, 100_000);
+    let second = checkout(&node, &[("Letterpress cards", "Hale Paper", "direct")]);
+    pay(&node, second[0]["orderId"].as_str().unwrap(), "{}");
+    let other = chain.broadcasts()[1].compute_txid();
+
+    let parent = bitcoin::Transaction {
+        version: Version::TWO,
+        lock_time: LockTime::ZERO,
+        input: vec![TxIn {
+            previous_output: OutPoint::null(),
+            script_sig: ScriptBuf::new(),
+            sequence: Sequence::MAX,
+            witness: Witness::default(),
+        }],
+        output: vec![TxOut { value: Amount::from_sat(240), script_pubkey: anchor_script() }],
+    };
+    let mut wallet = node.buyer_wallet();
+    let blocked = blocked_coins(&wallet.wallet, Some(seller.script_pubkey().as_script()), false);
+    assert!(!blocked.is_empty(), "the other seller's change should be reserved");
+    let seed = node.spend_seed(&wallet).unwrap();
+    let child = cpfp_child(&mut wallet, &seed, &parent, 0, 2.0, &blocked).unwrap();
+    assert!(child.tx.input.iter().all(|input| input.previous_output.txid != other), "the fee bump spent another seller's change");
+}
+
 /// Send live testnet4 coins from the node wallet in `OB_LIVE_DIR` to another
 /// address, for example to fund the desktop app's node wallet. Without
 /// `OB_SEND_TO` it only syncs and prints the wallet, so run it once that way
@@ -604,7 +691,7 @@ fn live_testnet4_send() {
     } else {
         node.unlock_wallet(Some(&passphrase)).unwrap();
     }
-    let mut psbt = node.build_payment(&address, sats, fee_rate, false).unwrap();
+    let mut psbt = node.build_payment(&address, sats, fee_rate, false, false).unwrap();
     {
         let wallet = node.buyer_wallet();
         let seed = node.spend_seed(&wallet).unwrap();
