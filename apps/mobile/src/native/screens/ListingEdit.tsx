@@ -3,7 +3,7 @@ import { Alert, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 
 import { File } from "expo-file-system";
 
 import type { ListingHeader } from "../../catalog.ts";
-import { packageFieldsOf, saleFieldsOf, scheduledSale, shippingTerms, withPackage, withSale, type PackageInput } from "../../commerceDraft.ts";
+import { listingFacts, packageFieldsOf, returnsDraft, saleFieldsOf, scheduledSale, shippingTerms, specificRows, withFacts, withPackage, withSale, type PackageInput, type ReturnsDraft, type SpecificRow } from "../../commerceDraft.ts";
 import { CONTENT_TAGS, MAX_LISTING_IMAGES, PRICE_CURRENCIES, deleteListing, draftOf, fromMinorUnits, saveListing, toMinorUnits, uploadImage, type ListingDraft, type PriceCurrency } from "../../seller.ts";
 import { isLocked, passphraseError, unlockWallet } from "../../walletLock.ts";
 import { sync } from "../session.ts";
@@ -11,7 +11,7 @@ import { ListingPhoto } from "../ListingPhoto.tsx";
 import { Button, Card, NAVY, Notice, SOFT, ui } from "../ui.tsx";
 
 type PackageFields = Omit<PackageInput, "regions">;
-type Fields = Omit<ListingDraft, "price" | "shipping" | "stock"> & PackageFields & { price: string; shipping: string; stock: string; salePrice: string; saleStarts: string; saleEnds: string; shipsTo: string[] };
+type Fields = Omit<ListingDraft, "price" | "shipping" | "stock"> & PackageFields & { price: string; shipping: string; stock: string; salePrice: string; saleStarts: string; saleEnds: string; shipsTo: string[]; specifics: SpecificRow[]; returns: ReturnsDraft };
 
 const EMPTY: ListingDraft = {
   title: "",
@@ -42,6 +42,8 @@ function fieldsOf(listing: ListingHeader | null): Fields {
     saleStarts: sale.startsOn,
     saleEnds: sale.endsOn,
     shipsTo: draft.commerce?.shipping.services.map(service => service.regions.join(", ")) ?? [],
+    specifics: specificRows(draft.commerce?.specifics),
+    returns: returnsDraft(draft.commerce?.returns),
   };
 }
 
@@ -67,6 +69,9 @@ function draftFrom(form: Fields): ListingDraft | string {
     if (typeof terms === "string") return terms;
     commerce = withPackage(commerce, terms);
   }
+  const facts = listingFacts(form.specifics, form.returns);
+  if (typeof facts === "string") return facts;
+  commerce = withFacts(commerce, facts);
   if (commerce && form.currency === "SAT") return "Price a listing with options or shipping services in USD, EUR, GBP, or JPY.";
   return {
     title: form.title.trim(),
@@ -251,6 +256,30 @@ export function ListingEdit({ listing, categories, onClose }: { listing: Listing
         {form.kind === "physical" ? <Field label="Ships from" value={form.shipFrom} onChangeText={(shipFrom) => set("shipFrom", shipFrom)} /> : null}
         {variants ? <Text style={ui.muted}>Stock follows the options already on this listing. This screen does not change those options.</Text> : <Field label="In stock" value={form.stock} onChangeText={(stock) => set("stock", stock)} keyboard="number-pad" />}
       </Card>
+      {form.currency !== "SAT" ? (
+        <Card title="Specifics and returns">
+          {form.specifics.map((row, index) => (
+            <View key={index} style={styles.field}>
+              <Field label={`Specific ${index + 1}`} value={row.key} onChangeText={(key) => set("specifics", form.specifics.map((item, at) => (at === index ? { ...item, key } : item)))} />
+              <Field label="Value" value={row.value} onChangeText={(value) => set("specifics", form.specifics.map((item, at) => (at === index ? { ...item, value } : item)))} />
+              {form.specifics.length > 1 ? <Button label="Remove specific" kind="plain" onPress={() => set("specifics", form.specifics.filter((_, at) => at !== index))} /> : null}
+            </View>
+          ))}
+          {form.specifics.length < 24 ? <Button label="Add an item specific" kind="plain" onPress={() => set("specifics", [...form.specifics, { key: "", value: "" }])} /> : null}
+          <Text style={ui.muted}>Returns</Text>
+          <View style={styles.choices}>
+            {(["store", "none", "days"] as const).map((kind) => (
+              <Chip key={kind} label={kind === "store" ? "Store policy" : kind === "none" ? "No returns" : "Set days"} selected={form.returns.kind === kind} onPress={() => set("returns", { ...form.returns, kind })} />
+            ))}
+          </View>
+          {form.returns.kind === "days" ? (
+            <>
+              <Field label="Return window (days)" value={form.returns.days} onChangeText={(days) => set("returns", { ...form.returns, days })} keyboard="number-pad" />
+              <Chip label="Seller pays return shipping" selected={form.returns.sellerPays} onPress={() => set("returns", { ...form.returns, sellerPays: !form.returns.sellerPays })} />
+            </>
+          ) : null}
+        </Card>
+      ) : null}
       <Card title="Content label">
         <View style={styles.choices}>
           {(["general", "sensitive", "adult"] as const).map((rating) => (

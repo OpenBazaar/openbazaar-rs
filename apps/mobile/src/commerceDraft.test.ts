@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { axesProblem, combinations, defaultService, emptyCommerce, forKind, packageFieldsOf, parseValues, rowsOf, saleFieldsOf, scheduledSale, shippingTerms, syncRows, withPackage, withRows, withSale } from "./commerceDraft.ts";
+import { axesProblem, combinations, defaultService, emptyCommerce, forKind, listingFacts, packageFieldsOf, parseValues, returnsDraft, rowsOf, saleFieldsOf, scheduledSale, shippingTerms, specificRows, syncRows, withFacts, withPackage, withRows, withSale } from "./commerceDraft.ts";
 
 const size = { name: "Size", values: ["S", "M"] };
 const color = { name: "Color", values: ["Navy", "Sand"] };
@@ -62,6 +62,24 @@ test("the package the editor saves is signed onto the listing, and an invalid ha
   assert.equal(packageFieldsOf(commerce?.shipping, "USD").handlingDays, "2");
   assert.equal(shippingTerms("USD", { weightG: "450", lengthMm: "120", widthMm: "80", heightMm: "60", handlingDays: "31", freeOver: "", regions: [""] }), "Handling time is at most 30 days.");
   assert.equal(shippingTerms("USD", { weightG: "", lengthMm: "", widthMm: "", heightMm: "", handlingDays: "2", freeOver: "", regions: ["USA"] }), "A region is a two-letter country code.");
+});
+
+test("the specifics and returns the editor saves are signed onto the listing, and an invalid value is refused", () => {
+  const saved = listingFacts(
+    [{ key: "Brand", value: "Marlow" }, { key: "UPC", value: "036000291452" }, { key: "", value: "" }],
+    { kind: "days", days: "30", sellerPays: true },
+  );
+  assert.deepEqual(saved, { specifics: { brand: "Marlow", upc: "036000291452" }, returns: { kind: "days", days: 30, sellerPays: true } });
+  if (!saved || typeof saved === "string") throw new Error("the facts were refused");
+  const commerce = withFacts(null, saved);
+  assert.deepEqual(commerce?.specifics, saved.specifics);
+  assert.deepEqual(commerce?.returns, saved.returns);
+  assert.deepEqual(specificRows(commerce?.specifics), [{ key: "brand", value: "Marlow" }, { key: "upc", value: "036000291452" }]);
+  assert.deepEqual(returnsDraft(commerce?.returns), { kind: "days", days: "30", sellerPays: true });
+  assert.equal(listingFacts([{ key: "UPC", value: "036000291453" }], { kind: "store", days: "", sellerPays: false }), "A product code's check digit is wrong.");
+  assert.equal(listingFacts([], { kind: "days", days: "0", sellerPays: false }), "A returns window is 1 to 365 days.");
+  assert.equal(listingFacts([], { kind: "days", days: "400", sellerPays: false }), "A returns window is 1 to 365 days.");
+  assert.equal(listingFacts([{ key: "price!", value: "12" }], { kind: "store", days: "", sellerPays: false }), "An item specific key is lowercase letters, digits and dashes.");
 });
 
 test("a digital listing carries no shipping", () => {

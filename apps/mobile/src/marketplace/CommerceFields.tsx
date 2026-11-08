@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { CONDITION_LABELS, type Commerce, type Condition, type Service } from "../commerce";
-import { defaultService, rowsOf, withRows, type PackageInput, type VariantRow } from "../commerceDraft";
+import { defaultService, rowsOf, withRows, type PackageInput, type ReturnsDraft, type SpecificRow, type VariantRow } from "../commerceDraft";
 import { fromMinor, toMinor } from "../pricing";
 import { VariantEditor } from "./VariantEditor";
 
@@ -13,13 +13,17 @@ type Props = {
   images: string[];
   packageFields: PackageFields;
   onPackage: (patch: Partial<PackageFields>) => void;
+  specifics: SpecificRow[];
+  onSpecifics: (rows: SpecificRow[]) => void;
+  returns: ReturnsDraft;
+  onReturns: (patch: Partial<ReturnsDraft>) => void;
   onChange: (commerce: Commerce) => void;
 };
 
 const MAX_SERVICES = 8;
 
 /// Condition, options, per-order limit and shipping services for a version 7 listing.
-export function CommerceFields({ commerce, kind, currency, basePrice, images, packageFields, onPackage, onChange }: Props) {
+export function CommerceFields({ commerce, kind, currency, basePrice, images, packageFields, onPackage, specifics, onSpecifics, returns, onReturns, onChange }: Props) {
   const [rows, setRows] = useState<VariantRow[]>(() => rowsOf(commerce));
   const [regionDrafts, setRegionDrafts] = useState(() => commerce.shipping.services.map(service => service.regions.join(", ")));
   const set = (patch: Partial<Commerce>) => onChange({ ...commerce, ...patch });
@@ -40,6 +44,19 @@ export function CommerceFields({ commerce, kind, currency, basePrice, images, pa
         {commerce.condition !== "new" && <label className="ob-field ob-field-wide"><span>Condition note</span><input value={commerce.conditionNote} maxLength={200} placeholder="Light scuff on the lid" onChange={e => set({ conditionNote: e.target.value })}/></label>}
       </div>
       <VariantEditor axes={commerce.axes} rows={rows} currency={currency} basePrice={basePrice} images={images} onChange={(axes, next) => { setRows(next); onChange(withRows(commerce, axes, next)); }}/>
+      <div className="ob-field-grid">
+        {specifics.map((row, index) => <div className="ob-service-row" key={index}>
+          <label className="ob-field"><span>Specific</span><input value={row.key} maxLength={32} placeholder="Brand" onChange={e => onSpecifics(specifics.map((item, at) => at === index ? { ...item, key: e.target.value } : item))}/></label>
+          <label className="ob-field"><span>Value</span><input value={row.value} maxLength={120} placeholder="Marlow" onChange={e => onSpecifics(specifics.map((item, at) => at === index ? { ...item, value: e.target.value } : item))}/></label>
+          <button type="button" className="ob-text-link" aria-label={`Remove specific ${index + 1}`} onClick={() => onSpecifics(specifics.filter((_, at) => at !== index))}>Remove</button>
+        </div>)}
+        {specifics.length < 24 && <button type="button" className="ob-secondary" onClick={() => onSpecifics([...specifics, { key: "", value: "" }])}>Add an item specific</button>}
+        <label className="ob-field"><span>Returns</span><select value={returns.kind} onChange={e => onReturns({ kind: e.target.value as ReturnsDraft["kind"] })}><option value="store">Store policy</option><option value="none">No returns</option><option value="days">A set number of days</option></select></label>
+        {returns.kind === "days" && <>
+          <label className="ob-field"><span>Return window (days)</span><input inputMode="numeric" value={returns.days} placeholder="30" onChange={e => onReturns({ days: e.target.value })}/></label>
+          <label className="ob-default-address"><input type="checkbox" checked={returns.sellerPays} onChange={e => onReturns({ sellerPays: e.target.checked })}/>Seller pays return shipping</label>
+        </>}
+      </div>
     </fieldset>
     {kind === "physical" && <fieldset className="ob-store-section">
       <legend>Shipping services</legend>
