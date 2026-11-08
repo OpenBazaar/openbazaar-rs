@@ -1,6 +1,7 @@
 use std::pin::Pin;
 use std::sync::Arc;
 
+use futures::io::{AsyncReadExt, AsyncWriteExt};
 use futures::Stream;
 use futures::StreamExt;
 use tor_cell::relaycell::msg::{Connected, End, EndReason};
@@ -10,7 +11,7 @@ use tor_rtcompat::Runtime;
 
 use crate::mailbox::Mailbox;
 use crate::onion::{OnionAddress, ORDER_PORT};
-use crate::transport::read_letter;
+use crate::transport::{read_letter, STORED_ACK};
 use crate::Error;
 use crate::LetterId;
 
@@ -62,7 +63,74 @@ impl OnionListener {
             .await
             .map_err(|err| Error::Arti(err.to_string()))?;
         let letter = read_letter(&mut stream).await?;
-        mailbox.accept(&letter)
+        let id = mailbox.accept(&letter)?;
+        // The sender blocks until it reads this byte. Close without it and
+        // the sender drops the circuit thinking the letter was lost.
+        stream.write_all(&[STORED_ACK]).await?;
+        stream.flush().await?;
+        let mut done = [0u8; 1];
+        let _ = stream.read(&mut done).await;
+        Ok(id)
+    }
+
+    /// Short status for the operator log: high-level state, and the current
+    /// problem when there is one.
+    pub fn status_summary(&self) -> String {
+        let status = self.service.status();
+        match status.current_problem() {
+            Some(problem) => format!("{:?}: {problem:?}", status.state()),
+            None => format!("{:?}", status.state()),
+        }
+    }
+}
+
+/// Local keystore name for this node's order mailbox. Not the onion address.
+const ORDER_NICKNAME: &str = "ob-orders";
+
+/// A vendor mailbox listening on its onion.
+///
+/// Holds the Arti client so the service keeps running. Dropping this stops
+/// the service. [`RunningMailbox::start`] does not dial; publishing the
+/// descriptor happens in the background once the client bootstraps.
+pub struct RunningMailbox {
+    listener: OnionListener,
+    /// Arti tasks for this service borrow the client. It has to outlive them.
+    client: Arc<arti_client::TorClient<tor_rtcompat::PreferredRuntime>>,
+}
+
+impl RunningMailbox {
+    /// Start the order listener with Arti state under `state_dir`.
+    ///
+    /// Call this inside a running Tokio runtime. The identity key is created
+    /// in `state_dir` if it is not already there, and
+    /// [`RunningMailbox::onion_address`] can be read before any circuit opens.
+    pub fn start(state_dir: &std::path::Path) -> Result<Self, Error> {
+        let client = crate::client::open_client(state_dir)?;
+        let listener = start_onion_listener(&client, ORDER_NICKNAME)?;
+        Ok(Self { listener, client })
+    }
+
+    /// The v3 address Arti stored for this service.
+    pub fn onion_address(&self) -> Result<OnionAddress, Error> {
+        self.listener
+            .onion_address()
+            .ok_or(Error::Listener("onion identity is not in the keystore"))
+    }
+
+    /// Read one sealed letter and store it in `mailbox`.
+    pub async fn accept_letter(&mut self, mailbox: &Mailbox) -> Result<LetterId, Error> {
+        self.listener.accept_letter(mailbox).await
+    }
+
+    /// Download a Tor directory. Launching the service does not do this.
+    /// Without it the descriptor is never published and clients hear that
+    /// the onion service was not found.
+    pub async fn bootstrap(&self) -> Result<(), Error> {
+        self.client.bootstrap().await.map_err(|err| Error::Arti(err.to_string()))
+    }
+
+    pub fn status_summary(&self) -> String {
+        self.listener.status_summary()
     }
 }
 

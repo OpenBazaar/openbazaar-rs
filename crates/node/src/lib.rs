@@ -4,7 +4,9 @@
 //! The HTTP server listens on loopback. Catalog, order mail, reviews, and
 //! escrow mail for a node on another machine go through this process's Tor
 //! client to that node's sale onion (`--remote`). A redirect off that onion
-//! is not followed.
+//! is not followed. `--onion` is a separate listener: it accepts one sealed
+//! letter on a v3 onion. `send-letter` dials that onion with Arti, or posts
+//! to a loopback `http://` URL. A clearnet host is refused before a socket opens.
 //! The server broadcasts a transaction only when `POST /orders/{id}/pay`
 //! asks it to, with a spend ticket the user confirmed, while the wallet is
 //! unlocked ([`wallet_lock`], [`spend_tickets`]).
@@ -55,6 +57,7 @@ mod live_stock;
 mod mail_drop;
 mod media;
 mod network;
+mod onion_mail;
 mod order_mail;
 mod order_terms;
 mod orders;
@@ -165,6 +168,7 @@ pub use media::MAX_MEDIA;
 pub use http::{http_response, serve_on};
 pub use lightning::LnFlags;
 pub use network::{NetworkMode, ServeOptions, VaultChoice};
+pub use onion_mail::{deliver_letter, letter_digest, poll_mailbox, PollMail, SendLetter, StoredLetter};
 pub use orders::OrderError;
 pub use pay_order::PayError;
 pub use remote::{devices_command, pair_command, RemoteConfig};
@@ -295,6 +299,10 @@ pub struct Node {
     pub(crate) letter_guard: letter_auth::LetterGuard,
     pub(crate) vendor_labels: Mutex<VendorLabels>,
     pub(crate) mailbox: Mailbox,
+    /// `{data}/tor` when this process should accept letters on an onion.
+    onion_dir: Mutex<Option<PathBuf>>,
+    /// v3 address published by the onion listener. Absent until it has an identity.
+    advertised_onion: Mutex<Option<String>>,
     pub(crate) escrow: escrow_mail::Escrow,
     pairing_token: String,
     /// True only in the process that created `pairing.token`.
@@ -434,6 +442,8 @@ impl Node {
             letter_guard: letter_auth::LetterGuard::open(&dir)?,
             vendor_labels: Mutex::new(vendor_labels),
             mailbox,
+            onion_dir: Mutex::new(None),
+            advertised_onion: Mutex::new(None),
             escrow: escrow_mail::Escrow::open(config.escrow, escrow_inbox, &dir, &vault, escrow_peers)?,
             pairing_token,
             pairing_fresh,
@@ -526,6 +536,9 @@ impl Node {
             scope.spawn(|| self.run_lightning(&stop));
             scope.spawn(|| self.run_order_mail(&stop));
             scope.spawn(|| self.run_replicas(poll.min(Duration::from_secs(30)), &stop));
+            if self.onion_dir.lock().unwrap_or_else(|err| err.into_inner()).is_some() {
+                scope.spawn(|| self.run_onion(&stop));
+            }
             let result = http::serve(self, port);
             stop.store(true, Ordering::Relaxed);
             result

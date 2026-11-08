@@ -137,6 +137,9 @@ pub struct ServeOptions {
     pub follows: Vec<String>,
     /// `--local-shop DIR`: serve the web export on the loopback listener.
     pub local_shop: Option<PathBuf>,
+    /// `--onion`: accept sealed letters on a Tor onion and advertise that address.
+    /// The shop HTTP listener stays on loopback. Clearnet sale URLs stay refused.
+    pub onion: bool,
 }
 
 impl ServeOptions {
@@ -164,6 +167,7 @@ impl ServeOptions {
         let mut lightning = crate::LnFlags::default();
         let mut follows: Vec<String> = Vec::new();
         let mut local_shop = None;
+        let mut onion = false;
         let mut iter = args.iter();
         while let Some(arg) = iter.next() {
             let mut value = |name: &str| {
@@ -240,6 +244,7 @@ impl ServeOptions {
                     xmr_daemons.extend(text.split(',').map(str::trim).filter(|url| !url.is_empty()).map(String::from));
                 }
                 "--follow" => follows.push(crate::replicas::normalize(&value("--follow")?)?),
+                "--onion" => onion = true,
                 "--local-shop" => {
                     let path = PathBuf::from(value("--local-shop")?);
                     if !path.join("index.html").is_file() {
@@ -290,6 +295,7 @@ impl ServeOptions {
             lightning,
             follows,
             local_shop,
+            onion,
         })
     }
 
@@ -431,6 +437,17 @@ mod tests {
         ] {
             assert!(ServeOptions::parse(&args(bad)).is_err(), "{bad:?}");
         }
+    }
+
+    #[test]
+    fn onion_listen_keeps_the_shop_on_loopback() {
+        let options = ServeOptions::parse(&args(&["9000", "--onion"])).unwrap();
+        assert!(options.onion);
+        assert_eq!(options.escrow_config().mailbox_url.as_deref(), Some("http://127.0.0.1:9000"));
+        assert!(!ServeOptions::parse(&[]).unwrap().onion);
+        let clearnet = "http://203.0.113.5:8787";
+        assert!(ServeOptions::parse(&args(&["--moderator", clearnet])).is_err());
+        assert!(ServeOptions::parse(&args(&["--escrow-vendor", &format!("Shop={clearnet}")])).is_err());
     }
 
     #[test]

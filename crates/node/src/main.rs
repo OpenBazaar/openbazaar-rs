@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use ob_node::{LocalConfig, NetworkMode, NodeConfig, RemoteConfig, ServeOptions, VaultChoice, VaultMode};
 
-const USAGE: &str = "ob-node [print | --version | pair [port] [--network N] [--data-dir DIR] [--lan-page] | devices [port] [--remove ID [--rotate] | --remove-all --rotate] | serve [port] [--remote] [--lan] [--lan-listen ADDR] [--remote-listen 127.0.0.1:PORT] [--web-dir DIR] [--local-shop DIR] [--push-gateway http://ONION] [--network testnet4|mainnet] [--data-dir DIR] [--peer HOST:PORT[,...] | --esplora URL[,URL...]] [--public-fallback | --no-public-fallback] [--confirmations N] [--poll-secs S] [--escrow-vendor SELLER=URL] [--moderator URL] [--moderate] [--vault keystore|passphrase|file] [--shop-origin URL] [--no-pair-codes] [--proxy socks5h://HOST:PORT] [--no-rates] [--xmr-daemon URL[,URL...]] [--lightning [--ln-network signet|testnet4|regtest] [--ln-chain esplora:URL|electrum:URL|bitcoind:USER:PASS@HOST:PORT] [--lsp NODE_ID@HOST:PORT [--lsp-token T] | --no-lsp] [--lsp-max-fee-sats N] [--ln-rgs URL | --ln-p2p-gossip] [--ln-listen HOST:PORT]]]
+const USAGE: &str = "ob-node [print | --version | pair [port] [--network N] [--data-dir DIR] [--lan-page] | devices [port] [--remove ID [--rotate] | --remove-all --rotate] | serve [port] [--remote] [--lan] [--lan-listen ADDR] [--remote-listen 127.0.0.1:PORT] [--web-dir DIR] [--local-shop DIR] [--push-gateway http://ONION] [--network testnet4|mainnet] [--data-dir DIR] [--peer HOST:PORT[,...] | --esplora URL[,URL...]] [--public-fallback | --no-public-fallback] [--confirmations N] [--poll-secs S] [--escrow-vendor SELLER=URL] [--moderator URL] [--moderate] [--vault keystore|passphrase|file] [--shop-origin URL] [--no-pair-codes] [--proxy socks5h://HOST:PORT] [--no-rates] [--xmr-daemon URL[,URL...]] [--onion] [--lightning [--ln-network signet|testnet4|regtest] [--ln-chain esplora:URL|electrum:URL|bitcoind:USER:PASS@HOST:PORT] [--lsp NODE_ID@HOST:PORT [--lsp-token T] | --no-lsp] [--lsp-max-fee-sats N] [--ln-rgs URL | --ln-p2p-gossip] [--ln-listen HOST:PORT]] | send-letter --to ONION|http://127.0.0.1:PORT --file FILE [--data-dir DIR] [--network testnet4|mainnet] [--timeout SECS] | poll-mail [--data-dir DIR] [--network testnet4|mainnet] [--expect SHA256]]
 
 Chain data comes from BIP 157/158 compact block filters by default.
 --peer uses only your own node (bitcoind with blockfilterindex=1 and peerblockfilters=1).
@@ -21,7 +21,10 @@ Chain data comes from BIP 157/158 compact block filters by default.
 --web-dir serves the web shop export to paired browsers over that onion.
 --lightning runs an LDK Lightning node for direct pay (see docs/lightning.md). A public peer, Esplora chain source, or gossip server is reached through --proxy, so it does not see this machine's IP. Without --proxy those stay refused. Electrum and bitcoind stay direct. With --remote, inbound Lightning is an onion on that Tor client, forwarded to a loopback socket that is not announced. A public --ln-listen is refused. Mainnet Lightning requires --proxy and an LSP you name (or --no-lsp). There is no mainnet LSP default.
 --vault passphrase reads OB_VAULT_PASSPHRASE, or asks on the terminal.
---vault file keeps the key in the data dir; use it only on headless machines and in tests.";
+--vault file keeps the key in the data dir; use it only on headless machines and in tests.
+--onion listens for one sealed letter on a Tor onion (virtual port 80) and writes that address to onion.address. Shop HTTP stays on 127.0.0.1. A clearnet sale URL is still refused.
+send-letter dials --to. An onion uses Arti and fails if the dial fails or times out. A loopback http:// URL posts the letter to /escrow/mail. Any other URL is refused.
+poll-mail lists id and sha256 for each letter in the sealed mailbox. With --expect, it exits 1 when that digest is absent.";
 const PASSPHRASE_ENV: &str = "OB_VAULT_PASSPHRASE";
 
 fn main() -> ExitCode {
@@ -29,6 +32,8 @@ fn main() -> ExitCode {
     match args.first().map(String::as_str) {
         None | Some("print") => print_catalog(),
         Some("serve") => serve(&args[1..]),
+        Some("send-letter") => send_letter(&args[1..]),
+        Some("poll-mail") => poll_mail(&args[1..]),
         Some("pair") => ob_node::pair_command(&args[1..]),
         Some("devices") => ob_node::devices_command(&args[1..]),
         Some("version") | Some("-V") | Some("--version") => {
@@ -199,6 +204,9 @@ fn serve(args: &[String]) -> ExitCode {
     if let Some(token) = node.fresh_pairing_token() {
         eprintln!("ob-node pairing token: {token}");
     }
+    if options.onion {
+        node.listen_onion(options.data_dir().join("tor"));
+    }
     if env::var_os("OB_EXIT_ON_STDIN_EOF").is_some() {
         ob_node::exit_when_stdin_closes();
     }
@@ -207,6 +215,41 @@ fn serve(args: &[String]) -> ExitCode {
         return ExitCode::from(1);
     }
     ExitCode::SUCCESS
+}
+
+fn send_letter(args: &[String]) -> ExitCode {
+    match ob_node::SendLetter::parse(args) {
+        Ok(command) => match command.run() {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(err) => {
+                eprintln!("ob-node: {err}");
+                ExitCode::from(1)
+            }
+        },
+        Err(err) => {
+            eprintln!("ob-node: {err}");
+            eprintln!("{USAGE}");
+            ExitCode::from(2)
+        }
+    }
+}
+
+fn poll_mail(args: &[String]) -> ExitCode {
+    match ob_node::PollMail::parse(args) {
+        Ok(command) => match command.run() {
+            Ok(true) => ExitCode::SUCCESS,
+            Ok(false) => ExitCode::from(1),
+            Err(err) => {
+                eprintln!("ob-node: {err}");
+                ExitCode::from(1)
+            }
+        },
+        Err(err) => {
+            eprintln!("ob-node: {err}");
+            eprintln!("{USAGE}");
+            ExitCode::from(2)
+        }
+    }
 }
 
 fn vault_mode(options: &ServeOptions) -> Result<VaultMode, String> {

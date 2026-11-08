@@ -42,7 +42,7 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 rpassword = "7.4"
 serde_json = "1"
 sha2 = "0.10"
-tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "time", "net"] }
+tokio = { version = "1", default-features = false, features = ["macros", "rt-multi-thread", "time", "net"] }
 tor-rtcompat = "0.48"
 tormail = { path = "../tormail" }
 ureq = { version = "2.12", features = ["socks-proxy"] }
@@ -64,3 +64,4 @@ openbazaar-lightning = { path = "../lightning", features = ["mock", "regtest"] }
 tempfile = "3"
 openbazaar-xmr = { path = "../xmr", features = ["mock"] }
 proptest = "1"
+tormail = { path = "../tormail" }

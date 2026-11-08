@@ -10,6 +10,8 @@ use crate::Error;
 
 const FRAME_MAGIC: &[u8; 4] = b"OBML";
 const FRAME_VERSION: u8 = 1;
+/// Sent by the vendor on the same stream, after `Mailbox::accept`.
+pub(crate) const STORED_ACK: u8 = 1;
 
 /// Carries a sealed letter to one vendor.
 ///
@@ -76,6 +78,13 @@ impl ArtiOrderTransport<tor_rtcompat::PreferredRuntime> {
             .map_err(|err| Error::Arti(err.to_string()))?;
         Ok(Self { client, onion })
     }
+
+    /// Same as [`Self::from_onion_address`], with Arti state kept in `state_dir`.
+    ///
+    /// Call this inside a running Tokio runtime. Nothing is dialed here.
+    pub fn from_state_dir(state_dir: &std::path::Path, onion: impl AsRef<str>) -> Result<Self, Error> {
+        Self::from_client(crate::client::open_client(state_dir)?, onion)
+    }
 }
 
 impl<R: Runtime> ArtiOrderTransport<R> {
@@ -117,7 +126,17 @@ impl<R: Runtime + Send + Sync> OrderTransport for ArtiOrderTransport<R> {
             .flush()
             .await
             .map_err(|err| Error::Arti(err.to_string()))?;
-        Ok(())
+        // One byte, written by the vendor only after the letter is on disk.
+        // A dropped circuit is an error: flush alone is not delivery.
+        let mut ack = [0u8; 1];
+        match stream.read(&mut ack).await {
+            Ok(1) if ack[0] == STORED_ACK => {
+                let _ = stream.close().await;
+                Ok(())
+            }
+            Ok(_) => Err(Error::Transport("vendor did not acknowledge the stored letter")),
+            Err(err) => Err(err.into()),
+        }
     }
 }
 
