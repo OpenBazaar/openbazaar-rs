@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { axesProblem, combinations, defaultService, emptyCommerce, forKind, listingFacts, packageFieldsOf, parseValues, returnsDraft, rowsOf, saleFieldsOf, scheduledSale, shippingTerms, specificRows, syncRows, withFacts, withPackage, withRows, withSale } from "./commerceDraft.ts";
+import { axesProblem, combinations, compareAtText, defaultService, emptyCommerce, forKind, listingFacts, packageFieldsOf, parseValues, priceTerms, returnsDraft, rowsOf, saleFieldsOf, scheduledSale, shippingTerms, specificRows, syncRows, withFacts, withPackage, withPrice, withRows, withSale } from "./commerceDraft.ts";
 
 const size = { name: "Size", values: ["S", "M"] };
 const color = { name: "Color", values: ["Navy", "Sand"] };
@@ -80,6 +80,22 @@ test("the specifics and returns the editor saves are signed onto the listing, an
   assert.equal(listingFacts([], { kind: "days", days: "0", sellerPays: false }), "A returns window is 1 to 365 days.");
   assert.equal(listingFacts([], { kind: "days", days: "400", sellerPays: false }), "A returns window is 1 to 365 days.");
   assert.equal(listingFacts([{ key: "price!", value: "12" }], { kind: "store", days: "", sellerPays: false }), "An item specific key is lowercase letters, digits and dashes.");
+});
+
+test("the compare-at and offers flag the editor saves are signed onto the listing, and an invalid compare-at is refused", () => {
+  const saved = priceTerms(2_500, "USD", "32.00", true);
+  assert.deepEqual(saved, { compareAt: 3_200, acceptsOffers: true });
+  if (!saved || typeof saved === "string") throw new Error("the price terms were refused");
+  const commerce = withPrice(null, saved);
+  assert.equal(commerce?.compareAt, 3_200);
+  assert.equal(commerce?.acceptsOffers, true);
+  assert.equal(compareAtText(commerce?.compareAt ?? 0, "USD"), "32.00");
+  assert.equal(priceTerms(2_500, "USD", "25.00", true), "A compare-at price is above every price it is compared with.");
+  assert.equal(priceTerms(2_500, "USD", "20.00", false), "A compare-at price is above every price it is compared with.");
+  assert.equal(priceTerms(2_500, "USD", "30.00", false, [3_200]), "A compare-at price is above every price it is compared with.");
+  assert.equal(priceTerms(2_500, "USD", "", "yes"), "An offers flag is yes or no.");
+  assert.deepEqual(priceTerms(2_500, "USD", "", false), { compareAt: 0, acceptsOffers: false });
+  assert.equal(withPrice(null, { compareAt: 0, acceptsOffers: false }), null);
 });
 
 test("a digital listing carries no shipping", () => {

@@ -3,7 +3,7 @@ import { Alert, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 
 import { File } from "expo-file-system";
 
 import type { ListingHeader } from "../../catalog.ts";
-import { listingFacts, packageFieldsOf, returnsDraft, saleFieldsOf, scheduledSale, shippingTerms, specificRows, withFacts, withPackage, withSale, type PackageInput, type ReturnsDraft, type SpecificRow } from "../../commerceDraft.ts";
+import { compareAtText, listingFacts, packageFieldsOf, priceTerms, returnsDraft, saleFieldsOf, scheduledSale, shippingTerms, specificRows, withFacts, withPackage, withPrice, withSale, type PackageInput, type ReturnsDraft, type SpecificRow } from "../../commerceDraft.ts";
 import { CONTENT_TAGS, MAX_LISTING_IMAGES, PRICE_CURRENCIES, deleteListing, draftOf, fromMinorUnits, saveListing, toMinorUnits, uploadImage, type ListingDraft, type PriceCurrency } from "../../seller.ts";
 import { isLocked, passphraseError, unlockWallet } from "../../walletLock.ts";
 import { sync } from "../session.ts";
@@ -11,7 +11,7 @@ import { ListingPhoto } from "../ListingPhoto.tsx";
 import { Button, Card, NAVY, Notice, SOFT, ui } from "../ui.tsx";
 
 type PackageFields = Omit<PackageInput, "regions">;
-type Fields = Omit<ListingDraft, "price" | "shipping" | "stock"> & PackageFields & { price: string; shipping: string; stock: string; salePrice: string; saleStarts: string; saleEnds: string; shipsTo: string[]; specifics: SpecificRow[]; returns: ReturnsDraft };
+type Fields = Omit<ListingDraft, "price" | "shipping" | "stock"> & PackageFields & { price: string; shipping: string; stock: string; salePrice: string; saleStarts: string; saleEnds: string; compareAt: string; acceptsOffers: boolean; shipsTo: string[]; specifics: SpecificRow[]; returns: ReturnsDraft };
 
 const EMPTY: ListingDraft = {
   title: "",
@@ -41,6 +41,8 @@ function fieldsOf(listing: ListingHeader | null): Fields {
     salePrice: sale.price,
     saleStarts: sale.startsOn,
     saleEnds: sale.endsOn,
+    compareAt: compareAtText(draft.commerce?.compareAt ?? 0, draft.currency),
+    acceptsOffers: draft.commerce?.acceptsOffers ?? false,
     shipsTo: draft.commerce?.shipping.services.map(service => service.regions.join(", ")) ?? [],
     specifics: specificRows(draft.commerce?.specifics),
     returns: returnsDraft(draft.commerce?.returns),
@@ -72,6 +74,9 @@ function draftFrom(form: Fields): ListingDraft | string {
   const facts = listingFacts(form.specifics, form.returns);
   if (typeof facts === "string") return facts;
   commerce = withFacts(commerce, facts);
+  const priced = priceTerms(price, form.currency, form.compareAt, form.acceptsOffers, (commerce ?? form.commerce)?.variants.map(variant => variant.price) ?? []);
+  if (typeof priced === "string") return priced;
+  commerce = withPrice(commerce, priced);
   if (commerce && form.currency === "SAT") return "Price a listing with options or shipping services in USD, EUR, GBP, or JPY.";
   return {
     title: form.title.trim(),
@@ -229,7 +234,9 @@ export function ListingEdit({ listing, categories, onClose }: { listing: Listing
             <Field label={`Sale price (${unit})`} value={form.salePrice} onChangeText={(salePrice) => set("salePrice", salePrice)} keyboard="decimal-pad" />
             <Field label="Sale starts" value={form.saleStarts} onChangeText={(saleStarts) => set("saleStarts", saleStarts)} />
             <Field label="Sale ends" value={form.saleEnds} onChangeText={(saleEnds) => set("saleEnds", saleEnds)} />
-            <Text style={ui.muted}>Leave these empty to sell at the regular price. Use days like 2026-11-01. Buyers pay the sale price on those days, and it is signed with the listing.</Text>
+            <Field label={`Compare-at (${unit})`} value={form.compareAt} onChangeText={(compareAt) => set("compareAt", compareAt)} keyboard="decimal-pad" />
+            <Chip label="Accept offers" selected={form.acceptsOffers} onPress={() => set("acceptsOffers", !form.acceptsOffers)} />
+            <Text style={ui.muted}>Leave the sale empty to sell at the regular price. Use days like 2026-11-01. Compare-at is a struck-through price above the price buyers pay. Both are signed with the listing.</Text>
           </>
         ) : null}
         {form.kind === "physical" && !services ? <Field label={`Shipping (${unit})`} value={form.shipping} onChangeText={(shipping) => set("shipping", shipping)} keyboard="decimal-pad" /> : null}
