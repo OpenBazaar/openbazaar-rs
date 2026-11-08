@@ -55,6 +55,28 @@ test("check names the file that disagrees", () => {
   }
 });
 
+test("a Windows checkout with CRLF still reads and writes the version", () => {
+  const dir = fixture();
+  try {
+    const files = ["Cargo.toml", "Cargo.lock", ...versions(dir).map((item) => item.file.split(" ")[0])];
+    const members = /members = \[([^\]]*)\]/.exec(readFileSync(join(dir, "Cargo.toml"), "utf8"))[1];
+    for (const [, member] of members.matchAll(/"([^"]+)"/g)) files.push(join(member, "Cargo.toml"));
+    for (const file of new Set(files)) {
+      const path = join(dir, file);
+      writeFileSync(path, readFileSync(path, "utf8").replace(/\r?\n/g, "\r\n"));
+    }
+    assert.equal(getVersion(dir), getVersion(repo));
+    setVersion(dir, "9.8.7-rc.1");
+    assert.equal(getVersion(dir), "9.8.7-rc.1");
+    assert.deepEqual(mismatches(dir), []);
+    const cargo = readFileSync(join(dir, "Cargo.toml"), "utf8");
+    assert.match(cargo, /\r\n\[workspace\.package\]\r\n/);
+    assert.match(cargo, /version = "9\.8\.7-rc\.1"\r\n/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("set refuses a version that is not semver", () => {
   const dir = fixture();
   try {
