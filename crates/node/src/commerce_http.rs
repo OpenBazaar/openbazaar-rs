@@ -4,6 +4,7 @@
 //! - `POST /coupons`: sign a code (replacing one with the same code).
 //! - `DELETE /coupons/{code}`: withdraw a code; orders naming it are declined.
 //! - `GET /offers`: bids waiting for an answer.
+//! - `POST /offers`: a buyer seals one bid to the listing's store.
 //! - `POST /offers/{id}/answer`: decline a bid, or sign an offer for it.
 
 use serde_json::{json, Value};
@@ -64,12 +65,21 @@ fn offers(
     origin: Option<&str>,
 ) -> Option<Vec<u8>> {
     let answer = path.strip_prefix("/offers/").and_then(|rest| rest.strip_suffix("/answer")).filter(|id| !id.is_empty() && !id.contains('/'));
-    let known = (method == "GET" && path == "/offers") || (method == "POST" && answer.is_some());
+    let submit = method == "POST" && path == "/offers";
+    let known = (method == "GET" && path == "/offers") || submit || (method == "POST" && answer.is_some());
     if !known {
         return None;
     }
     if let Err(response) = local_guard(node, client, head, origin) {
         return Some(response);
+    }
+    if submit {
+        let parsed = if body.len() > MAX_JSON { None } else { serde_json::from_slice::<Value>(body).ok() };
+        return Some(match parsed.map(|value| node.submit_bid(&value)) {
+            Some(Ok(value)) => json_body("200 OK", &value, origin),
+            Some(Err(err)) => error_response(err, origin),
+            None => json_error("400 Bad Request", "The offer could not be read.", origin),
+        });
     }
     Some(match answer {
         None => json_body("200 OK", &node.own_offers_value(), origin),

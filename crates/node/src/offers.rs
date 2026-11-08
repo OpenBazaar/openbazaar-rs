@@ -1,9 +1,10 @@
 //! Bids waiting on the seller, and the signed answer to each one.
 //!
-//! A bid arrives as a sealed message (`POST /mail`), signed by that
-//! conversation's key, carrying the encoded [`Bid`] and the same reply route
-//! an order uses. The seller's paired client lists them at `GET /offers` and
-//! answers one at `POST /offers/{id}/answer`: a decline, or an [`Offer`]
+//! A buyer sends one bid with `POST /offers`. The node seals it as a message
+//! (`POST /mail` on the seller), signed by a fresh conversation key, carrying
+//! the encoded [`Bid`] and the same reply route an order uses. The seller's
+//! paired client lists them at `GET /offers` and answers one at
+//! `POST /offers/{id}/answer`: a decline, or an [`Offer`]
 //! signed by the store key and bound to the conversation key that sent the
 //! bid. The answer goes back in the sealed reply. Accepting it is ordering
 //! with that record, which the order check already does. The seller's floor
@@ -16,10 +17,11 @@ use openbazaar_protocol::{Bid, Listing, Offer, SignedOffer, VariantId};
 use rand::rngs::StdRng;
 use rand::{RngCore, SeedableRng};
 use serde_json::{json, Value};
-use tormail::ReplyPublic;
+use tormail::{seal_message, ReplyPublic};
 
 use crate::escrow_mail::{hex, unhex};
-use crate::order_mail::MailError;
+use crate::escrow_outbox::Sent;
+use crate::order_mail::{mail_key, MailError, STORE_MAIL};
 use crate::own_listings::{capitalize, StoreError};
 use crate::sales::{refused, retry};
 use crate::vault::Vault;
@@ -156,6 +158,104 @@ impl Node {
     pub(crate) fn own_offers_value(&self) -> Value {
         let offers: Vec<Value> = self.offers().bids.iter().filter_map(public_bid).collect();
         json!({ "offers": offers })
+    }
+
+    /// `POST /offers`: seal one bid to the listing's store and send it.
+    ///
+    /// The conversation key is derived for this bid alone, the same way an
+    /// order letter is signed, so the bid does not link to the buyer's other
+    /// orders. The answer names that id only to the paired buyer.
+    pub(crate) fn submit_bid(&self, body: &Value) -> Result<Value, StoreError> {
+        let amount = match body.get("amount") {
+            Some(Value::Number(n)) => n.as_u64().filter(|n| *n > 0),
+            _ => None,
+        }
+        .ok_or_else(|| StoreError::Invalid("Enter an amount.".into()))?;
+        let quantity = body["quantity"].as_u64().filter(|n| (1..=999).contains(n)).ok_or_else(|| StoreError::Invalid("An offer is for 1 to 999.".into()))? as u16;
+        let currency = body["currency"].as_str().unwrap_or("").trim();
+        if currency.len() != 3 || !currency.bytes().all(|b| b.is_ascii_uppercase()) {
+            return Err(StoreError::Invalid(BAD_CURRENCY.into()));
+        }
+        let hash = body["listingHash"].as_str().unwrap_or("").trim();
+        let (listing, vendor) = {
+            let catalog = self.catalog();
+            let listing = catalog
+                .listings
+                .iter()
+                .find(|listing| listing.content_hash().ok().is_some_and(|sum| sum.to_hex() == hash))
+                .cloned()
+                .ok_or_else(|| StoreError::Invalid("That listing is not in this shop.".into()))?;
+            if listing.store_id == self.own_store {
+                return Err(StoreError::Invalid("That is your own store.".into()));
+            }
+            let store = catalog.store_of(&listing).cloned().ok_or_else(|| StoreError::Invalid("That seller has no store record.".into()))?;
+            let vendor = crate::stores::mailbox_key(&store).map_err(StoreError::Failed)?;
+            (listing, vendor)
+        };
+        let listing_id = listing.id().ok_or_else(|| StoreError::Invalid("That listing cannot take an offer.".into()))?;
+        let variant = match body.get("variant").and_then(Value::as_str).filter(|text| !text.is_empty()) {
+            None => VariantId::NONE,
+            Some(text) => {
+                let bytes = unhex(text).ok().and_then(|bytes| <[u8; 8]>::try_from(bytes).ok()).ok_or_else(|| StoreError::Invalid(BAD_VARIANT.into()))?;
+                VariantId(bytes)
+            }
+        };
+        if !variant_ok(&listing, variant) {
+            return Err(StoreError::Invalid(BAD_VARIANT.into()));
+        }
+        if currency_of(&listing) != Some(currency) {
+            return Err(StoreError::Invalid(BAD_CURRENCY.into()));
+        }
+        if !listing.commerce.as_ref().is_some_and(|commerce| commerce.pricing.accepts_offers) {
+            return Err(StoreError::Invalid(NOT_TAKING.into()));
+        }
+        let url = self.replicas().url_of(&listing.store_id).map(str::to_string).ok_or_else(|| StoreError::Invalid("Follow that store before making an offer.".into()))?;
+        let id = crate::orders::random_id();
+        let store_key = *listing.store_id.as_bytes();
+        let (reply, drop) = self.order_reply_secret(&id, &store_key).map_err(|err| self.letter_err(err))?;
+        let from = self.order_letter_key(&id, &store_key).map_err(|err| self.letter_err(err))?;
+        let per_order = if self.remote.services.sale_onion().is_some() {
+            let seed = self.order_reply_onion_seed(&id, &store_key).map_err(|err| self.letter_err(err))?;
+            Some(self.remote.publish_reply_onion(&self.data_dir, &seed).map_err(StoreError::Failed)?)
+        } else {
+            None
+        };
+        let reply_url = crate::letter_auth::choose_reply(per_order.as_deref(), self.sale_reply_url().as_deref()).ok_or_else(|| StoreError::Invalid("This node has no address for the seller's reply.".into()))?;
+        let bid = Bid { listing_id, variant_id: variant, quantity, amount, currency: currency.to_string() };
+        let encoded = bid.encode().map_err(|err| StoreError::Invalid(capitalize(&err.to_string())))?;
+        let message = json!({
+            "v": 1,
+            "kind": "bid",
+            "bid": hex(&encoded),
+            "replyUrl": reply_url,
+            "replyKey": hex(reply.public_key().as_bytes()),
+            "drop": hex(&drop.0),
+        });
+        let bytes = serde_json::to_vec(&message).map_err(|err| StoreError::Failed(err.to_string()))?;
+        let letter = seal_message(&bytes, &vendor, &from).map_err(|err| StoreError::Failed(err.to_string()))?;
+        let target = format!("{url}{STORE_MAIL}");
+        let conversation = [id.as_bytes(), store_key.as_slice()].concat();
+        let posted = letter.to_bytes();
+        match self.order_outbox.send(mail_key(&target, &conversation, &bytes), &target, &posted) {
+            Ok(Sent::Delivered | Sent::Queued(_)) => Ok(json!({ "id": id })),
+            Err(err) => Err(StoreError::Invalid(format!("The seller did not take that offer. {err}"))),
+        }
+    }
+
+    fn letter_err(&self, err: String) -> StoreError {
+        match self.lock.state() {
+            crate::wallet_lock::State::Unlocked => StoreError::Failed(err),
+            state => StoreError::Locked(state.as_str()),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn bid_sender_for(&self, listing_id: &str) -> Option<[u8; 32]> {
+        let id = crate::own_listings::parse_id(listing_id)?;
+        self.offers().bids.iter().find_map(|row| {
+            let bid = Bid::decode(&row.bid_bytes).ok()?;
+            (bid.listing_id == id).then_some(row.buyer)
+        })
     }
 
     /// A sealed bid. The same bid from the same conversation key is one row.
