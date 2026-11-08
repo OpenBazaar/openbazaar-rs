@@ -640,6 +640,63 @@ fn publishing_a_draft_puts_the_signed_listing_in_the_catalog() {
 }
 
 #[test]
+fn bulk_edit_leaves_unselected_listings_and_drafts_unchanged_and_an_invalid_value_signs_nothing() {
+    let (_dir, node) = seller();
+    let first = open_store(&node);
+    node.fix_rates(&[("USD", 100_000.0)]);
+    let image = first["images"][0].as_str().unwrap();
+    let sat_hash = first["hash"].as_str().unwrap().to_string();
+
+    let mut blue = mug(image);
+    blue["title"] = json!("Blue mug");
+    blue["currency"] = json!("USD");
+    blue["price"] = json!(2_500);
+    blue["shipping"] = json!(0);
+    blue["commerce"] = json!({ "condition": "new", "availability": { "kind": "in-stock" } });
+    let (status, blue) = request(&node, "POST", "/store/listings", &blue.to_string());
+    assert!(status.contains("200"), "{status} {blue}");
+    let mut red = mug(image);
+    red["title"] = json!("Red mug");
+    red["currency"] = json!("USD");
+    red["price"] = json!(2_500);
+    red["shipping"] = json!(0);
+    red["commerce"] = json!({ "condition": "new", "availability": { "kind": "in-stock" } });
+    let (status, red) = request(&node, "POST", "/store/listings", &red.to_string());
+    assert!(status.contains("200"), "{status} {red}");
+    let mut draft = mug(image);
+    draft["title"] = json!("Draft mug");
+    let (status, saved) = request(&node, "POST", "/store/drafts", &draft.to_string());
+    assert!(status.contains("200"), "{status} {saved}");
+
+    let blue_id = blue["listingId"].as_str().unwrap();
+    let red_hash = red["hash"].as_str().unwrap().to_string();
+    let (status, edited) = request(&node, "POST", "/store/listings/bulk", &json!({ "ids": [blue_id], "price": 1_800 }).to_string());
+    assert!(status.contains("200"), "{status} {edited}");
+    assert_eq!(edited["listings"][0]["price"]["amount"], 1_800);
+    let (_, catalog) = request(&node, "GET", "/catalog", "");
+    let listings = catalog["listings"].as_array().unwrap();
+    assert!(listings.iter().any(|item| item["title"] == "Blue mug" && item["price"]["amount"] == 1_800));
+    assert!(listings.iter().any(|item| item["title"] == "Red mug" && item["hash"] == red_hash && item["price"]["amount"] == 2_500), "an unselected listing stays unchanged");
+    assert!(listings.iter().any(|item| item["hash"] == sat_hash));
+    assert!(!listings.iter().any(|item| item["title"] == "Draft mug"), "a draft is not published by the bulk edit");
+    let (_, drafts) = request(&node, "GET", "/store/drafts", "");
+    assert_eq!(drafts["drafts"][0]["listing"]["title"], "Draft mug");
+
+    let hashes: Vec<String> = listings.iter().map(|item| item["hash"].as_str().unwrap().to_string()).collect();
+    let red_id = red["listingId"].as_str().unwrap();
+    let (status, refused) = request(&node, "POST", "/store/listings/bulk", &json!({ "ids": [blue_id, red_id], "price": 1.5 }).to_string());
+    assert!(status.contains("400"), "{status} {refused}");
+    assert!(refused["error"].as_str().unwrap_or("").contains("whole number"), "{refused}");
+    let (status, refused) = request(&node, "POST", "/store/listings/bulk", &json!({ "ids": [blue_id, red_id], "availability": { "kind": "paused" } }).to_string());
+    assert!(status.contains("400"), "{status} {refused}");
+    assert!(refused["error"].as_str().unwrap_or("").contains("Availability"), "{refused}");
+    let (_, catalog) = request(&node, "GET", "/catalog", "");
+    let after: Vec<String> = catalog["listings"].as_array().unwrap().iter().map(|item| item["hash"].as_str().unwrap().to_string()).collect();
+    assert_eq!(after, hashes, "an invalid value signs nothing in the batch");
+    assert!(!catalog["listings"].as_array().unwrap().iter().any(|item| item["title"] == "Draft mug"));
+}
+
+#[test]
 fn uploads_must_be_images() {
     let (_dir, node) = seller();
     let (status, _) = upload(&node, b"<svg onload=alert(1)>");

@@ -40,7 +40,7 @@ pub(crate) enum StoreError {
 }
 
 impl StoreError {
-    fn invalid(message: impl Into<String>) -> Self {
+    pub(crate) fn invalid(message: impl Into<String>) -> Self {
         StoreError::Invalid(message.into())
     }
 }
@@ -82,6 +82,27 @@ impl OwnListings {
             }
         }
         Ok(Self { path, vault, entries })
+    }
+
+    /// Replace each listing with a version already signed. Saves once, or restores the previous versions.
+    pub(crate) fn replace_all(&mut self, updates: &[(ListingId, Listing)]) -> Result<Vec<Listing>, StoreError> {
+        let mut replaced = Vec::with_capacity(updates.len());
+        for (id, listing) in updates {
+            let index = self.position(id).ok_or(StoreError::NotFound)?;
+            let old = self.entries[index].clone();
+            let mut superseded = vec![old.listing.content_hash().map_err(|err| StoreError::Failed(err.to_string()))?.to_hex()];
+            superseded.extend(old.superseded.iter().cloned());
+            superseded.truncate(MAX_SUPERSEDED);
+            self.entries[index] = Entry { listing: listing.clone(), superseded };
+            replaced.push((index, old));
+        }
+        if let Err(err) = self.save() {
+            for (index, old) in replaced {
+                self.entries[index] = old;
+            }
+            return Err(err);
+        }
+        Ok(replaced.into_iter().map(|(_, old)| old.listing).collect())
     }
 
     fn save(&self) -> Result<(), StoreError> {
@@ -311,9 +332,36 @@ impl Node {
         Ok(())
     }
 
-    /// Sign a new listing (`id` is `None`) or a new version of one, keep it,
-    /// and serve it in place of the old version.
-    fn sign_own_listing(&self, id: Option<ListingId>, body: &Value) -> Result<Value, StoreError> {
+    /// The editor JSON for a listing this store already signed.
+    pub(crate) fn editor_body(&self, listing: &Listing) -> Result<Value, StoreError> {
+        let details = listing.details.as_ref().ok_or_else(|| StoreError::invalid("That listing is not in your store."))?;
+        let (currency, price, shipping) = match &details.price {
+            Some(fiat) => (fiat.currency.as_str(), fiat.amount, fiat.shipping),
+            None => ("SAT", listing.price_sats, listing.shipping_sats),
+        };
+        let label = listing.content.unwrap_or(openbazaar_protocol::ContentLabel::GENERAL);
+        let mut body = json!({
+            "title": listing.title,
+            "description": listing.description,
+            "category": listing.category,
+            "kind": listing.kind.as_str(),
+            "shipFrom": listing.ship_from,
+            "stock": listing.stock,
+            "images": details.images.iter().map(|hash| hex(hash)).collect::<Vec<_>>(),
+            "currency": currency,
+            "price": price,
+            "shipping": shipping,
+            "contentRating": label.rating.as_str(),
+            "contentTags": label.tags.names(),
+        });
+        if let Some(commerce) = &listing.commerce {
+            body["commerce"] = crate::commerce_draft::value(commerce);
+        }
+        Ok(body)
+    }
+
+    /// Sign `body` the way one listing edit does. Nothing is saved.
+    pub(crate) fn signed_listing(&self, id: Option<ListingId>, body: &Value, previous: Option<&Listing>) -> Result<Listing, StoreError> {
         let draft = parse_draft(body, |hash| self.media.get(hash).is_some())?;
         let secret = self.own_signing_key().ok_or(StoreError::Locked(self.lock.state().as_str()))?;
         let store = self.own_record().ok_or_else(|| StoreError::Failed("the own store has no signed record yet".into()))?;
@@ -331,18 +379,10 @@ impl Node {
                 (item, shipping, Some(price))
             }
         };
-        let mut own = self.own_listings();
-        let previous = match id {
-            Some(id) => Some(own.position(&id).ok_or(StoreError::NotFound)?),
-            None => None,
-        };
-        let listed_on = previous.map_or_else(crate::own_store::today, |index| own.entries[index].listing.listed_on);
+        let listed_on = previous.map_or_else(crate::own_store::today, |listing| listing.listed_on);
         let commerce = match &body["commerce"] {
             Value::Null => None,
-            value => {
-                let before = previous.and_then(|index| own.entries[index].listing.commerce.as_ref());
-                Some(crate::commerce_draft::parse(value, before).map_err(StoreError::Invalid)?)
-            }
+            value => Some(crate::commerce_draft::parse(value, previous.and_then(|listing| listing.commerce.as_ref())).map_err(StoreError::Invalid)?),
         };
         if commerce.is_some() && fiat.is_none() {
             return Err(StoreError::invalid("Price a listing with options or shipping services in USD, EUR, GBP, or JPY."));
@@ -371,8 +411,23 @@ impl Node {
             commerce,
             signature: [0; 64],
         };
-        let listing = unsigned.resign(&secret).map_err(|err| StoreError::invalid(capitalize(&err.to_string())))?;
-        let entry = match previous {
+        unsigned.resign(&secret).map_err(|err| StoreError::invalid(capitalize(&err.to_string())))
+    }
+
+    /// Sign a new listing (`id` is `None`) or a new version of one, keep it,
+    /// and serve it in place of the old version.
+    fn sign_own_listing(&self, id: Option<ListingId>, body: &Value) -> Result<Value, StoreError> {
+        let previous = match id {
+            Some(id) => Some(self.own_listings().by_id(&id).ok_or(StoreError::NotFound)?.clone()),
+            None => None,
+        };
+        let listing = self.signed_listing(id, body, previous.as_ref())?;
+        let mut own = self.own_listings();
+        let previous_index = match id {
+            Some(id) => Some(own.position(&id).ok_or(StoreError::NotFound)?),
+            None => None,
+        };
+        let entry = match previous_index {
             Some(index) => {
                 let old = &own.entries[index];
                 let mut superseded = vec![old.listing.content_hash().map_err(|err| StoreError::Failed(err.to_string()))?.to_hex()];
@@ -382,7 +437,7 @@ impl Node {
             }
             None => Entry { listing: listing.clone(), superseded: Vec::new() },
         };
-        let old = match previous {
+        let old = match previous_index {
             Some(index) => Some(std::mem::replace(&mut own.entries[index], entry)),
             None => {
                 own.entries.push(entry);
@@ -390,7 +445,7 @@ impl Node {
             }
         };
         if let Err(err) = own.save() {
-            match (previous, old) {
+            match (previous_index, old) {
                 (Some(index), Some(old)) => own.entries[index] = old,
                 _ => {
                     own.entries.pop();
@@ -401,6 +456,7 @@ impl Node {
         drop(own);
         self.sync_shelf(old.as_ref().map(|entry| &entry.listing), &listing);
         let listing = if self.on_vacation() && !crate::vacation::is_paused(&listing) {
+            let secret = self.own_signing_key().ok_or(StoreError::Locked(self.lock.state().as_str()))?;
             self.note_vacation_availability(&listing)?;
             self.publish_paused(&listing, &secret)?
         } else {

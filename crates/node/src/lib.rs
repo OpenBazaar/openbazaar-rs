@@ -47,6 +47,7 @@ mod http_parse;
 mod instructions;
 mod labelers;
 mod letter_auth;
+mod listing_bulk;
 mod listing_drafts;
 mod live_stock;
 mod mail_drop;
