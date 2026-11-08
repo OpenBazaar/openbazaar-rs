@@ -302,6 +302,22 @@ impl Outbox {
     }
 
     #[cfg(test)]
+    pub(crate) fn queued(&self) -> Vec<(String, Vec<u8>)> {
+        let _guard = self.lock.lock().unwrap_or_else(|err| err.into_inner());
+        let mut out = Vec::new();
+        let Ok(entries) = fs::read_dir(&self.dir) else {
+            return out;
+        };
+        for entry in entries.flatten() {
+            let Ok(Some(value)) = self.read(&entry.path()) else { continue };
+            let Some(url) = value["url"].as_str() else { continue };
+            let Some(Ok(letter)) = value["letter"].as_str().map(unhex) else { continue };
+            out.push((url.to_string(), letter));
+        }
+        out
+    }
+
+    #[cfg(test)]
     pub(crate) fn pending(&self) -> usize {
         fs::read_dir(&self.dir)
             .map(|entries| {

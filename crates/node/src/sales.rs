@@ -95,11 +95,11 @@ fn public_sale(sale: &Value) -> Value {
     out
 }
 
-fn refused(message: impl Into<String>) -> MailError {
+pub(crate) fn refused(message: impl Into<String>) -> MailError {
     MailError::Refused(message.into())
 }
 
-fn retry(message: impl std::fmt::Display) -> MailError {
+pub(crate) fn retry(message: impl std::fmt::Display) -> MailError {
     MailError::Retry(message.to_string())
 }
 
@@ -267,6 +267,9 @@ impl Node {
 
     fn receive_buyer_message(&self, opened: Opened<Vec<u8>>) -> Result<(), MailError> {
         let body: Value = serde_json::from_slice(&opened.body).map_err(|_| refused("that message could not be read"))?;
+        if body["kind"] == "bid" {
+            return self.receive_bid(&opened.sender.0, &body);
+        }
         let id = body["sale"].as_str().unwrap_or("");
         let sender = hex(&opened.sender.0);
         let Some(sale) = self.sales().get(id).cloned() else {
@@ -407,13 +410,18 @@ impl Node {
 
     /// Seal `body` to the buyer's reply key and queue it for the buyer's node.
     fn queue_reply(&self, route: &Route, body: &Value) -> Result<(), String> {
+        self.queue_buyer_reply(&route.url, route.key, route.drop, body)
+    }
+
+    /// Seal `body` to a bid or order reply key and queue it for that buyer's node.
+    pub(crate) fn queue_buyer_reply(&self, url: &str, key: [u8; 32], drop: [u8; 16], body: &Value) -> Result<(), String> {
         let bytes = body_bytes(body);
-        let key = ReplyPublic::from_bytes(route.key).map_err(|err| err.to_string())?;
-        let from = self.sale_letter_key(&route.drop)?;
+        let key = ReplyPublic::from_bytes(key).map_err(|err| err.to_string())?;
+        let from = self.sale_letter_key(&drop)?;
         let sealed = seal_reply(&bytes, &key, &from).map_err(|err| err.to_string())?;
-        let frame = reply_frame(DropId(route.drop), &sealed);
-        let url = format!("{}{REPLY_MAIL}", route.url);
-        self.order_outbox.queue(mail_key(&url, &route.drop, &bytes), &url, &frame)
+        let frame = reply_frame(DropId(drop), &sealed);
+        let url = format!("{url}{REPLY_MAIL}");
+        self.order_outbox.queue(mail_key(&url, &drop, &bytes), &url, &frame)
     }
 }
 

@@ -23,6 +23,7 @@ mod coin_locks;
 mod commerce_draft;
 mod commerce_http;
 mod coupons;
+mod offers;
 mod review_publish;
 mod reviews;
 mod reviews_http;
@@ -116,6 +117,8 @@ mod payment_tests;
 mod seller_store_tests;
 #[cfg(test)]
 mod vacation_tests;
+#[cfg(test)]
+mod offers_tests;
 #[cfg(test)]
 mod stores_tests;
 #[cfg(test)]
@@ -273,6 +276,8 @@ pub struct Node {
     /// Coupon uses and spent offers.
     pub(crate) order_terms: Mutex<order_terms::TermsLedger>,
     pub(crate) coupons: Mutex<coupons::CouponBook>,
+    /// Bids waiting for this store to answer.
+    pub(crate) offers: Mutex<offers::OfferBook>,
     pub(crate) reviews: Mutex<reviews::ReviewPool>,
     /// Order letters and replies on their way to other nodes.
     pub(crate) order_outbox: escrow_outbox::Outbox,
@@ -412,6 +417,7 @@ impl Node {
             stock: Mutex::new(stock::StockLedger::open(&dir, vault.clone())?),
             order_terms: Mutex::new(order_terms::TermsLedger::open(&dir, vault.clone())?),
             coupons: Mutex::new(coupons::CouponBook::open(&dir, vault.clone())?),
+            offers: Mutex::new(offers::OfferBook::open(&dir, vault.clone())?),
             reviews: Mutex::new(reviews::ReviewPool::open(&dir, vault.clone())?),
             order_outbox: order_mail::open_outbox(&dir, vault.clone(), Arc::clone(&peers))?,
             peers,
