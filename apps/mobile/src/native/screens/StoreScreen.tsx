@@ -3,7 +3,8 @@ import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-
 
 import { parseCatalog, type ContentRating, type ListingHeader, type ShopCatalog } from "../../catalog.ts";
 import { collectionValue } from "../../homeNode/replica.ts";
-import { displayNameError, fetchDrafts, updateProfile, type SavedDraft } from "../../seller.ts";
+import { purchaseTerms, type AvailabilityDraft } from "../../commerceDraft.ts";
+import { bulkEditListings, displayNameError, fetchDrafts, updateProfile, type SavedDraft } from "../../seller.ts";
 import { isLocked, passphraseError, unlockWallet } from "../../walletLock.ts";
 import { ListingPhoto } from "../ListingPhoto.tsx";
 import { dismissRefused, queueEdit, sync, useSession } from "../session.ts";
@@ -55,6 +56,91 @@ function Listing({ listing, queued, canEdit, ownWithoutId, onRate, onEdit }: { l
         </View>
       ) : null}
     </View>
+  );
+}
+
+function BulkEdit({ listings, onDone }: { listings: ListingHeader[]; onDone: () => void }) {
+  const choices = listings.filter(listing => listing.listingId);
+  const [selected, setSelected] = useState<string[]>([]);
+  const [bulk, setBulk] = useState<"price" | "availability">("price");
+  const [price, setPrice] = useState("");
+  const [availability, setAvailability] = useState<AvailabilityDraft>({ kind: "in-stock", shipsOn: "", days: "" });
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [needsUnlock, setNeedsUnlock] = useState(false);
+  const [passphrase, setPassphrase] = useState("");
+  if (!choices.length) return null;
+  async function apply() {
+    const ids = selected.filter(id => choices.some(listing => listing.listingId === id));
+    if (!ids.length) return;
+    let change: Parameters<typeof bulkEditListings>[1];
+    if (bulk === "price") {
+      if (!/^\d+$/.test(price.trim()) || Number(price) === 0) {
+        setError(price.trim() === "0" ? "Enter a price above zero." : "The price must be a whole number of the smallest unit.");
+        return;
+      }
+      change = { price: Number(price) };
+    } else {
+      const terms = purchaseTerms("1", availability);
+      if (typeof terms === "string") {
+        setError(terms);
+        return;
+      }
+      change = { availability: terms.availability };
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      if (needsUnlock) {
+        await unlockWallet(passphrase);
+        setPassphrase("");
+        setNeedsUnlock(false);
+      }
+      await bulkEditListings(ids, change);
+      setSelected([]);
+      onDone();
+    } catch (err) {
+      if (isLocked(err)) {
+        setNeedsUnlock(true);
+        setError("Unlock the wallet on your node so it can sign these listings.");
+      } else setError(passphraseError(err, "Those listings were not changed."));
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <Card title="Edit selected">
+      <Text style={ui.muted}>One price or one availability. A draft stays a draft.</Text>
+      <View style={styles.choices}>
+        <Pressable accessibilityRole="button" onPress={() => setBulk("price")} style={[styles.choice, bulk === "price" && styles.choiceOn]}>
+          <Text style={[styles.choiceText, bulk === "price" && styles.choiceTextOn]}>Price</Text>
+        </Pressable>
+        <Pressable accessibilityRole="button" onPress={() => setBulk("availability")} style={[styles.choice, bulk === "availability" && styles.choiceOn]}>
+          <Text style={[styles.choiceText, bulk === "availability" && styles.choiceTextOn]}>Availability</Text>
+        </Pressable>
+      </View>
+      {bulk === "price" ? (
+        <TextInput accessibilityLabel="Regular price" value={price} onChangeText={setPrice} keyboardType="number-pad" placeholder="1800" style={ui.input} />
+      ) : (
+        <View style={styles.choices}>
+          {(["in-stock", "pre-order", "made-to-order", "away"] as const).map(kind => (
+            <Pressable key={kind} accessibilityRole="button" onPress={() => setAvailability({ ...availability, kind })} style={[styles.choice, availability.kind === kind && styles.choiceOn]}>
+              <Text style={[styles.choiceText, availability.kind === kind && styles.choiceTextOn]}>{kind}</Text>
+            </Pressable>
+          ))}
+        </View>
+      )}
+      {availability.kind === "pre-order" && bulk === "availability" ? <TextInput accessibilityLabel="Ships on" value={availability.shipsOn} onChangeText={shipsOn => setAvailability({ ...availability, shipsOn })} placeholder="YYYY-MM-DD" style={ui.input} /> : null}
+      {availability.kind === "made-to-order" && bulk === "availability" ? <TextInput accessibilityLabel="Ready in days" value={availability.days} onChangeText={days => setAvailability({ ...availability, days })} keyboardType="number-pad" placeholder="14" style={ui.input} /> : null}
+      {choices.map(listing => (
+        <Pressable key={listing.listingId} accessibilityRole="checkbox" accessibilityState={{ checked: selected.includes(listing.listingId!) }} onPress={() => setSelected(current => current.includes(listing.listingId!) ? current.filter(id => id !== listing.listingId) : [...current, listing.listingId!])}>
+          <Text style={ui.muted}>{selected.includes(listing.listingId!) ? "Selected" : "Select"} {listing.title}</Text>
+        </Pressable>
+      ))}
+      {needsUnlock ? <TextInput accessibilityLabel="Wallet passphrase" value={passphrase} onChangeText={setPassphrase} secureTextEntry autoCapitalize="none" style={ui.input} /> : null}
+      {error ? <Notice tone="error" text={error} /> : null}
+      <Button label={busy ? "Signing…" : "Apply to selected"} busy={busy} disabled={!selected.length} onPress={() => void apply()} />
+    </Card>
   );
 }
 
@@ -154,6 +240,7 @@ export function StoreScreen({ onRefresh }: { onRefresh: () => void }) {
               ))}
             </Card>
           ) : null}
+          <BulkEdit listings={catalog.listings.filter(listing => own && listing.storeId === own.key)} onDone={onRefresh} />
           <Card title="Listings">
             {own ? <Button label="New listing" onPress={() => setEditing("new")} /> : <Text style={ui.muted}>This node has no storefront yet. Set the store up in the web shop, then you can add listings here.</Text>}
             {catalog.listings.length === 0 ? <Text style={ui.muted}>No listings yet.</Text> : null}

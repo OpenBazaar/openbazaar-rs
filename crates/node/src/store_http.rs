@@ -6,6 +6,7 @@
 //! - `PUT /store/vacation`: `{"away": true|false}`. Pauses the store. No note.
 //! - `GET /store/listings`, `POST /store/listings`: the own store's listings.
 //! - `PUT /store/listings/{id}`, `DELETE /store/listings/{id}`: by stable id.
+//! - `POST /store/listings/bulk`: one price or one availability, on the selected listings.
 //! - `GET /store/drafts`, `POST /store/drafts`: unpublished listings. Not signed.
 //! - `PUT /store/drafts/{id}`, `DELETE /store/drafts/{id}`: by draft id.
 //! - `POST /media`: one image as the raw body; answers its SHA-256.
@@ -64,6 +65,7 @@ pub(crate) fn response(
             | ("PUT", "/store/role")
             | ("PUT", "/store/vacation")
             | ("GET" | "POST", "/store/listings")
+            | ("POST", "/store/listings/bulk")
             | ("GET" | "POST", "/store/drafts")
             | ("POST", "/media")
     ) || (listing_id.is_some() && matches!(method, "PUT" | "DELETE"))
@@ -87,6 +89,7 @@ pub(crate) fn response(
         ),
         ("GET", "/store/listings") => result(node.own_listings_value(), origin),
         ("POST", "/store/listings") => result(read_json(body).and_then(|value| node.create_own_listing(&value)), origin),
+        ("POST", "/store/listings/bulk") => result(read_json(body).and_then(|value| node.bulk_edit_listings(&value)), origin),
         ("GET", "/store/drafts") => result(node.listing_drafts_value(), origin),
         ("POST", "/store/drafts") => result(read_json(body).and_then(|value| node.save_listing_draft(None, &value)), origin),
         ("PUT", path) if path.starts_with("/store/drafts/") => {

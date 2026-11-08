@@ -5,6 +5,7 @@ import { paired, pairedResponse, type BuyerOrder, type ContentRating, type Listi
 import { verifiedListings } from "./records.ts";
 import type { Commerce } from "./commerce.ts";
 import { forKind } from "./commerceDraft.ts";
+import { BULK_PATH, bulkEditBody, type BulkChange } from "./bulkEdit.ts";
 import { draftPath } from "./listingDraft.ts";
 
 export type Role = "buyer" | "seller";
@@ -309,6 +310,11 @@ export async function fetchDrafts(): Promise<SavedDraft[]> {
 export async function saveDraft(id: string | null, draft: ListingDraft): Promise<SavedDraft> {
   const body = draft.kind === "digital" ? { ...draft, shipFrom: "", shipping: 0, commerce: draft.commerce ? forKind(draft.commerce, "digital") : null } : draft;
   return parseDraft(await paired(draftPath(id), json(id ? "PUT" : "POST", body)));
+}
+
+/// Sign one price or one availability onto the selected listings. Drafts are not included.
+export async function bulkEditListings(ids: string[], change: BulkChange): Promise<void> {
+  await paired(BULK_PATH, json("POST", bulkEditBody(ids, change)));
 }
 
 export async function deleteDraft(id: string): Promise<void> {
