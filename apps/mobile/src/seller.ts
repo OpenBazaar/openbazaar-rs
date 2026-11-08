@@ -5,6 +5,7 @@ import { paired, pairedResponse, type BuyerOrder, type ContentRating, type Listi
 import { verifiedListings } from "./records.ts";
 import type { Commerce } from "./commerce.ts";
 import { forKind } from "./commerceDraft.ts";
+import type { CouponBody } from "./couponDraft.ts";
 import { BULK_PATH, bulkEditBody, type BulkChange } from "./bulkEdit.ts";
 import { draftPath } from "./listingDraft.ts";
 
@@ -319,6 +320,41 @@ export async function bulkEditListings(ids: string[], change: BulkChange): Promi
 
 export async function deleteDraft(id: string): Promise<void> {
   await paired(`/store/drafts/${id}`, { method: "DELETE" });
+}
+
+export type StoreCoupon = {
+  code: string;
+  percentBps: number | null;
+  fixed: number | null;
+  currency: string;
+  minSubtotal: number;
+  startsOn: number;
+  endsOn: number;
+  maxUses: number;
+  uses: number;
+};
+
+export async function fetchCoupons(): Promise<StoreCoupon[]> {
+  const items = record(await paired("/coupons")).coupons;
+  return (Array.isArray(items) ? items : []).map(item => {
+    const row = record(item);
+    return {
+      code: typeof row.code === "string" ? row.code : "",
+      percentBps: typeof row.percentBps === "number" ? row.percentBps : null,
+      fixed: typeof row.fixed === "number" ? row.fixed : null,
+      currency: typeof row.currency === "string" ? row.currency : "",
+      minSubtotal: typeof row.minSubtotal === "number" ? row.minSubtotal : 0,
+      startsOn: typeof row.startsOn === "number" ? row.startsOn : 0,
+      endsOn: typeof row.endsOn === "number" ? row.endsOn : 0,
+      maxUses: typeof row.maxUses === "number" ? row.maxUses : 0,
+      uses: typeof row.uses === "number" ? row.uses : 0,
+    };
+  });
+}
+
+/// Sign a coupon through the store's existing coupon path. It is not a listing field.
+export async function saveCoupon(body: CouponBody): Promise<void> {
+  await paired("/coupons", json("POST", body));
 }
 
 export async function deleteListing(id: string): Promise<void> {
