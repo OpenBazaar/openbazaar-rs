@@ -2,16 +2,17 @@ import { useState, type FormEvent } from "react";
 import type { CurrencyCode, ListingHeader, RateTable } from "../catalog";
 import { CONTENT_TAGS, MAX_LISTING_IMAGES, PRICE_CURRENCIES, draftOf, formatPrice, fromMinorUnits, saveListing, toMinorUnits, type ListingDraft, type PriceCurrency } from "../seller";
 import { ImageUpload, MediaImage, useLockedAction } from "./SellerKit";
-import { axesProblem, emptyCommerce, rowsOf, saleFieldsOf, scheduledSale, withSale } from "../commerceDraft";
+import { axesProblem, emptyCommerce, packageFieldsOf, rowsOf, saleFieldsOf, scheduledSale, shippingTerms, withPackage, withSale, type PackageInput } from "../commerceDraft";
 import { CommerceFields } from "./CommerceFields";
 
-type Form = Omit<ListingDraft, "price" | "shipping" | "stock"> & { price: string; shipping: string; stock: string; salePrice: string; saleStarts: string; saleEnds: string };
+type PackageFields = Omit<PackageInput, "regions">;
+type Form = Omit<ListingDraft, "price" | "shipping" | "stock"> & PackageFields & { price: string; shipping: string; stock: string; salePrice: string; saleStarts: string; saleEnds: string };
 
 const EMPTY: ListingDraft = { title: "", description: "", category: "", kind: "physical", shipFrom: "", stock: 1, images: [], currency: "USD", price: 0, shipping: 0, contentRating: "general", contentTags: [] };
 
 function formOf(draft: ListingDraft): Form {
   const sale = saleFieldsOf(draft.price, draft.commerce?.sale ?? null, draft.currency);
-  return { ...draft, price: draft.price ? fromMinorUnits(draft.price, draft.currency) : "", shipping: draft.shipping ? fromMinorUnits(draft.shipping, draft.currency) : "", stock: String(draft.stock), salePrice: sale.price, saleStarts: sale.startsOn, saleEnds: sale.endsOn };
+  return { ...draft, ...packageFieldsOf(draft.commerce?.shipping, draft.currency), price: draft.price ? fromMinorUnits(draft.price, draft.currency) : "", shipping: draft.shipping ? fromMinorUnits(draft.shipping, draft.currency) : "", stock: String(draft.stock), salePrice: sale.price, saleStarts: sale.startsOn, saleEnds: sale.endsOn };
 }
 
 /// The draft the node takes, or what to fix first.
@@ -27,14 +28,23 @@ function draftFrom(form: Form): ListingDraft | string {
   if (form.kind === "physical" && !form.shipFrom.trim()) return "Say where it ships from.";
   const sale = scheduledSale(price, form.currency, { price: form.salePrice, startsOn: form.saleStarts, endsOn: form.saleEnds });
   if (typeof sale === "string") return sale;
-  const commerce = withSale(form.commerce ?? null, sale);
+  let commerce = withSale(form.commerce ?? null, sale);
+  if (commerce && form.kind === "physical") {
+    const terms = shippingTerms(form.currency, {
+      weightG: form.weightG, lengthMm: form.lengthMm, widthMm: form.widthMm, heightMm: form.heightMm,
+      handlingDays: form.handlingDays, freeOver: form.freeOver,
+      regions: commerce.shipping.services.map(service => service.regions.join(", ")),
+    });
+    if (typeof terms === "string") return terms;
+    commerce = withPackage(commerce, terms);
+  }
   if (commerce && form.currency === "SAT") return "Price a listing with options or shipping services in USD, EUR, GBP, or JPY.";
   if (commerce) {
     const problem = axesProblem(commerce.axes, rowsOf(commerce));
     if (problem) return problem;
     if (commerce.shipping.services.some(s => !s.name.trim() || s.daysMin > s.daysMax)) return "Name each shipping service and give its delivery days, fastest first.";
   }
-  const { salePrice: _salePrice, saleStarts: _saleStarts, saleEnds: _saleEnds, ...rest } = form;
+  const { salePrice: _salePrice, saleStarts: _saleStarts, saleEnds: _saleEnds, weightG: _weightG, lengthMm: _lengthMm, widthMm: _widthMm, heightMm: _heightMm, handlingDays: _handlingDays, freeOver: _freeOver, ...rest } = form;
   return { ...rest, price, shipping, stock, commerce };
 }
 
@@ -109,9 +119,13 @@ export function ListingEditor({ listing, categories, rates, onSaved, onCancel }:
           <p className="ob-shipping-note ob-field-wide">Leave these empty to sell at the regular price. Buyers pay the sale price on those days, and it is signed with the listing.</p>
         </>}
       </div>
-      <label className="ob-default-address"><input type="checkbox" checked={!!form.commerce} onChange={e => set("commerce", e.target.checked ? emptyCommerce() : null)}/>Add condition, options like size or color, and shipping services</label>
+      <label className="ob-default-address"><input type="checkbox" checked={!!form.commerce} onChange={e => {
+        if (!e.target.checked) { set("commerce", null); return; }
+        const commerce = emptyCommerce();
+        setForm(current => ({ ...current, commerce, ...packageFieldsOf(commerce.shipping, current.currency) }));
+      }}/>Add condition, options like size or color, and shipping services</label>
     </fieldset>
-    {form.commerce && <CommerceFields commerce={form.commerce} kind={form.kind} currency={form.currency === "SAT" ? "USD" : form.currency} basePrice={toMinorUnits(form.price, form.currency) ?? 0} images={form.images} onChange={c => set("commerce", c)}/>}
+    {form.commerce && <CommerceFields commerce={form.commerce} kind={form.kind} currency={form.currency === "SAT" ? "USD" : form.currency} basePrice={toMinorUnits(form.price, form.currency) ?? 0} images={form.images} packageFields={form} onPackage={patch => setForm(current => ({ ...current, ...patch }))} onChange={c => set("commerce", c)}/>}
     <fieldset className="ob-store-section">
       <legend>Content label</legend>
       <div className="ob-field-grid">

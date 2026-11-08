@@ -338,6 +338,56 @@ fn a_scheduled_sale_is_signed_onto_the_listing_and_a_backwards_window_is_not() {
 }
 
 #[test]
+fn a_package_is_signed_onto_the_listing_and_an_invalid_handling_time_is_not() {
+    let (_dir, node) = seller();
+    let listing = open_store(&node);
+    node.fix_rates(&[("USD", 100_000.0)]);
+    let image = listing["images"][0].as_str().unwrap();
+    let mut body = mug(image);
+    body["title"] = json!("Packed mug");
+    body["currency"] = json!("USD");
+    body["price"] = json!(2_500);
+    body["shipping"] = json!(0);
+    body["commerce"] = json!({
+        "condition": "new",
+        "shipping": {
+            "weightG": 450,
+            "dimsMm": [120, 80, 60],
+            "handlingDays": 2,
+            "freeOver": 5_000,
+            "services": [{ "name": "Standard", "price": 500, "extraItem": 0, "daysMin": 2, "daysMax": 5, "regions": ["US", "CA"] }]
+        }
+    });
+    let (status, priced) = request(&node, "POST", "/store/listings", &body.to_string());
+    assert!(status.contains("200"), "{status} {priced}");
+    assert_eq!(priced["commerce"]["shipping"]["weightG"], 450);
+    assert_eq!(priced["commerce"]["shipping"]["handlingDays"], 2);
+    assert_eq!(priced["commerce"]["shipping"]["freeOver"], 5_000);
+    assert_eq!(priced["commerce"]["shipping"]["services"][0]["regions"], json!(["CA", "US"]));
+    let bytes = crate::escrow_mail::unhex(priced["record"].as_str().unwrap()).unwrap();
+    let signed = openbazaar_protocol::Listing::decode(&bytes).unwrap();
+    signed.verify().unwrap();
+    let commerce = signed.commerce.unwrap();
+    let shipping = &commerce.shipping;
+    assert_eq!((shipping.weight_g, shipping.dims_mm, shipping.handling_days, shipping.free_over), (450, [120, 80, 60], 2, 5_000));
+    let regions: Vec<_> = shipping.services[0].regions.iter().map(|code| code.as_str()).collect();
+    assert_eq!(regions, ["CA", "US"], "the signed listing carries the package the editor saved");
+
+    let before = node.own_listings().entries.len();
+    body["commerce"]["shipping"]["handlingDays"] = json!(31);
+    let (status, refused) = request(&node, "POST", "/store/listings", &body.to_string());
+    assert!(status.contains("400"), "{status} {refused}");
+    assert!(refused["error"].as_str().unwrap_or("").contains("30"), "{refused}");
+    body["commerce"]["shipping"]["handlingDays"] = json!(2);
+    body["commerce"]["shipping"]["services"][0]["regions"] = json!(["USA"]);
+    let (status, refused) = request(&node, "POST", "/store/listings", &body.to_string());
+    assert!(status.contains("400"), "{status} {refused}");
+    assert!(refused["error"].as_str().unwrap_or("").contains("country code"), "{refused}");
+    assert_eq!(node.own_listings().entries.len(), before, "an invalid package is not signed");
+    assert_eq!(node.own_listings().entries[1].listing.commerce.as_ref().unwrap().shipping.handling_days, 2);
+}
+
+#[test]
 fn uploads_must_be_images() {
     let (_dir, node) = seller();
     let (status, _) = upload(&node, b"<svg onload=alert(1)>");

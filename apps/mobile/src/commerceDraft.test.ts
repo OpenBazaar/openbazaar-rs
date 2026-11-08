@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { axesProblem, combinations, emptyCommerce, forKind, parseValues, rowsOf, saleFieldsOf, scheduledSale, syncRows, withRows, withSale } from "./commerceDraft.ts";
+import { axesProblem, combinations, defaultService, emptyCommerce, forKind, packageFieldsOf, parseValues, rowsOf, saleFieldsOf, scheduledSale, shippingTerms, syncRows, withPackage, withRows, withSale } from "./commerceDraft.ts";
 
 const size = { name: "Size", values: ["S", "M"] };
 const color = { name: "Color", values: ["Navy", "Sand"] };
@@ -45,6 +45,23 @@ test("the sale the editor saves is signed onto the listing, and an invalid windo
   assert.equal(scheduledSale(2_500, "USD", { price: "0.00", startsOn: "2026-11-01", endsOn: "2026-11-30" }), "Enter a sale price.");
   assert.equal(scheduledSale(2_500, "USD", { price: "30.00", startsOn: "2026-11-01", endsOn: "2026-11-30" }), "A sale price is below the regular price.");
   assert.equal(scheduledSale(2_500, "USD", { price: "20.00", startsOn: "2026-11-30", endsOn: "2026-11-01" }), "A sale ends before it starts.");
+});
+
+test("the package the editor saves is signed onto the listing, and an invalid handling time is refused", () => {
+  const saved = shippingTerms("USD", {
+    weightG: "450", lengthMm: "120", widthMm: "80", heightMm: "60", handlingDays: "2", freeOver: "50.00", regions: ["us, CA"],
+  });
+  assert.deepEqual(saved, { weightG: 450, dimsMm: [120, 80, 60], handlingDays: 2, freeOver: 5_000, regions: [["CA", "US"]] });
+  if (!saved || typeof saved === "string") throw new Error("the package was refused");
+  const commerce = withPackage({ ...emptyCommerce(), shipping: { ...emptyCommerce().shipping, services: [defaultService()] } }, saved);
+  assert.equal(commerce?.shipping.weightG, 450);
+  assert.deepEqual(commerce?.shipping.dimsMm, [120, 80, 60]);
+  assert.equal(commerce?.shipping.handlingDays, 2);
+  assert.equal(commerce?.shipping.freeOver, 5_000);
+  assert.deepEqual(commerce?.shipping.services[0].regions, ["CA", "US"]);
+  assert.equal(packageFieldsOf(commerce?.shipping, "USD").handlingDays, "2");
+  assert.equal(shippingTerms("USD", { weightG: "450", lengthMm: "120", widthMm: "80", heightMm: "60", handlingDays: "31", freeOver: "", regions: [""] }), "Handling time is at most 30 days.");
+  assert.equal(shippingTerms("USD", { weightG: "", lengthMm: "", widthMm: "", heightMm: "", handlingDays: "2", freeOver: "", regions: ["USA"] }), "A region is a two-letter country code.");
 });
 
 test("a digital listing carries no shipping", () => {
