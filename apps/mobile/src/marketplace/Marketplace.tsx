@@ -20,6 +20,7 @@ import { HomeNodePanel } from "./HomeNodePanel";
 import { HomeNodeBadge } from "./HomeNodeGate";
 import { LightningSettings } from "./LightningSettings";
 import { LightningOrderPayment, LightningWalletCard } from "./LightningPayment";
+import { priceDrops, rememberPrices, savedHashesAfterRefresh, sameWatches, signedPrice, type WatchedListing } from "../priceNotices";
 import { fetchProfile, formatPrice, salesToShip, setRole } from "../seller";
 import { Onboarding } from "./Onboarding";
 import { StoreSetup } from "./StoreSetup";
@@ -68,6 +69,15 @@ const categoryIcons: Record<string, IconName> = { Books: "book", Grocery: "cup",
 const photos: Record<string, string> = { "Paperback novel": "paperback", "Field guide to tide pools": "paperback-open", "Whole bean coffee, 12 oz": "coffee", "Wildflower honey, 8 oz": "honey", "Linen dish towel": "towel", "Stoneware mug": "mug", "Wool socks": "socks", "Clothbound notebook": "notebook", Sketchbook: "notebook", "Beeswax candles, set of 4": "candles", "Cotton work shirt": "shirt", "Work shirt": "shirt", "Cotton apron": "shirt", "Garden trowel": "trowel", "Letterpress cards": "cards" };
 function photo(listing: ListingHeader) { return photos[listing.title] ? `goods/${photos[listing.title]}.jpg` : null; }
 function readSaved(): string[] { try { const a = JSON.parse(localStorage.getItem("ob-shop-saved") ?? "[]"); return Array.isArray(a) ? a.filter((s): s is string => typeof s === "string") : []; } catch { return []; } }
+function readWatched(): WatchedListing[] {
+  try {
+    const parsed = JSON.parse(localStorage.getItem("ob-price-watched") ?? "[]");
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((item): item is WatchedListing => !!item && typeof item.listingId === "string" && typeof item.storeId === "string" && typeof item.hash === "string" && Number.isSafeInteger(item.amount) && typeof item.currency === "string");
+  } catch {
+    return [];
+  }
+}
 function readCurrency(): CurrencyCode { try { const c = localStorage.getItem("ob-shop-currency"); return ["USD", "EUR", "GBP", "JPY"].includes(c ?? "") ? c as CurrencyCode : "USD"; } catch { return "USD"; } }
 function readSidebarWidth() { try { const n = Number(localStorage.getItem("ob-sidebar-width")); return n >= 224 && n <= 360 ? n : 244; } catch { return 244; } }
 function readCollapsed() { try { return localStorage.getItem("ob-sidebar-collapsed") === "true"; } catch { return false; } }
@@ -94,6 +104,7 @@ export default function Marketplace() {
   const [sort, setSort] = useState("newest");
   const [filters, setFilters] = useState({ seller: "", kind: "", shipFrom: "", min: "", max: "" });
   const [saved, setSaved] = useState<string[]>(readSaved);
+  const [watched, setWatched] = useState<WatchedListing[]>(readWatched);
   const [cart, setCart] = useState<CartLine[]>(() => { try { const a = JSON.parse(localStorage.getItem("ob-shop-cart") ?? "[]"); return Array.isArray(a) ? a.filter(l => typeof l.hash === "string" && Number.isInteger(l.quantity) && l.quantity > 0 && l.quantity <= 99) : []; } catch { return []; } });
   const [menu, setMenu] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -130,6 +141,18 @@ export default function Marketplace() {
   useEffect(() => { void load(); document.title = "OpenBazaar"; }, []);
   useEffect(() => { let active = true; const pull = () => { void fetchRates().then(r => { if (active) setRates(r); }); }; pull(); const timer = setInterval(pull, 300000); return () => { active = false; clearInterval(timer); }; }, []);
   useEffect(() => { try { localStorage.setItem("ob-shop-saved", JSON.stringify(saved)); } catch {} }, [saved]);
+  useEffect(() => { try { localStorage.setItem("ob-price-watched", JSON.stringify(watched)); } catch {} }, [watched]);
+  useEffect(() => {
+    if (!catalog) return;
+    const listings = catalog.listings;
+    const drops = priceDrops(watched, listings);
+    if (drops.length === 1) setToast(`${drops[0].title} is a lower price than when you saved it`);
+    else if (drops.length > 1) setToast(`${drops.length} saved goods are a lower price`);
+    const nextWatched = rememberPrices(watched, listings);
+    if (!sameWatches(watched, nextWatched)) setWatched(nextWatched);
+    const nextSaved = savedHashesAfterRefresh(saved, watched, listings);
+    if (nextSaved.some((hash, index) => hash !== saved[index])) setSaved(nextSaved);
+  }, [catalog, watched, saved]);
   useEffect(() => { try { localStorage.setItem("ob-sidebar-width", String(sidebarWidth)); localStorage.setItem("ob-sidebar-collapsed", String(collapsed)); } catch {} }, [sidebarWidth, collapsed]);
   useEffect(() => { const update = () => { setMobile(window.innerWidth < 960); setMenu(false); setSettingsOpen(false); }; window.addEventListener("resize", update); return () => window.removeEventListener("resize", update); }, []);
   useEffect(() => { try { localStorage.setItem("ob-shop-cart", JSON.stringify(cart)); } catch {} }, [cart]);
@@ -160,7 +183,18 @@ export default function Marketplace() {
 
   function addToBag(listing: ListingHeader, pick: BuyChoice = { quantity: 1 }) { const line = { hash: listing.hash, variant: pick.variant }; const key = lineKey(line); setCart(lines => { const old = lines.find(l => lineKey(l) === key); const quantity = Math.min(listing.commerce ? 99 : listing.stock, 99, (old?.quantity ?? 0) + pick.quantity); return old ? lines.map(l => lineKey(l) === key ? { ...l, quantity } : l) : [...lines, { ...line, quantity }]; }); setToast("Added to your bag"); }
   function navigate(next: Section, nextCategory: string | null = null) { setSettingsOpen(false); content.current?.scrollTo({ top: 0, behavior: "instant" }); setSection(next); setCategory(nextCategory); setFilters({ seller: "", kind: "", shipFrom: "", min: "", max: "" }); setQuery(""); setPage({ name: "browse" }); setMenu(false); setNewListing(0); }
-  function toggleSaved(listing: ListingHeader) { const exists = saved.includes(listing.hash); setSaved(a => exists ? a.filter(x => x !== listing.hash) : [...a, listing.hash]); setToast(exists ? "Removed from saved goods" : "Added to your saved goods"); }
+  function toggleSaved(listing: ListingHeader) {
+    const exists = saved.includes(listing.hash);
+    setSaved(a => exists ? a.filter(x => x !== listing.hash) : [...a, listing.hash]);
+    setWatched(list => {
+      if (!listing.listingId) return list;
+      const rest = list.filter(item => item.listingId !== listing.listingId || item.storeId !== listing.storeId);
+      if (exists) return rest;
+      const price = signedPrice(listing);
+      return price ? [...rest, { listingId: listing.listingId, storeId: listing.storeId, hash: listing.hash, amount: price.amount, currency: price.currency }] : rest;
+    });
+    setToast(exists ? "Removed from saved goods" : "Added to your saved goods");
+  }
   function open(listing: ListingHeader) { setPage({ name: "detail", listing }); }
   async function startSelling() { try { profile.update(await setRole("seller")); navigate("store"); } catch (e) { setToast(e instanceof Error ? e.message : "Your node could not open a store."); } }
   function storeChanged(message: string) { setToast(message); void load(); void profile.refresh(); }
