@@ -313,6 +313,17 @@ impl Node {
         })
     }
 
+    /// Where this escrow's peer sends the next letter. With the sale onion
+    /// up, this is an onion for `id` alone, forwarded to the sale gate.
+    /// Loopback demos keep [`Self::reply_url`].
+    pub(crate) fn escrow_reply_url(&self, id: &EscrowId) -> Result<String, String> {
+        if self.remote.services.sale_onion().is_none() {
+            return self.reply_url();
+        }
+        let seed = self.escrow_reply_onion_seed(id)?;
+        self.remote.publish_reply_onion(&self.data_dir, &seed)
+    }
+
     /// Opens escrow mail sent to this node as buyer.
     pub(crate) fn buyer_mail_secret(&self) -> StoreSecret {
         let secret = *self.buyer_wallet().watch.mail_key;

@@ -105,6 +105,10 @@ impl Node {
         self.vendor_desk().value(self.network)
     }
 
+    pub(crate) fn vendor_escrow_ids(&self) -> Vec<EscrowId> {
+        self.vendor_desk().sales.keys().copied().collect()
+    }
+
     fn vendor_desk(&self) -> std::sync::MutexGuard<'_, VendorDesk> {
         self.escrow
             .vendor

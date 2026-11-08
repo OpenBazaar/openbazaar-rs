@@ -9,9 +9,10 @@
 //! | buyer  | `POST {store}/mail`     | a follow-up message in that order ("complete") |
 //! | seller | `POST {buyer}/mail/reply` | a reply frame, sealed to the order's reply key |
 //!
-//! The buyer's base URL travels inside the sealed order as the `replyUrl`
-//! option, next to the per-order reply key and drop id. The store's URL is
-//! the one the buyer follows ([`crate::replicas`]).
+//! The buyer's reply onion for this order travels inside the sealed order as
+//! the `replyUrl`, next to the per-order reply key and drop id. It is not the
+//! store's sale onion. The store's URL is the one the buyer follows
+//! ([`crate::replicas`]).
 //!
 //! Everything sent goes through a persistent outbox (`order-outbox/`), so a
 //! seller that is offline gets the order when it is back, and a buyer that
