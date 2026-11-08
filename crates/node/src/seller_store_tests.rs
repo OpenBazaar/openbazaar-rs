@@ -469,6 +469,54 @@ fn compare_at_and_offers_are_signed_onto_the_listing_and_an_invalid_compare_at_i
 }
 
 #[test]
+fn availability_and_lot_size_are_signed_onto_the_listing_and_an_invalid_value_is_not() {
+    let (_dir, node) = seller();
+    let listing = open_store(&node);
+    node.fix_rates(&[("USD", 100_000.0)]);
+    let image = listing["images"][0].as_str().unwrap();
+    // A lot of 5, pre-order shipping on 1 Dec 2026, the terms the editor saves.
+    let mut body = mug(image);
+    body["title"] = json!("Lot mug");
+    body["currency"] = json!("USD");
+    body["price"] = json!(2_500);
+    body["shipping"] = json!(0);
+    body["commerce"] = json!({
+        "condition": "new",
+        "lotSize": 5,
+        "availability": { "kind": "pre-order", "shipsOn": 20261201 }
+    });
+    let (status, priced) = request(&node, "POST", "/store/listings", &body.to_string());
+    assert!(status.contains("200"), "{status} {priced}");
+    assert_eq!(priced["commerce"]["lotSize"], 5);
+    assert_eq!(priced["commerce"]["availability"], json!({ "kind": "pre-order", "shipsOn": 20261201 }));
+    let bytes = crate::escrow_mail::unhex(priced["record"].as_str().unwrap()).unwrap();
+    let signed = openbazaar_protocol::Listing::decode(&bytes).unwrap();
+    signed.verify().unwrap();
+    let purchase = signed.commerce.unwrap().purchase;
+    assert_eq!(purchase.lot_size, 5);
+    assert_eq!(purchase.availability, openbazaar_protocol::Availability::PreOrder { ships_on: 20261201 }, "the signed listing carries the availability and lot size the editor saved");
+
+    let before = node.own_listings().entries.len();
+    body["commerce"]["lotSize"] = json!(0);
+    let (status, refused) = request(&node, "POST", "/store/listings", &body.to_string());
+    assert!(status.contains("400"), "{status} {refused}");
+    assert!(refused["error"].as_str().unwrap_or("").contains("one piece"), "{refused}");
+    body["commerce"]["lotSize"] = json!(5);
+    body["commerce"]["availability"]["kind"] = json!("paused");
+    let (status, refused) = request(&node, "POST", "/store/listings", &body.to_string());
+    assert!(status.contains("400"), "{status} {refused}");
+    assert!(refused["error"].as_str().unwrap_or("").contains("Availability"), "{refused}");
+    body["commerce"]["availability"] = json!({ "kind": "made-to-order", "days": 400 });
+    let (status, refused) = request(&node, "POST", "/store/listings", &body.to_string());
+    assert!(status.contains("400"), "{status} {refused}");
+    assert!(refused["error"].as_str().unwrap_or("").contains("365"), "{refused}");
+    let kept = node.own_listings();
+    assert_eq!(kept.entries.len(), before, "an invalid availability or lot size is not signed");
+    let purchase = kept.entries[1].listing.commerce.as_ref().unwrap().purchase;
+    assert_eq!((purchase.lot_size, purchase.availability), (5, openbazaar_protocol::Availability::PreOrder { ships_on: 20261201 }));
+}
+
+#[test]
 fn uploads_must_be_images() {
     let (_dir, node) = seller();
     let (status, _) = upload(&node, b"<svg onload=alert(1)>");

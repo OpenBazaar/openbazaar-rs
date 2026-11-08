@@ -3,7 +3,7 @@ import { Alert, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 
 import { File } from "expo-file-system";
 
 import type { ListingHeader } from "../../catalog.ts";
-import { compareAtText, listingFacts, packageFieldsOf, priceTerms, returnsDraft, saleFieldsOf, scheduledSale, shippingTerms, specificRows, withFacts, withPackage, withPrice, withSale, type PackageInput, type ReturnsDraft, type SpecificRow } from "../../commerceDraft.ts";
+import { compareAtText, listingFacts, packageFieldsOf, priceTerms, purchaseFields, purchaseTerms, returnsDraft, saleFieldsOf, scheduledSale, shippingTerms, specificRows, withFacts, withPackage, withPrice, withPurchase, withSale, type AvailabilityDraft, type PackageInput, type ReturnsDraft, type SpecificRow } from "../../commerceDraft.ts";
 import { CONTENT_TAGS, MAX_LISTING_IMAGES, PRICE_CURRENCIES, deleteListing, draftOf, fromMinorUnits, saveListing, toMinorUnits, uploadImage, type ListingDraft, type PriceCurrency } from "../../seller.ts";
 import { isLocked, passphraseError, unlockWallet } from "../../walletLock.ts";
 import { sync } from "../session.ts";
@@ -11,7 +11,7 @@ import { ListingPhoto } from "../ListingPhoto.tsx";
 import { Button, Card, NAVY, Notice, SOFT, ui } from "../ui.tsx";
 
 type PackageFields = Omit<PackageInput, "regions">;
-type Fields = Omit<ListingDraft, "price" | "shipping" | "stock"> & PackageFields & { price: string; shipping: string; stock: string; salePrice: string; saleStarts: string; saleEnds: string; compareAt: string; acceptsOffers: boolean; shipsTo: string[]; specifics: SpecificRow[]; returns: ReturnsDraft };
+type Fields = Omit<ListingDraft, "price" | "shipping" | "stock"> & PackageFields & { price: string; shipping: string; stock: string; salePrice: string; saleStarts: string; saleEnds: string; compareAt: string; acceptsOffers: boolean; lotSize: string; availability: AvailabilityDraft; shipsTo: string[]; specifics: SpecificRow[]; returns: ReturnsDraft };
 
 const EMPTY: ListingDraft = {
   title: "",
@@ -43,6 +43,8 @@ function fieldsOf(listing: ListingHeader | null): Fields {
     saleEnds: sale.endsOn,
     compareAt: compareAtText(draft.commerce?.compareAt ?? 0, draft.currency),
     acceptsOffers: draft.commerce?.acceptsOffers ?? false,
+    lotSize: purchaseFields(draft.commerce).lotSize,
+    availability: purchaseFields(draft.commerce).availability,
     shipsTo: draft.commerce?.shipping.services.map(service => service.regions.join(", ")) ?? [],
     specifics: specificRows(draft.commerce?.specifics),
     returns: returnsDraft(draft.commerce?.returns),
@@ -77,6 +79,9 @@ function draftFrom(form: Fields): ListingDraft | string {
   const priced = priceTerms(price, form.currency, form.compareAt, form.acceptsOffers, (commerce ?? form.commerce)?.variants.map(variant => variant.price) ?? []);
   if (typeof priced === "string") return priced;
   commerce = withPrice(commerce, priced);
+  const purchase = purchaseTerms(form.lotSize, form.availability);
+  if (typeof purchase === "string") return purchase;
+  commerce = withPurchase(commerce, purchase);
   if (commerce && form.currency === "SAT") return "Price a listing with options or shipping services in USD, EUR, GBP, or JPY.";
   return {
     title: form.title.trim(),
@@ -236,7 +241,16 @@ export function ListingEdit({ listing, categories, onClose }: { listing: Listing
             <Field label="Sale ends" value={form.saleEnds} onChangeText={(saleEnds) => set("saleEnds", saleEnds)} />
             <Field label={`Compare-at (${unit})`} value={form.compareAt} onChangeText={(compareAt) => set("compareAt", compareAt)} keyboard="decimal-pad" />
             <Chip label="Accept offers" selected={form.acceptsOffers} onPress={() => set("acceptsOffers", !form.acceptsOffers)} />
-            <Text style={ui.muted}>Leave the sale empty to sell at the regular price. Use days like 2026-11-01. Compare-at is a struck-through price above the price buyers pay. Both are signed with the listing.</Text>
+            <Field label="Lot size" value={form.lotSize} onChangeText={(lotSize) => set("lotSize", lotSize)} keyboard="number-pad" />
+            <Text style={ui.muted}>Availability</Text>
+            <View style={styles.choices}>
+              {(["in-stock", "pre-order", "made-to-order", "away"] as const).map((kind) => (
+                <Chip key={kind} label={kind === "in-stock" ? "In stock" : kind === "pre-order" ? "Pre-order" : kind === "made-to-order" ? "Made to order" : "Away"} selected={form.availability.kind === kind} onPress={() => set("availability", { ...form.availability, kind })} />
+              ))}
+            </View>
+            {form.availability.kind === "pre-order" ? <Field label="Ships on" value={form.availability.shipsOn} onChangeText={(shipsOn) => set("availability", { ...form.availability, shipsOn })} /> : null}
+            {form.availability.kind === "made-to-order" ? <Field label="Ready in (days)" value={form.availability.days} onChangeText={(days) => set("availability", { ...form.availability, days })} keyboard="number-pad" /> : null}
+            <Text style={ui.muted}>Leave the sale empty to sell at the regular price. Use days like 2026-11-01. Compare-at is a struck-through price above the price buyers pay. A lot is the pieces in one unit. These are signed with the listing.</Text>
           </>
         ) : null}
         {form.kind === "physical" && !services ? <Field label={`Shipping (${unit})`} value={form.shipping} onChangeText={(shipping) => set("shipping", shipping)} keyboard="decimal-pad" /> : null}

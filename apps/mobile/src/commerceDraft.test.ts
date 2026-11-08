@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { axesProblem, combinations, compareAtText, defaultService, emptyCommerce, forKind, listingFacts, packageFieldsOf, parseValues, priceTerms, returnsDraft, rowsOf, saleFieldsOf, scheduledSale, shippingTerms, specificRows, syncRows, withFacts, withPackage, withPrice, withRows, withSale } from "./commerceDraft.ts";
+import { axesProblem, combinations, compareAtText, defaultService, emptyCommerce, forKind, listingFacts, packageFieldsOf, parseValues, priceTerms, purchaseFields, purchaseTerms, returnsDraft, rowsOf, saleFieldsOf, scheduledSale, shippingTerms, specificRows, syncRows, withFacts, withPackage, withPrice, withPurchase, withRows, withSale } from "./commerceDraft.ts";
 
 const size = { name: "Size", values: ["S", "M"] };
 const color = { name: "Color", values: ["Navy", "Sand"] };
@@ -96,6 +96,23 @@ test("the compare-at and offers flag the editor saves are signed onto the listin
   assert.equal(priceTerms(2_500, "USD", "", "yes"), "An offers flag is yes or no.");
   assert.deepEqual(priceTerms(2_500, "USD", "", false), { compareAt: 0, acceptsOffers: false });
   assert.equal(withPrice(null, { compareAt: 0, acceptsOffers: false }), null);
+});
+
+test("the availability and lot size the editor saves are signed onto the listing, and an invalid value is refused", () => {
+  const saved = purchaseTerms("5", { kind: "pre-order", shipsOn: "2026-12-01", days: "" });
+  assert.deepEqual(saved, { lotSize: 5, availability: { kind: "pre-order", shipsOn: 20261201 } });
+  if (!saved || typeof saved === "string") throw new Error("the purchase terms were refused");
+  const commerce = withPurchase(null, saved);
+  assert.equal(commerce?.lotSize, 5);
+  assert.deepEqual(commerce?.availability, { kind: "pre-order", shipsOn: 20261201 });
+  assert.deepEqual(purchaseFields(commerce), { lotSize: "5", availability: { kind: "pre-order", shipsOn: "2026-12-01", days: "" } });
+  assert.equal(purchaseTerms("0", { kind: "in-stock", shipsOn: "", days: "" }), "A unit is at least one piece.");
+  assert.equal(purchaseTerms("65536", { kind: "in-stock", shipsOn: "", days: "" }), "The lot size must be a whole number up to 65535.");
+  assert.equal(purchaseTerms("1", { kind: "paused", shipsOn: "", days: "" }), "Availability is in-stock, pre-order, made-to-order, or away.");
+  assert.equal(purchaseTerms("1", { kind: "made-to-order", shipsOn: "", days: "400" }), "The making time must be a whole number up to 365.");
+  assert.equal(purchaseTerms("1", { kind: "pre-order", shipsOn: "2026-13-01", days: "" }), "The pre-order ship date must be a date written YYYYMMDD.");
+  assert.deepEqual(purchaseTerms("", { kind: "in-stock", shipsOn: "", days: "" }), { lotSize: 1, availability: { kind: "in-stock" } });
+  assert.equal(withPurchase(null, { lotSize: 1, availability: { kind: "in-stock" } }), null);
 });
 
 test("a digital listing carries no shipping", () => {
