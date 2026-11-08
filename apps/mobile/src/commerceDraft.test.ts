@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { axesProblem, combinations, emptyCommerce, forKind, parseValues, rowsOf, syncRows, withRows } from "./commerceDraft.ts";
+import { axesProblem, combinations, emptyCommerce, forKind, parseValues, rowsOf, saleFieldsOf, scheduledSale, syncRows, withRows, withSale } from "./commerceDraft.ts";
 
 const size = { name: "Size", values: ["S", "M"] };
 const color = { name: "Color", values: ["Navy", "Sand"] };
@@ -30,6 +30,21 @@ test("the editor names what to fix", () => {
   assert.equal(axesProblem([size], off), "Offer at least one combination.");
   assert.equal(axesProblem([size], syncRows([size], [])), null);
   assert.deepEqual(parseValues(" S, m ,M,, L "), ["S", "m", "L"]);
+});
+
+test("the sale the editor saves is signed onto the listing, and an invalid window is refused", () => {
+  const saved = scheduledSale(2_500, "USD", { price: "20.00", startsOn: "2026-11-01", endsOn: "2026-11-30" });
+  assert.deepEqual(saved, { offBps: 2_000, startsOn: 20261101, endsOn: 20261130 });
+  if (!saved || typeof saved === "string") throw new Error("the sale was refused");
+  const commerce = withSale(null, saved);
+  assert.deepEqual(commerce?.sale, saved);
+  assert.deepEqual(saleFieldsOf(2_500, commerce?.sale ?? null, "USD"), { price: "20.00", startsOn: "2026-11-01", endsOn: "2026-11-30" });
+  assert.equal(scheduledSale(2_500, "USD", { price: "", startsOn: "", endsOn: "" }), null);
+  assert.equal(scheduledSale(2_500, "USD", { price: "", startsOn: "2026-11-01", endsOn: "2026-11-30" }), "Enter a sale price.");
+  assert.equal(scheduledSale(2_500, "USD", { price: "  ", startsOn: "2026-11-01", endsOn: "2026-11-30" }), "Enter a sale price.");
+  assert.equal(scheduledSale(2_500, "USD", { price: "0.00", startsOn: "2026-11-01", endsOn: "2026-11-30" }), "Enter a sale price.");
+  assert.equal(scheduledSale(2_500, "USD", { price: "30.00", startsOn: "2026-11-01", endsOn: "2026-11-30" }), "A sale price is below the regular price.");
+  assert.equal(scheduledSale(2_500, "USD", { price: "20.00", startsOn: "2026-11-30", endsOn: "2026-11-01" }), "A sale ends before it starts.");
 });
 
 test("a digital listing carries no shipping", () => {

@@ -301,6 +301,43 @@ fn other_nodes_see_only_a_selling_store_and_its_own_images() {
 }
 
 #[test]
+fn a_scheduled_sale_is_signed_onto_the_listing_and_a_backwards_window_is_not() {
+    let (_dir, node) = seller();
+    let listing = open_store(&node);
+    node.fix_rates(&[("USD", 100_000.0)]);
+    let image = listing["images"][0].as_str().unwrap();
+    // 20.00 on a 25.00 price is 2,000 basis points, the sale the editor saves.
+    let sale = json!({ "offBps": 2_000, "startsOn": 20261101, "endsOn": 20261130 });
+    let mut body = mug(image);
+    body["title"] = json!("Sale mug");
+    body["currency"] = json!("USD");
+    body["price"] = json!(2_500);
+    body["shipping"] = json!(0);
+    body["commerce"] = json!({ "condition": "new", "sale": sale });
+    let (status, priced) = request(&node, "POST", "/store/listings", &body.to_string());
+    assert!(status.contains("200"), "{status} {priced}");
+    assert_eq!(priced["commerce"]["sale"], sale);
+    let bytes = crate::escrow_mail::unhex(priced["record"].as_str().unwrap()).unwrap();
+    let signed = openbazaar_protocol::Listing::decode(&bytes).unwrap();
+    signed.verify().unwrap();
+    assert_eq!(
+        signed.commerce.unwrap().pricing.sale,
+        Some(openbazaar_protocol::Sale { off_bps: 2_000, starts_on: 20261101, ends_on: 20261130 }),
+        "the signed listing carries the sale the editor saved"
+    );
+
+    body["commerce"]["sale"]["endsOn"] = json!(20261101);
+    body["commerce"]["sale"]["startsOn"] = json!(20261130);
+    let before = node.own_listings().entries.len();
+    let (status, refused) = request(&node, "POST", "/store/listings", &body.to_string());
+    assert!(status.contains("400"), "{status} {refused}");
+    assert!(refused["error"].as_str().unwrap_or("").contains("ends before it starts"), "{refused}");
+    assert_eq!(node.own_listings().entries.len(), before, "an invalid window is not signed");
+    let kept = &node.own_listings().entries[1].listing;
+    assert_eq!(kept.commerce.as_ref().unwrap().pricing.sale.unwrap().ends_on, 20261130);
+}
+
+#[test]
 fn uploads_must_be_images() {
     let (_dir, node) = seller();
     let (status, _) = upload(&node, b"<svg onload=alert(1)>");
