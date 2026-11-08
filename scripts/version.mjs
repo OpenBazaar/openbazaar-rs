@@ -30,16 +30,19 @@ const DESKTOP_LOCK = { path: "apps/desktop/src-tauri/Cargo.lock", packages: ["op
 const read = (root, path) => readFileSync(join(root, path), "utf8");
 
 function tomlSection(text, header) {
-  const start = text.indexOf(`\n[${header}]\n`);
-  if (start < 0) throw new Error(`[${header}] is missing`);
-  const body = start + header.length + 4;
+  const escaped = header.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = new RegExp(`(?:^|\\n)\\[${escaped}\\]\\r?\\n`).exec(text);
+  if (!match) throw new Error(`[${header}] is missing`);
+  const body = match.index + match[0].length;
   const next = text.slice(body).search(/^\[/m);
   return [body, next < 0 ? text.length : body + next];
 }
 
 function tomlVersion(text, header) {
   const [from, to] = tomlSection(text, header);
-  const match = /^version = "([^"]*)"$/m.exec(text.slice(from, to));
+  // Do not consume a trailing CR. A Windows checkout keeps CRLF, and the
+  // replacement must leave that CR in place.
+  const match = /^version = "([^"]*)"(?=\r?$)/m.exec(text.slice(from, to));
   if (!match) throw new Error(`[${header}] has no version`);
   return { value: match[1], at: from + match.index, length: match[0].length };
 }
@@ -52,7 +55,7 @@ function setTomlVersion(text, header, version) {
 /// Path packages (no `source` line) in a Cargo.lock, by name.
 function lockEntries(text, names) {
   const entries = [];
-  const block = /\[\[package\]\]\nname = "([^"]+)"\nversion = "([^"]*)"\n(source = )?/g;
+  const block = /\[\[package\]\]\r?\nname = "([^"]+)"\r?\nversion = "([^"]*)"\r?\n(source = )?/g;
   for (const match of text.matchAll(block)) {
     if (names.includes(match[1]) && !match[3]) entries.push({ name: match[1], value: match[2], match });
   }
@@ -60,9 +63,10 @@ function lockEntries(text, names) {
 }
 
 function setLockVersions(text, names, version) {
+  const nl = text.includes("\r\n") ? "\r\n" : "\n";
   let out = text;
   for (const { name, match } of lockEntries(text, names).reverse()) {
-    const replaced = `[[package]]\nname = "${name}"\nversion = "${version}"\n`;
+    const replaced = `[[package]]${nl}name = "${name}"${nl}version = "${version}"${nl}`;
     out = out.slice(0, match.index) + replaced + out.slice(match.index + match[0].length - (match[3] ?? "").length);
   }
   return out;
@@ -93,8 +97,8 @@ export function inheritingCrates(root) {
   if (!members) throw new Error("Cargo.toml has no workspace members");
   return [...members[1].matchAll(/"([^"]+)"/g)]
     .map(([, dir]) => read(root, join(dir, "Cargo.toml")))
-    .filter((manifest) => /^version\.workspace = true$/m.test(manifest))
-    .map((manifest) => /^name = "([^"]+)"$/m.exec(manifest)[1]);
+    .filter((manifest) => /^version\.workspace = true\r?$/m.test(manifest))
+    .map((manifest) => /^name = "([^"]+)"\r?$/m.exec(manifest)[1]);
 }
 
 export function getVersion(root) {
