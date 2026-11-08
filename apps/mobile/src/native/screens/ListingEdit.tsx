@@ -3,13 +3,14 @@ import { Alert, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 
 import { File } from "expo-file-system";
 
 import type { ListingHeader } from "../../catalog.ts";
+import { saleFieldsOf, scheduledSale, withSale } from "../../commerceDraft.ts";
 import { CONTENT_TAGS, MAX_LISTING_IMAGES, PRICE_CURRENCIES, deleteListing, draftOf, fromMinorUnits, saveListing, toMinorUnits, uploadImage, type ListingDraft, type PriceCurrency } from "../../seller.ts";
 import { isLocked, passphraseError, unlockWallet } from "../../walletLock.ts";
 import { sync } from "../session.ts";
 import { ListingPhoto } from "../ListingPhoto.tsx";
 import { Button, Card, NAVY, Notice, SOFT, ui } from "../ui.tsx";
 
-type Fields = Omit<ListingDraft, "price" | "shipping" | "stock"> & { price: string; shipping: string; stock: string };
+type Fields = Omit<ListingDraft, "price" | "shipping" | "stock"> & { price: string; shipping: string; stock: string; salePrice: string; saleStarts: string; saleEnds: string };
 
 const EMPTY: ListingDraft = {
   title: "",
@@ -29,11 +30,15 @@ const EMPTY: ListingDraft = {
 
 function fieldsOf(listing: ListingHeader | null): Fields {
   const draft = listing ? draftOf(listing) : EMPTY;
+  const sale = saleFieldsOf(draft.price, draft.commerce?.sale ?? null, draft.currency);
   return {
     ...draft,
     price: draft.price ? fromMinorUnits(draft.price, draft.currency) : "",
     shipping: draft.shipping ? fromMinorUnits(draft.shipping, draft.currency) : "",
     stock: String(draft.stock),
+    salePrice: sale.price,
+    saleStarts: sale.startsOn,
+    saleEnds: sale.endsOn,
   };
 }
 
@@ -47,6 +52,10 @@ function draftFrom(form: Fields): ListingDraft | string {
   if (shipping === null) return "Enter shipping as a plain amount, or leave it empty for free shipping.";
   if (!Number.isInteger(stock) || stock < 0 || stock > 1_000_000) return "Enter how many you have, from 0 to 1,000,000.";
   if (form.kind === "physical" && !form.shipFrom.trim()) return "Say where it ships from.";
+  const sale = scheduledSale(price, form.currency, { price: form.salePrice, startsOn: form.saleStarts, endsOn: form.saleEnds });
+  if (typeof sale === "string") return sale;
+  const commerce = withSale(form.commerce ?? null, sale);
+  if (commerce && form.currency === "SAT") return "Price a listing with options or shipping services in USD, EUR, GBP, or JPY.";
   return {
     title: form.title.trim(),
     description: form.description.trim(),
@@ -60,7 +69,7 @@ function draftFrom(form: Fields): ListingDraft | string {
     shipping,
     contentRating: form.contentRating,
     contentTags: form.contentTags,
-    commerce: form.commerce,
+    commerce,
   };
 }
 
@@ -198,6 +207,14 @@ export function ListingEdit({ listing, categories, onClose }: { listing: Listing
           ))}
         </View>
         <Field label={`Price (${unit})`} value={form.price} onChangeText={(price) => set("price", price)} keyboard="decimal-pad" />
+        {form.currency !== "SAT" ? (
+          <>
+            <Field label={`Sale price (${unit})`} value={form.salePrice} onChangeText={(salePrice) => set("salePrice", salePrice)} keyboard="decimal-pad" />
+            <Field label="Sale starts" value={form.saleStarts} onChangeText={(saleStarts) => set("saleStarts", saleStarts)} />
+            <Field label="Sale ends" value={form.saleEnds} onChangeText={(saleEnds) => set("saleEnds", saleEnds)} />
+            <Text style={ui.muted}>Leave these empty to sell at the regular price. Use days like 2026-11-01. Buyers pay the sale price on those days, and it is signed with the listing.</Text>
+          </>
+        ) : null}
         {form.kind === "physical" && !services ? <Field label={`Shipping (${unit})`} value={form.shipping} onChangeText={(shipping) => set("shipping", shipping)} keyboard="decimal-pad" /> : null}
         {services ? <Text style={ui.muted}>Shipping services stay as they are. This screen does not change them.</Text> : null}
         {form.kind === "physical" ? <Field label="Ships from" value={form.shipFrom} onChangeText={(shipFrom) => set("shipFrom", shipFrom)} /> : null}
