@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from "react";
-import { displayNameError, updateProfile, type ProfileChanges, type SellerProfile } from "../seller";
+import { displayNameError, setVacation, updateProfile, type ProfileChanges, type SellerProfile } from "../seller";
 import { PageHeading } from "./PageHeading";
 import { RailMark } from "./RailMark";
 import { ImageUpload, MediaImage, useLockedAction } from "./SellerKit";
@@ -37,6 +37,16 @@ export function StoreSetup({ profile, onSaved, onViewStore }: { profile: SellerP
   const set = <K extends keyof Fields>(key: K) => (value: Fields[K]) => setFields(f => ({ ...f, [key]: value }));
   const first = !profile.setUp;
   const nameError = displayNameError(fields.name);
+  async function pause(away: boolean) {
+    if (busy) return;
+    setBusy(true);
+    setError("");
+    await run(async () => {
+      const next = await setVacation(away);
+      onSaved(next, next.away ? "Your store is paused" : "Your store is taking orders again");
+    });
+    setBusy(false);
+  }
   async function save(e: FormEvent) {
     e.preventDefault();
     if (busy) return;
@@ -103,6 +113,11 @@ export function StoreSetup({ profile, onSaved, onViewStore }: { profile: SellerP
           <li className={profile.escrowAvailable ? "" : "is-off"}><strong>Moderated escrow</strong><span>{profile.escrowAvailable ? "Buyers can choose a moderator." : "Not available for your own store on this node yet. Orders are paid directly."}</span></li>
         </ul>
       </fieldset>
+      {profile.setUp ? <fieldset className="ob-store-section">
+        <legend>Vacation</legend>
+        <p className="ob-field-hint">Pause the store. Listings stay up with no stock, and new orders are refused. Buyers are not told where you are.</p>
+        <button type="button" className="ob-secondary" disabled={busy} onClick={() => void pause(!profile.away)}>{profile.away ? "End vacation" : "Pause the store"}</button>
+      </fieldset> : null}
       {error && <p className="ob-form-error" role="alert">{error}</p>}
       <div className="ob-form-actions">
         <button className="ob-primary" disabled={busy || nameError !== null}>{busy ? "Signing…" : first ? "Open my store" : "Save store"}</button>

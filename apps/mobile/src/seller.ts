@@ -32,6 +32,8 @@ export type SellerProfile = {
   published: boolean;
   /** The seller has saved the storefront at least once. */
   setUp: boolean;
+  /** The store is paused. Not a place, a date, or a note. */
+  away: boolean;
   unpublishedChanges: boolean;
   listingCount: number;
   network: string;
@@ -135,6 +137,7 @@ export function parseProfile(value: unknown): SellerProfile {
     escrowAvailable: p.escrowAvailable === true,
     published: p.published === true,
     setUp: p.setUp === true,
+    away: p.away === true,
     unpublishedChanges: p.unpublishedChanges === true,
     listingCount: count(p.listingCount),
     network: text(p.network),
@@ -260,6 +263,11 @@ export async function updateProfile(changes: ProfileChanges): Promise<SellerProf
 
 export async function setRole(role: Role): Promise<SellerProfile> {
   return parseProfile(await paired("/store/role", json("PUT", { role })));
+}
+
+/// Pause the store, or open it again. The body is only the flag: a note could say where the seller is.
+export async function setVacation(away: boolean): Promise<SellerProfile> {
+  return parseProfile(await paired("/store/vacation", json("PUT", { away })));
 }
 
 /// Upload one image; the node answers its SHA-256, which records name.

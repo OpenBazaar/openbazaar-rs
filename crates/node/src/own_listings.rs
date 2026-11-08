@@ -400,7 +400,13 @@ impl Node {
         }
         drop(own);
         self.sync_shelf(old.as_ref().map(|entry| &entry.listing), &listing);
-        self.serve_own_listing(listing.clone());
+        let listing = if self.on_vacation() && !crate::vacation::is_paused(&listing) {
+            self.note_vacation_availability(&listing)?;
+            self.publish_paused(&listing, &secret)?
+        } else {
+            self.serve_own_listing(listing.clone());
+            listing
+        };
         crate::listing_value(&self.catalog(), &listing).map_err(|err| StoreError::Failed(err.to_string()))
     }
 
