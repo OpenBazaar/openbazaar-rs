@@ -1421,6 +1421,11 @@ function PaymentBlock({
   if (escrow) {
     return (
       <View>
+        {escrow.moderatorFeeSats ? (
+          <Text style={styles.body}>
+            Moderator fee {formatNumber(escrow.moderatorFeeSats)} sats, paid from the escrow to the moderator key in the terms.
+          </Text>
+        ) : null}
         <Text style={styles.body}>Fund {formatBtc(escrow.fundingSats)}.</Text>
         <Text style={styles.body}>Timeout at block {formatNumber(escrow.timeoutHeight)}.</Text>
         <Text style={styles.body}>Two signatures are required.</Text>

@@ -327,6 +327,7 @@ impl Node {
             || terms.buyer_payout != payout.script_pubkey()
             || terms.funding_value != Amount::from_sat(number(escrow, "fundingSats")?)
             || terms.network_fee != Amount::from_sat(number(escrow, "spendFeeSats")?)
+            || terms.moderator.fee != Amount::from_sat(number(escrow, "moderatorFeeSats")?)
             || terms.moderator != ctx.moderator
         {
             return Err("the vendor's terms are not the ones this node asked for".into());
@@ -357,6 +358,7 @@ impl Node {
                 "terms": hex(&signed.encode()),
                 "address": address.to_string(),
                 "vendorPayout": vendor_payout.to_string(),
+                "moderatorFeeSats": terms.moderator.fee.to_sat(),
                 "disputeDeadline": terms.dispute_deadline,
                 "vendorClaimHeight": terms.vendor_claim_height,
                 "refundHeight": terms.refund_height,

@@ -378,3 +378,80 @@ fn protocol_dispute_envelope_carries_both_branches() {
     cheap.moderator_fee = 1;
     assert_eq!(case.check_envelope(&cheap), Err(Error::BadPayload));
 }
+
+/// The signed fee is paid to the moderator payout key already in the terms.
+/// A larger fee after the buyer signed, or a name or street on that fee, is refused.
+#[test]
+fn the_moderator_key_is_paid_the_signed_fee_and_a_larger_fee_or_a_name_is_refused() {
+    let order = order(ORDER_SECRET);
+    let buyer_sig = order.terms.sign(&order.buyer_secret).unwrap();
+    let vendor_sig = order.terms.sign(&order.vendor_secret).unwrap();
+    let mut larger = order.terms.clone();
+    larger.moderator.fee = MODERATOR_FEE + Amount::from_sat(1);
+    assert_eq!(
+        SignedTerms::new(larger, buyer_sig, vendor_sig).unwrap_err(),
+        Error::BadTermsSignature,
+        "a larger fee after the buyer signed is refused"
+    );
+
+    let (mut buyer, vendor) = funded();
+    let key = buyer.terms().moderator.payout.clone();
+    let signed_fee = buyer.terms().moderator.fee;
+    assert_eq!(signed_fee, MODERATOR_FEE);
+    assert!(key.is_p2tr(), "the fee is paid to the moderator key in the terms");
+
+    let ruling = rule(&buyer.dispute_letter(b"x").unwrap(), TIP).unwrap();
+    let settled = buyer.settle_dispute(&ruling).unwrap();
+    for tx in [&settled, vendor.claim().transaction()] {
+        let paid: Vec<_> = tx
+            .output
+            .iter()
+            .filter(|out| out.script_pubkey == key)
+            .collect();
+        assert_eq!(paid.len(), 1, "the moderator key is paid once");
+        assert_eq!(paid[0].value, signed_fee);
+        let script = paid[0].script_pubkey.as_bytes();
+        assert!(!script.windows(5).any(|window| window == b"Alice"));
+        assert!(!script.windows(8).any(|window| window == b"12 Cedar"));
+    }
+
+    let policy = crate::Policy::default();
+    for label in [*b"Alice\0\0\0", *b"12 Cedar"] {
+        let named = bitcoin::ScriptBuf::new_op_return(label);
+        assert_eq!(
+            moderator_keys()
+                .record(named, MODERATOR_FEE, policy)
+                .validate()
+                .unwrap_err(),
+            Error::NonStandardOutput,
+            "a name or street cannot receive the fee"
+        );
+    }
+
+    let clean = moderator_keys()
+        .sign_public_ruling(&ruling.to_bytes(), [2; 32], [3; 16])
+        .unwrap();
+    assert!(!clean.windows(5).any(|window| window == b"Alice"));
+    assert!(!clean.windows(8).any(|window| window == b"12 Cedar"));
+    let buyer_key = buyer.terms().buyer;
+    assert!(!clean
+        .windows(buyer_key.len())
+        .any(|window| window == buyer_key.as_slice()));
+
+    let mut name = [0u8; 16];
+    name[..5].copy_from_slice(b"Alice");
+    assert!(
+        moderator_keys()
+            .sign_public_ruling(&ruling.to_bytes(), [2; 32], name)
+            .is_err(),
+        "a name on the public record of the fee is refused"
+    );
+    let mut street = [0u8; 16];
+    street[..15].copy_from_slice(b"12 Cedar Street");
+    assert!(
+        moderator_keys()
+            .sign_public_ruling(&ruling.to_bytes(), [4; 32], street)
+            .is_err(),
+        "a street on the public record of the fee is refused"
+    );
+}
