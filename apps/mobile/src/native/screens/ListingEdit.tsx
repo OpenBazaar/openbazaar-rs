@@ -4,7 +4,7 @@ import { File } from "expo-file-system";
 
 import type { ListingHeader } from "../../catalog.ts";
 import { TAXONOMY, compareAtText, listingFacts, packageFieldsOf, priceTerms, purchaseFields, purchaseTerms, returnsDraft, saleFieldsOf, scheduledSale, shippingTerms, signedTaxonomy, specificRows, tierRows, volumeTiers, withFacts, withPackage, withPrice, withPurchase, withSale, withTaxonomy, withTiers, withVariantWeights, type AvailabilityDraft, type PackageInput, type ReturnsDraft, type SpecificRow, type TierRow } from "../../commerceDraft.ts";
-import { CONTENT_TAGS, MAX_LISTING_IMAGES, PRICE_CURRENCIES, deleteListing, draftOf, fromMinorUnits, saveListing, toMinorUnits, uploadImage, type ListingDraft, type PriceCurrency } from "../../seller.ts";
+import { CONTENT_TAGS, MAX_LISTING_IMAGES, PRICE_CURRENCIES, deleteDraft, deleteListing, draftOf, fromMinorUnits, saveDraft, saveListing, toMinorUnits, uploadImage, type ListingDraft, type PriceCurrency, type SavedDraft } from "../../seller.ts";
 import { isLocked, passphraseError, unlockWallet } from "../../walletLock.ts";
 import { sync } from "../session.ts";
 import { ListingPhoto } from "../ListingPhoto.tsx";
@@ -29,8 +29,8 @@ const EMPTY: ListingDraft = {
   commerce: null,
 };
 
-function fieldsOf(listing: ListingHeader | null): Fields {
-  const draft = listing ? draftOf(listing) : EMPTY;
+function fieldsOf(listing: ListingHeader | null, saved?: ListingDraft): Fields {
+  const draft = saved ?? (listing ? draftOf(listing) : EMPTY);
   const sale = saleFieldsOf(draft.price, draft.commerce?.sale ?? null, draft.currency);
   return {
     ...draft,
@@ -114,8 +114,9 @@ function draftFrom(form: Fields): ListingDraft | string {
   };
 }
 
-export function ListingEdit({ listing, categories, onClose }: { listing: ListingHeader | null; categories: string[]; onClose: () => void }) {
-  const [form, setForm] = useState<Fields>(() => fieldsOf(listing));
+export function ListingEdit({ listing, unpublished, categories, onClose }: { listing: ListingHeader | null; unpublished?: SavedDraft | null; categories: string[]; onClose: () => void }) {
+  const [form, setForm] = useState<Fields>(() => fieldsOf(listing, unpublished?.listing));
+  const [draftId, setDraftId] = useState(unpublished?.draftId ?? null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [needsUnlock, setNeedsUnlock] = useState(false);
@@ -124,13 +125,7 @@ export function ListingEdit({ listing, categories, onClose }: { listing: Listing
   const services = (form.commerce?.shipping.services.length ?? 0) > 0;
   const set = <K extends keyof Fields>(key: K, value: Fields[K]) => setForm((current) => ({ ...current, [key]: value }));
 
-  const persist = async (draft: ListingDraft) => {
-    await saveListing(listing?.listingId ?? null, draft);
-    await sync();
-    onClose();
-  };
-
-  const save = async () => {
+  const save = async (publish: boolean) => {
     const draft = draftFrom(form);
     if (typeof draft === "string") {
       setError(draft);
@@ -139,12 +134,21 @@ export function ListingEdit({ listing, categories, onClose }: { listing: Listing
     setBusy(true);
     setError(null);
     try {
-      if (needsUnlock) {
+      if (publish && needsUnlock) {
         await unlockWallet(passphrase);
         setPassphrase("");
         setNeedsUnlock(false);
       }
-      await persist(draft);
+      if (!publish) {
+        const saved = await saveDraft(draftId, draft);
+        setDraftId(saved.draftId);
+        onClose();
+        return;
+      }
+      await saveListing(listing?.listingId ?? null, draft);
+      if (draftId) await deleteDraft(draftId);
+      await sync();
+      onClose();
     } catch (err) {
       if (isLocked(err)) {
         setNeedsUnlock(true);
@@ -367,7 +371,8 @@ export function ListingEdit({ listing, categories, onClose }: { listing: Listing
           <Text style={ui.muted}>The node signs the listing with your store key. The passphrase stays on this request.</Text>
         </Card>
       ) : null}
-      <Button label={busy ? "Saving…" : listing ? "Save changes" : "Publish listing"} busy={busy} onPress={() => void save()} />
+      <Button label="Save draft" kind="plain" disabled={busy} onPress={() => void save(false)} />
+      <Button label={busy ? "Saving…" : listing ? "Save changes" : "Publish listing"} busy={busy} onPress={() => void save(true)} />
       <Button label="Cancel" kind="plain" disabled={busy} onPress={onClose} />
       {listing?.listingId ? <Button label="Delete listing" kind="danger" disabled={busy} onPress={remove} /> : null}
     </ScrollView>
