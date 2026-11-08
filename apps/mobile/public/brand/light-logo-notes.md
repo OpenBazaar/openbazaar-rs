@@ -1,0 +1,5 @@
+Light appearance companion for the approved marketplace logo. Generated with the built-in image tool from `ob-market-logo-256.png`; its alpha channel is preserved. Dark appearance and launcher assets retain the original artwork.
+
+Prompt:
+
+Use case: background-extraction / precise-object-edit. Edit target: the attached approved OpenBazaar blue marketplace stall logo. Make a LIGHT-THEME companion icon on a genuinely transparent background. Preserve the exact marketplace-tent silhouette, four scalloped awning sections, flagpole and flag, two posts and counter, perspective, centered square framing and generous existing margins (stall about 68 percent of canvas width). Remove only the navy background and exterior glow. Keep the rich cobalt/cyan faceted three-dimensional blue design, with crisp medium/deep blue edges and restrained shading that remain distinct against white or very pale blue. Make the currently white flag and pole medium blue so they remain legible on white. No background tile, container, circle, added shadow, text or new objects. The result must read clearly as the same brand at 42 pixels. Transparent RGBA output.

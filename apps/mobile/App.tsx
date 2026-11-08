@@ -73,7 +73,7 @@ type Route =
   | { name: "done"; receipt: CheckoutReceipt }
   | { name: "safety" };
 
-const NAVY = "#063853";
+const NAVY = "#0b1724";
 const BLUE = "#0e6da5";
 const INK = "#242424";
 const SECONDARY = "#4a4a4a";
@@ -438,7 +438,7 @@ function ShopApp() {
       {catalog && !loadError ? (
         <View style={styles.header}>
           <Pressable accessibilityRole="button" accessibilityLabel="OpenBazaar home" onPress={goShop} style={styles.brand}>
-            <Image source={require("./public/brand/ob-market-logo-256.png")} style={styles.mark} accessibilityLabel="OpenBazaar" />
+            <Image source={require("./public/brand/ob-market-logo-light.png")} style={styles.mark} accessibilityLabel="OpenBazaar" />
             <Text style={styles.wordmark}>OpenBazaar</Text>
           </Pressable>
           <SearchField
@@ -449,13 +449,6 @@ function ShopApp() {
             }}
           />
           <View style={styles.headerTools}>
-            <View style={styles.currencies}>
-              {CURRENCIES.map((code) => (
-                <Pressable key={code} accessibilityRole="button" accessibilityLabel={`Show prices in ${code}`} onPress={() => onCurrency(code)} style={[styles.currency, currency === code && styles.currencyOn]}>
-                  <Text style={[styles.currencyText, currency === code && styles.currencyTextOn]}>{code}</Text>
-                </Pressable>
-              ))}
-            </View>
             <IconCount label="Saved" icon="heart" filled={saved.length > 0} count={saved.length} onPress={() => { setMenu(false); setRoute({ name: "saved" }); }} />
             <IconCount label="Cart" icon="bag" count={cartCount} onPress={() => { setMenu(false); setRoute({ name: "cart" }); }} />
             <View>
@@ -468,6 +461,16 @@ function ShopApp() {
                   <TextButton label="Addresses" onPress={() => { setMenu(false); setRoute({ name: "addresses" }); }} />
                   <TextButton label="Orders" onPress={() => { setMenu(false); setRoute({ name: "orders" }); }} />
                   <TextButton label="Content filters" onPress={() => { setMenu(false); setRoute({ name: "safety" }); }} />
+                  <View style={styles.menuCurrency}>
+                    <Text style={styles.menuCurrencyLabel}>Display currency</Text>
+                    <View style={styles.currencies}>
+                      {CURRENCIES.map((code) => (
+                        <Pressable key={code} accessibilityRole="button" accessibilityLabel={`Show prices in ${code}`} onPress={() => onCurrency(code)} style={[styles.currency, currency === code && styles.currencyOn]}>
+                          <Text style={[styles.currencyText, currency === code && styles.currencyTextOn]}>{code}</Text>
+                        </Pressable>
+                      ))}
+                    </View>
+                  </View>
                 </View>
               ) : null}
             </View>
@@ -1545,7 +1548,7 @@ const styles = StyleSheet.create({
   search: { flexGrow: 1, flexBasis: 220, minHeight: 44, backgroundColor: SOFT, borderRadius: 8, paddingHorizontal: 12, fontFamily: SANS, fontSize: 16, color: INK },
   headerTools: { flexDirection: "row", alignItems: "center", gap: 8, marginLeft: "auto" },
   currencies: { flexDirection: "row", gap: 4 },
-  currency: { minHeight: 32, paddingHorizontal: 8, justifyContent: "center", borderRadius: 6 },
+  currency: { minWidth: 44, minHeight: 44, paddingHorizontal: 8, justifyContent: "center", borderRadius: 6 },
   currencyOn: { backgroundColor: SOFT },
   currencyText: { fontFamily: SANS, fontSize: 12, color: MUTED },
   currencyTextOn: { color: INK, fontWeight: "500" },
@@ -1554,6 +1557,8 @@ const styles = StyleSheet.create({
   iconCount: { fontFamily: SANS, fontSize: 13, color: INK },
   you: { minHeight: 36, paddingHorizontal: 8, justifyContent: "center" },
   youText: { fontFamily: SANS, fontSize: 14, color: INK },
+  menuCurrency: { marginTop: 10, paddingTop: 12, borderTopWidth: 1, borderTopColor: LINE, gap: 8 },
+  menuCurrencyLabel: { fontFamily: SANS, fontSize: 13, color: MUTED },
   menu: { position: "absolute", top: 36, right: 0, backgroundColor: CARD, borderWidth: 1, borderColor: LINE, borderRadius: 8, padding: 8, zIndex: 4, minWidth: 140 },
   browse: { flex: 1, flexDirection: "row" },
   rail: { width: 240, borderRightWidth: 1, borderRightColor: LINE, backgroundColor: CARD },

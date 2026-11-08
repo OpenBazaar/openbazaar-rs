@@ -74,7 +74,7 @@ function readCollapsed() { try { return localStorage.getItem("ob-sidebar-collaps
 function fiat(sats: number, rates: RateTable, currency: CurrencyCode) { const r = rates[currency]; return r ? new Intl.NumberFormat("en-US", { style: "currency", currency }).format(sats / 1e8 * r) : null; }
 function btc(sats: number) { return `${(sats / 1e8).toFixed(8).replace(/0+$/, "").replace(/\.$/, "")} BTC`; }
 export function Money({ sats, rates, currency, large = false }: { sats: number; rates: RateTable; currency: CurrencyCode; large?: boolean }) { const estimate = fiat(sats, rates, currency); return <div className={`ob-money ${large ? "ob-money-large" : ""}`}><span>{sats.toLocaleString("en-US")} <small>sats</small></span>{estimate && <span className="ob-estimate" title={`Estimated value in ${currency}`}>≈ {estimate}</span>}</div>; }
-function Brand() { return <span className="ob-brand"><span className="ob-brand-icon"><img src="brand/ob-market-logo-256.png" alt="" width={42} height={42}/></span><span>OpenBazaar<span className="ob-brand-dot">.</span></span></span>; }
+function Brand({ theme }: { theme: "light" | "dark" }) { return <span className="ob-brand"><span className="ob-brand-icon"><img src={theme === "light" ? "brand/ob-market-logo-light.png" : "brand/ob-market-logo-256.png"} alt="" width={42} height={42}/></span><span>OpenBazaar<span className="ob-brand-dot">.</span></span></span>; }
 
 type Section = "discover" | "saved" | "orders" | "bag" | "addresses" | "safety" | "wallet" | "store-labels" | "home-node" | "lightning" | "follows" | StoreSection;
 type StoreSection = "storefront" | "listings" | "sales" | "store";
@@ -127,7 +127,7 @@ export default function Marketplace() {
     return () => document.removeEventListener("pointerdown", dismiss);
   }, [settingsOpen]);
   async function load() { setLoading(true); setLoadError(""); try { setCatalog(await fetchCatalog()); } catch (e) { setLoadError(e instanceof Error ? e.message : "Your node could not be reached."); } finally { setLoading(false); } }
-  useEffect(() => { void load(); const link = document.createElement("link"); link.rel = "stylesheet"; link.href = "marketplace.css"; document.head.appendChild(link); const sellerCss = document.createElement("link"); sellerCss.rel = "stylesheet"; sellerCss.href = "seller.css"; document.head.appendChild(sellerCss); document.title = "OpenBazaar"; return () => { link.remove(); sellerCss.remove(); }; }, []);
+  useEffect(() => { void load(); document.title = "OpenBazaar"; }, []);
   useEffect(() => { let active = true; const pull = () => { void fetchRates().then(r => { if (active) setRates(r); }); }; pull(); const timer = setInterval(pull, 300000); return () => { active = false; clearInterval(timer); }; }, []);
   useEffect(() => { try { localStorage.setItem("ob-shop-saved", JSON.stringify(saved)); } catch {} }, [saved]);
   useEffect(() => { try { localStorage.setItem("ob-sidebar-width", String(sidebarWidth)); localStorage.setItem("ob-sidebar-collapsed", String(collapsed)); } catch {} }, [sidebarWidth, collapsed]);
@@ -142,7 +142,7 @@ export default function Marketplace() {
   useEffect(() => {
     if (!menu || !mobile) return;
     const previous = document.activeElement as HTMLElement | null;
-    const buttons = () => Array.from(sidebarRef.current?.querySelectorAll<HTMLButtonElement>('button:not([disabled])') ?? []).filter(b => b.offsetParent !== null);
+    const buttons = () => Array.from(sidebarRef.current?.querySelectorAll<HTMLElement>('button:not([disabled]), select:not([disabled])') ?? []).filter(b => b.offsetParent !== null);
     buttons()[0]?.focus();
     const trap = (e: KeyboardEvent) => { if (e.key !== "Tab") return; const items = buttons(); const first = items[0]; const last = items[items.length - 1]; if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last?.focus(); } else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first?.focus(); } };
     document.addEventListener("keydown", trap);
@@ -190,7 +190,7 @@ export default function Marketplace() {
     <aside ref={sidebarRef} className={`ob-sidebar ${menu ? "is-open" : ""} ${collapsed && !mobile ? "is-collapsed" : ""}`} aria-label="Main navigation" inert={(mobile && !menu)}>
       <button className="ob-sidebar-toggle" onClick={() => setCollapsed(c => !c)} aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"} title={collapsed ? "Expand sidebar" : "Collapse sidebar"}><Icon name="chevron"/></button>
       {mobile && <button className="ob-icon-button ob-drawer-close" aria-label="Close navigation" onClick={() => setMenu(false)}><Icon name="close" size={18}/></button>}
-      <div className="ob-sidebar-brand"><button className="ob-brand-button" onClick={() => navigate("discover")} aria-label="OpenBazaar home"><Brand/></button></div>
+      <div className="ob-sidebar-brand"><button className="ob-brand-button" onClick={() => navigate("discover")} aria-label="OpenBazaar home"><Brand theme={theme}/></button></div>
       <div className="ob-sidebar-scroll">
         <nav className="ob-main-nav" aria-label="Shopping">
           <NavItem icon="compass" active={navSection === "discover" && !category} onClick={() => navigate("discover")}>Products</NavItem>
@@ -221,6 +221,7 @@ export default function Marketplace() {
           <NavItem icon="bolt" active={section === "lightning"} onClick={() => navigate("lightning")}>Lightning</NavItem>
           <NavItem icon="globe" active={section === "follows"} onClick={() => navigate("follows")}>Followed stores</NavItem>
           {profile.data && (seller ? <NavItem icon="home" active={section === "store"} onClick={() => navigate("store")}>Store settings</NavItem> : <NavItem icon="home" active={false} onClick={() => void startSelling()}>Start selling</NavItem>)}
+          <div className="ob-settings-currency"><label className="ob-field">Display currency<select aria-label="Display currency" value={currency} onChange={e => { const c = e.target.value as CurrencyCode; setCurrency(c); try { localStorage.setItem("ob-shop-currency", c); } catch {} }}><option value="USD">USD · US dollar</option><option value="EUR">EUR · Euro</option><option value="GBP">GBP · British pound</option><option value="JPY">JPY · Japanese yen</option></select></label><p>Used for price estimates.</p></div>
         </nav>
         <div className="ob-node" title={loading ? "Connecting to your node" : loadError ? "Your node is offline" : "Your node is connected"}><span className={`ob-status-dot ${loadError ? "is-offline" : loading ? "is-loading" : ""}`}/><div><strong>{loading ? "Connecting to your node" : loadError ? "Your node is offline" : "Your node is connected"}</strong></div></div>
         <BuildLine build={build} onCopied={setToast}/>
@@ -231,7 +232,7 @@ export default function Marketplace() {
       <header className="ob-topbar">
         <button className="ob-icon-button ob-mobile-menu" aria-label="Open navigation" aria-expanded={menu} onClick={() => setMenu(true)}><Icon name="menu"/></button>
         <div className="ob-breadcrumb"><span>{inSettings ? "Settings" : inStore ? "Your store" : section === "wallet" || section === "orders" ? "Your activity" : "Marketplace"}</span><Icon name="chevron" size={12}/><strong>{page.name === "browse" ? activeTitle : page.name === "detail" ? page.listing.title : page.name === "checkout" ? "Checkout" : "Order details"}</strong></div>
-        <div className="ob-topbar-right"><button className="ob-theme-toggle" role="switch" aria-checked={theme === "dark"} aria-label="Dark mode" title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"} onClick={() => setTheme(t => t === "dark" ? "light" : "dark")}><Icon name={theme === "dark" ? "moon" : "sun"} size={17}/><span className="ob-theme-track"><span/></span></button><label className="ob-currency"><Icon name="globe" size={16}/><select aria-label="Display currency" value={currency} onChange={e => { const c = e.target.value as CurrencyCode; setCurrency(c); try { localStorage.setItem("ob-shop-currency", c); } catch {} }}>{["USD", "EUR", "GBP", "JPY"].map(c => <option key={c}>{c}</option>)}</select></label></div>
+        <div className="ob-topbar-right"><button className="ob-theme-toggle" role="switch" aria-checked={theme === "dark"} aria-label="Dark mode" title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"} onClick={() => setTheme(t => t === "dark" ? "light" : "dark")}><Icon name={theme === "dark" ? "moon" : "sun"} size={17}/><span className="ob-theme-track"><span/></span></button></div>
       </header>
       <HomeNodeBadge/>
       <NetworkBadge/>

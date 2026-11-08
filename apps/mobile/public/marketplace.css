@@ -3645,3 +3645,24 @@ svg {
 .ob-ln-reveals { margin: 0 0 12px; padding-left: 20px; display: grid; gap: 6px; font-size: 14px; line-height: 1.6; color: var(--ob-secondary); }
 .ob-settings-card .ob-spend-terms code { word-break: break-all; }
 @media(max-width:719px) { .ob-ln-open { grid-template-columns: 1fr; } }
+
+/* One centered axis for every control in the collapsed rail. */
+.ob-sidebar.is-collapsed { --ob-rail-inset: 12px; padding-inline: 0; }
+.ob-sidebar.is-collapsed .ob-sidebar-brand { padding-inline: var(--ob-rail-inset); }
+.ob-sidebar.is-collapsed .ob-brand-button { display: flex; justify-content: center; align-items: center; width: 100%; min-height: 44px; }
+.ob-sidebar.is-collapsed .ob-sidebar-scroll { padding-inline: var(--ob-rail-inset); scrollbar-width: none; }
+.ob-sidebar.is-collapsed .ob-sidebar-scroll::-webkit-scrollbar { display: none; width: 0; }
+.ob-sidebar.is-collapsed .ob-sidebar-utilities { padding-inline: var(--ob-rail-inset); }
+.ob-sidebar.is-collapsed .ob-sidebar-toggle { left: 50%; right: auto; transform: translateX(-50%); }
+.ob-sidebar.is-collapsed :is(.ob-main-nav,.ob-categories-nav,.ob-utility-nav)>.ob-nav-item,
+.ob-sidebar.is-collapsed .ob-settings-toggle { display: grid; place-items: center; grid-template-columns: 1fr; gap: 0; padding-inline: 0; }
+.ob-sidebar.is-collapsed .ob-node { width: 100%; gap: 0; justify-content: center; }
+
+/* Infrequently changed display preferences live with settings. */
+.ob-settings-nav { max-height: calc(100dvh - 72px); overflow-y: auto; }
+.ob-settings-currency { margin: 10px 2px 2px; padding: 16px 8px 8px; border-top: 1px solid var(--ob-line); }
+.ob-settings-currency .ob-field { font-size: 13px; gap: 8px; }
+.ob-settings-currency select { width: 100%; min-height: 44px; padding: 10px; font: inherit; font-size: 14px; background: var(--ob-paper); color: var(--ob-ink); border: 1px solid var(--ob-line); border-radius: 7px; }
+.ob-settings-currency p { font-size: 12px; line-height: 1.5; color: var(--ob-muted); margin-top: 9px; }
+@media(max-width:959px) { .ob-settings-nav { max-height: calc(100dvh - 100px); } }
+:root[data-ob-theme="light"] .ob-brand-icon { background: transparent; border-radius: 0; }
