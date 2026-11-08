@@ -3,7 +3,7 @@ import { Alert, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 
 import { File } from "expo-file-system";
 
 import type { ListingHeader } from "../../catalog.ts";
-import { compareAtText, listingFacts, packageFieldsOf, priceTerms, purchaseFields, purchaseTerms, returnsDraft, saleFieldsOf, scheduledSale, shippingTerms, specificRows, tierRows, volumeTiers, withFacts, withPackage, withPrice, withPurchase, withSale, withTiers, withVariantWeights, type AvailabilityDraft, type PackageInput, type ReturnsDraft, type SpecificRow, type TierRow } from "../../commerceDraft.ts";
+import { TAXONOMY, compareAtText, listingFacts, packageFieldsOf, priceTerms, purchaseFields, purchaseTerms, returnsDraft, saleFieldsOf, scheduledSale, shippingTerms, signedTaxonomy, specificRows, tierRows, volumeTiers, withFacts, withPackage, withPrice, withPurchase, withSale, withTaxonomy, withTiers, withVariantWeights, type AvailabilityDraft, type PackageInput, type ReturnsDraft, type SpecificRow, type TierRow } from "../../commerceDraft.ts";
 import { CONTENT_TAGS, MAX_LISTING_IMAGES, PRICE_CURRENCIES, deleteListing, draftOf, fromMinorUnits, saveListing, toMinorUnits, uploadImage, type ListingDraft, type PriceCurrency } from "../../seller.ts";
 import { isLocked, passphraseError, unlockWallet } from "../../walletLock.ts";
 import { sync } from "../session.ts";
@@ -11,7 +11,7 @@ import { ListingPhoto } from "../ListingPhoto.tsx";
 import { Button, Card, NAVY, Notice, SOFT, ui } from "../ui.tsx";
 
 type PackageFields = Omit<PackageInput, "regions">;
-type Fields = Omit<ListingDraft, "price" | "shipping" | "stock"> & PackageFields & { price: string; shipping: string; stock: string; salePrice: string; saleStarts: string; saleEnds: string; compareAt: string; acceptsOffers: boolean; lotSize: string; availability: AvailabilityDraft; tiers: TierRow[]; variantWeights: string[]; shipsTo: string[]; specifics: SpecificRow[]; returns: ReturnsDraft };
+type Fields = Omit<ListingDraft, "price" | "shipping" | "stock"> & PackageFields & { price: string; shipping: string; stock: string; salePrice: string; saleStarts: string; saleEnds: string; compareAt: string; acceptsOffers: boolean; lotSize: string; availability: AvailabilityDraft; tiers: TierRow[]; variantWeights: string[]; taxonomy: string; shipsTo: string[]; specifics: SpecificRow[]; returns: ReturnsDraft };
 
 const EMPTY: ListingDraft = {
   title: "",
@@ -47,6 +47,7 @@ function fieldsOf(listing: ListingHeader | null): Fields {
     availability: purchaseFields(draft.commerce).availability,
     tiers: tierRows(draft.price, draft.commerce?.tiers ?? [], draft.currency),
     variantWeights: draft.commerce?.variants.map(variant => (variant.weightG ? String(variant.weightG) : "")) ?? [],
+    taxonomy: String(draft.commerce?.taxonomy ?? 0),
     shipsTo: draft.commerce?.shipping.services.map(service => service.regions.join(", ")) ?? [],
     specifics: specificRows(draft.commerce?.specifics),
     returns: returnsDraft(draft.commerce?.returns),
@@ -92,6 +93,9 @@ function draftFrom(form: Fields): ListingDraft | string {
     if (typeof variants === "string") return variants;
     commerce = { ...commerce, variants };
   }
+  const taxonomy = signedTaxonomy(form.taxonomy);
+  if (typeof taxonomy === "string") return taxonomy;
+  commerce = withTaxonomy(commerce, taxonomy);
   if (commerce && form.currency === "SAT") return "Price a listing with options or shipping services in USD, EUR, GBP, or JPY.";
   return {
     title: form.title.trim(),
@@ -223,6 +227,18 @@ export function ListingEdit({ listing, categories, onClose }: { listing: Listing
         <Field label="Title" value={form.title} onChangeText={(title) => set("title", title)} />
         <Field label="Description" value={form.description} onChangeText={(description) => set("description", description)} multiline />
         <Field label="Category" value={form.category} onChangeText={(category) => set("category", category)} />
+        {form.currency !== "SAT" ? (
+          <>
+            <Text style={ui.muted}>Top-level category</Text>
+            <View style={styles.choices}>
+              <Chip label="Uncategorised" selected={form.taxonomy === "0"} onPress={() => set("taxonomy", "0")} />
+              {TAXONOMY.map((item) => (
+                <Chip key={item.id} label={item.name} selected={form.taxonomy === String(item.id)} onPress={() => set("taxonomy", String(item.id))} />
+              ))}
+            </View>
+            <Text style={ui.muted}>Stored on the listing. The category above stays as the subcategory.</Text>
+          </>
+        ) : null}
         {categories.length ? (
           <View style={styles.choices}>
             {categories.map((category) => (

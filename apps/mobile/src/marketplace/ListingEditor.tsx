@@ -2,11 +2,11 @@ import { useState, type FormEvent } from "react";
 import type { CurrencyCode, ListingHeader, RateTable } from "../catalog";
 import { CONTENT_TAGS, MAX_LISTING_IMAGES, PRICE_CURRENCIES, draftOf, formatPrice, fromMinorUnits, saveListing, toMinorUnits, type ListingDraft, type PriceCurrency } from "../seller";
 import { ImageUpload, MediaImage, useLockedAction } from "./SellerKit";
-import { axesProblem, compareAtText, emptyCommerce, listingFacts, packageFieldsOf, priceTerms, purchaseFields, purchaseTerms, returnsDraft, rowsOf, saleFieldsOf, scheduledSale, shippingTerms, specificRows, tierRows, volumeTiers, withFacts, withPackage, withPrice, withPurchase, withSale, withTiers, withVariantWeights, type AvailabilityDraft, type PackageInput, type ReturnsDraft, type SpecificRow, type TierRow } from "../commerceDraft";
+import { TAXONOMY, axesProblem, compareAtText, emptyCommerce, listingFacts, packageFieldsOf, priceTerms, purchaseFields, purchaseTerms, returnsDraft, rowsOf, saleFieldsOf, scheduledSale, shippingTerms, signedTaxonomy, specificRows, tierRows, volumeTiers, withFacts, withPackage, withPrice, withPurchase, withSale, withTaxonomy, withTiers, withVariantWeights, type AvailabilityDraft, type PackageInput, type ReturnsDraft, type SpecificRow, type TierRow } from "../commerceDraft";
 import { CommerceFields } from "./CommerceFields";
 
 type PackageFields = Omit<PackageInput, "regions">;
-type Form = Omit<ListingDraft, "price" | "shipping" | "stock"> & PackageFields & { price: string; shipping: string; stock: string; salePrice: string; saleStarts: string; saleEnds: string; compareAt: string; acceptsOffers: boolean; lotSize: string; availability: AvailabilityDraft; tiers: TierRow[]; variantWeights: string[]; specifics: SpecificRow[]; returns: ReturnsDraft };
+type Form = Omit<ListingDraft, "price" | "shipping" | "stock"> & PackageFields & { price: string; shipping: string; stock: string; salePrice: string; saleStarts: string; saleEnds: string; compareAt: string; acceptsOffers: boolean; lotSize: string; availability: AvailabilityDraft; tiers: TierRow[]; variantWeights: string[]; taxonomy: string; specifics: SpecificRow[]; returns: ReturnsDraft };
 
 const EMPTY: ListingDraft = { title: "", description: "", category: "", kind: "physical", shipFrom: "", stock: 1, images: [], currency: "USD", price: 0, shipping: 0, contentRating: "general", contentTags: [] };
 
@@ -14,7 +14,7 @@ function formOf(draft: ListingDraft): Form {
   const sale = saleFieldsOf(draft.price, draft.commerce?.sale ?? null, draft.currency);
   const purchase = purchaseFields(draft.commerce);
   const rows = draft.commerce ? rowsOf(draft.commerce) : [];
-  return { ...draft, ...packageFieldsOf(draft.commerce?.shipping, draft.currency), specifics: specificRows(draft.commerce?.specifics), returns: returnsDraft(draft.commerce?.returns), price: draft.price ? fromMinorUnits(draft.price, draft.currency) : "", shipping: draft.shipping ? fromMinorUnits(draft.shipping, draft.currency) : "", stock: String(draft.stock), salePrice: sale.price, saleStarts: sale.startsOn, saleEnds: sale.endsOn, compareAt: compareAtText(draft.commerce?.compareAt ?? 0, draft.currency), acceptsOffers: draft.commerce?.acceptsOffers ?? false, lotSize: purchase.lotSize, availability: purchase.availability, tiers: tierRows(draft.price, draft.commerce?.tiers ?? [], draft.currency), variantWeights: rows.map(row => row.weightG ? String(row.weightG) : "") };
+  return { ...draft, ...packageFieldsOf(draft.commerce?.shipping, draft.currency), specifics: specificRows(draft.commerce?.specifics), returns: returnsDraft(draft.commerce?.returns), price: draft.price ? fromMinorUnits(draft.price, draft.currency) : "", shipping: draft.shipping ? fromMinorUnits(draft.shipping, draft.currency) : "", stock: String(draft.stock), salePrice: sale.price, saleStarts: sale.startsOn, saleEnds: sale.endsOn, compareAt: compareAtText(draft.commerce?.compareAt ?? 0, draft.currency), acceptsOffers: draft.commerce?.acceptsOffers ?? false, lotSize: purchase.lotSize, availability: purchase.availability, tiers: tierRows(draft.price, draft.commerce?.tiers ?? [], draft.currency), variantWeights: rows.map(row => row.weightG ? String(row.weightG) : ""), taxonomy: String(draft.commerce?.taxonomy ?? 0) };
 }
 
 /// The draft the node takes, or what to fix first.
@@ -61,13 +61,16 @@ function draftFrom(form: Form): ListingDraft | string {
     if (typeof variants === "string") return variants;
     commerce = { ...commerce, variants };
   }
+  const taxonomy = signedTaxonomy(form.taxonomy);
+  if (typeof taxonomy === "string") return taxonomy;
+  commerce = withTaxonomy(commerce, taxonomy);
   if (commerce && form.currency === "SAT") return "Price a listing with options or shipping services in USD, EUR, GBP, or JPY.";
   if (commerce) {
     const problem = axesProblem(commerce.axes, rowsOf(commerce));
     if (problem) return problem;
     if (commerce.shipping.services.some(s => !s.name.trim() || s.daysMin > s.daysMax)) return "Name each shipping service and give its delivery days, fastest first.";
   }
-  const { salePrice: _salePrice, saleStarts: _saleStarts, saleEnds: _saleEnds, compareAt: _compareAt, acceptsOffers: _acceptsOffers, lotSize: _lotSize, availability: _availability, tiers: _tiers, variantWeights: _variantWeights, weightG: _weightG, lengthMm: _lengthMm, widthMm: _widthMm, heightMm: _heightMm, handlingDays: _handlingDays, freeOver: _freeOver, specifics: _specifics, returns: _returns, ...rest } = form;
+  const { salePrice: _salePrice, saleStarts: _saleStarts, saleEnds: _saleEnds, compareAt: _compareAt, acceptsOffers: _acceptsOffers, lotSize: _lotSize, availability: _availability, tiers: _tiers, variantWeights: _variantWeights, taxonomy: _taxonomy, weightG: _weightG, lengthMm: _lengthMm, widthMm: _widthMm, heightMm: _heightMm, handlingDays: _handlingDays, freeOver: _freeOver, specifics: _specifics, returns: _returns, ...rest } = form;
   return { ...rest, price, shipping, stock, commerce };
 }
 
@@ -122,6 +125,7 @@ export function ListingEditor({ listing, categories, rates, onSaved, onCancel }:
         <label className="ob-field ob-field-wide"><span>Title</span><input value={form.title} maxLength={120} onChange={e => set("title", e.target.value)}/></label>
         <label className="ob-field ob-field-wide"><span>Description</span><textarea value={form.description} maxLength={5000} onChange={e => set("description", e.target.value)}/></label>
         <label className="ob-field"><span>Category</span><input list="ob-listing-categories" value={form.category} maxLength={40} placeholder="Home" onChange={e => set("category", e.target.value)}/><datalist id="ob-listing-categories">{categories.map(c => <option key={c} value={c}/>)}</datalist></label>
+        {form.currency !== "SAT" && <label className="ob-field"><span>Top-level category</span><select value={form.taxonomy} onChange={e => set("taxonomy", e.target.value)}><option value="0">Uncategorised</option>{TAXONOMY.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select><small className="ob-field-hint">Stored on the listing. The category above stays as the subcategory.</small></label>}
         <div className="ob-field" role="radiogroup" aria-label="Type of good"><span>Type of good</span><div className="ob-kind-choice">
           {(["physical", "digital"] as const).map(kind => <label key={kind} className={form.kind === kind ? "is-selected" : ""}><input type="radio" name="kind" checked={form.kind === kind} onChange={() => set("kind", kind)}/>{kind === "physical" ? "Physical item" : "Digital good"}</label>)}
         </div></div>

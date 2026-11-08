@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { axesProblem, combinations, compareAtText, defaultService, emptyCommerce, forKind, listingFacts, packageFieldsOf, parseValues, priceTerms, purchaseFields, purchaseTerms, returnsDraft, rowsOf, saleFieldsOf, scheduledSale, shippingTerms, signedWeight, specificRows, syncRows, tierRows, volumeTiers, withFacts, withPackage, withPrice, withPurchase, withRows, withSale, withTiers, withVariantWeights } from "./commerceDraft.ts";
+import { axesProblem, combinations, compareAtText, defaultService, emptyCommerce, forKind, listingFacts, packageFieldsOf, parseValues, priceTerms, purchaseFields, purchaseTerms, returnsDraft, rowsOf, saleFieldsOf, scheduledSale, shippingTerms, signedTaxonomy, signedWeight, specificRows, syncRows, tierRows, volumeTiers, withFacts, withPackage, withPrice, withPurchase, withRows, withSale, withTaxonomy, withTiers, withVariantWeights } from "./commerceDraft.ts";
 
 const size = { name: "Size", values: ["S", "M"] };
 const color = { name: "Color", values: ["Navy", "Sand"] };
@@ -138,6 +138,17 @@ test("the per-variant weight and volume tiers the editor saves are signed onto t
   assert.equal(volumeTiers(2_500, "USD", [{ qty: "1", price: "20.00" }]), "A volume tier starts at 2 and takes 0.01% to 90% off.");
   assert.equal(volumeTiers(2_500, "USD", [{ qty: "5", price: "20.00" }, { qty: "3", price: "15.00" }]), "Volume tiers rise in quantity and discount.");
   assert.equal(withTiers(null, []), null);
+});
+
+test("the taxonomy the editor saves is signed onto the listing, and an invalid taxonomy is refused", () => {
+  assert.equal(signedTaxonomy("3"), 3);
+  const commerce = withTaxonomy(null, 3);
+  assert.equal(commerce?.taxonomy, 3);
+  assert.equal(signedTaxonomy(""), 0);
+  assert.equal(signedTaxonomy("0"), 0);
+  assert.equal(withTaxonomy(null, 0), null);
+  assert.equal(signedTaxonomy("65536"), "The category number must be a whole number up to 65535.");
+  assert.equal(signedTaxonomy("clothing"), "The category number must be a whole number up to 65535.");
 });
 
 test("a digital listing carries no shipping", () => {
