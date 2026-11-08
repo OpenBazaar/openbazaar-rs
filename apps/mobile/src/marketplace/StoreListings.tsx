@@ -1,6 +1,6 @@
 import { useState } from "react";
 import type { CurrencyCode, ListingHeader, RateTable } from "../catalog";
-import { deleteListing, fetchOwnListings, formatPrice, type SellerProfile } from "../seller";
+import { deleteListing, fetchDrafts, fetchOwnListings, formatPrice, type SavedDraft, type SellerProfile } from "../seller";
 import { useNodeResource } from "../useNodeResource";
 import { ListingEditor } from "./ListingEditor";
 import { Empty, Money } from "./Marketplace";
@@ -10,7 +10,8 @@ import { MediaImage, useLockedAction } from "./SellerKit";
 /** The seller's own listings: add, edit, and remove. Each change is signed by the node. */
 export function StoreListings({ profile, rates, currency, startNew = false, onChanged }: { profile: SellerProfile; rates: RateTable; currency: CurrencyCode; startNew?: boolean; onChanged: (message: string) => void }) {
   const resource = useNodeResource(() => fetchOwnListings(profile.storeKey), 0);
-  const [editing, setEditing] = useState<ListingHeader | "new" | null>(startNew && profile.setUp ? "new" : null);
+  const drafts = useNodeResource(() => fetchDrafts(), 0);
+  const [editing, setEditing] = useState<ListingHeader | "new" | SavedDraft | null>(startNew && profile.setUp ? "new" : null);
   const [confirm, setConfirm] = useState<string | null>(null);
   const [error, setError] = useState("");
   const { run, dialog } = useLockedAction(setError);
@@ -18,6 +19,7 @@ export function StoreListings({ profile, rates, currency, startNew = false, onCh
   async function changed(message: string) {
     setEditing(null);
     await resource.refresh();
+    await drafts.refresh();
     onChanged(message);
   }
   async function remove(listing: ListingHeader) {
@@ -30,9 +32,11 @@ export function StoreListings({ profile, rates, currency, startNew = false, onCh
       await changed("Listing removed");
     });
   }
+  const savedDraft = editing && editing !== "new" && "draftId" in editing ? editing : null;
+  const published = editing && editing !== "new" && !("draftId" in editing) ? editing : null;
   if (editing) return <section className="ob-store-listings">
-    <PageHeading title={editing === "new" ? "New listing" : `Edit ${editing.title}`} description="Your node signs the listing and serves it to buyers, including when you edit it later."/>
-    <ListingEditor listing={editing === "new" ? null : editing} categories={[...new Set(listings.map(l => l.category))]} rates={rates} onSaved={message => void changed(message)} onCancel={() => setEditing(null)}/>
+    <PageHeading title={editing === "new" ? "New listing" : savedDraft ? `Draft ${savedDraft.listing.title || "listing"}` : `Edit ${published?.title ?? "listing"}`} description="Save a draft to keep it on this node. Publish signs it and serves it to buyers."/>
+    <ListingEditor listing={published} savedDraft={savedDraft} categories={[...new Set(listings.map(l => l.category))]} rates={rates} onSaved={message => void changed(message)} onCancel={() => setEditing(null)}/>
   </section>;
   return <section className="ob-store-listings">
     <PageHeading title="Your listings" description={profile.setUp ? `What ${profile.name} sells. Buyers see each listing as your node signed it.` : "Set up your store first, then add what you sell."} action={<button className="ob-primary" disabled={!profile.setUp} onClick={() => setEditing("new")}>New listing</button>}/>
@@ -52,6 +56,15 @@ export function StoreListings({ profile, rates, currency, startNew = false, onCh
           <button className="ob-secondary" onClick={() => setEditing(listing)} aria-label={`Edit ${listing.title}`}>Edit</button>
           <button className="ob-text-link" onClick={() => setConfirm(listing.hash)} aria-label={`Remove ${listing.title}`}>Remove</button>
         </>}
+      </span>
+    </li>)}</ul>}
+    {(drafts.data ?? []).length > 0 && <ul className="ob-own-listings">{(drafts.data ?? []).map(draft => <li key={draft.draftId} className="ob-own-listing">
+      <span className="ob-own-listing-copy">
+        <strong>{draft.listing.title || "Untitled draft"}</strong>
+        <span>Draft · not published</span>
+      </span>
+      <span className="ob-own-listing-actions">
+        <button className="ob-secondary" onClick={() => setEditing(draft)} aria-label={`Edit draft ${draft.listing.title || "listing"}`}>Edit draft</button>
       </span>
     </li>)}</ul>}
     {dialog}

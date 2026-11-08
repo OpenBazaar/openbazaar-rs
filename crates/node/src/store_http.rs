@@ -6,6 +6,8 @@
 //! - `PUT /store/vacation`: `{"away": true|false}`. Pauses the store. No note.
 //! - `GET /store/listings`, `POST /store/listings`: the own store's listings.
 //! - `PUT /store/listings/{id}`, `DELETE /store/listings/{id}`: by stable id.
+//! - `GET /store/drafts`, `POST /store/drafts`: unpublished listings. Not signed.
+//! - `PUT /store/drafts/{id}`, `DELETE /store/drafts/{id}`: by draft id.
 //! - `POST /media`: one image as the raw body; answers its SHA-256.
 
 use serde_json::{json, Value};
@@ -55,10 +57,17 @@ pub(crate) fn response(
     origin: Option<&str>,
 ) -> Option<Vec<u8>> {
     let listing_id = path.strip_prefix("/store/listings/");
+    let draft_id = path.strip_prefix("/store/drafts/");
     let known = matches!(
         (method, path),
-        ("GET" | "PUT", "/store/profile") | ("PUT", "/store/role") | ("PUT", "/store/vacation") | ("GET" | "POST", "/store/listings") | ("POST", "/media")
-    ) || (listing_id.is_some() && matches!(method, "PUT" | "DELETE"));
+        ("GET" | "PUT", "/store/profile")
+            | ("PUT", "/store/role")
+            | ("PUT", "/store/vacation")
+            | ("GET" | "POST", "/store/listings")
+            | ("GET" | "POST", "/store/drafts")
+            | ("POST", "/media")
+    ) || (listing_id.is_some() && matches!(method, "PUT" | "DELETE"))
+        || (draft_id.is_some() && matches!(method, "PUT" | "DELETE"));
     if !known {
         return None;
     }
@@ -78,6 +87,14 @@ pub(crate) fn response(
         ),
         ("GET", "/store/listings") => result(node.own_listings_value(), origin),
         ("POST", "/store/listings") => result(read_json(body).and_then(|value| node.create_own_listing(&value)), origin),
+        ("GET", "/store/drafts") => result(node.listing_drafts_value(), origin),
+        ("POST", "/store/drafts") => result(read_json(body).and_then(|value| node.save_listing_draft(None, &value)), origin),
+        ("PUT", path) if path.starts_with("/store/drafts/") => {
+            result(read_json(body).and_then(|value| node.save_listing_draft(draft_id, &value)), origin)
+        }
+        ("DELETE", path) if path.starts_with("/store/drafts/") => {
+            result(node.delete_listing_draft(draft_id.unwrap_or_default()).map(|()| json!({ "deleted": true })), origin)
+        }
         ("POST", "/media") => upload(node, body, origin),
         ("PUT", _) => {
             let id = listing_id.unwrap_or_default();

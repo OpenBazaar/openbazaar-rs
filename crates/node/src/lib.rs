@@ -47,6 +47,7 @@ mod http_parse;
 mod instructions;
 mod labelers;
 mod letter_auth;
+mod listing_drafts;
 mod live_stock;
 mod mail_drop;
 mod media;
@@ -267,6 +268,8 @@ pub struct Node {
     pub(crate) own_pending: AtomicBool,
     /// The listings the own store signed, current and superseded.
     pub(crate) own_listings: Mutex<own_listings::OwnListings>,
+    /// Listings the seller has not published. Not signed and not in the catalog.
+    pub(crate) listing_drafts: Mutex<listing_drafts::ListingDrafts>,
     /// Stores followed on other nodes, as signed copies.
     pub(crate) replicas: Mutex<replicas::Replicas>,
     /// Sales to buyers on other nodes.
@@ -412,6 +415,7 @@ impl Node {
             own_store,
             own_pending: AtomicBool::new(own.pending),
             own_listings: Mutex::new(own_listings),
+            listing_drafts: Mutex::new(listing_drafts::ListingDrafts::open(&dir, vault.clone())?),
             replicas: Mutex::new(replicas),
             sales: Mutex::new(sales::Sales::open(&dir, vault.clone())?),
             stock: Mutex::new(stock::StockLedger::open(&dir, vault.clone())?),

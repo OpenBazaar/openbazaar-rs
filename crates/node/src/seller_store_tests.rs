@@ -594,6 +594,52 @@ fn taxonomy_is_signed_onto_the_listing_and_an_invalid_taxonomy_is_not() {
 }
 
 #[test]
+fn a_draft_is_not_in_the_public_catalog() {
+    let (_dir, node) = seller();
+    let listing = open_store(&node);
+    let image = listing["images"][0].as_str().unwrap();
+    let mut body = mug(image);
+    body["title"] = json!("Draft mug");
+    let (status, saved) = request(&node, "POST", "/store/drafts", &body.to_string());
+    assert!(status.contains("200"), "{status} {saved}");
+    assert!(saved["draftId"].as_str().is_some());
+    assert!(saved.get("record").is_none(), "a draft is not signed");
+    assert_eq!(saved["listing"]["title"], "Draft mug");
+    let (_, catalog) = request(&node, "GET", "/catalog", "");
+    assert!(!catalog["listings"].as_array().unwrap().iter().any(|item| item["title"] == "Draft mug"), "a draft is not in the public catalog");
+    let (_, own) = request(&node, "GET", "/store/listings", "");
+    assert!(!own["listings"].as_array().unwrap().iter().any(|item| item["title"] == "Draft mug"));
+}
+
+#[test]
+fn publishing_a_draft_puts_the_signed_listing_in_the_catalog() {
+    let (_dir, node) = seller();
+    let listing = open_store(&node);
+    let image = listing["images"][0].as_str().unwrap();
+    let mut body = mug(image);
+    body["title"] = json!("Draft mug");
+    let (status, saved) = request(&node, "POST", "/store/drafts", &body.to_string());
+    assert!(status.contains("200"), "{status} {saved}");
+    let before = request(&node, "GET", "/catalog", "").1["listings"].as_array().unwrap().len();
+
+    let mut invalid = body.clone();
+    invalid["title"] = json!("");
+    let (status, refused) = request(&node, "POST", "/store/listings", &invalid.to_string());
+    assert!(status.contains("400"), "{status} {refused}");
+    let (_, catalog) = request(&node, "GET", "/catalog", "");
+    assert_eq!(catalog["listings"].as_array().unwrap().len(), before, "an invalid listing is not signed into the catalog");
+
+    let (status, priced) = request(&node, "POST", "/store/listings", &saved["listing"].to_string());
+    assert!(status.contains("200"), "{status} {priced}");
+    assert!(priced["record"].as_str().is_some(), "publishing signs the listing");
+    let (_, catalog) = request(&node, "GET", "/catalog", "");
+    assert!(catalog["listings"].as_array().unwrap().iter().any(|item| item["title"] == "Draft mug" && item["hash"] == priced["hash"]), "publishing puts the signed listing in the catalog");
+    let _ = request(&node, "DELETE", &format!("/store/drafts/{}", saved["draftId"].as_str().unwrap()), "");
+    let (_, drafts) = request(&node, "GET", "/store/drafts", "");
+    assert!(drafts["drafts"].as_array().unwrap().is_empty());
+}
+
+#[test]
 fn uploads_must_be_images() {
     let (_dir, node) = seller();
     let (status, _) = upload(&node, b"<svg onload=alert(1)>");

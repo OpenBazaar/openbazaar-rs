@@ -1,9 +1,9 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 
 import { parseCatalog, type ContentRating, type ListingHeader, type ShopCatalog } from "../../catalog.ts";
 import { collectionValue } from "../../homeNode/replica.ts";
-import { displayNameError, updateProfile } from "../../seller.ts";
+import { displayNameError, fetchDrafts, updateProfile, type SavedDraft } from "../../seller.ts";
 import { isLocked, passphraseError, unlockWallet } from "../../walletLock.ts";
 import { ListingPhoto } from "../ListingPhoto.tsx";
 import { dismissRefused, queueEdit, sync, useSession } from "../session.ts";
@@ -105,13 +105,20 @@ function DisplayName({ saved }: { saved: string }) {
 export function StoreScreen({ onRefresh }: { onRefresh: () => void }) {
   const session = useSession();
   const { catalog, error } = useCatalog();
-  const [editing, setEditing] = useState<ListingHeader | null | "new">(null);
+  const [editing, setEditing] = useState<ListingHeader | SavedDraft | null | "new">(null);
+  const [drafts, setDrafts] = useState<SavedDraft[]>([]);
   const queuedTargets = new Set([...session.queue.pending, ...(session.queue.inFlight?.requests ?? [])].map(m => (m.body as { target?: string } | undefined)?.target));
   const collection = session.replica.collections.catalog;
   const own = catalog?.stores.find((store) => store.own);
+  useEffect(() => {
+    if (!own || editing !== null) return;
+    void fetchDrafts().then(setDrafts).catch(() => setDrafts([]));
+  }, [own, editing]);
   const categories = [...new Set(catalog?.listings.map((listing) => listing.category) ?? [])];
   if (editing !== null) {
-    return <ListingEdit listing={editing === "new" ? null : editing} categories={categories} onClose={() => setEditing(null)} />;
+    const unpublished = editing !== "new" && "draftId" in editing ? editing : null;
+    const published = editing !== "new" && !("draftId" in editing) ? editing : null;
+    return <ListingEdit listing={published} unpublished={unpublished} categories={categories} onClose={() => setEditing(null)} />;
   }
   return (
     <ScrollView contentContainerStyle={ui.screen}>
@@ -139,6 +146,14 @@ export function StoreScreen({ onRefresh }: { onRefresh: () => void }) {
             {catalog.rejected ? <Row label="Failed signature check" value={String(catalog.rejected)} /> : null}
             {collection?.error ? <Row label="Last sync" value={`failed (${collection.error.code})`} /> : null}
           </Card>
+          {drafts.length ? (
+            <Card title="Drafts">
+              <Text style={ui.muted}>Saved on this node. Buyers do not see them until you publish.</Text>
+              {drafts.map((draft) => (
+                <Button key={draft.draftId} label={draft.listing.title || "Untitled draft"} kind="plain" onPress={() => setEditing(draft)} />
+              ))}
+            </Card>
+          ) : null}
           <Card title="Listings">
             {own ? <Button label="New listing" onPress={() => setEditing("new")} /> : <Text style={ui.muted}>This node has no storefront yet. Set the store up in the web shop, then you can add listings here.</Text>}
             {catalog.listings.length === 0 ? <Text style={ui.muted}>No listings yet.</Text> : null}

@@ -5,6 +5,7 @@ import { paired, pairedResponse, type BuyerOrder, type ContentRating, type Listi
 import { verifiedListings } from "./records.ts";
 import type { Commerce } from "./commerce.ts";
 import { forKind } from "./commerceDraft.ts";
+import { draftPath } from "./listingDraft.ts";
 
 export type Role = "buyer" | "seller";
 
@@ -285,6 +286,33 @@ export async function fetchOwnListings(storeKey: string): Promise<ListingHeader[
 export async function saveListing(id: string | null, draft: ListingDraft): Promise<void> {
   const body = draft.kind === "digital" ? { ...draft, shipFrom: "", shipping: 0, commerce: draft.commerce ? forKind(draft.commerce, "digital") : null } : draft;
   await paired(id ? `/store/listings/${id}` : "/store/listings", json(id ? "PUT" : "POST", body));
+}
+
+export type SavedDraft = { draftId: string; listing: ListingDraft };
+
+export { draftPath };
+
+function parseDraft(value: unknown): SavedDraft {
+  const row = record(value);
+  const draftId = typeof row.draftId === "string" ? row.draftId : "";
+  const listing = row.listing;
+  if (!draftId || !listing || typeof listing !== "object") throw new Error("The draft could not be read.");
+  return { draftId, listing: listing as ListingDraft };
+}
+
+export async function fetchDrafts(): Promise<SavedDraft[]> {
+  const items = record(await paired("/store/drafts")).drafts;
+  return (Array.isArray(items) ? items : []).map(parseDraft);
+}
+
+/// Keep the listing on the node without signing it or serving it to buyers.
+export async function saveDraft(id: string | null, draft: ListingDraft): Promise<SavedDraft> {
+  const body = draft.kind === "digital" ? { ...draft, shipFrom: "", shipping: 0, commerce: draft.commerce ? forKind(draft.commerce, "digital") : null } : draft;
+  return parseDraft(await paired(draftPath(id), json(id ? "PUT" : "POST", body)));
+}
+
+export async function deleteDraft(id: string): Promise<void> {
+  await paired(`/store/drafts/${id}`, { method: "DELETE" });
 }
 
 export async function deleteListing(id: string): Promise<void> {

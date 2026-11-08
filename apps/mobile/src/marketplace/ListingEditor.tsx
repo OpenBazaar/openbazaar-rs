@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from "react";
 import type { CurrencyCode, ListingHeader, RateTable } from "../catalog";
-import { CONTENT_TAGS, MAX_LISTING_IMAGES, PRICE_CURRENCIES, draftOf, formatPrice, fromMinorUnits, saveListing, toMinorUnits, type ListingDraft, type PriceCurrency } from "../seller";
+import { CONTENT_TAGS, MAX_LISTING_IMAGES, PRICE_CURRENCIES, deleteDraft, draftOf, formatPrice, fromMinorUnits, saveDraft, saveListing, toMinorUnits, type ListingDraft, type PriceCurrency, type SavedDraft } from "../seller";
 import { ImageUpload, MediaImage, useLockedAction } from "./SellerKit";
 import { TAXONOMY, axesProblem, compareAtText, emptyCommerce, listingFacts, packageFieldsOf, priceTerms, purchaseFields, purchaseTerms, returnsDraft, rowsOf, saleFieldsOf, scheduledSale, shippingTerms, signedTaxonomy, specificRows, tierRows, volumeTiers, withFacts, withPackage, withPrice, withPurchase, withSale, withTaxonomy, withTiers, withVariantWeights, type AvailabilityDraft, type PackageInput, type ReturnsDraft, type SpecificRow, type TierRow } from "../commerceDraft";
 import { CommerceFields } from "./CommerceFields";
@@ -83,8 +83,9 @@ function satsHint(amount: number | null, currency: PriceCurrency, rates: RateTab
   return `≈ ${Math.round((major / rate) * 1e8).toLocaleString("en-US")} sats today`;
 }
 
-export function ListingEditor({ listing, categories, rates, onSaved, onCancel }: { listing: ListingHeader | null; categories: string[]; rates: RateTable; onSaved: (message: string) => void; onCancel: () => void }) {
-  const [form, setForm] = useState<Form>(() => formOf(listing ? draftOf(listing) : EMPTY));
+export function ListingEditor({ listing, savedDraft, categories, rates, onSaved, onCancel }: { listing: ListingHeader | null; savedDraft?: SavedDraft | null; categories: string[]; rates: RateTable; onSaved: (message: string) => void; onCancel: () => void }) {
+  const [form, setForm] = useState<Form>(() => formOf(savedDraft?.listing ?? (listing ? draftOf(listing) : EMPTY)));
+  const [draftId, setDraftId] = useState(savedDraft?.draftId ?? null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const { run, dialog } = useLockedAction(setError);
@@ -92,6 +93,7 @@ export function ListingEditor({ listing, categories, rates, onSaved, onCancel }:
   async function save(e: FormEvent) {
     e.preventDefault();
     if (busy) return;
+    const publish = (e.nativeEvent as SubmitEvent).submitter?.getAttribute("data-action") !== "draft";
     const draft = draftFrom(form);
     if (typeof draft === "string") {
       setError(draft);
@@ -100,7 +102,14 @@ export function ListingEditor({ listing, categories, rates, onSaved, onCancel }:
     setBusy(true);
     setError("");
     await run(async () => {
+      if (!publish) {
+        const saved = await saveDraft(draftId, draft);
+        setDraftId(saved.draftId);
+        onSaved("Draft saved");
+        return;
+      }
       await saveListing(listing?.listingId ?? null, draft);
+      if (draftId) await deleteDraft(draftId);
       onSaved(listing ? "Listing updated and signed" : "Listing published");
     });
     setBusy(false);
@@ -177,7 +186,8 @@ export function ListingEditor({ listing, categories, rates, onSaved, onCancel }:
     {error && <p className="ob-form-error" role="alert">{error}</p>}
     <div className="ob-form-actions">
       <button type="button" className="ob-secondary" onClick={onCancel}>Cancel</button>
-      <button className="ob-primary" disabled={busy}>{busy ? "Signing…" : listing ? "Save changes" : "Publish listing"}</button>
+      <button type="submit" data-action="draft" className="ob-secondary" disabled={busy}>Save draft</button>
+      <button type="submit" data-action="publish" className="ob-primary" disabled={busy}>{busy ? "Saving…" : listing ? "Save changes" : "Publish listing"}</button>
     </div>
     {dialog}
   </form>;
