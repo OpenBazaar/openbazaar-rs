@@ -53,7 +53,7 @@
 .ob-axis-row { display: grid; grid-template-columns: minmax(140px, 1fr) minmax(220px, 2.4fr) auto; gap: 12px; align-items: end; }
 .ob-add-axis { justify-self: start; }
 .ob-variant-grid { border: 1px solid var(--ob-line); border-radius: 10px; overflow: hidden; }
-.ob-variant-head,.ob-variant-row { display: grid; grid-template-columns: 52px minmax(120px, 1.4fr) minmax(90px, 1fr) minmax(90px, .9fr) minmax(70px, .6fr) minmax(96px, .8fr); gap: 10px; align-items: center; padding: 8px 12px; }
+.ob-variant-head,.ob-variant-row { display: grid; grid-template-columns: 52px minmax(120px, 1.4fr) minmax(90px, 1fr) minmax(90px, .9fr) minmax(70px, .6fr) minmax(80px, .7fr) minmax(96px, .8fr); gap: 10px; align-items: center; padding: 8px 12px; }
 .ob-variant-head { background: var(--ob-subtle); font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .5px; color: var(--ob-muted); }
 .ob-variant-row { border-top: 1px solid var(--ob-line); font-size: 14px; color: var(--ob-ink); }
 .ob-variant-row input:not([type="checkbox"]),.ob-variant-row select { width: 100%; min-height: 34px; padding: 0 9px; border: 1px solid var(--ob-line); border-radius: 6px; background: var(--ob-surface); color: var(--ob-ink); font: inherit; font-size: 13px; box-sizing: border-box; }

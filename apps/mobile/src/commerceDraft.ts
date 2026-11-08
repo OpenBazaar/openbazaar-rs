@@ -6,15 +6,15 @@
 // "not offered"). Existing rows keep their id, so orders placed against an
 // earlier version still find their variant after an edit.
 
-import type { Availability, Axis, Commerce, Returns, Sale, Service, Variant } from "./commerce.ts";
+import type { Availability, Axis, Commerce, Returns, Sale, Service, Tier, Variant } from "./commerce.ts";
 import { fromMinor, toMinor } from "./pricing.ts";
 
 export const MAX_AXES = 3;
 export const MAX_VALUES = 16;
 export const MAX_VARIANTS = 100;
 
-/// A grid row: a variant, and whether the seller offers it.
-export type VariantRow = Variant & { offered: boolean };
+/// A grid row: a variant, whether the seller offers it, and the weight typed for it.
+export type VariantRow = Variant & { offered: boolean; weight?: string };
 
 export function emptyCommerce(): Commerce {
   return {
@@ -41,7 +41,7 @@ export function syncRows(axes: Axis[], rows: VariantRow[]): VariantRow[] {
   const byKey = new Map(rows.map(row => [keyOf(row.options), row]));
   return combinations(axes).map(options => {
     const existing = byKey.get(keyOf(options));
-    return existing ? { ...existing, options } : { id: "", options, sku: "", price: 0, stock: 0, image: 0, weightG: 0, offered: true };
+    return existing ? { ...existing, options, weight: existing.weight ?? (existing.weightG ? String(existing.weightG) : "") } : { id: "", options, sku: "", price: 0, stock: 0, image: 0, weightG: 0, weight: "", offered: true };
   });
 }
 
@@ -78,7 +78,7 @@ export function axesProblem(axes: Axis[], rows: VariantRow[]): string | null {
 /// The commerce object the node signs: offered rows only, without the
 /// editor's bookkeeping, and new rows without an id.
 export function withRows(commerce: Commerce, axes: Axis[], rows: VariantRow[]): Commerce {
-  const variants = axes.length ? rows.filter(r => r.offered).map(({ offered: _, ...variant }) => variant) : [];
+  const variants = axes.length ? rows.filter(r => r.offered).map(({ offered: _offered, weight: _weight, ...variant }) => variant) : [];
   return { ...commerce, axes: axes.length ? axes : [], variants };
 }
 
@@ -142,6 +142,75 @@ export function scheduledSale(regular: number, currency: string, fields: SaleFie
 export function withSale(commerce: Commerce | null, sale: Sale | null): Commerce | null {
   if (!commerce && !sale) return null;
   return { ...(commerce ?? emptyCommerce()), sale };
+}
+
+export type TierRow = { qty: string; price: string };
+
+const MAX_WEIGHT = 0xffff_ffff;
+
+/// Grams the record stores. Empty means the package weight. Anything else must fit in a u32.
+export function signedWeight(text: string): number | string {
+  const trimmed = text.trim();
+  if (!trimmed) return 0;
+  if (!/^\d+$/.test(trimmed)) return "Variant weight is a whole number of grams.";
+  const value = Number(trimmed);
+  if (!Number.isSafeInteger(value) || value > MAX_WEIGHT) return "Variant weight is a whole number of grams.";
+  return value;
+}
+
+/// Put a typed weight on each variant the listing signs.
+export function withVariantWeights(variants: Variant[], weights: string[]): Variant[] | string {
+  const next: Variant[] = [];
+  for (let i = 0; i < variants.length; i += 1) {
+    const weightG = signedWeight(weights[i] ?? "");
+    if (typeof weightG === "string") return weightG;
+    next.push({ ...variants[i], weightG });
+  }
+  return next;
+}
+
+/// Tier rows to show. The record stores a discount; the editor shows the price buyers pay.
+export function tierRows(regular: number, tiers: Tier[], currency: string): TierRow[] {
+  if (!tiers.length || regular <= 0) return [{ qty: "", price: "" }];
+  return tiers.map(tier => ({ qty: String(tier.minQty), price: fromMinor(regular - discountOf(regular, tier.offBps), currency) }));
+}
+
+/// The volume tiers the listing signs. A fully blank row is left off. A half-filled row is empty.
+export function volumeTiers(regular: number, currency: string, rows: TierRow[]): Tier[] | string {
+  const tiers: Tier[] = [];
+  for (const row of rows) {
+    const qtyText = row.qty.trim();
+    const priceText = row.price.trim();
+    if (!qtyText && !priceText) continue;
+    if (!qtyText || !priceText) return "A volume tier is empty.";
+    if (!/^\d+$/.test(qtyText)) return "A volume tier starts at 2 and takes 0.01% to 90% off.";
+    const minQty = Number(qtyText);
+    const amount = toMinor(priceText, currency);
+    if (amount == null || amount <= 0) return "A volume tier is empty.";
+    if (amount >= regular) return "A volume tier price is below the regular price.";
+    if (minQty < 2 || minQty > 65_535) return "A volume tier starts at 2 and takes 0.01% to 90% off.";
+    const discount = regular - amount;
+    let offBps: number | null = null;
+    for (let bps = 1; bps <= 9_000; bps += 1) {
+      if (discountOf(regular, bps) === discount) {
+        offBps = bps;
+        break;
+      }
+    }
+    if (offBps == null) return "A volume tier starts at 2 and takes 0.01% to 90% off.";
+    tiers.push({ minQty, offBps });
+  }
+  if (tiers.length > 4) return "A listing has at most 4 volume tiers.";
+  for (let i = 1; i < tiers.length; i += 1) {
+    if (tiers[i].minQty <= tiers[i - 1].minQty || tiers[i].offBps <= tiers[i - 1].offBps) return "Volume tiers rise in quantity and discount.";
+  }
+  return tiers;
+}
+
+/// Put volume tiers on the commerce block the existing sign path already accepts.
+export function withTiers(commerce: Commerce | null, tiers: Tier[]): Commerce | null {
+  if (!commerce && tiers.length === 0) return null;
+  return { ...(commerce ?? emptyCommerce()), tiers };
 }
 
 export type PriceTerms = { compareAt: number; acceptsOffers: boolean };

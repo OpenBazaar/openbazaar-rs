@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { axesProblem, combinations, compareAtText, defaultService, emptyCommerce, forKind, listingFacts, packageFieldsOf, parseValues, priceTerms, purchaseFields, purchaseTerms, returnsDraft, rowsOf, saleFieldsOf, scheduledSale, shippingTerms, specificRows, syncRows, withFacts, withPackage, withPrice, withPurchase, withRows, withSale } from "./commerceDraft.ts";
+import { axesProblem, combinations, compareAtText, defaultService, emptyCommerce, forKind, listingFacts, packageFieldsOf, parseValues, priceTerms, purchaseFields, purchaseTerms, returnsDraft, rowsOf, saleFieldsOf, scheduledSale, shippingTerms, signedWeight, specificRows, syncRows, tierRows, volumeTiers, withFacts, withPackage, withPrice, withPurchase, withRows, withSale, withTiers, withVariantWeights } from "./commerceDraft.ts";
 
 const size = { name: "Size", values: ["S", "M"] };
 const color = { name: "Color", values: ["Navy", "Sand"] };
@@ -113,6 +113,31 @@ test("the availability and lot size the editor saves are signed onto the listing
   assert.equal(purchaseTerms("1", { kind: "pre-order", shipsOn: "2026-13-01", days: "" }), "The pre-order ship date must be a date written YYYYMMDD.");
   assert.deepEqual(purchaseTerms("", { kind: "in-stock", shipsOn: "", days: "" }), { lotSize: 1, availability: { kind: "in-stock" } });
   assert.equal(withPurchase(null, { lotSize: 1, availability: { kind: "in-stock" } }), null);
+});
+
+test("the per-variant weight and volume tiers the editor saves are signed onto the listing, and an invalid value is refused", () => {
+  const variant = { id: "", options: ["Mug"], sku: "", price: 0, stock: 2, image: 0, weightG: 0 };
+  assert.equal(signedWeight("220"), 220);
+  const weighted = withVariantWeights([variant], ["220"]);
+  if (typeof weighted === "string") throw new Error("the weight was refused");
+  assert.equal(weighted[0].weightG, 220);
+  const saved = volumeTiers(2_500, "USD", [{ qty: "3", price: "20.00" }, { qty: "", price: "" }]);
+  assert.deepEqual(saved, [{ minQty: 3, offBps: 2_000 }]);
+  if (typeof saved === "string") throw new Error("the tiers were refused");
+  const commerce = withTiers(null, saved);
+  assert.deepEqual(commerce?.tiers, saved);
+  assert.equal(commerce?.variants.length, 0);
+  const withWeight = commerce ? { ...commerce, variants: weighted } : null;
+  assert.equal(withWeight?.variants[0].weightG, 220);
+  assert.deepEqual(tierRows(2_500, saved, "USD"), [{ qty: "3", price: "20.00" }]);
+  assert.equal(signedWeight("4294967296"), "Variant weight is a whole number of grams.");
+  assert.equal(signedWeight("1.5"), "Variant weight is a whole number of grams.");
+  assert.equal(volumeTiers(2_500, "USD", [{ qty: "3", price: "" }]), "A volume tier is empty.");
+  assert.equal(volumeTiers(2_500, "USD", [{ qty: "", price: "20.00" }]), "A volume tier is empty.");
+  assert.equal(volumeTiers(2_500, "USD", [{ qty: "3", price: "25.00" }]), "A volume tier price is below the regular price.");
+  assert.equal(volumeTiers(2_500, "USD", [{ qty: "1", price: "20.00" }]), "A volume tier starts at 2 and takes 0.01% to 90% off.");
+  assert.equal(volumeTiers(2_500, "USD", [{ qty: "5", price: "20.00" }, { qty: "3", price: "15.00" }]), "Volume tiers rise in quantity and discount.");
+  assert.equal(withTiers(null, []), null);
 });
 
 test("a digital listing carries no shipping", () => {

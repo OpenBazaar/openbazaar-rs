@@ -517,6 +517,52 @@ fn availability_and_lot_size_are_signed_onto_the_listing_and_an_invalid_value_is
 }
 
 #[test]
+fn variant_weight_and_volume_tiers_are_signed_onto_the_listing_and_an_invalid_value_is_not() {
+    let (_dir, node) = seller();
+    let listing = open_store(&node);
+    node.fix_rates(&[("USD", 100_000.0)]);
+    let image = listing["images"][0].as_str().unwrap();
+    // 220 g on the variant, and 3 for 20.00 on a 25.00 price, the terms the editor saves.
+    let mut body = mug(image);
+    body["title"] = json!("Tiered mug");
+    body["currency"] = json!("USD");
+    body["price"] = json!(2_500);
+    body["shipping"] = json!(0);
+    body["commerce"] = json!({
+        "condition": "new",
+        "axes": [{ "name": "Size", "values": ["Mug"] }],
+        "variants": [{ "options": ["Mug"], "price": 0, "stock": 2, "weightG": 220 }],
+        "tiers": [{ "minQty": 3, "offBps": 2_000 }]
+    });
+    let (status, priced) = request(&node, "POST", "/store/listings", &body.to_string());
+    assert!(status.contains("200"), "{status} {priced}");
+    assert_eq!(priced["commerce"]["variants"][0]["weightG"], 220);
+    assert_eq!(priced["commerce"]["tiers"], json!([{ "minQty": 3, "offBps": 2_000 }]));
+    let bytes = crate::escrow_mail::unhex(priced["record"].as_str().unwrap()).unwrap();
+    let signed = openbazaar_protocol::Listing::decode(&bytes).unwrap();
+    signed.verify().unwrap();
+    let commerce = signed.commerce.unwrap();
+    assert_eq!(commerce.variants.variants[0].weight_g, 220);
+    assert_eq!(commerce.pricing.tiers, vec![openbazaar_protocol::Tier { min_qty: 3, off_bps: 2_000 }], "the signed listing carries the weight and volume tier the editor saved");
+
+    let before = node.own_listings().entries.len();
+    body["commerce"]["variants"][0]["weightG"] = json!(4_294_967_296u64);
+    let (status, refused) = request(&node, "POST", "/store/listings", &body.to_string());
+    assert!(status.contains("400"), "{status} {refused}");
+    assert!(refused["error"].as_str().unwrap_or("").contains("variant weight"), "{refused}");
+    body["commerce"]["variants"][0]["weightG"] = json!(220);
+    body["commerce"]["tiers"] = json!([{ "minQty": 1, "offBps": 2_000 }]);
+    let (status, refused) = request(&node, "POST", "/store/listings", &body.to_string());
+    assert!(status.contains("400"), "{status} {refused}");
+    assert!(refused["error"].as_str().unwrap_or("").contains("starts at 2"), "{refused}");
+    let kept = node.own_listings();
+    assert_eq!(kept.entries.len(), before, "an invalid weight or volume tier is not signed");
+    let commerce = kept.entries[1].listing.commerce.as_ref().unwrap();
+    assert_eq!(commerce.variants.variants[0].weight_g, 220);
+    assert_eq!(commerce.pricing.tiers, vec![openbazaar_protocol::Tier { min_qty: 3, off_bps: 2_000 }]);
+}
+
+#[test]
 fn uploads_must_be_images() {
     let (_dir, node) = seller();
     let (status, _) = upload(&node, b"<svg onload=alert(1)>");
