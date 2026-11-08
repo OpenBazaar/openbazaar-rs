@@ -213,6 +213,40 @@ export function withTiers(commerce: Commerce | null, tiers: Tier[]): Commerce | 
   return { ...(commerce ?? emptyCommerce()), tiers };
 }
 
+/// Top-level categories a signed listing stores by number. Zero is uncategorised.
+/// These are the record's numbers; they are not a separate category tree.
+export const TAXONOMY: readonly { id: number; name: string }[] = [
+  { id: 1, name: "Books" },
+  { id: 2, name: "Art and collectibles" },
+  { id: 3, name: "Clothing and shoes" },
+  { id: 4, name: "Electronics" },
+  { id: 5, name: "Home and kitchen" },
+  { id: 6, name: "Toys and games" },
+  { id: 7, name: "Sports and outdoors" },
+  { id: 8, name: "Health and beauty" },
+  { id: 9, name: "Jewelry and accessories" },
+  { id: 10, name: "Music and media" },
+  { id: 11, name: "Tools and supplies" },
+  { id: 12, name: "Digital goods" },
+  { id: 13, name: "Food and drink" },
+  { id: 14, name: "Vehicles and parts" },
+  { id: 15, name: "Other" },
+];
+
+/// The taxonomy id the listing signs. Empty is uncategorised. The record stores a u16.
+export function signedTaxonomy(value: string): number | string {
+  const text = value.trim();
+  if (!text) return 0;
+  if (!/^\d+$/.test(text) || Number(text) > 65_535) return "The category number must be a whole number up to 65535.";
+  return Number(text);
+}
+
+/// Put the taxonomy id on the commerce block the existing sign path already accepts.
+export function withTaxonomy(commerce: Commerce | null, taxonomy: number): Commerce | null {
+  if (!commerce && taxonomy === 0) return null;
+  return { ...(commerce ?? emptyCommerce()), taxonomy };
+}
+
 export type PriceTerms = { compareAt: number; acceptsOffers: boolean };
 
 /// The compare-at price to show. Zero on the record means the field is empty.

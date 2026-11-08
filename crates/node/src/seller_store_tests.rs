@@ -563,6 +563,37 @@ fn variant_weight_and_volume_tiers_are_signed_onto_the_listing_and_an_invalid_va
 }
 
 #[test]
+fn taxonomy_is_signed_onto_the_listing_and_an_invalid_taxonomy_is_not() {
+    let (_dir, node) = seller();
+    let listing = open_store(&node);
+    node.fix_rates(&[("USD", 100_000.0)]);
+    let image = listing["images"][0].as_str().unwrap();
+    // Clothing and shoes, the category number the editor saves.
+    let mut body = mug(image);
+    body["title"] = json!("Classed mug");
+    body["currency"] = json!("USD");
+    body["price"] = json!(2_500);
+    body["shipping"] = json!(0);
+    body["commerce"] = json!({ "condition": "new", "taxonomy": 3 });
+    let (status, priced) = request(&node, "POST", "/store/listings", &body.to_string());
+    assert!(status.contains("200"), "{status} {priced}");
+    assert_eq!(priced["commerce"]["taxonomy"], 3);
+    let bytes = crate::escrow_mail::unhex(priced["record"].as_str().unwrap()).unwrap();
+    let signed = openbazaar_protocol::Listing::decode(&bytes).unwrap();
+    signed.verify().unwrap();
+    assert_eq!(signed.commerce.unwrap().taxonomy, 3, "the signed listing carries the taxonomy the editor saved");
+
+    let before = node.own_listings().entries.len();
+    body["commerce"]["taxonomy"] = json!(65_536);
+    let (status, refused) = request(&node, "POST", "/store/listings", &body.to_string());
+    assert!(status.contains("400"), "{status} {refused}");
+    assert!(refused["error"].as_str().unwrap_or("").contains("65535"), "{refused}");
+    let kept = node.own_listings();
+    assert_eq!(kept.entries.len(), before, "an invalid taxonomy is not signed");
+    assert_eq!(kept.entries[1].listing.commerce.as_ref().unwrap().taxonomy, 3);
+}
+
+#[test]
 fn uploads_must_be_images() {
     let (_dir, node) = seller();
     let (status, _) = upload(&node, b"<svg onload=alert(1)>");
