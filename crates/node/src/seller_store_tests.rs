@@ -388,6 +388,48 @@ fn a_package_is_signed_onto_the_listing_and_an_invalid_handling_time_is_not() {
 }
 
 #[test]
+fn specifics_and_returns_are_signed_onto_the_listing_and_an_invalid_value_is_not() {
+    let (_dir, node) = seller();
+    let listing = open_store(&node);
+    node.fix_rates(&[("USD", 100_000.0)]);
+    let image = listing["images"][0].as_str().unwrap();
+    let mut body = mug(image);
+    body["title"] = json!("Labeled mug");
+    body["currency"] = json!("USD");
+    body["price"] = json!(2_500);
+    body["shipping"] = json!(0);
+    body["commerce"] = json!({
+        "condition": "new",
+        "specifics": { "Brand": "Marlow", "upc": "036000291452" },
+        "returns": { "kind": "days", "days": 30, "sellerPays": true }
+    });
+    let (status, priced) = request(&node, "POST", "/store/listings", &body.to_string());
+    assert!(status.contains("200"), "{status} {priced}");
+    assert_eq!(priced["commerce"]["specifics"]["brand"], "Marlow");
+    assert_eq!(priced["commerce"]["specifics"]["upc"], "036000291452");
+    assert_eq!(priced["commerce"]["returns"], json!({ "kind": "days", "days": 30, "sellerPays": true }));
+    let bytes = crate::escrow_mail::unhex(priced["record"].as_str().unwrap()).unwrap();
+    let signed = openbazaar_protocol::Listing::decode(&bytes).unwrap();
+    signed.verify().unwrap();
+    let commerce = signed.commerce.unwrap();
+    assert_eq!(commerce.specifics, vec![("brand".into(), "Marlow".into()), ("upc".into(), "036000291452".into())]);
+    assert_eq!(commerce.returns, openbazaar_protocol::Returns::Days { days: 30, seller_pays: true }, "the signed listing carries the specifics and returns the editor saved");
+
+    let before = node.own_listings().entries.len();
+    body["commerce"]["returns"]["days"] = json!(0);
+    let (status, refused) = request(&node, "POST", "/store/listings", &body.to_string());
+    assert!(status.contains("400"), "{status} {refused}");
+    assert!(refused["error"].as_str().unwrap_or("").contains("365"), "{refused}");
+    body["commerce"]["returns"]["days"] = json!(30);
+    body["commerce"]["specifics"]["upc"] = json!("036000291453");
+    let (status, refused) = request(&node, "POST", "/store/listings", &body.to_string());
+    assert!(status.contains("400"), "{status} {refused}");
+    assert!(refused["error"].as_str().unwrap_or("").contains("check digit"), "{refused}");
+    assert_eq!(node.own_listings().entries.len(), before, "an invalid specific or returns window is not signed");
+    assert_eq!(node.own_listings().entries[1].listing.commerce.as_ref().unwrap().returns, openbazaar_protocol::Returns::Days { days: 30, seller_pays: true });
+}
+
+#[test]
 fn uploads_must_be_images() {
     let (_dir, node) = seller();
     let (status, _) = upload(&node, b"<svg onload=alert(1)>");

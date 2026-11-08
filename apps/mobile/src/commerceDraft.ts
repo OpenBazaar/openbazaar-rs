@@ -6,7 +6,7 @@
 // "not offered"). Existing rows keep their id, so orders placed against an
 // earlier version still find their variant after an edit.
 
-import type { Axis, Commerce, Sale, Service, Variant } from "./commerce.ts";
+import type { Axis, Commerce, Returns, Sale, Service, Variant } from "./commerce.ts";
 import { fromMinor, toMinor } from "./pricing.ts";
 
 export const MAX_AXES = 3;
@@ -227,6 +227,92 @@ export function withPackage(commerce: Commerce | null, terms: PackageTerms): Com
   const base = commerce ?? emptyCommerce();
   const services = base.shipping.services.map((service, index) => ({ ...service, regions: terms.regions[index] ?? [] }));
   return { ...base, shipping: { ...base.shipping, weightG: terms.weightG, dimsMm: terms.dimsMm, handlingDays: terms.handlingDays, freeOver: terms.freeOver, services } };
+}
+
+export type SpecificRow = { key: string; value: string };
+export type ReturnsDraft = { kind: "store" | "none" | "days"; days: string; sellerPays: boolean };
+export type ListingFacts = { specifics: Record<string, string>; returns: Returns };
+
+const CODE_LENGTHS: Record<string, readonly number[]> = { upc: [12], ean: [8, 13], isbn: [13], gtin: [8, 12, 13, 14] };
+
+function bytes(text: string): number {
+  return new TextEncoder().encode(text).length;
+}
+
+function specificKey(text: string): string {
+  return text.trim().toLowerCase().replaceAll(" ", "-").replaceAll("_", "-");
+}
+
+function gtinCheck(digits: string): boolean {
+  const values = [...digits].map(digit => digit.charCodeAt(0) - 48);
+  const check = values.pop() ?? -1;
+  let sum = 0;
+  for (let i = values.length - 1, weight = 3; i >= 0; i -= 1, weight = weight === 3 ? 1 : 3) sum += values[i] * weight;
+  return (10 - (sum % 10)) % 10 === check;
+}
+
+function isbn10(value: string): boolean {
+  let sum = 0;
+  for (let i = 0; i < value.length; i += 1) {
+    const byte = value.charCodeAt(i);
+    const digit = byte >= 48 && byte <= 57 ? byte - 48 : byte === 88 && i === 9 ? 10 : -1;
+    if (digit < 0) return false;
+    sum += digit * (10 - i);
+  }
+  return sum % 11 === 0;
+}
+
+function validCode(key: string, value: string): boolean {
+  if (key === "isbn" && value.length === 10) return isbn10(value);
+  const lengths = CODE_LENGTHS[key] ?? [];
+  return lengths.includes(value.length) && /^\d+$/.test(value) && gtinCheck(value);
+}
+
+/// Rows to show for specifics already on the listing. One blank row when there are none.
+export function specificRows(specifics: Record<string, string> | undefined): SpecificRow[] {
+  const rows = Object.entries(specifics ?? {}).map(([key, value]) => ({ key, value }));
+  return rows.length ? rows : [{ key: "", value: "" }];
+}
+
+export function returnsDraft(returns: Returns | undefined): ReturnsDraft {
+  if (returns?.kind === "none") return { kind: "none", days: "", sellerPays: false };
+  if (returns?.kind === "days") return { kind: "days", days: String(returns.days), sellerPays: returns.sellerPays };
+  return { kind: "store", days: "", sellerPays: false };
+}
+
+/// Item specifics and the returns override the listing signs.
+export function listingFacts(rows: SpecificRow[], returns: ReturnsDraft): ListingFacts | string {
+  const specifics = new Map<string, string>();
+  for (const row of rows) {
+    const key = specificKey(row.key);
+    const value = row.value.trim();
+    if (!key && !value) continue;
+    if (!key) return "Name each item specific.";
+    if (!/^[a-z0-9-]+$/.test(key) || bytes(key) > 32) return "An item specific key is lowercase letters, digits and dashes.";
+    if (!value || bytes(value) > 120) return "An item specific value is empty or too long.";
+    if (specifics.has(key)) return "Each item specific is named once.";
+    if ((key === "gtin" || key === "upc" || key === "ean" || key === "isbn") && !validCode(key, value)) return "A product code's check digit is wrong.";
+    specifics.set(key, value);
+  }
+  if (specifics.size > 24) return "A listing has at most 24 item specifics.";
+  let signedReturns: Returns = { kind: "store" };
+  if (returns.kind === "none") signedReturns = { kind: "none" };
+  if (returns.kind === "days") {
+    if (!/^\d+$/.test(returns.days.trim())) return "A returns window is 1 to 365 days.";
+    const days = Number(returns.days.trim());
+    if (days < 1 || days > 365) return "A returns window is 1 to 365 days.";
+    signedReturns = { kind: "days", days, sellerPays: returns.sellerPays };
+  }
+  const ordered: Record<string, string> = {};
+  for (const key of [...specifics.keys()].sort()) ordered[key] = specifics.get(key) ?? "";
+  return { specifics: ordered, returns: signedReturns };
+}
+
+/// Put specifics and returns on the commerce block the existing sign path already accepts.
+export function withFacts(commerce: Commerce | null, facts: ListingFacts): Commerce | null {
+  const bare = Object.keys(facts.specifics).length === 0 && facts.returns.kind === "store";
+  if (!commerce && bare) return null;
+  return { ...(commerce ?? emptyCommerce()), specifics: facts.specifics, returns: facts.returns };
 }
 
 /// Shipping and pickup only make sense for physical goods.
