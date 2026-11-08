@@ -4,6 +4,7 @@ import { txUrl } from "../nodeWallet";
 import { fetchSales, fulfillSale, type Sale } from "../seller";
 import { useNodeResource } from "../useNodeResource";
 import { Empty, Icon, Money } from "./Marketplace";
+import { OfferInbox } from "./OfferInbox";
 import { PageHeading } from "./PageHeading";
 
 const STEPS = ["Awaiting payment", "Payment seen", "Paid", "Shipped", "Completed"];
@@ -99,6 +100,7 @@ export function Sales({ sales, rates, currency }: { sales: SalesResource; rates:
   return <section className="ob-orders ob-sales">
     <PageHeading title="Sales" description="Orders buyers placed with your store, paid straight to your node's wallet." action={<button className="ob-secondary" disabled={sales.loading} onClick={() => void sales.refresh()}>Refresh sales</button>}/>
     {sales.error && <p className="ob-form-error" role="alert">{sales.error}</p>}
+    <OfferInbox/>
     {sales.loading && !sales.data ? <p role="status">Loading sales…</p> : !list.length ? <Empty icon="paper" title="No sales yet" text="When a buyer orders from your store, the order appears here."/> : list.map(sale => <article className={`ob-order-row ${sale.status === "Paid" ? "needs-action" : ""}`} key={sale.id}>
       <button className="ob-order-toggle" onClick={() => setExpanded(expanded === sale.id ? null : sale.id)} aria-expanded={expanded === sale.id} aria-label={`Sale ${sale.lines.map(l => l.title).join(", ")}`}>
         <span className="ob-order-icon"><Icon name="paper"/></span>

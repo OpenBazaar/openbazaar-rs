@@ -8,6 +8,7 @@ use tormail::{open_reply, seal_message, DropId, ReplyDelivery, ReplyKeypair, Sen
 
 use crate::escrow_mail::{hex, unhex};
 use crate::harness::{open_node, request, unlock, MockChain, TempDir};
+use crate::multinode_variant_tests::{deliver, peer};
 use crate::http::dispatch;
 use crate::network::NetworkMode;
 use crate::seller_store_tests::{open_store, png, upload};
@@ -206,4 +207,43 @@ fn a_bid_is_declined_when_the_listing_does_not_take_offers_or_the_store_is_away(
     assert_eq!(offers.len(), 2, "a different amount is a new bid");
     assert_eq!(offers.iter().filter(|row| row["amount"] == 1_000).count(), 1);
     assert_eq!(offers.iter().filter(|row| row["amount"] == 1_500).count(), 1);
+}
+
+#[test]
+fn a_buyer_submits_one_bid_sealed_to_that_conversation() {
+    let chain = MockChain::new();
+    let (seller, buyer) = (peer(&chain), peer(&chain));
+    seller.node.fix_rates(&[("USD", 100_000.0)]);
+    let _ = open_store(&seller.node);
+    let listing = digital(&seller.node, true);
+    let hash = listing["hash"].as_str().unwrap();
+    let listing_id = listing["listingId"].as_str().unwrap();
+    let (status, followed) = request(&buyer.node, "POST", "/follows", &json!({ "url": seller.url }).to_string());
+    assert!(status.contains("200"), "{status} {followed}");
+
+    for body in [
+        json!({ "listingHash": hash, "quantity": 1, "amount": 0, "currency": "USD" }),
+        json!({ "listingHash": hash, "quantity": 1, "currency": "USD" }),
+        json!({ "listingHash": hash, "quantity": 1, "amount": "", "currency": "USD" }),
+    ] {
+        let (status, refused) = request(&buyer.node, "POST", "/offers", &body.to_string());
+        assert!(status.contains("400"), "{status} {refused}");
+        assert!(refused["error"].as_str().unwrap_or("").contains("amount"), "{refused}");
+    }
+    assert!(request(&seller.node, "GET", "/offers", "").1["offers"].as_array().unwrap().is_empty());
+
+    let body = json!({ "listingHash": hash, "quantity": 2, "amount": 1_800, "currency": "USD" });
+    let (status, sent) = request(&buyer.node, "POST", "/offers", &body.to_string());
+    assert!(status.contains("200"), "{status} {sent}");
+    assert_eq!(sent.as_object().unwrap().keys().collect::<Vec<_>>(), ["id"], "the answer names this bid and nothing about the buyer");
+    let id = sent["id"].as_str().unwrap();
+    deliver(&seller, &buyer);
+    let listed = request(&seller.node, "GET", "/offers", "").1;
+    assert_eq!(listed["offers"][0]["listingId"], listing_id);
+    assert_eq!(listed["offers"][0]["quantity"], 2);
+    assert_eq!(listed["offers"][0]["amount"], 1_800);
+    assert_eq!(listed["offers"][0]["currency"], "USD");
+    let sender = seller.node.bid_sender_for(listing_id).unwrap();
+    let expected = buyer.node.order_letter_key(id, seller.node.own_store.as_bytes()).unwrap().id().0;
+    assert_eq!(sender, expected, "the bid is sealed by this conversation's key");
 }
