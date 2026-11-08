@@ -162,6 +162,10 @@ impl Node {
         let reply_url = order.options.get("replyUrl").cloned().unwrap_or_default();
         let reply_url = crate::peer_http::sale_base(&reply_url).map_err(refused)?;
         let route = Route { url: reply_url, key: *order.reply.key.as_bytes(), drop: order.reply.drop.0 };
+        if self.on_vacation() {
+            self.queue_reply(&route, &json!({ "v": 1, "kind": "declined", "reason": crate::vacation::AWAY_MESSAGE })).map_err(retry)?;
+            return Ok(());
+        }
         let priced = match order.terms.lines.is_empty() {
             true => self.price_order(&order),
             false => self.price_terms_order(&id, &order, &opened.sender.0)?,

@@ -116,6 +116,10 @@ test("the profile reads the node's values and drops unknown ones", () => {
   assert.equal(profile.avatar, IMAGE);
   assert.equal(profile.banner, null);
   assert.equal(profile.acceptsLightning, false);
+  assert.equal(profile.away, false);
+  const paused = parseProfile({ role: "seller", storeKey: STORE, away: true, vacationNote: "in Paris until June" });
+  assert.equal(paused.away, true);
+  assert.equal("vacationNote" in paused, false);
   assert.equal(parseProfile({ role: "seller", storeKey: STORE, acceptsLightning: true }).acceptsLightning, true);
   assert.deepEqual(profile.shipsTo, ["US"]);
   assert.equal(parseProfile({ role: "admin", storeKey: STORE }).role, null);

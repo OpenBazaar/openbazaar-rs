@@ -3,6 +3,7 @@
 //!
 //! - `GET /store/profile`, `PUT /store/profile`: the storefront.
 //! - `PUT /store/role`: `{"role": "buyer" | "seller"}`, chosen at onboarding.
+//! - `PUT /store/vacation`: `{"away": true|false}`. Pauses the store. No note.
 //! - `GET /store/listings`, `POST /store/listings`: the own store's listings.
 //! - `PUT /store/listings/{id}`, `DELETE /store/listings/{id}`: by stable id.
 //! - `POST /media`: one image as the raw body; answers its SHA-256.
@@ -56,7 +57,7 @@ pub(crate) fn response(
     let listing_id = path.strip_prefix("/store/listings/");
     let known = matches!(
         (method, path),
-        ("GET" | "PUT", "/store/profile") | ("PUT", "/store/role") | ("GET" | "POST", "/store/listings") | ("POST", "/media")
+        ("GET" | "PUT", "/store/profile") | ("PUT", "/store/role") | ("PUT", "/store/vacation") | ("GET" | "POST", "/store/listings") | ("POST", "/media")
     ) || (listing_id.is_some() && matches!(method, "PUT" | "DELETE"));
     if !known {
         return None;
@@ -67,6 +68,7 @@ pub(crate) fn response(
     Some(match (method, path) {
         ("GET", "/store/profile") => result(node.profile_value(), origin),
         ("PUT", "/store/profile") => result(read_json(body).and_then(|value| node.update_profile(&value)), origin),
+        ("PUT", "/store/vacation") => result(read_json(body).and_then(|value| node.set_vacation(&value)), origin),
         ("PUT", "/store/role") => result(
             read_json(body).and_then(|value| {
                 let role = value["role"].as_str().and_then(Role::parse);

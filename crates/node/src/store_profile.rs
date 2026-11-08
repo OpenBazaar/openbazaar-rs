@@ -101,6 +101,8 @@ impl Node {
             "published": record.is_some(),
             // The seller has saved the storefront once; until then it is the default.
             "setUp": profile["setUp"] == true,
+            // A node-local pause. Not part of the signed store record.
+            "away": profile["away"] == true,
             "unpublishedChanges": self.own_pending.load(std::sync::atomic::Ordering::Relaxed),
             "listingCount": listings,
             "network": self.network.as_str(),

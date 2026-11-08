@@ -74,6 +74,7 @@ mod spend_tickets;
 mod stock;
 mod store_http;
 mod store_profile;
+mod vacation;
 mod stores;
 mod vault;
 mod vault_key;
@@ -113,6 +114,8 @@ mod pay_bump_tests;
 mod payment_tests;
 #[cfg(test)]
 mod seller_store_tests;
+#[cfg(test)]
+mod vacation_tests;
 #[cfg(test)]
 mod stores_tests;
 #[cfg(test)]

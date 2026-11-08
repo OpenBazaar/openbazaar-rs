@@ -144,6 +144,18 @@ impl Node {
         json!(receipts)
     }
 
+    /// Remember the shelf count before a pause publishes stock 0.
+    /// `shelf` falls back to the signed count, so this has to run first.
+    pub(crate) fn pin_shelf(&self, listing: &Listing) {
+        let mut stock = self.stock();
+        for (key, signed) in keys_of(listing) {
+            let count = stock.shelf(&key, signed);
+            if let Err(err) = stock.set_on_hand(key, count) {
+                eprintln!("ob-node: stock: {err}");
+            }
+        }
+    }
+
     /// The seller saved a listing: the stock they changed replaces the ledger's count.
     pub(crate) fn sync_shelf(&self, before: Option<&Listing>, after: &Listing) {
         let mut stock = self.stock();
@@ -162,6 +174,10 @@ impl Node {
     pub(crate) fn watch_stock(&self) -> usize {
         if let Err(err) = self.stock().sweep(crate::escrow_outbox::now_secs()) {
             eprintln!("ob-node: stock: {err}");
+        }
+        // A pause publishes stock 0 on purpose. Republishing the shelf would undo it.
+        if self.on_vacation() {
+            return 0;
         }
         let Some(secret) = self.own_signing_key() else { return 0 };
         let moved: Vec<Listing> = {
@@ -185,6 +201,11 @@ impl Node {
         }
         signed
     }
+}
+
+/// `listing` with its stock set from the ledger. The same listing when nothing moved.
+pub(crate) fn listing_at_shelf(listing: &Listing, shelf: impl Fn(&Key, u32) -> u32) -> Listing {
+    restocked(listing, shelf).unwrap_or_else(|| listing.clone())
 }
 
 /// `listing` with its stock set from `shelf`, or `None` if nothing moved.
