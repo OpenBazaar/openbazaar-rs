@@ -12,9 +12,9 @@ use x25519_dalek::{PublicKey as XPublic, StaticSecret};
 use super::auth::Signer;
 use super::pairing::{self, link};
 use super::protocol::{
-    base32, lan_open_request, lan_open_response, lan_seal_request, lan_seal_response, node_id,
+    base32, lan_open_request, lan_open_response, lan_seal_request, lan_seal_response_with_nonce, node_id,
     pairing_onion, pairing_onion_seed, parse_words, request_preimage, words, DeviceKey,
-    PairRequest,
+    PairRequest, LAN_VECTOR_RESPONSE_NONCE,
 };
 use crate::vault_key::encode_hex;
 
@@ -151,7 +151,7 @@ fn build() -> Value {
             "body": encode_hex(&sealed),
             "responseKey": encode_hex(&response_key),
             "answer": String::from_utf8_lossy(answer),
-            "sealedAnswer": encode_hex(&lan_seal_response(&response_key, answer)),
+            "sealedAnswer": encode_hex(&lan_seal_response_with_nonce(&response_key, answer, &LAN_VECTOR_RESPONSE_NONCE)),
         },
     })
 }

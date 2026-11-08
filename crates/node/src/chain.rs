@@ -32,9 +32,11 @@ const USER_AGENT: &str = concat!("ob-node/", env!("CARGO_PKG_VERSION"));
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// Returned before any request when a public server would otherwise be told an address.
-const PUBLIC_ADDRESSES: &str = "a public Esplora server is not asked which addresses this wallet follows";
+const PUBLIC_ADDRESSES: &str =
+    "a public Esplora server is not asked which addresses this wallet follows";
 /// Returned before any request when a public server would otherwise see this machine's IP.
-const PUBLIC_CLEARNET: &str = "a public Esplora server is not contacted without --proxy; it would see this machine's IP";
+const PUBLIC_CLEARNET: &str =
+    "a public Esplora server is not contacted without --proxy; it would see this machine's IP";
 
 /// One transaction that pays an address, with the outputs that pay it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -164,6 +166,16 @@ struct Server {
     checked: AtomicBool,
 }
 
+/// The URL the client will dial, with the host the parser actually uses.
+fn canonical_server(url: &str) -> Result<String, String> {
+    let parsed = url::Url::parse(url.trim())
+        .map_err(|err| format!("that chain server is not a URL ({err})"))?;
+    if (parsed.scheme() != "http" && parsed.scheme() != "https") || parsed.host_str().is_none() {
+        return Err("a chain server must be an http or https URL with a host".into());
+    }
+    Ok(parsed.to_string().trim_end_matches('/').to_string())
+}
+
 impl EsploraChain {
     pub fn new(urls: &[String], network: Network) -> Result<Self, String> {
         Self::with_egress(urls, network, &Egress::default())
@@ -173,7 +185,9 @@ impl EsploraChain {
         if urls.is_empty() {
             return Err("no chain server is configured".into());
         }
-        let mut http = reqwest::Client::builder();
+        let mut http = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .no_proxy();
         if let Some(proxy) = egress.reqwest_proxy()? {
             http = http.proxy(proxy);
         }
@@ -189,14 +203,14 @@ impl EsploraChain {
         let servers = urls
             .iter()
             .map(|url| {
-                let url = url.trim_end_matches('/').to_string();
-                Server {
+                let url = canonical_server(url)?;
+                Ok(Server {
                     client: AsyncClient::from_client(url.clone(), http.clone()),
                     url,
                     checked: AtomicBool::new(false),
-                }
+                })
             })
-            .collect();
+            .collect::<Result<Vec<_>, String>>()?;
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .thread_name("ob-chain")
@@ -274,7 +288,8 @@ impl EsploraChain {
         let server = &self.servers[index];
         let result = self.check(server).and_then(|()| run(&server.client));
         if result.is_err() {
-            self.preferred.store((index + 1) % self.servers.len(), Ordering::Relaxed);
+            self.preferred
+                .store((index + 1) % self.servers.len(), Ordering::Relaxed);
         }
         result.map_err(|err| format!("{}: {err}", server.url))
     }
@@ -289,7 +304,11 @@ impl ChainSource for EsploraChain {
                 "A public Esplora server is not asked which addresses this wallet follows. Without --proxy it is not contacted at all, so it does not see this machine's IP. With --proxy it sees the tip, fee estimates, and any transaction broadcast to it.",
             )
         } else {
-            ChainStatus::simple("esplora", "own-server", "Only your own Esplora server sees the addresses this node follows.")
+            ChainStatus::simple(
+                "esplora",
+                "own-server",
+                "Only your own Esplora server sees the addresses this node follows.",
+            )
         }
     }
 
@@ -309,7 +328,10 @@ impl ChainSource for EsploraChain {
             return Err(PUBLIC_ADDRESSES.into());
         }
         let txs = self.each(|client| async move {
-            client.scripthash_txs(script, None).await.map_err(|err| err.to_string())
+            client
+                .scripthash_txs(script, None)
+                .await
+                .map_err(|err| err.to_string())
         })?;
         Ok(txs
             .into_iter()
@@ -322,7 +344,11 @@ impl ChainSource for EsploraChain {
                     .filter(|(_, out)| out.scriptpubkey.as_script() == script)
                     .map(|(vout, out)| (vout as u32, out.value))
                     .collect(),
-                height: if tx.status.confirmed { tx.status.block_height } else { None },
+                height: if tx.status.confirmed {
+                    tx.status.block_height
+                } else {
+                    None
+                },
             })
             .filter(|tx| !tx.outputs.is_empty())
             .collect())
@@ -331,7 +357,10 @@ impl ChainSource for EsploraChain {
     fn fee_rate(&self) -> Result<f64, String> {
         self.refuse_public_clearnet()?;
         self.each(|client| async move {
-            let estimates = client.get_fee_estimates().await.map_err(|err| err.to_string())?;
+            let estimates = client
+                .get_fee_estimates()
+                .await
+                .map_err(|err| err.to_string())?;
             esplora_client::convert_fee_rate(FEE_TARGET_BLOCKS as usize, estimates)
                 .map(f64::from)
                 .ok_or_else(|| "the server returned no fee estimate".to_string())
@@ -374,8 +403,18 @@ impl ChainSource for EsploraChain {
             let Some(out) = tx.output.get(outpoint.vout as usize).cloned() else {
                 return Ok(None);
             };
-            let status = client.get_tx_status(&txid).await.map_err(|err| err.to_string())?;
-            Ok(Some((out, if status.confirmed { status.block_height } else { None })))
+            let status = client
+                .get_tx_status(&txid)
+                .await
+                .map_err(|err| err.to_string())?;
+            Ok(Some((
+                out,
+                if status.confirmed {
+                    status.block_height
+                } else {
+                    None
+                },
+            )))
         })
     }
 }
@@ -385,7 +424,11 @@ pub struct OfflineChain;
 
 impl ChainSource for OfflineChain {
     fn status(&self) -> ChainStatus {
-        ChainStatus::simple("offline", "private", "This node asks no one about the chain.")
+        ChainStatus::simple(
+            "offline",
+            "private",
+            "This node asks no one about the chain.",
+        )
     }
 
     fn tip_height(&self) -> Result<u32, String> {
@@ -429,7 +472,9 @@ mod tests {
         let urls = ["https://mempool.space/testnet4/api".to_string()];
         let chain = EsploraChain::with_egress(&urls, Network::Testnet4, &egress).unwrap();
         assert!(chain.tip_height().is_err());
-        let (kind, host) = seen.recv_timeout(Duration::from_secs(5)).expect("no query reached the proxy");
+        let (kind, host) = seen
+            .recv_timeout(Duration::from_secs(5))
+            .expect("no query reached the proxy");
         assert_eq!((kind, host.as_str()), (3, "mempool.space"));
     }
 
@@ -443,7 +488,11 @@ mod tests {
             for mut stream in listener.incoming().flatten() {
                 let mut greeting = [0u8; 2];
                 let mut methods = [0u8; 255];
-                if stream.read_exact(&mut greeting).is_err() || stream.read_exact(&mut methods[..greeting[1] as usize]).is_err() {
+                if stream.read_exact(&mut greeting).is_err()
+                    || stream
+                        .read_exact(&mut methods[..greeting[1] as usize])
+                        .is_err()
+                {
                     continue;
                 }
                 let _ = stream.write_all(&[5, 2]);
@@ -456,7 +505,9 @@ mod tests {
                 };
                 let mut version = [0u8; 1];
                 let _ = stream.read_exact(&mut version);
-                let Some(user) = field(&mut stream) else { continue };
+                let Some(user) = field(&mut stream) else {
+                    continue;
+                };
                 let _ = field(&mut stream);
                 let _ = tx.send(user);
                 let _ = stream.write_all(&[1, 0]);
@@ -464,14 +515,20 @@ mod tests {
                 let _ = stream.write_all(&[5, 4, 0, 1, 0, 0, 0, 0, 0, 0]);
             }
         });
-        let egress = Egress { proxy: Some(proxy), live_rates: false };
+        let egress = Egress {
+            proxy: Some(proxy),
+            live_rates: false,
+        };
         let urls = ["https://mempool.space/testnet4/api".to_string()];
         let chain = EsploraChain::with_egress(&urls, Network::Testnet4, &egress).unwrap();
         assert!(chain.tip_height().is_err());
         assert!(chain.tip_height().is_err());
         let first = users.recv_timeout(Duration::from_secs(5)).unwrap();
         let second = users.recv_timeout(Duration::from_secs(5)).unwrap();
-        assert_ne!(first, second, "a shared SOCKS username would put both queries on one circuit");
+        assert_ne!(
+            first, second,
+            "a shared SOCKS username would put both queries on one circuit"
+        );
     }
 
     #[test]
@@ -481,7 +538,10 @@ mod tests {
         use std::str::FromStr;
 
         let (proxy, seen) = crate::egress::fake_socks::start();
-        let egress = Egress { proxy: Some(proxy), live_rates: false };
+        let egress = Egress {
+            proxy: Some(proxy),
+            live_rates: false,
+        };
         let urls = ["https://mempool.space/testnet4/api".to_string()];
         let chain = EsploraChain::with_egress(&urls, Network::Testnet4, &egress).unwrap();
         assert!(chain.status().reveals.contains("not asked which addresses"));
@@ -505,17 +565,27 @@ mod tests {
         .network(Network::Testnet4)
         .create_wallet_no_persist()
         .unwrap();
-        let scan_err = chain.wallet_update(WalletRequest::Full(wallet.start_full_scan().build())).unwrap_err();
+        let scan_err = chain
+            .wallet_update(WalletRequest::Full(wallet.start_full_scan().build()))
+            .unwrap_err();
         assert!(scan_err.contains("not asked which addresses"), "{scan_err}");
-        assert!(seen.try_recv().is_err(), "an address query reached the public server");
+        assert!(
+            seen.try_recv().is_err(),
+            "an address query reached the public server"
+        );
 
         assert!(chain.tip_height().is_err());
-        let (kind, host) = seen.recv_timeout(Duration::from_secs(5)).expect("the tip query did not reach the proxy");
+        let (kind, host) = seen
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the tip query did not reach the proxy");
         assert_eq!((kind, host.as_str()), (3, "mempool.space"));
     }
 
     fn sample_tx() -> Transaction {
-        use bitcoin::{absolute::LockTime, transaction::Version, Amount, OutPoint, ScriptBuf, Sequence, TxIn, TxOut, Witness};
+        use bitcoin::{
+            absolute::LockTime, transaction::Version, Amount, OutPoint, ScriptBuf, Sequence, TxIn,
+            TxOut, Witness,
+        };
         Transaction {
             version: Version::TWO,
             lock_time: LockTime::ZERO,
@@ -525,14 +595,18 @@ mod tests {
                 sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
                 witness: Witness::default(),
             }],
-            output: vec![TxOut { value: Amount::from_sat(1_000), script_pubkey: ScriptBuf::new() }],
+            output: vec![TxOut {
+                value: Amount::from_sat(1_000),
+                script_pubkey: ScriptBuf::new(),
+            }],
         }
     }
 
     #[test]
     fn a_public_esplora_broadcast_is_not_sent_in_the_clear() {
         let urls = ["http://203.0.113.9:8332".to_string()];
-        let chain = EsploraChain::with_egress(&urls, Network::Testnet4, &Egress::default()).unwrap();
+        let chain =
+            EsploraChain::with_egress(&urls, Network::Testnet4, &Egress::default()).unwrap();
         let started = std::time::Instant::now();
         let broadcast_err = chain.broadcast(&sample_tx()).unwrap_err();
         let tip_err = chain.tip_height().unwrap_err();
@@ -540,17 +614,85 @@ mod tests {
         for err in [broadcast_err, tip_err, fee_err] {
             assert!(err.contains("not contacted without --proxy"), "{err}");
         }
-        assert!(started.elapsed() < std::time::Duration::from_millis(500), "a clearnet dial was attempted");
+        assert!(
+            started.elapsed() < std::time::Duration::from_millis(500),
+            "a clearnet dial was attempted"
+        );
 
         let (proxy, seen) = crate::egress::fake_socks::start();
         let proxied = EsploraChain::with_egress(
             &["https://mempool.space/testnet4/api".to_string()],
             Network::Testnet4,
-            &Egress { proxy: Some(proxy), live_rates: false },
+            &Egress {
+                proxy: Some(proxy),
+                live_rates: false,
+            },
         )
         .unwrap();
         assert!(proxied.broadcast(&sample_tx()).is_err());
-        let (kind, host) = seen.recv_timeout(std::time::Duration::from_secs(5)).expect("the broadcast did not reach the proxy");
+        let (kind, host) = seen
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("the broadcast did not reach the proxy");
         assert_eq!((kind, host.as_str()), (3, "mempool.space"));
+    }
+
+    #[test]
+    fn an_esplora_redirect_is_not_followed() {
+        use std::io::{Read, Write};
+        use std::str::FromStr;
+        use std::sync::atomic::AtomicUsize;
+        use std::sync::Arc;
+
+        let leak = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let leak_url = format!("http://{}", leak.local_addr().unwrap());
+        let leaked = Arc::new(AtomicUsize::new(0));
+        let leaked_thread = Arc::clone(&leaked);
+        std::thread::spawn(move || {
+            for mut stream in leak.incoming().flatten() {
+                let mut buf = [0u8; 1024];
+                let _ = stream.read(&mut buf);
+                leaked_thread.fetch_add(1, Ordering::SeqCst);
+                let _ = stream.write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\nConnection: close\r\n\r\nleaked",
+                );
+            }
+        });
+        let private = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let private_url = format!("http://{}", private.local_addr().unwrap());
+        let asked = Arc::new(AtomicUsize::new(0));
+        let asked_thread = Arc::clone(&asked);
+        std::thread::spawn(move || {
+            for mut stream in private.incoming().flatten() {
+                let mut buf = [0u8; 2048];
+                let _ = stream.read(&mut buf);
+                asked_thread.fetch_add(1, Ordering::SeqCst);
+                let body = format!("see {leak_url}");
+                let head = format!(
+                    "HTTP/1.1 302 Found\r\nLocation: {leak_url}/scripthash/x\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = stream.write_all(head.as_bytes());
+                let _ = stream.write_all(body.as_bytes());
+            }
+        });
+        let chain =
+            EsploraChain::with_egress(&[private_url], Network::Testnet4, &Egress::default())
+                .unwrap();
+        let address = Address::from_str("tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx")
+            .unwrap()
+            .require_network(Network::Testnet4)
+            .unwrap();
+        let err = chain.script_txs(&address.script_pubkey(), 0).unwrap_err();
+        assert!(!err.is_empty());
+        assert!(
+            asked.load(Ordering::SeqCst) >= 1,
+            "the private server was not asked"
+        );
+        std::thread::sleep(Duration::from_millis(200));
+        assert_eq!(
+            leaked.load(Ordering::SeqCst),
+            0,
+            "a redirect left the configured server"
+        );
     }
 }

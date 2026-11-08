@@ -7,7 +7,7 @@
 use bitcoin::hashes::{sha256, Hash};
 use bitcoin::secp256k1::{schnorr, Message, Secp256k1, XOnlyPublicKey};
 use chacha20poly1305::aead::{Aead, KeyInit, Payload};
-use chacha20poly1305::{ChaCha20Poly1305, Key, Nonce};
+use chacha20poly1305::{ChaCha20Poly1305, Key, Nonce, XChaCha20Poly1305, XNonce};
 use hmac::{Hmac, Mac};
 use p256::ecdsa::signature::Verifier;
 use sha2::Sha256;
@@ -19,6 +19,19 @@ use crate::vault_key::encode_hex;
 pub(crate) const SECRET_LEN: usize = 10;
 pub(crate) const WORDS: usize = 8;
 const LAN_LABEL: &[u8] = b"OBLAN1";
+/// Response envelopes only. A request still uses [`LAN_LABEL`]: each request
+/// key is used for one plaintext, so its fixed nonce does not repeat a
+/// different message. The response key is reused for every answer to a
+/// captured request, including errors, so each answer carries its own nonce.
+const LAN_RESPONSE_LABEL: &[u8] = b"OBLAN2";
+const LAN_RESPONSE_VERSION: u8 = 2;
+const RESPONSE_NONCE_LEN: usize = 24;
+/// Pinned by `vectors.json`. Production responses do not use this nonce.
+#[cfg(test)]
+pub(crate) const LAN_VECTOR_RESPONSE_NONCE: [u8; RESPONSE_NONCE_LEN] = [
+    0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f,
+    0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27,
+];
 
 pub(crate) fn node_id(node_public: &[u8; 32]) -> String {
     let mut text = b"OBNODE2".to_vec();
@@ -327,8 +340,41 @@ pub(crate) fn lan_open_request(node: &StaticSecret, body: &[u8]) -> Option<(Vec<
     Some((open(&request_key, &body[32..])?, response_key))
 }
 
-pub(crate) fn lan_seal_response(response_key: &[u8; 32], answer: &[u8]) -> Vec<u8> {
-    seal(response_key, answer)
+/// `0x02 ‖ nonce ‖ XChaCha20-Poly1305(Kres, nonce, aad = "OBLAN2", answer)`.
+/// `nonce` must be 24 bytes and not all zeros. A caller that repeats a nonce
+/// under one response key reopens the captured-envelope attack.
+pub(crate) fn lan_seal_response_with_nonce(
+    response_key: &[u8; 32],
+    answer: &[u8],
+    nonce: &[u8; RESPONSE_NONCE_LEN],
+) -> Vec<u8> {
+    assert!(
+        *nonce != [0; RESPONSE_NONCE_LEN],
+        "a LAN response nonce must not be all zeros"
+    );
+    let ciphertext = XChaCha20Poly1305::new(Key::from_slice(response_key))
+        .encrypt(
+            XNonce::from_slice(nonce),
+            Payload {
+                msg: answer,
+                aad: LAN_RESPONSE_LABEL,
+            },
+        )
+        .expect("XChaCha20-Poly1305 seals any length");
+    let mut body = Vec::with_capacity(1 + RESPONSE_NONCE_LEN + ciphertext.len());
+    body.push(LAN_RESPONSE_VERSION);
+    body.extend_from_slice(nonce);
+    body.extend(ciphertext);
+    body
+}
+
+/// The nonce in a version-2 response envelope.
+pub(crate) fn lan_response_nonce(body: &[u8]) -> Option<[u8; RESPONSE_NONCE_LEN]> {
+    if body.first().copied() != Some(LAN_RESPONSE_VERSION) || body.len() < 1 + RESPONSE_NONCE_LEN {
+        return None;
+    }
+    let nonce: [u8; RESPONSE_NONCE_LEN] = body[1..1 + RESPONSE_NONCE_LEN].try_into().ok()?;
+    (nonce != [0; RESPONSE_NONCE_LEN]).then_some(nonce)
 }
 
 /// Device side: a `POST /lan` body for `request`, and the key to open the answer.
@@ -346,7 +392,20 @@ pub(crate) fn lan_seal_request(
 }
 
 pub(crate) fn lan_open_response(response_key: &[u8; 32], body: &[u8]) -> Option<Vec<u8>> {
-    open(response_key, body)
+    let nonce = lan_response_nonce(body)?;
+    let ciphertext = body.get(1 + RESPONSE_NONCE_LEN..)?;
+    if ciphertext.len() < 16 {
+        return None;
+    }
+    XChaCha20Poly1305::new(Key::from_slice(response_key))
+        .decrypt(
+            XNonce::from_slice(&nonce),
+            Payload {
+                msg: ciphertext,
+                aad: LAN_RESPONSE_LABEL,
+            },
+        )
+        .ok()
 }
 
 pub(crate) fn base32(bytes: &[u8]) -> String {

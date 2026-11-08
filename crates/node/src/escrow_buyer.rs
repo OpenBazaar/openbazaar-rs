@@ -357,7 +357,7 @@ impl Node {
 
     /// `POST /orders/{id}/pay` for escrow: round 1 on an unsigned funding PSBT
     /// that pays exactly what the spend ticket allows.
-    pub(crate) fn open_escrow(&self, order: BuyerOrder, allowed: &SpendTerms) -> Result<Value, PayError> {
+    pub(crate) fn open_escrow(&self, order: BuyerOrder, allowed: &SpendTerms, link_coins: bool) -> Result<Value, PayError> {
         let escrow = order
             .escrow
             .clone()
@@ -384,7 +384,7 @@ impl Node {
         let fee_rate = self.pay_fee_rate()?;
         let ctx = self.escrow_context().map_err(PayError::Chain)?;
         check_terms(allowed, &address, funding)?;
-        let psbt = self.build_payment(&address, funding, fee_rate, true)?;
+        let psbt = self.build_payment(&address, funding, fee_rate, true, link_coins)?;
         check_fee(allowed, psbt_fee(&psbt)?)?;
         let secret = {
             let wallet = self.buyer_wallet();

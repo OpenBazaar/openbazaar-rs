@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { chacha20poly1305 } from "@noble/ciphers/chacha.js";
+import { chacha20poly1305, xchacha20poly1305 } from "@noble/ciphers/chacha.js";
 import { x25519 } from "@noble/curves/ed25519.js";
 import { p256 } from "@noble/curves/nist.js";
 import { hkdf } from "@noble/hashes/hkdf.js";
 import { hmac } from "@noble/hashes/hmac.js";
 import { sha256 } from "@noble/hashes/sha2.js";
-import { bytesToHex, concatBytes, hexToBytes, utf8ToBytes } from "@noble/hashes/utils.js";
+import { bytesToHex, concatBytes, hexToBytes, randomBytes, utf8ToBytes } from "@noble/hashes/utils.js";
 
 import { AnswerLostError, HomeNodeClient, UnknownDeviceError, type Channels, type NodeLink } from "./client.ts";
 import { deviceIdOf, nodeIdOf, pairingOnion, requestPreimage, sas, transcript } from "./protocol.ts";
@@ -21,6 +21,7 @@ const onion = "b".repeat(56);
 const link: NodeLink = { nodeId: nodeIdOf(nodePublic), nodeKey: bytesToHex(nodePublic), onion, lan: ["192.168.1.20:8790"], deviceId };
 const signer = { deviceId, sign: async (preimage: string) => bytesToHex(p256.sign(utf8ToBytes(preimage), deviceSecret, { format: "der" })) };
 const LABEL = utf8ToBytes("OBLAN1");
+const RESPONSE_LABEL = utf8ToBytes("OBLAN2");
 
 type Seen = { via: "lan" | "tor"; method: string; path: string; headers: Record<string, string>; body: string };
 
@@ -59,7 +60,8 @@ function fakeNode(handle: (seen: Seen) => Uint8Array, options: { lanUp?: boolean
       const inner = chacha20poly1305(K.slice(0, 32), new Uint8Array(12), LABEL).decrypt(body.slice(32));
       const out = serve("lan", inner);
       if (options.dropLanAnswer && seen.at(-1)?.method !== "GET") throw new Error("connection reset");
-      return { status: 200, body: chacha20poly1305(K.slice(32), new Uint8Array(12), LABEL).encrypt(out) };
+      const nonce = randomBytes(24);
+      return { status: 200, body: concatBytes(new Uint8Array([2]), nonce, xchacha20poly1305(K.slice(32), nonce, RESPONSE_LABEL).encrypt(out)) };
     },
   };
   return { seen, channels };

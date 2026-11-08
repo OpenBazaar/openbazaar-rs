@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import type { CurrencyCode, RateTable } from "../catalog";
-import { txUrl } from "../nodeWallet";
+import { EXTERNAL_TX_NOTE } from "../nodeWallet";
 import { fetchSales, fulfillSale, type Sale } from "../seller";
 import { useNodeResource } from "../useNodeResource";
 import { Empty, Icon, Money } from "./Marketplace";
@@ -30,8 +30,8 @@ function paymentSent(sale: Sale): boolean {
   return sale.status === "Payment seen" || (sale.status === "Awaiting payment" && !!sale.sentTxid);
 }
 
-function TxLink({ network, txid }: { network: string; txid: string }) {
-  return network === "testnet4" || network === "mainnet" ? <a className="ob-transaction-link" href={txUrl(network, txid)} target="_blank" rel="noreferrer noopener">{txid}</a> : <code>{txid}</code>;
+function TxId({ txid }: { txid: string }) {
+  return <code>{txid}</code>;
 }
 
 function Progress({ status }: { status: string }) {
@@ -86,8 +86,9 @@ function SaleDetail({ sale, rates, currency, onChange }: { sale: Sale; rates: Ra
       {sale.shipTo && <div><dt>Ship to</dt><dd className="ob-sale-address">{sale.shipTo}</dd></div>}
       {sale.deliveryNote && <div><dt>Buyer's note</dt><dd>{sale.deliveryNote}</dd></div>}
       <div><dt>Payment address</dt><dd><code>{sale.address}</code></dd></div>
-      {sale.sentTxid && !sale.txids.includes(sale.sentTxid) && <div><dt>Buyer sent</dt><dd><TxLink network={sale.network} txid={sale.sentTxid}/></dd></div>}
-      {sale.txids.map(txid => <div key={txid}><dt>Transaction</dt><dd><TxLink network={sale.network} txid={txid}/></dd></div>)}
+      {sale.sentTxid && !sale.txids.includes(sale.sentTxid) && <div><dt>Buyer sent</dt><dd><TxId txid={sale.sentTxid}/></dd></div>}
+      {sale.txids.map(txid => <div key={txid}><dt>Transaction</dt><dd><TxId txid={txid}/></dd></div>)}
+      {(sale.sentTxid || sale.txids.length > 0) && <div><dt>Viewing it</dt><dd>{EXTERNAL_TX_NOTE}</dd></div>}
       {sale.fulfillment && <div><dt>Sent</dt><dd>{[sale.fulfillment.carrier, sale.fulfillment.tracking].filter(Boolean).join(" · ") || "Delivered"}{sale.fulfillment.note && <p>{sale.fulfillment.note}</p>}{sale.fulfillment.content && <p className="ob-sale-content">{sale.fulfillment.content}</p>}</dd></div>}
     </dl>
     {sale.status === "Paid" ? <FulfillForm sale={sale} onDone={onChange}/> : sale.status === "Awaiting payment" || sale.status === "Payment seen" ? <p className="ob-page-intro">{paymentSent(sale) && "Payment sent, waiting for confirmation. "}Ship once the payment confirms. Your node watches the address and tells the buyer.</p> : sale.status === "Shipped" ? <p className="ob-page-intro">Waiting for the buyer to confirm it arrived.</p> : <p className="ob-page-intro">The buyer confirmed this order. It is complete.</p>}

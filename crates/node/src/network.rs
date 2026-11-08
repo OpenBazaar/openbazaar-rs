@@ -335,23 +335,23 @@ impl ServeOptions {
 }
 
 pub(crate) fn is_private_url(url: &str) -> bool {
-    let rest = url.split("://").nth(1).unwrap_or(url);
-    let authority = rest.split('/').next().unwrap_or("");
-    let host = authority
-        .rsplit_once('@')
-        .map_or(authority, |(_, host)| host);
-    let host = if let Some(stripped) = host.strip_prefix('[') {
-        stripped.split(']').next().unwrap_or("")
-    } else {
-        host.split(':').next().unwrap_or("")
-    };
+    // A backslash is not a path separator here. The URL parser accepts some of
+    // them, and a split on "://" would call the wrong host private.
+    if url.contains('\\') {
+        return false;
+    }
+    let Ok(parsed) = url::Url::parse(url.trim()) else { return false };
+    if parsed.scheme() != "http" && parsed.scheme() != "https" {
+        return false;
+    }
+    let Some(host) = parsed.host_str() else { return false };
     if host == "localhost" || host.ends_with(".local") || host.ends_with(".onion") {
         return true;
     }
-    match host.parse::<std::net::IpAddr>() {
-        Ok(std::net::IpAddr::V4(ip)) => ip.is_loopback() || ip.is_private() || ip.is_link_local(),
-        Ok(std::net::IpAddr::V6(ip)) => ip.is_loopback() || (ip.segments()[0] & 0xfe00) == 0xfc00,
-        Err(_) => false,
+    match parsed.host() {
+        Some(url::Host::Ipv4(ip)) => ip.is_loopback() || ip.is_private() || ip.is_link_local(),
+        Some(url::Host::Ipv6(ip)) => ip.is_loopback() || (ip.segments()[0] & 0xfe00) == 0xfc00,
+        _ => false,
     }
 }
 
@@ -473,6 +473,12 @@ mod tests {
         }
         let public = ServeOptions::parse(&args(&["--esplora", "https://blockstream.info/api"])).unwrap();
         assert!(public.uses_public_server());
+        assert!(is_private_url("http://mempool.space@127.0.0.1/api"), "the host is the loopback address");
+        assert!(!is_private_url("http://127.0.0.1@mempool.space/api"), "the host is mempool.space");
+        assert!(!is_private_url("http://127.0.0.1\\@127.0.0.1/"));
+        assert!(!is_private_url("not a url"));
+        assert!(is_private_url("http://10.1.2.3:3002"));
+        assert!(is_private_url("http://[fd00::1]/api"));
         let mixed = ServeOptions::parse(&args(&["--esplora", "http://127.0.0.1:3002, https://mempool.space/api"])).unwrap();
         assert!(mixed.uses_public_server());
     }

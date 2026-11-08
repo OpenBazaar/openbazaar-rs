@@ -36,9 +36,9 @@ use bitcoin::{Address, Amount, FeeRate, Psbt, Sequence, Transaction};
 use serde_json::{json, Value};
 
 use crate::buyer_orders::{now_secs, BuyerOrder};
-use crate::spend_tickets::{SpendTerms, TicketError, FEE_CAP_PERCENT};
 use crate::instructions::ESCROW_MAINNET_REFUSAL;
 use crate::network::{address_for, NetworkMode};
+use crate::spend_tickets::{SpendTerms, TicketError, FEE_CAP_PERCENT};
 use crate::watch::{AWAITING_FUNDING, AWAITING_PAYMENT};
 use crate::Node;
 
@@ -74,33 +74,45 @@ impl PayError {
     }
 }
 
+/// One queued payment and whether the caller chose to link coin provenance.
+pub(crate) struct QueuedPay {
+    id: String,
+    allowed: SpendTerms,
+    link_coins: bool,
+}
+
 /// Orders waiting for the pay worker, each with the terms its ticket allows.
 pub(crate) struct PayJobs {
-    queue: Sender<(String, SpendTerms)>,
-    pending: Mutex<Receiver<(String, SpendTerms)>>,
+    queue: Sender<QueuedPay>,
+    pending: Mutex<Receiver<QueuedPay>>,
 }
 
 impl PayJobs {
     pub(crate) fn new() -> Self {
         let (queue, pending) = mpsc::channel();
-        Self { queue, pending: Mutex::new(pending) }
+        Self {
+            queue,
+            pending: Mutex::new(pending),
+        }
     }
 }
 
 impl Node {
     /// Check the request and pay the order now, on this thread.
     pub fn pay_order(&self, id: &str, body: &Value) -> Result<Value, PayError> {
-        let allowed = self.admit_payment(id, body)?;
-        self.pay_now(id, &allowed)
+        let (allowed, link_coins) = self.admit_payment(id, body)?;
+        self.pay_now(id, &allowed, link_coins)
     }
 
     /// Check the request, mark the order `paying`, and queue it for the pay
     /// worker. Returns the order as it is now.
     pub fn queue_payment(&self, id: &str, body: &Value) -> Result<Value, PayError> {
-        let allowed = self.admit_payment(id, body)?;
+        let (allowed, link_coins) = self.admit_payment(id, body)?;
         let mut orders = self.orders();
         if orders.get(id).ok_or(PayError::NotFound)?.paying {
-            return Err(PayError::Conflict("A payment for this order is already being sent.".into()));
+            return Err(PayError::Conflict(
+                "A payment for this order is already being sent.".into(),
+            ));
         }
         orders
             .update(id, |order| {
@@ -110,15 +122,19 @@ impl Node {
             .map_err(PayError::Failed)?;
         self.pay_jobs
             .queue
-            .send((id.to_string(), allowed))
+            .send(QueuedPay {
+                id: id.to_string(),
+                allowed,
+                link_coins,
+            })
             .map_err(|err| PayError::Failed(err.to_string()))?;
         orders.get_value(id).ok_or(PayError::NotFound)
     }
 
     /// The request, the lock, and the ticket: the terms this payment may use.
     /// The ticket is spent by this call whether or not the payment goes ahead.
-    fn admit_payment(&self, id: &str, body: &Value) -> Result<SpendTerms, PayError> {
-        let ticket = self.check_pay_request(body)?;
+    fn admit_payment(&self, id: &str, body: &Value) -> Result<(SpendTerms, bool), PayError> {
+        let (ticket, link_coins) = self.check_pay_request(body)?;
         self.lock.spend_key()?;
         let allowed = self
             .lock
@@ -126,28 +142,39 @@ impl Node {
             .redeem(&ticket, id, self.lock.now())
             .map_err(|err| match err {
                 TicketError::Unknown => PayError::Conflict(
-                    "That spend ticket is used, expired, or unknown. Confirm the payment again.".into(),
+                    "That spend ticket is used, expired, or unknown. Confirm the payment again."
+                        .into(),
                 ),
-                TicketError::OtherOrder => PayError::Conflict("That spend ticket is for another order.".into()),
+                TicketError::OtherOrder => {
+                    PayError::Conflict("That spend ticket is for another order.".into())
+                }
             })?;
         let order = self.orders().get(id).cloned().ok_or(PayError::NotFound)?;
         if order.paying {
-            return Err(PayError::Conflict("A payment for this order is already being sent.".into()));
+            return Err(PayError::Conflict(
+                "A payment for this order is already being sent.".into(),
+            ));
         }
         self.ready_to_pay(&order)?;
         let (address, amount) = self.spend_target(&order)?;
         check_terms(&allowed, &address, amount)?;
         self.lock.touch();
-        Ok(allowed)
+        Ok((allowed, link_coins))
     }
 
     /// `POST /orders/{id}/pay/quote`: the exact terms the user is asked to confirm.
-    pub(crate) fn quote_payment(&self, id: &str) -> Result<(String, SpendTerms), PayError> {
+    pub(crate) fn quote_payment(
+        &self,
+        id: &str,
+        link_coins: bool,
+    ) -> Result<(String, SpendTerms), PayError> {
         self.lock.spend_key()?;
         self.lock.touch();
         let order = self.orders().get(id).cloned().ok_or(PayError::NotFound)?;
         if order.paying {
-            return Err(PayError::Conflict("A payment for this order is already being sent.".into()));
+            return Err(PayError::Conflict(
+                "A payment for this order is already being sent.".into(),
+            ));
         }
         self.ready_to_pay(&order)?;
         let (address, amount) = self.spend_target(&order)?;
@@ -155,8 +182,13 @@ impl Node {
         let fee_rate = self.pay_fee_rate()?;
         let escrow = order.settlement == "escrow";
         let fee = match self.signed_funding(&order)? {
-            Some(tx) => self.buyer_wallet().wallet.calculate_fee(&tx).map(|fee| fee.to_sat()).map_err(|err| PayError::Failed(err.to_string()))?,
-            None => psbt_fee(&self.build_payment(&address, amount, fee_rate, escrow)?)?,
+            Some(tx) => self
+                .buyer_wallet()
+                .wallet
+                .calculate_fee(&tx)
+                .map(|fee| fee.to_sat())
+                .map_err(|err| PayError::Failed(err.to_string()))?,
+            None => psbt_fee(&self.build_payment(&address, amount, fee_rate, escrow, link_coins)?)?,
         };
         let terms = SpendTerms {
             order_id: order.id.clone(),
@@ -166,20 +198,28 @@ impl Node {
             address: address.to_string(),
             fee_rate_sat_vb: fee_rate.to_sat_per_kwu() as f64 / 250.0,
         };
-        Ok((self.lock.tickets.quote(terms.clone(), self.lock.now()), terms))
+        Ok((
+            self.lock.tickets.quote(terms.clone(), self.lock.now()),
+            terms,
+        ))
     }
 
     /// Where this order's payment goes and how much: the amount still due,
     /// or the escrow funding output.
     fn spend_target(&self, order: &BuyerOrder) -> Result<(Address, u64), PayError> {
         if order.settlement == "escrow" {
-            let escrow = order.escrow.as_ref().ok_or_else(|| PayError::Invalid("This order has no escrow terms.".into()))?;
+            let escrow = order
+                .escrow
+                .as_ref()
+                .ok_or_else(|| PayError::Invalid("This order has no escrow terms.".into()))?;
             let funding = escrow
                 .get("fundingSats")
                 .and_then(Value::as_u64)
                 .ok_or_else(|| PayError::Invalid("This escrow has no funding amount.".into()))?;
             match escrow.get("stage").and_then(Value::as_str) {
-                Some("offered") | Some("signed") => Ok((self.order_address(Some(escrow), "address")?, funding)),
+                Some("offered") | Some("signed") => {
+                    Ok((self.order_address(Some(escrow), "address")?, funding))
+                }
                 Some(stage) => Err(PayError::Conflict(format!("This escrow is {stage}."))),
                 None => Err(PayError::Invalid("This escrow has no stage.".into())),
             }
@@ -191,10 +231,16 @@ impl Node {
 
     /// The funding transaction of an escrow that was signed but not broadcast.
     fn signed_funding(&self, order: &BuyerOrder) -> Result<Option<Transaction>, PayError> {
-        let Some(escrow) = order.escrow.as_ref().filter(|escrow| escrow["stage"] == "signed") else {
+        let Some(escrow) = order
+            .escrow
+            .as_ref()
+            .filter(|escrow| escrow["stage"] == "signed")
+        else {
             return Ok(None);
         };
-        let hex = escrow["fundingTx"].as_str().ok_or_else(|| PayError::Invalid("This escrow has no funding transaction.".into()))?;
+        let hex = escrow["fundingTx"]
+            .as_str()
+            .ok_or_else(|| PayError::Invalid("This escrow has no funding transaction.".into()))?;
         bitcoin::consensus::encode::deserialize_hex(hex)
             .map(Some)
             .map_err(|err| PayError::Failed(err.to_string()))
@@ -204,11 +250,21 @@ impl Node {
     pub fn run_pay_jobs(&self) -> usize {
         let mut ran = 0;
         loop {
-            let next = self.pay_jobs.pending.lock().unwrap_or_else(|err| err.into_inner()).try_recv();
-            let Ok((id, allowed)) = next else {
+            let next = self
+                .pay_jobs
+                .pending
+                .lock()
+                .unwrap_or_else(|err| err.into_inner())
+                .try_recv();
+            let Ok(QueuedPay {
+                id,
+                allowed,
+                link_coins,
+            }) = next
+            else {
                 return ran;
             };
-            self.run_pay_job(&id, &allowed);
+            self.run_pay_job(&id, &allowed, link_coins);
             ran += 1;
         }
     }
@@ -223,15 +279,19 @@ impl Node {
                 .unwrap_or_else(|err| err.into_inner())
                 .recv_timeout(Duration::from_millis(250));
             match next {
-                Ok((id, allowed)) => self.run_pay_job(&id, &allowed),
+                Ok(QueuedPay {
+                    id,
+                    allowed,
+                    link_coins,
+                }) => self.run_pay_job(&id, &allowed, link_coins),
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => return,
             }
         }
     }
 
-    fn run_pay_job(&self, id: &str, allowed: &SpendTerms) {
-        let result = self.pay_now(id, allowed);
+    fn run_pay_job(&self, id: &str, allowed: &SpendTerms, link_coins: bool) {
+        let result = self.pay_now(id, allowed, link_coins);
         let error = result.as_ref().err().map(PayError::message);
         match &result {
             Ok(paid) => eprintln!("ob-node: paid order {id} in {}", paid["txid"]),
@@ -246,16 +306,16 @@ impl Node {
         }
     }
 
-    fn pay_now(&self, id: &str, allowed: &SpendTerms) -> Result<Value, PayError> {
+    fn pay_now(&self, id: &str, allowed: &SpendTerms, link_coins: bool) -> Result<Value, PayError> {
         let order = self.orders().get(id).cloned().ok_or(PayError::NotFound)?;
         if allowed.order_id != order.id {
             return Err(PayError::Conflict(TERMS_CHANGED.into()));
         }
         self.ready_to_pay(&order)?;
         if order.settlement == "escrow" {
-            self.open_escrow(order, allowed)
+            self.open_escrow(order, allowed, link_coins)
         } else {
-            self.pay_direct(order, allowed)
+            self.pay_direct(order, allowed, link_coins)
         }
     }
 
@@ -266,17 +326,32 @@ impl Node {
             return Err(PayError::Invalid(ESCROW_MAINNET_REFUSAL.into()));
         }
         if let Some(txid) = &order.pay_txid {
-            let what = if escrow { "funded this escrow" } else { "paid this order" };
-            return Err(PayError::Conflict(format!("This node already {what} in {txid}.")));
+            let what = if escrow {
+                "funded this escrow"
+            } else {
+                "paid this order"
+            };
+            return Err(PayError::Conflict(format!(
+                "This node already {what} in {txid}."
+            )));
         }
-        let waiting = if escrow { AWAITING_FUNDING } else { AWAITING_PAYMENT };
+        let waiting = if escrow {
+            AWAITING_FUNDING
+        } else {
+            AWAITING_PAYMENT
+        };
         if order.status != waiting {
             let what = if escrow { "escrow" } else { "order" };
-            return Err(PayError::Conflict(format!("This {what} is {}.", order.status)));
+            return Err(PayError::Conflict(format!(
+                "This {what} is {}.",
+                order.status
+            )));
         }
         if !escrow {
             if order.total_sats.saturating_sub(order.received_sats) == 0 {
-                return Err(PayError::Conflict("Nothing is left to pay on this order.".into()));
+                return Err(PayError::Conflict(
+                    "Nothing is left to pay on this order.".into(),
+                ));
             }
             self.order_address(order.payment.as_ref(), "address")?;
         }
@@ -284,12 +359,17 @@ impl Node {
     }
 
     /// The ticket from a pay request.
-    fn check_pay_request(&self, body: &Value) -> Result<String, PayError> {
+    fn check_pay_request(&self, body: &Value) -> Result<(String, bool), PayError> {
         let Some(map) = body.as_object() else {
             return Err(PayError::Invalid("The request could not be read.".into()));
         };
-        if map.keys().any(|key| key != "confirm" && key != "ticket") {
-            return Err(PayError::Invalid("That field is not part of a payment.".into()));
+        if map
+            .keys()
+            .any(|key| key != "confirm" && key != "ticket" && key != "linkCoins")
+        {
+            return Err(PayError::Invalid(
+                "That field is not part of a payment.".into(),
+            ));
         }
         let confirm = match map.get("confirm") {
             None => false,
@@ -301,32 +381,49 @@ impl Node {
                 "This node is on mainnet and pays with real bitcoin. Send \"confirm\": true to pay.".into(),
             ));
         }
+        let link_coins = match map.get("linkCoins") {
+            None => false,
+            Some(Value::Bool(flag)) => *flag,
+            Some(_) => return Err(PayError::Invalid("linkCoins must be true or false.".into())),
+        };
         match map.get("ticket") {
-            Some(Value::String(ticket)) if !ticket.is_empty() => Ok(ticket.clone()),
+            Some(Value::String(ticket)) if !ticket.is_empty() => Ok((ticket.clone(), link_coins)),
             _ => Err(PayError::Invalid(
-                "Every payment needs a spend ticket. Quote it, confirm it, then send the ticket.".into(),
+                "Every payment needs a spend ticket. Quote it, confirm it, then send the ticket."
+                    .into(),
             )),
         }
     }
 
-    fn pay_direct(&self, order: BuyerOrder, allowed: &SpendTerms) -> Result<Value, PayError> {
+    fn pay_direct(
+        &self,
+        order: BuyerOrder,
+        allowed: &SpendTerms,
+        link_coins: bool,
+    ) -> Result<Value, PayError> {
         let address = self.order_address(order.payment.as_ref(), "address")?;
         let due = order.total_sats.saturating_sub(order.received_sats);
         check_terms(allowed, &address, due)?;
         self.sync_buyer_wallet().map_err(PayError::Chain)?;
         let fee_rate = self.pay_fee_rate()?;
-        let tx = self.sign_payment(&address, due, fee_rate, allowed)?;
+        let tx = self.sign_payment(&address, due, fee_rate, allowed, link_coins)?;
         self.chain.broadcast(&tx).map_err(PayError::Chain)?;
         let txid = tx.compute_txid().to_string();
         self.after_broadcast(&order.id, tx.clone(), &txid)?;
         Ok(self.paid_value(&order.id, &tx, due, fee_rate))
     }
 
-    pub(crate) fn order_address(&self, terms: Option<&Value>, key: &str) -> Result<Address, PayError> {
+    pub(crate) fn order_address(
+        &self,
+        terms: Option<&Value>,
+        key: &str,
+    ) -> Result<Address, PayError> {
         let text = terms
             .and_then(|terms| terms.get(key))
             .and_then(Value::as_str)
-            .ok_or_else(|| PayError::Invalid(format!("This order has no {} address.", self.network)))?;
+            .ok_or_else(|| {
+                PayError::Invalid(format!("This order has no {} address.", self.network))
+            })?;
         address_for(text, self.network).map_err(PayError::Invalid)
     }
 
@@ -342,8 +439,15 @@ impl Node {
     }
 
     /// Build and sign a transaction with exactly one recipient output, within `allowed`.
-    fn sign_payment(&self, address: &Address, sats: u64, fee_rate: FeeRate, allowed: &SpendTerms) -> Result<Transaction, PayError> {
-        let mut psbt = self.build_payment(address, sats, fee_rate, false)?;
+    fn sign_payment(
+        &self,
+        address: &Address,
+        sats: u64,
+        fee_rate: FeeRate,
+        allowed: &SpendTerms,
+        link_coins: bool,
+    ) -> Result<Transaction, PayError> {
+        let mut psbt = self.build_payment(address, sats, fee_rate, false, link_coins)?;
         check_fee(allowed, psbt_fee(&psbt)?)?;
         let wallet = self.buyer_wallet();
         let seed = self.spend_seed(&wallet)?;
@@ -351,9 +455,12 @@ impl Node {
             .sign(&mut psbt, &seed)
             .map_err(|err| PayError::Failed(err.to_string()))?;
         if !finalized {
-            return Err(PayError::Failed("the payment could not be fully signed".into()));
+            return Err(PayError::Failed(
+                "the payment could not be fully signed".into(),
+            ));
         }
-        psbt.extract_tx().map_err(|err| PayError::Failed(err.to_string()))
+        psbt.extract_tx()
+            .map_err(|err| PayError::Failed(err.to_string()))
     }
 
     /// An unsigned PSBT with exactly one recipient output. `final_inputs`
@@ -364,21 +471,39 @@ impl Node {
         sats: u64,
         fee_rate: FeeRate,
         final_inputs: bool,
+        link_coins: bool,
     ) -> Result<Psbt, PayError> {
         let mut wallet = self.buyer_wallet();
         let untrusted = wallet.untrusted_pending();
+        let recipient = address.script_pubkey();
+        let blocked = crate::coin_provenance::blocked_coins(
+            &wallet.wallet,
+            Some(recipient.as_script()),
+            link_coins,
+        );
         let mut builder = wallet.wallet.build_tx();
         builder
             .add_recipient(address.script_pubkey(), Amount::from_sat(sats))
             .fee_rate(fee_rate);
         if final_inputs {
-            builder.set_exact_sequence(Sequence::ENABLE_LOCKTIME_NO_RBF).only_witness_utxo();
+            builder
+                .set_exact_sequence(Sequence::ENABLE_LOCKTIME_NO_RBF)
+                .only_witness_utxo();
         }
-        for outpoint in untrusted.into_iter().chain(self.escrow.coins.outpoints()) {
+        for outpoint in untrusted
+            .into_iter()
+            .chain(self.escrow.coins.outpoints())
+            .chain(blocked.iter().copied())
+        {
             builder.add_unspendable(outpoint);
         }
         let psbt = builder.finish().map_err(|err| {
-            PayError::Invalid(format!("The node wallet cannot pay {sats} sats: {err}"))
+            let mut message = format!("The node wallet cannot pay {sats} sats: {err}");
+            if !blocked.is_empty() {
+                message.push(' ');
+                message.push_str(crate::coin_provenance::LINK_EXPLANATION);
+            }
+            PayError::Invalid(message)
         })?;
         let tx = &psbt.unsigned_tx;
         let foreign = tx
@@ -386,14 +511,28 @@ impl Node {
             .iter()
             .filter(|out| !wallet.wallet.is_mine(out.script_pubkey.clone()))
             .count();
-        if foreign != 1 || !tx.output.iter().any(|out| out.script_pubkey == address.script_pubkey()) {
-            return Err(PayError::Failed("a payment must pay exactly one order".into()));
+        if foreign != 1
+            || !tx
+                .output
+                .iter()
+                .any(|out| out.script_pubkey == address.script_pubkey())
+        {
+            return Err(PayError::Failed(
+                "a payment must pay exactly one order".into(),
+            ));
         }
-        wallet.persist().map_err(|err| PayError::Failed(err.to_string()))?;
+        wallet
+            .persist()
+            .map_err(|err| PayError::Failed(err.to_string()))?;
         Ok(psbt)
     }
 
-    pub(crate) fn after_broadcast(&self, id: &str, tx: Transaction, txid: &str) -> Result<(), PayError> {
+    pub(crate) fn after_broadcast(
+        &self,
+        id: &str,
+        tx: Transaction,
+        txid: &str,
+    ) -> Result<(), PayError> {
         {
             let mut wallet = self.buyer_wallet();
             wallet.wallet.apply_unconfirmed_txs([(tx, now_secs())]);
@@ -403,7 +542,11 @@ impl Node {
         }
         self.orders()
             .update(id, |order| order.pay_txid = Some(txid.to_string()))
-            .map_err(|err| PayError::Failed(format!("sent {txid}, but the order could not be updated: {err}")))?;
+            .map_err(|err| {
+                PayError::Failed(format!(
+                    "sent {txid}, but the order could not be updated: {err}"
+                ))
+            })?;
         if let Err(err) = self.tell_seller_sent(id, txid) {
             eprintln!("ob-node: order {id}: sent {txid}, but the seller was not told: {err:?}");
         }
@@ -411,7 +554,12 @@ impl Node {
     }
 
     fn paid_value(&self, id: &str, tx: &Transaction, sats: u64, fee_rate: FeeRate) -> Value {
-        let fee = self.buyer_wallet().wallet.calculate_fee(tx).map(|fee| fee.to_sat()).ok();
+        let fee = self
+            .buyer_wallet()
+            .wallet
+            .calculate_fee(tx)
+            .map(|fee| fee.to_sat())
+            .ok();
         json!({
             "orderId": id,
             "network": self.network.as_str(),
@@ -425,7 +573,11 @@ impl Node {
 }
 
 /// Refuse a payment whose recipient or amount differs from the ticket.
-pub(crate) fn check_terms(allowed: &SpendTerms, address: &Address, sats: u64) -> Result<(), PayError> {
+pub(crate) fn check_terms(
+    allowed: &SpendTerms,
+    address: &Address,
+    sats: u64,
+) -> Result<(), PayError> {
     if allowed.recipient != address.script_pubkey() || allowed.amount_sats != sats {
         return Err(PayError::Conflict(TERMS_CHANGED.into()));
     }
