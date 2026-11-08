@@ -4,7 +4,8 @@ import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-
 import { parseCatalog, type ContentRating, type ListingHeader, type ShopCatalog } from "../../catalog.ts";
 import { collectionValue } from "../../homeNode/replica.ts";
 import { purchaseTerms, type AvailabilityDraft } from "../../commerceDraft.ts";
-import { bulkEditListings, displayNameError, fetchDrafts, updateProfile, type SavedDraft } from "../../seller.ts";
+import { couponDraft, type CouponForm } from "../../couponDraft.ts";
+import { bulkEditListings, displayNameError, fetchCoupons, saveCoupon, fetchDrafts, updateProfile, type SavedDraft, type StoreCoupon } from "../../seller.ts";
 import { isLocked, passphraseError, unlockWallet } from "../../walletLock.ts";
 import { ListingPhoto } from "../ListingPhoto.tsx";
 import { dismissRefused, queueEdit, sync, useSession } from "../session.ts";
@@ -56,6 +57,69 @@ function Listing({ listing, queued, canEdit, ownWithoutId, onRate, onEdit }: { l
         </View>
       ) : null}
     </View>
+  );
+}
+
+function CouponEditor({ onDone }: { onDone: () => void }) {
+  const [coupons, setCoupons] = useState<StoreCoupon[]>([]);
+  const [form, setForm] = useState<CouponForm>({ code: "", kind: "percent", amount: "", currency: "USD", minSubtotal: "", startsOn: "", endsOn: "", maxUses: "", listings: [] });
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [needsUnlock, setNeedsUnlock] = useState(false);
+  const [passphrase, setPassphrase] = useState("");
+  useEffect(() => {
+    void fetchCoupons().then(setCoupons).catch(() => setCoupons([]));
+  }, []);
+  async function save() {
+    const body = couponDraft(form);
+    if (typeof body === "string") {
+      setError(body);
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      if (needsUnlock) {
+        await unlockWallet(passphrase);
+        setPassphrase("");
+        setNeedsUnlock(false);
+      }
+      await saveCoupon(body);
+      setCoupons(await fetchCoupons());
+      setForm({ code: "", kind: "percent", amount: "", currency: "USD", minSubtotal: "", startsOn: "", endsOn: "", maxUses: "", listings: [] });
+      onDone();
+    } catch (err) {
+      if (isLocked(err)) {
+        setNeedsUnlock(true);
+        setError("Unlock the wallet on your node so it can sign this coupon.");
+      } else setError(passphraseError(err, "The coupon was not signed."));
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <Card title="Coupons">
+      <Text style={ui.muted}>A code the store signs. Buyers type it at checkout. It is not part of a listing.</Text>
+      <TextInput accessibilityLabel="Coupon code" value={form.code} onChangeText={code => setForm({ ...form, code })} autoCapitalize="characters" maxLength={24} placeholder="FALL10" style={ui.input} />
+      <View style={styles.choices}>
+        <Pressable accessibilityRole="button" onPress={() => setForm({ ...form, kind: "percent" })} style={[styles.choice, form.kind === "percent" && styles.choiceOn]}>
+          <Text style={[styles.choiceText, form.kind === "percent" && styles.choiceTextOn]}>Percent</Text>
+        </Pressable>
+        <Pressable accessibilityRole="button" onPress={() => setForm({ ...form, kind: "fixed" })} style={[styles.choice, form.kind === "fixed" && styles.choiceOn]}>
+          <Text style={[styles.choiceText, form.kind === "fixed" && styles.choiceTextOn]}>Fixed</Text>
+        </Pressable>
+      </View>
+      <TextInput accessibilityLabel={form.kind === "percent" ? "Basis points" : "Amount"} value={form.amount} onChangeText={amount => setForm({ ...form, amount })} keyboardType="number-pad" placeholder={form.kind === "percent" ? "1000" : "500"} style={ui.input} />
+      <TextInput accessibilityLabel="Currency" value={form.currency} onChangeText={currency => setForm({ ...form, currency })} autoCapitalize="characters" maxLength={3} style={ui.input} />
+      <TextInput accessibilityLabel="Starts" value={form.startsOn} onChangeText={startsOn => setForm({ ...form, startsOn })} placeholder="YYYY-MM-DD" style={ui.input} />
+      <TextInput accessibilityLabel="Ends" value={form.endsOn} onChangeText={endsOn => setForm({ ...form, endsOn })} placeholder="YYYY-MM-DD" style={ui.input} />
+      {needsUnlock ? <TextInput accessibilityLabel="Wallet passphrase" value={passphrase} onChangeText={setPassphrase} secureTextEntry autoCapitalize="none" style={ui.input} /> : null}
+      {error ? <Notice tone="error" text={error} /> : null}
+      <Button label={busy ? "Signing…" : "Sign coupon"} busy={busy} onPress={() => void save()} />
+      {coupons.map(coupon => (
+        <Text key={coupon.code} style={ui.muted}>{coupon.code} · {coupon.percentBps != null ? `${coupon.percentBps} bps` : coupon.fixed} {coupon.currency}</Text>
+      ))}
+    </Card>
   );
 }
 
@@ -240,6 +304,7 @@ export function StoreScreen({ onRefresh }: { onRefresh: () => void }) {
               ))}
             </Card>
           ) : null}
+          {own ? <CouponEditor onDone={onRefresh} /> : null}
           <BulkEdit listings={catalog.listings.filter(listing => own && listing.storeId === own.key)} onDone={onRefresh} />
           <Card title="Listings">
             {own ? <Button label="New listing" onPress={() => setEditing("new")} /> : <Text style={ui.muted}>This node has no storefront yet. Set the store up in the web shop, then you can add listings here.</Text>}

@@ -697,6 +697,54 @@ fn bulk_edit_leaves_unselected_listings_and_drafts_unchanged_and_an_invalid_valu
 }
 
 #[test]
+fn the_coupon_the_editor_saves_is_on_the_signed_coupon_and_an_invalid_coupon_is_not() {
+    let (_dir, node) = seller();
+    open_store(&node);
+    let body = json!({
+        "code": "fall10",
+        "percentBps": 1_000,
+        "currency": "USD",
+        "minSubtotal": 0,
+        "startsOn": 20_261_101,
+        "endsOn": 20_261_130,
+        "maxUses": 0,
+        "listings": []
+    });
+    let (status, signed) = request(&node, "POST", "/coupons", &body.to_string());
+    assert!(status.contains("200"), "{status} {signed}");
+    assert_eq!(signed["code"], "FALL10");
+    assert_eq!(signed["percentBps"], 1_000);
+    let book = node.coupons();
+    let coupon = book.all().iter().find(|item| item.terms.code == "FALL10").expect("the editor's coupon is signed");
+    coupon.verify().unwrap();
+    assert_eq!(coupon.terms.discount, openbazaar_protocol::Discount::Percent(1_000));
+    assert_eq!((coupon.terms.starts_on, coupon.terms.ends_on), (20_261_101, 20_261_130));
+    drop(book);
+
+    let before = node.coupons().all().len();
+    let mut empty = body.clone();
+    empty["code"] = json!("");
+    let (status, refused) = request(&node, "POST", "/coupons", &empty.to_string());
+    assert!(status.contains("400"), "{status} {refused}");
+    assert!(refused["error"].as_str().unwrap_or("").contains("coupon code"), "{refused}");
+    let mut backwards = body.clone();
+    backwards["startsOn"] = json!(20_261_201);
+    backwards["endsOn"] = json!(20_261_101);
+    backwards["code"] = json!("LATE");
+    let (status, refused) = request(&node, "POST", "/coupons", &backwards.to_string());
+    assert!(status.contains("400"), "{status} {refused}");
+    assert!(refused["error"].as_str().unwrap_or("").contains("ends before"), "{refused}");
+    let mut zero = body.clone();
+    zero["percentBps"] = json!(0);
+    zero["code"] = json!("ZERO");
+    let (status, refused) = request(&node, "POST", "/coupons", &zero.to_string());
+    assert!(status.contains("400"), "{status} {refused}");
+    assert!(refused["error"].as_str().unwrap_or("").contains("0.01%"), "{refused}");
+    assert_eq!(node.coupons().all().len(), before, "an invalid coupon is not signed");
+    assert!(node.coupons().all().iter().all(|item| item.terms.code == "FALL10"));
+}
+
+#[test]
 fn uploads_must_be_images() {
     let (_dir, node) = seller();
     let (status, _) = upload(&node, b"<svg onload=alert(1)>");

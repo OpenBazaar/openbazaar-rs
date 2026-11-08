@@ -25,6 +25,7 @@ import { priceDrops, rememberPrices, savedHashesAfterRefresh, sameWatches, signe
 import { fetchProfile, formatPrice, salesToShip, setRole } from "../seller";
 import { Onboarding } from "./Onboarding";
 import { StoreSetup } from "./StoreSetup";
+import { Coupons } from "./Coupons";
 import { StoreListings } from "./StoreListings";
 import { Sales, useSales } from "./Sales";
 import { OwnStore } from "./OwnStore";
@@ -88,8 +89,8 @@ export function Money({ sats, rates, currency, large = false }: { sats: number; 
 function Brand({ theme }: { theme: "light" | "dark" }) { return <span className="ob-brand"><span className="ob-brand-icon"><img src={theme === "light" ? "brand/ob-market-logo-light.png" : "brand/ob-market-logo-256.png"} alt="" width={42} height={42}/></span><span>OpenBazaar<span className="ob-brand-dot">.</span></span></span>; }
 
 type Section = "discover" | "saved" | "orders" | "bag" | "addresses" | "safety" | "wallet" | "store-labels" | "home-node" | "lightning" | "follows" | StoreSection;
-type StoreSection = "storefront" | "listings" | "sales" | "store";
-const STORE_SECTIONS: readonly Section[] = ["storefront", "listings", "sales", "store"];
+type StoreSection = "storefront" | "listings" | "coupons" | "sales" | "store";
+const STORE_SECTIONS: readonly Section[] = ["storefront", "listings", "coupons", "sales", "store"];
 type Page = { name: "browse" } | { name: "detail"; listing: ListingHeader } | { name: "checkout"; lines: CartLine[]; returnTo?: ListingHeader } | { name: "receipt"; receipt: CheckoutReceipt };
 
 export default function Marketplace() {
@@ -199,7 +200,7 @@ export default function Marketplace() {
   function open(listing: ListingHeader) { setPage({ name: "detail", listing }); }
   async function startSelling() { try { profile.update(await setRole("seller")); navigate("store"); } catch (e) { setToast(e instanceof Error ? e.message : "Your node could not open a store."); } }
   function storeChanged(message: string) { setToast(message); void load(); void profile.refresh(); }
-  const activeTitle = section === "storefront" ? "Your storefront" : section === "listings" ? "Your listings" : section === "sales" ? "Sales" : section === "store" ? "Store settings" : section === "follows" ? "Followed stores" : section === "saved" ? "Saved goods" : section === "orders" ? "Your orders" : section === "bag" ? "Your bag" : section === "addresses" ? "Your addresses" : section === "wallet" ? "Wallet" : section === "safety" ? "Content filters" : section === "store-labels" ? "Store labels" : section === "home-node" ? "Home node" : section === "lightning" ? "Lightning" : "Products";
+  const activeTitle = section === "storefront" ? "Your storefront" : section === "listings" ? "Your listings" : section === "coupons" ? "Coupons" : section === "sales" ? "Sales" : section === "store" ? "Store settings" : section === "follows" ? "Followed stores" : section === "saved" ? "Saved goods" : section === "orders" ? "Your orders" : section === "bag" ? "Your bag" : section === "addresses" ? "Your addresses" : section === "wallet" ? "Wallet" : section === "safety" ? "Content filters" : section === "store-labels" ? "Store labels" : section === "home-node" ? "Home node" : section === "lightning" ? "Lightning" : "Products";
   const inSettings = ["safety", "addresses", "store-labels", "home-node", "lightning", "follows"].includes(section);
   const inStore = STORE_SECTIONS.includes(section);
   const browsing = page.name === "browse" && (section === "discover" || (section === "saved" && saved.length > 0));
@@ -215,6 +216,7 @@ export default function Marketplace() {
     if (!own) return <p role="status">{profile.error || "Loading your store…"}</p>;
     if (section === "sales") return <Sales sales={sales} {...money}/>;
     if (section === "listings") return <StoreListings key={newListing} profile={own} {...money} startNew={newListing > 0} onChanged={storeChanged}/>;
+    if (section === "coupons") return <Coupons onChanged={storeChanged}/>;
     if (section === "storefront" && own.setUp) return <OwnStore profile={own} listings={catalog?.listings ?? []} {...money} onOpen={open} onEdit={() => navigate("store")} onAddListing={() => { navigate("listings"); setNewListing(n => n + 1); }}/>;
     return <StoreSetup key={own.storeKey} profile={own} onSaved={(next, message) => { profile.update(next); storeChanged(message); navigate("storefront"); }} onViewStore={() => navigate("storefront")}/>;
   }
@@ -235,6 +237,7 @@ export default function Marketplace() {
         {seller && <><div className="ob-nav-label ob-store-nav-label">Your store</div><nav className="ob-main-nav ob-store-nav" aria-label="Your store">
           <NavItem icon="home" active={navSection === "storefront"} onClick={() => navigate("storefront")}>Storefront</NavItem>
           <NavItem icon="grid" active={navSection === "listings"} onClick={() => navigate("listings")}>Listings</NavItem>
+          <NavItem icon="check" active={navSection === "coupons"} onClick={() => navigate("coupons")}>Coupons</NavItem>
           <NavItem icon="paper" active={navSection === "sales"} onClick={() => navigate("sales")} count={toShip || undefined}>Sales</NavItem>
         </nav></>}
         <CanopyDivider/>
