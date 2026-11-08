@@ -2,17 +2,17 @@ import { useState, type FormEvent } from "react";
 import type { CurrencyCode, ListingHeader, RateTable } from "../catalog";
 import { CONTENT_TAGS, MAX_LISTING_IMAGES, PRICE_CURRENCIES, draftOf, formatPrice, fromMinorUnits, saveListing, toMinorUnits, type ListingDraft, type PriceCurrency } from "../seller";
 import { ImageUpload, MediaImage, useLockedAction } from "./SellerKit";
-import { axesProblem, emptyCommerce, listingFacts, packageFieldsOf, returnsDraft, rowsOf, saleFieldsOf, scheduledSale, shippingTerms, specificRows, withFacts, withPackage, withSale, type PackageInput, type ReturnsDraft, type SpecificRow } from "../commerceDraft";
+import { axesProblem, compareAtText, emptyCommerce, listingFacts, packageFieldsOf, priceTerms, returnsDraft, rowsOf, saleFieldsOf, scheduledSale, shippingTerms, specificRows, withFacts, withPackage, withPrice, withSale, type PackageInput, type ReturnsDraft, type SpecificRow } from "../commerceDraft";
 import { CommerceFields } from "./CommerceFields";
 
 type PackageFields = Omit<PackageInput, "regions">;
-type Form = Omit<ListingDraft, "price" | "shipping" | "stock"> & PackageFields & { price: string; shipping: string; stock: string; salePrice: string; saleStarts: string; saleEnds: string; specifics: SpecificRow[]; returns: ReturnsDraft };
+type Form = Omit<ListingDraft, "price" | "shipping" | "stock"> & PackageFields & { price: string; shipping: string; stock: string; salePrice: string; saleStarts: string; saleEnds: string; compareAt: string; acceptsOffers: boolean; specifics: SpecificRow[]; returns: ReturnsDraft };
 
 const EMPTY: ListingDraft = { title: "", description: "", category: "", kind: "physical", shipFrom: "", stock: 1, images: [], currency: "USD", price: 0, shipping: 0, contentRating: "general", contentTags: [] };
 
 function formOf(draft: ListingDraft): Form {
   const sale = saleFieldsOf(draft.price, draft.commerce?.sale ?? null, draft.currency);
-  return { ...draft, ...packageFieldsOf(draft.commerce?.shipping, draft.currency), specifics: specificRows(draft.commerce?.specifics), returns: returnsDraft(draft.commerce?.returns), price: draft.price ? fromMinorUnits(draft.price, draft.currency) : "", shipping: draft.shipping ? fromMinorUnits(draft.shipping, draft.currency) : "", stock: String(draft.stock), salePrice: sale.price, saleStarts: sale.startsOn, saleEnds: sale.endsOn };
+  return { ...draft, ...packageFieldsOf(draft.commerce?.shipping, draft.currency), specifics: specificRows(draft.commerce?.specifics), returns: returnsDraft(draft.commerce?.returns), price: draft.price ? fromMinorUnits(draft.price, draft.currency) : "", shipping: draft.shipping ? fromMinorUnits(draft.shipping, draft.currency) : "", stock: String(draft.stock), salePrice: sale.price, saleStarts: sale.startsOn, saleEnds: sale.endsOn, compareAt: compareAtText(draft.commerce?.compareAt ?? 0, draft.currency), acceptsOffers: draft.commerce?.acceptsOffers ?? false };
 }
 
 /// The draft the node takes, or what to fix first.
@@ -43,13 +43,16 @@ function draftFrom(form: Form): ListingDraft | string {
     if (typeof facts === "string") return facts;
     commerce = withFacts(commerce, facts);
   }
+  const priced = priceTerms(price, form.currency, form.compareAt, form.acceptsOffers, (commerce ?? form.commerce)?.variants.map(variant => variant.price) ?? []);
+  if (typeof priced === "string") return priced;
+  commerce = withPrice(commerce, priced);
   if (commerce && form.currency === "SAT") return "Price a listing with options or shipping services in USD, EUR, GBP, or JPY.";
   if (commerce) {
     const problem = axesProblem(commerce.axes, rowsOf(commerce));
     if (problem) return problem;
     if (commerce.shipping.services.some(s => !s.name.trim() || s.daysMin > s.daysMax)) return "Name each shipping service and give its delivery days, fastest first.";
   }
-  const { salePrice: _salePrice, saleStarts: _saleStarts, saleEnds: _saleEnds, weightG: _weightG, lengthMm: _lengthMm, widthMm: _widthMm, heightMm: _heightMm, handlingDays: _handlingDays, freeOver: _freeOver, specifics: _specifics, returns: _returns, ...rest } = form;
+  const { salePrice: _salePrice, saleStarts: _saleStarts, saleEnds: _saleEnds, compareAt: _compareAt, acceptsOffers: _acceptsOffers, weightG: _weightG, lengthMm: _lengthMm, widthMm: _widthMm, heightMm: _heightMm, handlingDays: _handlingDays, freeOver: _freeOver, specifics: _specifics, returns: _returns, ...rest } = form;
   return { ...rest, price, shipping, stock, commerce };
 }
 
@@ -121,7 +124,9 @@ export function ListingEditor({ listing, categories, rates, onSaved, onCancel }:
           <label className="ob-field"><span>Sale price ({unit})</span><input inputMode="decimal" value={form.salePrice} placeholder="Optional" onChange={e => set("salePrice", e.target.value)}/></label>
           <label className="ob-field"><span>Sale starts</span><input type="date" value={form.saleStarts} onChange={e => set("saleStarts", e.target.value)}/></label>
           <label className="ob-field"><span>Sale ends</span><input type="date" value={form.saleEnds} onChange={e => set("saleEnds", e.target.value)}/></label>
-          <p className="ob-shipping-note ob-field-wide">Leave these empty to sell at the regular price. Buyers pay the sale price on those days, and it is signed with the listing.</p>
+          <label className="ob-field"><span>Compare-at ({unit})</span><input inputMode="decimal" value={form.compareAt} placeholder="Optional" onChange={e => set("compareAt", e.target.value)}/><small className="ob-field-hint">A struck-through price, above the price buyers pay.</small></label>
+          <p className="ob-shipping-note ob-field-wide">Leave the sale empty to sell at the regular price. Buyers pay the sale price on those days, and it is signed with the listing.</p>
+          <label className="ob-default-address"><input type="checkbox" checked={form.acceptsOffers} onChange={e => set("acceptsOffers", e.target.checked)}/>Accept offers</label>
         </>}
       </div>
       <label className="ob-default-address"><input type="checkbox" checked={!!form.commerce} onChange={e => {

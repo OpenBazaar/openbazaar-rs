@@ -75,7 +75,11 @@ pub(crate) fn parse(body: &Value, previous: Option<&Commerce>) -> Result<Commerc
             compare_at: uint(&body["compareAt"], "compare-at price", u64::MAX)?,
             sale: sale(&body["sale"])?,
             tiers: tiers(&body["tiers"])?,
-            accepts_offers: body["acceptsOffers"].as_bool().unwrap_or(false),
+            accepts_offers: match &body["acceptsOffers"] {
+                Value::Null => false,
+                Value::Bool(flag) => *flag,
+                _ => return fail("An offers flag is yes or no."),
+            },
         },
         purchase: Purchase {
             max_per_order: uint(&body["maxPerOrder"], "per-order limit", u64::from(u16::MAX))? as u16,

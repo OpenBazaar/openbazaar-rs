@@ -144,6 +144,31 @@ export function withSale(commerce: Commerce | null, sale: Sale | null): Commerce
   return { ...(commerce ?? emptyCommerce()), sale };
 }
 
+export type PriceTerms = { compareAt: number; acceptsOffers: boolean };
+
+/// The compare-at price to show. Zero on the record means the field is empty.
+export function compareAtText(amount: number, currency: string): string {
+  return amount > 0 ? fromMinor(amount, currency) : "";
+}
+
+/// The compare-at price and offers flag the listing signs. An empty compare-at means none.
+/// The record stores a yes-or-no flag, and a compare-at above every price it is compared with.
+export function priceTerms(regular: number, currency: string, compareAt: string, acceptsOffers: unknown, variantPrices: readonly number[] = []): PriceTerms | string {
+  if (typeof acceptsOffers !== "boolean") return "An offers flag is yes or no.";
+  const text = compareAt.trim();
+  const amount = text ? toMinor(text, currency) : 0;
+  if (amount == null) return "Enter a compare-at price, or leave it empty.";
+  const highest = variantPrices.reduce((top, price) => Math.max(top, price > 0 ? price : regular), regular);
+  if (amount > 0 && amount <= highest) return "A compare-at price is above every price it is compared with.";
+  return { compareAt: amount, acceptsOffers };
+}
+
+/// Put compare-at and the offers flag on the commerce block the existing sign path already accepts.
+export function withPrice(commerce: Commerce | null, terms: PriceTerms): Commerce | null {
+  if (!commerce && terms.compareAt === 0 && !terms.acceptsOffers) return null;
+  return { ...(commerce ?? emptyCommerce()), compareAt: terms.compareAt, acceptsOffers: terms.acceptsOffers };
+}
+
 export type PackageInput = {
   weightG: string;
   lengthMm: string;

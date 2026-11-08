@@ -430,6 +430,45 @@ fn specifics_and_returns_are_signed_onto_the_listing_and_an_invalid_value_is_not
 }
 
 #[test]
+fn compare_at_and_offers_are_signed_onto_the_listing_and_an_invalid_compare_at_is_not() {
+    let (_dir, node) = seller();
+    let listing = open_store(&node);
+    node.fix_rates(&[("USD", 100_000.0)]);
+    let image = listing["images"][0].as_str().unwrap();
+    // 32.00 on a 25.00 price, and offers on, the terms the editor saves.
+    let mut body = mug(image);
+    body["title"] = json!("Listed mug");
+    body["currency"] = json!("USD");
+    body["price"] = json!(2_500);
+    body["shipping"] = json!(0);
+    body["commerce"] = json!({ "condition": "new", "compareAt": 3_200, "acceptsOffers": true });
+    let (status, priced) = request(&node, "POST", "/store/listings", &body.to_string());
+    assert!(status.contains("200"), "{status} {priced}");
+    assert_eq!(priced["commerce"]["compareAt"], 3_200);
+    assert_eq!(priced["commerce"]["acceptsOffers"], true);
+    let bytes = crate::escrow_mail::unhex(priced["record"].as_str().unwrap()).unwrap();
+    let signed = openbazaar_protocol::Listing::decode(&bytes).unwrap();
+    signed.verify().unwrap();
+    let pricing = signed.commerce.unwrap().pricing;
+    assert_eq!((pricing.compare_at, pricing.accepts_offers), (3_200, true), "the signed listing carries the compare-at and offers flag the editor saved");
+
+    let before = node.own_listings().entries.len();
+    body["commerce"]["compareAt"] = json!(2_500);
+    let (status, refused) = request(&node, "POST", "/store/listings", &body.to_string());
+    assert!(status.contains("400"), "{status} {refused}");
+    assert!(refused["error"].as_str().unwrap_or("").contains("above"), "{refused}");
+    body["commerce"]["compareAt"] = json!(3_200);
+    body["commerce"]["acceptsOffers"] = json!("yes");
+    let (status, refused) = request(&node, "POST", "/store/listings", &body.to_string());
+    assert!(status.contains("400"), "{status} {refused}");
+    assert!(refused["error"].as_str().unwrap_or("").contains("offers flag"), "{refused}");
+    let kept = node.own_listings();
+    assert_eq!(kept.entries.len(), before, "an invalid compare-at or offers flag is not signed");
+    let pricing = &kept.entries[1].listing.commerce.as_ref().unwrap().pricing;
+    assert_eq!((pricing.compare_at, pricing.accepts_offers), (3_200, true));
+}
+
+#[test]
 fn uploads_must_be_images() {
     let (_dir, node) = seller();
     let (status, _) = upload(&node, b"<svg onload=alert(1)>");
