@@ -144,6 +144,91 @@ export function withSale(commerce: Commerce | null, sale: Sale | null): Commerce
   return { ...(commerce ?? emptyCommerce()), sale };
 }
 
+export type PackageInput = {
+  weightG: string;
+  lengthMm: string;
+  widthMm: string;
+  heightMm: string;
+  handlingDays: string;
+  freeOver: string;
+  /** One ships-to line per shipping service. Empty means worldwide. */
+  regions: string[];
+};
+
+export type PackageTerms = {
+  weightG: number;
+  dimsMm: [number, number, number];
+  handlingDays: number;
+  freeOver: number;
+  regions: string[][];
+};
+
+const BLANK_PACKAGE: Omit<PackageInput, "regions"> = { weightG: "", lengthMm: "", widthMm: "", heightMm: "", handlingDays: "", freeOver: "" };
+
+function whole(text: string, max: number, label: string): number | string {
+  const trimmed = text.trim();
+  if (!trimmed) return 0;
+  if (!/^\d+$/.test(trimmed)) return label;
+  const value = Number(trimmed);
+  if (!Number.isSafeInteger(value) || value > max) return label;
+  return value;
+}
+
+/// Country codes the way the signed service stores them: uppercase, unique, sorted.
+export function regionList(text: string): string[] | string {
+  const codes = text.split(/[\s,]+/).map(code => code.trim().toUpperCase()).filter(Boolean);
+  if (codes.length > 32) return "A service ships to at most 32 countries.";
+  if (codes.some(code => !/^[A-Z]{2}$/.test(code))) return "A region is a two-letter country code.";
+  return [...new Set(codes)].sort();
+}
+
+/// Package fields to show for shipping already on the listing.
+export function packageFieldsOf(shipping: Commerce["shipping"] | null | undefined, currency: string): Omit<PackageInput, "regions"> {
+  if (!shipping) return BLANK_PACKAGE;
+  const [lengthMm, widthMm, heightMm] = shipping.dimsMm;
+  return {
+    weightG: shipping.weightG ? String(shipping.weightG) : "",
+    lengthMm: lengthMm ? String(lengthMm) : "",
+    widthMm: widthMm ? String(widthMm) : "",
+    heightMm: heightMm ? String(heightMm) : "",
+    handlingDays: shipping.handlingDays ? String(shipping.handlingDays) : "",
+    freeOver: shipping.freeOver ? fromMinor(shipping.freeOver, currency) : "",
+  };
+}
+
+/// The package, handling time, free-shipping threshold and ships-to list the listing signs.
+export function shippingTerms(currency: string, input: PackageInput): PackageTerms | string {
+  const weightG = whole(input.weightG, 0xffff_ffff, "Package weight is a whole number of grams.");
+  if (typeof weightG === "string") return weightG;
+  const lengthMm = whole(input.lengthMm, 65_535, "A package side is at most 65535 mm.");
+  if (typeof lengthMm === "string") return lengthMm;
+  const widthMm = whole(input.widthMm, 65_535, "A package side is at most 65535 mm.");
+  if (typeof widthMm === "string") return widthMm;
+  const heightMm = whole(input.heightMm, 65_535, "A package side is at most 65535 mm.");
+  if (typeof heightMm === "string") return heightMm;
+  const handlingDays = whole(input.handlingDays, 30, "Handling time is at most 30 days.");
+  if (typeof handlingDays === "string") return handlingDays;
+  const freeText = input.freeOver.trim();
+  const freeOver = freeText ? toMinor(freeText, currency) : 0;
+  if (freeOver == null) return "Enter the free-shipping amount, or leave it empty.";
+  const regions: string[][] = [];
+  for (const text of input.regions) {
+    const list = regionList(text);
+    if (typeof list === "string") return list;
+    regions.push(list);
+  }
+  return { weightG, dimsMm: [lengthMm, widthMm, heightMm], handlingDays, freeOver, regions };
+}
+
+/// Put the package on the commerce block the existing sign path already accepts.
+export function withPackage(commerce: Commerce | null, terms: PackageTerms): Commerce | null {
+  const bare = terms.weightG === 0 && terms.handlingDays === 0 && terms.freeOver === 0 && terms.dimsMm.every(side => side === 0) && terms.regions.every(list => list.length === 0);
+  if (!commerce && bare) return null;
+  const base = commerce ?? emptyCommerce();
+  const services = base.shipping.services.map((service, index) => ({ ...service, regions: terms.regions[index] ?? [] }));
+  return { ...base, shipping: { ...base.shipping, weightG: terms.weightG, dimsMm: terms.dimsMm, handlingDays: terms.handlingDays, freeOver: terms.freeOver, services } };
+}
+
 /// Shipping and pickup only make sense for physical goods.
 export function forKind(commerce: Commerce, kind: "physical" | "digital"): Commerce {
   return kind === "digital" ? { ...commerce, shipping: { weightG: 0, dimsMm: [0, 0, 0], handlingDays: 0, freeOver: 0, services: [], pickup: null } } : commerce;

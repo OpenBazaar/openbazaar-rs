@@ -3,14 +3,15 @@ import { Alert, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 
 import { File } from "expo-file-system";
 
 import type { ListingHeader } from "../../catalog.ts";
-import { saleFieldsOf, scheduledSale, withSale } from "../../commerceDraft.ts";
+import { packageFieldsOf, saleFieldsOf, scheduledSale, shippingTerms, withPackage, withSale, type PackageInput } from "../../commerceDraft.ts";
 import { CONTENT_TAGS, MAX_LISTING_IMAGES, PRICE_CURRENCIES, deleteListing, draftOf, fromMinorUnits, saveListing, toMinorUnits, uploadImage, type ListingDraft, type PriceCurrency } from "../../seller.ts";
 import { isLocked, passphraseError, unlockWallet } from "../../walletLock.ts";
 import { sync } from "../session.ts";
 import { ListingPhoto } from "../ListingPhoto.tsx";
 import { Button, Card, NAVY, Notice, SOFT, ui } from "../ui.tsx";
 
-type Fields = Omit<ListingDraft, "price" | "shipping" | "stock"> & { price: string; shipping: string; stock: string; salePrice: string; saleStarts: string; saleEnds: string };
+type PackageFields = Omit<PackageInput, "regions">;
+type Fields = Omit<ListingDraft, "price" | "shipping" | "stock"> & PackageFields & { price: string; shipping: string; stock: string; salePrice: string; saleStarts: string; saleEnds: string; shipsTo: string[] };
 
 const EMPTY: ListingDraft = {
   title: "",
@@ -33,12 +34,14 @@ function fieldsOf(listing: ListingHeader | null): Fields {
   const sale = saleFieldsOf(draft.price, draft.commerce?.sale ?? null, draft.currency);
   return {
     ...draft,
+    ...packageFieldsOf(draft.commerce?.shipping, draft.currency),
     price: draft.price ? fromMinorUnits(draft.price, draft.currency) : "",
     shipping: draft.shipping ? fromMinorUnits(draft.shipping, draft.currency) : "",
     stock: String(draft.stock),
     salePrice: sale.price,
     saleStarts: sale.startsOn,
     saleEnds: sale.endsOn,
+    shipsTo: draft.commerce?.shipping.services.map(service => service.regions.join(", ")) ?? [],
   };
 }
 
@@ -54,7 +57,16 @@ function draftFrom(form: Fields): ListingDraft | string {
   if (form.kind === "physical" && !form.shipFrom.trim()) return "Say where it ships from.";
   const sale = scheduledSale(price, form.currency, { price: form.salePrice, startsOn: form.saleStarts, endsOn: form.saleEnds });
   if (typeof sale === "string") return sale;
-  const commerce = withSale(form.commerce ?? null, sale);
+  let commerce = withSale(form.commerce ?? null, sale);
+  if (form.kind === "physical") {
+    const terms = shippingTerms(form.currency, {
+      weightG: form.weightG, lengthMm: form.lengthMm, widthMm: form.widthMm, heightMm: form.heightMm,
+      handlingDays: form.handlingDays, freeOver: form.freeOver,
+      regions: form.shipsTo,
+    });
+    if (typeof terms === "string") return terms;
+    commerce = withPackage(commerce, terms);
+  }
   if (commerce && form.currency === "SAT") return "Price a listing with options or shipping services in USD, EUR, GBP, or JPY.";
   return {
     title: form.title.trim(),
@@ -216,7 +228,26 @@ export function ListingEdit({ listing, categories, onClose }: { listing: Listing
           </>
         ) : null}
         {form.kind === "physical" && !services ? <Field label={`Shipping (${unit})`} value={form.shipping} onChangeText={(shipping) => set("shipping", shipping)} keyboard="decimal-pad" /> : null}
-        {services ? <Text style={ui.muted}>Shipping services stay as they are. This screen does not change them.</Text> : null}
+        {services ? <Text style={ui.muted}>Service prices and delivery days stay as they are. You can still set where each one ships.</Text> : null}
+        {form.kind === "physical" && form.currency !== "SAT" ? (
+          <>
+            <Field label="Package weight (g)" value={form.weightG} onChangeText={(weightG) => set("weightG", weightG)} keyboard="number-pad" />
+            <Field label="Length (mm)" value={form.lengthMm} onChangeText={(lengthMm) => set("lengthMm", lengthMm)} keyboard="number-pad" />
+            <Field label="Width (mm)" value={form.widthMm} onChangeText={(widthMm) => set("widthMm", widthMm)} keyboard="number-pad" />
+            <Field label="Height (mm)" value={form.heightMm} onChangeText={(heightMm) => set("heightMm", heightMm)} keyboard="number-pad" />
+            <Field label="Handling time (days)" value={form.handlingDays} onChangeText={(handlingDays) => set("handlingDays", handlingDays)} keyboard="number-pad" />
+            <Field label={`Free shipping over (${unit})`} value={form.freeOver} onChangeText={(freeOver) => set("freeOver", freeOver)} keyboard="decimal-pad" />
+            {form.shipsTo.map((line, index) => (
+              <Field
+                key={form.commerce?.shipping.services[index]?.name ?? `ships-${index}`}
+                label={`Ships to (${form.commerce?.shipping.services[index]?.name || "service"})`}
+                value={line}
+                onChangeText={(text) => set("shipsTo", form.shipsTo.map((item, at) => (at === index ? text : item)))}
+              />
+            ))}
+            <Text style={ui.muted}>Country codes, like US, CA. Leave ships-to empty for worldwide. Handling time is at most 30 days.</Text>
+          </>
+        ) : null}
         {form.kind === "physical" ? <Field label="Ships from" value={form.shipFrom} onChangeText={(shipFrom) => set("shipFrom", shipFrom)} /> : null}
         {variants ? <Text style={ui.muted}>Stock follows the options already on this listing. This screen does not change those options.</Text> : <Field label="In stock" value={form.stock} onChangeText={(stock) => set("stock", stock)} keyboard="number-pad" />}
       </Card>
