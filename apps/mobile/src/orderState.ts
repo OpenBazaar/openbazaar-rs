@@ -5,7 +5,7 @@
 // The screen has to know the rail before it offers a wallet button or a QR,
 // because those controls move different money.
 
-import { formatXmr, XMR_CONFIRMATIONS } from './xmr.ts'
+import { formatXmr, parseXmrPayment, XMR_CONFIRMATIONS } from './xmr.ts'
 
 export const ORDER_STATUS = {
   awaitingPayment: 'Awaiting payment',
@@ -75,16 +75,6 @@ export function confirmationTarget(
   return bitcoinNeeded
 }
 
-export type MoneroFields = {
-  network: 'stagenet' | 'mainnet'
-  subaddress: string
-  uri: string
-  amountPiconero: string
-  receivedPiconero: string
-  overpaidPiconero: string
-  confirmationsNeeded: number
-}
-
 export type MoneroDue = {
   network: 'stagenet' | 'mainnet'
   subaddress: string
@@ -97,29 +87,19 @@ export type MoneroDue = {
   awaiting: boolean
 }
 
-export function moneroDue(payment: { rail?: string; monero?: MoneroFields | null } | null | undefined): MoneroDue | null {
-  const fields = payment?.rail === 'xmr' ? payment.monero : null
+/** A Monero amount line from the node's flat payment object. Bitcoin payments are null. */
+export function moneroDue(payment: unknown): MoneroDue | null {
+  const fields = parseXmrPayment(payment)
   if (!fields) return null
-  let amount: bigint
-  let received: bigint
-  let overpaid: bigint
-  try {
-    amount = BigInt(fields.amountPiconero)
-    received = BigInt(fields.receivedPiconero)
-    overpaid = BigInt(fields.overpaidPiconero)
-  } catch {
-    return null
-  }
-  const remaining = amount > received ? amount - received : 0n
   return {
     network: fields.network,
     subaddress: fields.subaddress,
     uri: fields.uri,
-    amountXmr: formatXmr(amount),
-    receivedXmr: formatXmr(received),
-    remainingXmr: formatXmr(remaining),
-    overpaidXmr: overpaid > 0n ? formatXmr(overpaid) : null,
+    amountXmr: formatXmr(fields.amount),
+    receivedXmr: formatXmr(fields.received),
+    remainingXmr: formatXmr(fields.remaining),
+    overpaidXmr: fields.overpaid > 0n ? formatXmr(fields.overpaid) : null,
     confirmationsNeeded: fields.confirmationsNeeded,
-    awaiting: remaining > 0n
+    awaiting: fields.remaining > 0n
   }
 }

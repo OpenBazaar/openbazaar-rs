@@ -39,6 +39,18 @@ test('escrow status never offers the bitcoin pay button', () => {
 })
 
 test('a Monero order keeps its subaddress and does not offer bitcoin', () => {
+  const payment = {
+    rail: 'xmr',
+    network: 'stagenet',
+    subaddress: '7Bexample',
+    subaddressIndex: 3,
+    uri: 'monero:7Bexample?tx_amount=0.04',
+    amountPiconero: '40000000000',
+    satsPerXmr: 300000,
+    priceSats: 12000,
+    receivedPiconero: '0',
+    confirmationsNeeded: 10
+  }
   const parsed = parseBuyerOrder({
     id: 'order-1',
     checkoutId: 'check-1',
@@ -49,30 +61,22 @@ test('a Monero order keeps its subaddress and does not offer bitcoin', () => {
     settlement: 'direct',
     status: 'Awaiting payment',
     lines: [{ listingHash: 'bb', title: 'Cup', quantity: 1, priceSats: 12_000 }],
-    payment: {
-      rail: 'xmr',
-      network: 'stagenet',
-      subaddress: '7Bexample',
-      uri: 'monero:7Bexample?tx_amount=0.04',
-      amountPiconero: '40000000000',
-      receivedPiconero: '0',
-      overpaidPiconero: '0',
-      confirmationsNeeded: 10
-    }
+    payment
   })
-  assert.equal(parsed.payment?.rail, 'xmr')
-  assert.equal(parsed.payment?.address, '')
-  const due = moneroDue(parsed.payment)
+  const due = moneroDue(payment)
+  assert.equal(due?.subaddress, '7Bexample')
   assert.equal(due?.amountXmr, '0.04')
   assert.equal(due?.remainingXmr, '0.04')
   assert.equal(due?.awaiting, true)
-  assert.equal(payKind(parsed), 'xmr')
-  assert.equal(canOfferBitcoinPay(parsed, payKind(parsed), parsed.totalSats), false)
+  const kind = payKind({ settlement: parsed.settlement, status: parsed.status, payment })
+  assert.equal(kind, 'xmr')
+  assert.equal(canOfferBitcoinPay(parsed, kind, parsed.totalSats), false)
   assert.equal(confirmationTarget('xmr', due?.confirmationsNeeded, 1), 10)
   assert.equal(confirmationTarget('btc', 10, 3), 3)
 })
 
 test('a bitcoin receipt stays on the bitcoin rail when the node omits rail', () => {
+  const payment = { address: 'tb1qexample', network: 'testnet4', amountSats: 2400 }
   const parsed = parseBuyerOrder({
     id: 'order-2',
     created: 1,
@@ -81,9 +85,9 @@ test('a bitcoin receipt stays on the bitcoin rail when the node omits rail', () 
     totalSats: 2400,
     settlement: 'direct',
     status: 'Payment seen',
-    payment: { address: 'tb1qexample', network: 'testnet4', amountSats: 2400 }
+    payment
   })
-  assert.equal(parsed.payment?.rail, 'btc')
-  assert.equal(parsed.payment?.monero, null)
-  assert.equal(payKind(parsed), 'btc')
+  assert.equal(parsed.payment?.address, 'tb1qexample')
+  assert.equal(moneroDue(payment), null)
+  assert.equal(payKind({ settlement: 'direct', status: parsed.status, payment: parsed.payment }), 'btc')
 })
