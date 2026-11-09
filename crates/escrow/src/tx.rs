@@ -104,7 +104,7 @@ pub enum Spend {
     Release,
     /// Buyer backstop at `refund_height`. Pays the buyer.
     Refund,
-    /// Vendor default at `vendor_claim_height`. Pays the vendor.
+    /// Timeout when no ruling was published. Pays the buyer, the same refund.
     Claim,
     /// Dispute outcome paying the buyer and the moderator fee.
     BuyerWins,
@@ -153,8 +153,9 @@ impl Templates {
             height_lock(terms.refund_height)?,
             vec![pay(Party::Buyer, anchored), anchor.clone()],
         );
-        // The claim pays the vendor exactly what the vendor-wins outcome
-        // pays, so a vendor who won a ruling saves nothing by waiting for it.
+        // Silence follows the buyer refund. The presigned claim is that
+        // refund: it does not pay the vendor, and the moderator fee stays on
+        // a published ruling.
         let with_fee = |party: Party, lock: absolute::LockTime| {
             spend_template(
                 outpoint,
@@ -175,8 +176,8 @@ impl Templates {
                 absolute::LockTime::ZERO,
                 vec![pay(Party::Vendor, payout)],
             ),
-            refund,
-            claim: with_fee(Party::Vendor, height_lock(terms.vendor_claim_height)?),
+            refund: refund.clone(),
+            claim: refund,
             buyer_wins: with_fee(Party::Buyer, absolute::LockTime::ZERO),
             vendor_wins: with_fee(Party::Vendor, absolute::LockTime::ZERO),
         })

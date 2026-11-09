@@ -1,5 +1,5 @@
-//! Disputes from either party, durable cases and rulings, the M3 fee on
-//! the vendor claim, the M6 limits, and a moderator on compact block filters.
+//! Disputes from either party, durable cases and rulings, a silent moderator,
+//! the M6 limits, and a moderator on compact block filters.
 
 use std::sync::atomic::Ordering;
 
@@ -89,20 +89,22 @@ fn the_vendor_disputes_and_a_vendor_ruling_settles_for_it() {
     assert_eq!(outcome.output[1].value.to_sat(), MODERATOR_FEE_SATS);
 }
 
-/// M3, option (a): the claim pays exactly what a vendor-wins ruling pays,
-/// so a vendor gains nothing by waiting out a dispute instead of asking.
+/// A missing moderator does not pay the vendor. The presigned claim is the
+/// buyer refund, and the moderator fee is not an output of it.
 #[test]
-fn m3_the_vendor_claim_pays_the_moderator_fee_like_a_vendor_ruling() {
+fn a_missing_moderator_does_not_pay_the_vendor() {
     let (market, _, escrow) = funded_market();
     let funding = escrow["fundingSats"].as_u64().unwrap();
     let fee = escrow["spendFeeSats"].as_u64().unwrap();
     let claim = SignedClaim::from_bytes(&unhex(sale(&market.vendor.node)["claim"].as_str().unwrap()).unwrap()).unwrap();
     let claim = claim.transaction();
     let outputs: Vec<u64> = claim.output.iter().map(|out| out.value.to_sat()).collect();
-    assert_eq!(claim.output[0].script_pubkey, script_of(&escrow["vendorPayout"]));
-    assert_eq!(outputs[0], funding - fee - ANCHOR_VALUE.to_sat() - MODERATOR_FEE_SATS);
-    assert!(outputs.contains(&MODERATOR_FEE_SATS), "{outputs:?}");
-    assert!(outputs.contains(&ANCHOR_VALUE.to_sat()), "the claim can be bumped");
+    assert_eq!(claim.output[0].script_pubkey, script_of(&escrow["buyerPayout"]));
+    assert_ne!(claim.output[0].script_pubkey, script_of(&escrow["vendorPayout"]));
+    assert_eq!(outputs[0], funding - fee - ANCHOR_VALUE.to_sat());
+    assert!(!outputs.contains(&MODERATOR_FEE_SATS), "{outputs:?}");
+    assert!(outputs.contains(&ANCHOR_VALUE.to_sat()), "the refund can be bumped");
+    assert_eq!(claim.lock_time.to_consensus_u32(), escrow["refundHeight"].as_u64().unwrap() as u32);
 }
 
 #[test]
