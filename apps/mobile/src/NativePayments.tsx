@@ -27,6 +27,14 @@ import {
   type NetworkInfo
 } from './nodeWallet'
 import { paymentStatusView } from './paymentStatus'
+import {
+  canOfferBitcoinPay,
+  confirmationTarget,
+  moneroDue,
+  ORDER_STATUS,
+  orderPollingDone,
+  payKind
+} from './orderState'
 import { useNodeResource } from './useNodeResource'
 import {
   isLocked,
@@ -297,16 +305,16 @@ export function NativeOrderPayment({
     () => fetchOrder(id),
     12000,
     true,
-    o => o.status === 'Paid'
+    orderPollingDone
   )
   const order = resource.data ?? initial,
     net = network.data?.network,
     orderNet = order.network ?? order.payment?.network
   const due = amountDue(order.totalSats, order.receivedSats),
-    escrow =
-      order.settlement === 'escrow' ||
-      !!order.escrow ||
-      order.status === 'Awaiting vendor terms'
+    kind = payKind(order),
+    monero = moneroDue(order.payment),
+    escrow = kind === 'escrow',
+    offerBitcoinPay = canOfferBitcoinPay(order, kind, due)
   const [busy, setBusy] = useState(false),
     [error, setError] = useState(''),
     [step, setStep] = useState<'unlock' | Quote | null>(null),
@@ -316,15 +324,20 @@ export function NativeOrderPayment({
     network: orderNet ?? net ?? 'testnet4',
     status: order.status,
     confirmations: order.confirmations,
-    requiredConfirmations: network.data?.confirmations,
+    requiredConfirmations: confirmationTarget(
+      kind,
+      monero?.confirmationsNeeded,
+      network.data?.confirmations
+    ),
     dueSats: due,
     sending: order.paying || busy,
     payTxid: order.payTxid,
-    wallet: wallet.data?.balance
+    wallet: kind === 'btc' ? wallet.data?.balance : null
   })
   const insufficient = !!view.balance
-  const mismatch = !!net && (orderNet !== net || wallet.data?.network !== net)
+  const mismatch = kind === 'btc' && !!net && (orderNet !== net || wallet.data?.network !== net)
   const disabled =
+    !offerBitcoinPay ||
     busy ||
     resource.loading ||
     !!resource.error ||
@@ -337,11 +350,7 @@ export function NativeOrderPayment({
     !!wallet.data.syncError ||
     mismatch ||
     insufficient ||
-    order.paying ||
-    !!order.payTxid ||
-    due === 0 ||
-    order.status !== 'Awaiting payment' ||
-    escrow
+    order.paying
   const current = useRef({ disabled, net })
   current.current = { disabled, net }
   async function run(task: () => Promise<void>, fallback: string) {
@@ -399,10 +408,16 @@ export function NativeOrderPayment({
   return (
     <View style={s.payment}>
       <Text style={s.section}>{order.status}</Text>
-      <Text style={s.body}>
-        Received {order.receivedSats.toLocaleString()} /{' '}
-        {order.totalSats.toLocaleString()} sats
-      </Text>
+      {monero ? (
+        <Text style={s.body}>
+          Received {monero.receivedXmr} / {monero.amountXmr} XMR
+        </Text>
+      ) : (
+        <Text style={s.body}>
+          Received {order.receivedSats.toLocaleString()} /{' '}
+          {order.totalSats.toLocaleString()} sats
+        </Text>
+      )}
       <Text style={s.body}>{view.confirmations}</Text>
       {txids.map(txid => (
         <Copy
@@ -427,6 +442,22 @@ export function NativeOrderPayment({
       ) : null}
       {escrow ? (
         <Text style={s.body}>Escrow status is read-only in this client.</Text>
+      ) : kind === 'xmr' ? (
+        <>
+          {view.progress ? <Text style={s.body}>{view.progress}</Text> : null}
+          {monero && monero.awaiting && order.status === ORDER_STATUS.awaitingPayment && !order.payTxid ? (
+            <>
+              <Qr value={monero.uri} />
+              <Copy label='Monero subaddress' value={monero.subaddress} />
+              <Copy label='Amount in XMR' value={monero.remainingXmr} />
+              <Text style={s.body}>
+                Send only {monero.network} Monero to this subaddress.
+              </Text>
+            </>
+          ) : monero ? null : (
+            <Text style={s.body}>This Monero payment could not be read.</Text>
+          )}
+        </>
       ) : (
         <>
           <Text style={s.body}>
@@ -438,7 +469,7 @@ export function NativeOrderPayment({
             </Text>
           )}
           {view.progress && <Text style={s.body}>{view.progress}</Text>}
-          {due > 0 && !order.payTxid && order.status === 'Awaiting payment' && (
+          {offerBitcoinPay && (
             <>
               {step === 'unlock' ? (
                 <View style={s.copy}>

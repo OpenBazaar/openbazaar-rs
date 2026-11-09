@@ -18,7 +18,7 @@ use openbazaar_xmr::{monero_uri, CONFIRMATIONS};
 use serde_json::{json, Value};
 
 use crate::http::{json_body, json_error};
-use crate::watch::{AWAITING_PAYMENT, PAID, PAYMENT_SEEN};
+use crate::watch::{direct_progress, PAID};
 use crate::{catalog_value, Node, OrderError};
 
 pub(crate) const ESCROW_IS_BITCOIN_ONLY: &str = "Escrow is Bitcoin-only. Pay in Monero with direct pay.";
@@ -129,13 +129,7 @@ impl Node {
                 None => continue,
             };
             let due = amount_of(&payment, "amountPiconero");
-            let status = if due > 0 && received.confirmed >= due {
-                PAID
-            } else if due > 0 && received.total >= due {
-                PAYMENT_SEEN
-            } else {
-                AWAITING_PAYMENT
-            };
+            let status = direct_progress(due, received.total, received.confirmed);
             let confirmations = received.confirmations.unwrap_or(0).min(u64::from(u32::MAX)) as u32;
             let result = self.orders().update(&id, |order| {
                 let Some(payment) = order.payment.as_mut() else { return };

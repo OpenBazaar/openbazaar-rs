@@ -1,4 +1,5 @@
 import type { NetworkName } from './catalog'
+import { ORDER_STATUS } from './orderState.ts'
 
 // The node does not expose a fee estimate, so the client keeps this much back
 // for the network fee before it offers to pay from the node wallet. It covers
@@ -40,7 +41,7 @@ export function paymentStatusView(input: PaymentStatusInput): PaymentStatusView 
 }
 
 function confirmationsText({ status, confirmations, requiredConfirmations }: PaymentStatusInput): string {
-  if (status === 'Paid') return 'Confirmed'
+  if (status === ORDER_STATUS.paid) return 'Confirmed'
   return requiredConfirmations === undefined
     ? `Confirmations: ${confirmations}`
     : `Confirmations: ${confirmations} / ${requiredConfirmations}`
@@ -48,8 +49,8 @@ function confirmationsText({ status, confirmations, requiredConfirmations }: Pay
 
 function progressText({ status, confirmations, requiredConfirmations, sending, payTxid }: PaymentStatusInput): string | null {
   if (sending) return 'Sending payment from your node wallet…'
-  if (status === 'Paid') return null
-  if (status === 'Payment seen') {
+  if (status === ORDER_STATUS.paid) return null
+  if (status === ORDER_STATUS.paymentSeen) {
     if (requiredConfirmations === undefined) return 'Payment seen. Waiting for confirmations.'
     const left = Math.max(1, requiredConfirmations - confirmations)
     return `Payment seen. Waiting for ${left} more confirmation${left === 1 ? '' : 's'}.`
