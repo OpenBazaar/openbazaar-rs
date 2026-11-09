@@ -181,7 +181,7 @@ where
     SealedLetter::from_bytes(&payload)
 }
 
-async fn read_exact<R>(reader: &mut R, buf: &mut [u8]) -> Result<(), Error>
+pub(crate) async fn read_exact<R>(reader: &mut R, buf: &mut [u8]) -> Result<(), Error>
 where
     R: AsyncRead + Unpin,
 {

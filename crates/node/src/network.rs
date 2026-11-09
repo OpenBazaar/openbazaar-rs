@@ -137,8 +137,9 @@ pub struct ServeOptions {
     pub follows: Vec<String>,
     /// `--local-shop DIR`: serve the web export on the loopback listener.
     pub local_shop: Option<PathBuf>,
-    /// `--onion`: accept sealed letters on a Tor onion and advertise that address.
-    /// The shop HTTP listener stays on loopback. Clearnet sale URLs stay refused.
+    /// `--onion`: accept sealed letters on a Tor onion, advertise that address,
+    /// and serve the public shop routes there. The clearnet listener stays on
+    /// loopback. Clearnet sale URLs stay refused.
     pub onion: bool,
 }
 

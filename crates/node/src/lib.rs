@@ -4,8 +4,9 @@
 //! The HTTP server listens on loopback. Catalog, order mail, reviews, and
 //! escrow mail for a node on another machine go through this process's Tor
 //! client to that node's sale onion (`--remote`). A redirect off that onion
-//! is not followed. `--onion` is a separate listener: it accepts one sealed
-//! letter on a v3 onion. `send-letter` dials that onion with Arti, or posts
+//! is not followed. `--onion` accepts one sealed letter on a v3 onion and
+//! serves the same public shop routes there. Wallet, escrow spend, and mail
+//! secrets stay closed. `send-letter` dials that onion with Arti, or posts
 //! to a loopback `http://` URL. A clearnet host is refused before a socket opens.
 //! The server broadcasts a transaction only when `POST /orders/{id}/pay`
 //! asks it to, with a spend ticket the user confirmed, while the wallet is
@@ -302,6 +303,8 @@ pub struct Node {
     pub(crate) mailbox: Mailbox,
     /// `{data}/tor` when this process should accept letters on an onion.
     onion_dir: Mutex<Option<PathBuf>>,
+    /// Sale gate the onion relays public shop requests to. Absent until serve binds it.
+    onion_shop: Mutex<Option<std::net::SocketAddr>>,
     /// v3 address published by the onion listener. Absent until it has an identity.
     advertised_onion: Mutex<Option<String>>,
     pub(crate) escrow: escrow_mail::Escrow,
@@ -444,6 +447,7 @@ impl Node {
             vendor_labels: Mutex::new(vendor_labels),
             mailbox,
             onion_dir: Mutex::new(None),
+            onion_shop: Mutex::new(None),
             advertised_onion: Mutex::new(None),
             escrow: escrow_mail::Escrow::open(config.escrow, escrow_inbox, &dir, &vault, escrow_peers)?,
             pairing_token,
@@ -538,6 +542,16 @@ impl Node {
             scope.spawn(|| self.run_order_mail(&stop));
             scope.spawn(|| self.run_replicas(poll.min(Duration::from_secs(30)), &stop));
             if self.onion_dir.lock().unwrap_or_else(|err| err.into_inner()).is_some() {
+                match crate::sale_gate::bind() {
+                    Ok(listener) => match listener.local_addr() {
+                        Ok(addr) => {
+                            *self.onion_shop.lock().unwrap_or_else(|err| err.into_inner()) = Some(addr);
+                            scope.spawn(|| crate::sale_gate::serve(listener, port, &stop));
+                        }
+                        Err(err) => eprintln!("ob-node: store onion: {err}"),
+                    },
+                    Err(err) => eprintln!("ob-node: store onion could not listen: {err}"),
+                }
                 scope.spawn(|| self.run_onion(&stop));
             }
             let result = http::serve(self, port);
