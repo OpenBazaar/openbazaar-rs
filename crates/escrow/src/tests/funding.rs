@@ -29,8 +29,12 @@ fn two_parties_fund_by_exchanging_only_messages() {
 
     let claim = vendor.claim().transaction();
     buyer.verify_key_spend(claim).unwrap();
-    assert_eq!(claim.lock_time.to_consensus_u32(), CLAIM);
+    assert_eq!(claim.lock_time.to_consensus_u32(), REFUND);
     assert_eq!(
+        claim.output[0].script_pubkey,
+        order(ORDER_SECRET).terms.buyer_payout
+    );
+    assert_ne!(
         claim.output[0].script_pubkey,
         order(ORDER_SECRET).terms.vendor_payout
     );

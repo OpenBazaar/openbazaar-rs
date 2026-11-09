@@ -310,7 +310,8 @@ presigned_type!(
 );
 
 presigned_type!(
-    /// The vendor's default claim: pays the vendor at `vendor_claim_height`.
+    /// The presigned claim. It pays the buyer at `refund_height`, so a silent
+    /// moderator cannot pay the vendor.
     SignedClaim,
     2
 );

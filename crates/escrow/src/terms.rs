@@ -20,9 +20,10 @@ use crate::{Error, Party};
 const TERMS_MAGIC: &[u8; 4] = b"OBET";
 /// Not `OBST`, which is the catalog store record.
 const SIGNED_MAGIC: &[u8; 4] = b"OBTS";
-/// v3 is the M3 claim: the vendor claim pays the moderator fee. v2 signed a
-/// fee-free claim, so a v2 encoding must not decode.
-const VERSION: u8 = 3;
+/// v4: a silent moderator does not pay the vendor. The presigned claim is the
+/// buyer refund, and the moderator fee stays on a published ruling. v3 signed
+/// a vendor claim that paid the fee, so a v3 encoding must not decode.
+const VERSION: u8 = 4;
 
 /// Everything the escrow can pay, agreed before funding.
 ///
@@ -43,7 +44,8 @@ pub struct EscrowTerms {
     pub network_fee: Amount,
     /// Last height at which the moderator accepts a dispute letter.
     pub dispute_deadline: u32,
-    /// `nLockTime` of the vendor claim (the vendor default).
+    /// End of the ruling window. No presigned spend pays the vendor here.
+    /// Silence pays the buyer at `refund_height`.
     pub vendor_claim_height: u32,
     /// `nLockTime` of the buyer refund (the vendor-vanished backstop).
     pub refund_height: u32,
@@ -172,7 +174,7 @@ impl EscrowTerms {
     }
 
     pub fn digest(&self) -> [u8; 32] {
-        tagged("ob-escrow/terms/v3", &[&self.encode()])
+        tagged("ob-escrow/terms/v4", &[&self.encode()])
     }
 
     /// Sign the terms with a per-order key. The key must be the buyer's or the vendor's.
