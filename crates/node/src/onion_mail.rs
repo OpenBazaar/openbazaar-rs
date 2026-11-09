@@ -1,11 +1,13 @@
-//! One sealed letter between two nodes.
+//! One sealed letter between two nodes, and the public shop on that onion.
 //!
-//! Shop HTTP stays on loopback. A peer that is a v3 onion is dialed with
-//! [`tormail::ArtiOrderTransport`] and the letter is stored in the vendor's
-//! `mailbox/` by [`tormail::RunningMailbox`]. A peer that is `http://` on
-//! this machine is still posted to `/escrow/mail`. Anything else is refused
-//! before a socket opens. Checkout still writes the buyer's own copy; this
-//! module is the path that actually leaves the process.
+//! The clearnet listener stays on loopback. The same v3 onion answers
+//! `GET /public/store` and the other public routes the sale gate allows.
+//! Wallet, escrow spend, and mail secrets are not among them. A peer that
+//! is a v3 onion is dialed with [`tormail::ArtiOrderTransport`] and the letter
+//! is stored in the vendor's `mailbox/` by [`tormail::RunningMailbox`]. A
+//! peer that is `http://` on this machine is still posted to `/escrow/mail`.
+//! Anything else is refused before a socket opens. Checkout still writes the
+//! buyer's own copy; this module is the path that actually leaves the process.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -161,9 +163,16 @@ impl Node {
 
     async fn accept_onion(&self, state_dir: &Path, stop: &AtomicBool) -> Result<(), String> {
         let mut running = RunningMailbox::start(state_dir).map_err(|err| err.to_string())?;
+        let shop = *self.onion_shop.lock().unwrap_or_else(|err| err.into_inner());
+        if let Some(gate) = shop {
+            running.set_shop(gate);
+        }
         let onion = running.onion_address().map_err(|err| err.to_string())?;
         self.publish_onion(&onion)?;
         eprintln!("ob-node onion {onion}");
+        if shop.is_some() {
+            eprintln!("ob-node: store at http://{onion}/ (public store, media, and reviews)");
+        }
         eprintln!("ob-node: bootstrapping tor");
         running.bootstrap().await.map_err(|err| err.to_string())?;
         eprintln!("ob-node: tor bootstrapped; onion service {}", running.status_summary());
@@ -180,7 +189,8 @@ impl Node {
             tokio::select! {
                 result = running.accept_letter(&self.mailbox) => {
                     match result {
-                        Ok(id) => eprintln!("ob-node: stored letter {id}"),
+                        Ok(tormail::Arrival::Letter(id)) => eprintln!("ob-node: stored letter {id}"),
+                        Ok(tormail::Arrival::Shop) => {}
                         Err(tormail::Error::ListenerClosed) => break,
                         Err(err) => {
                             eprintln!("ob-node: {err}");
@@ -321,6 +331,7 @@ impl PollMail {
 mod tests {
     use std::io::{Read, Write};
     use std::net::TcpListener;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Mutex;
     use std::thread;
     use std::time::Duration;
@@ -472,5 +483,139 @@ mod tests {
         .unwrap();
         assert_eq!(poll.mailbox(), PathBuf::from("/tmp/ob-vendor/testnet4/mailbox"));
         assert!(PollMail::parse(&["--expect".into(), "abcd".into()]).is_err());
+    }
+
+    #[test]
+    fn the_sale_onion_serves_the_public_store_and_a_clearnet_host_is_not_dialed() {
+        use std::sync::atomic::AtomicUsize;
+        use std::sync::Arc;
+        use std::time::Instant;
+
+        assert!(tormail::is_shop_preface(b"GET /public/store"));
+        assert!(!tormail::is_shop_preface(b"OBML"), "a sealed letter is not a shop request");
+        assert!(crate::sale_gate::allowed("GET", "/public/store"));
+        assert!(!crate::sale_gate::allowed("GET", "/wallet"));
+        assert!(!crate::sale_gate::allowed("POST", "/orders/abc/pay"));
+        assert!(!crate::sale_gate::allowed("GET", "/mail"));
+        assert!(!crate::sale_gate::allowed("GET", "/escrow/mail"));
+
+        let dir = crate::harness::TempDir::new();
+        let chain = crate::harness::MockChain::new();
+        let node = crate::harness::open_node(&dir.0, NetworkMode::Testnet4, &chain, 1, crate::EscrowConfig::default());
+        crate::seller_store_tests::open_store(&node);
+        let (direct_status, direct_body) = crate::seller_store_tests::peer_request(&node, "/public/store");
+        assert!(direct_status.contains("200"), "{direct_status}");
+
+        let shop = TcpListener::bind("127.0.0.1:0").unwrap();
+        let shop_port = shop.local_addr().unwrap().port();
+        let seen = Arc::new(Mutex::new(Vec::<String>::new()));
+        let stop = Arc::new(AtomicBool::new(false));
+        let gate = crate::sale_gate::bind().unwrap();
+        let gate_addr = gate.local_addr().unwrap();
+        let trap = TcpListener::bind("127.0.0.1:0").unwrap();
+        let trap_hits = Arc::new(AtomicUsize::new(0));
+
+        thread::scope(|scope| {
+            let record = Arc::clone(&seen);
+            let stopping = Arc::clone(&stop);
+            scope.spawn(move || serve_shop(shop, shop_port, &node, &record, &stopping));
+            let stopping = Arc::clone(&stop);
+            scope.spawn(move || crate::sale_gate::serve(gate, shop_port, &stopping));
+            let counted = Arc::clone(&trap_hits);
+            let stopping = Arc::clone(&stop);
+            scope.spawn(move || {
+                trap.set_nonblocking(true).ok();
+                while !stopping.load(Ordering::Relaxed) {
+                    match trap.accept() {
+                        Ok((mut stream, _)) => {
+                            counted.fetch_add(1, Ordering::SeqCst);
+                            let mut buf = [0u8; 128];
+                            let _ = stream.read(&mut buf);
+                        }
+                        Err(_) => thread::sleep(Duration::from_millis(20)),
+                    }
+                }
+            });
+
+            let store = talk(gate_addr, "GET /public/store HTTP/1.1\r\nHost: example.onion\r\nConnection: close\r\n\r\n");
+            assert!(store.starts_with("HTTP/1.1 200"), "{store}");
+            let body = store.split("\r\n\r\n").nth(1).unwrap_or("");
+            assert_eq!(body.as_bytes(), direct_body.as_slice(), "{body}");
+
+            for closed in [
+                "GET /wallet HTTP/1.1\r\nHost: example.onion\r\nConnection: close\r\n\r\n",
+                "POST /orders/abc/pay HTTP/1.1\r\nHost: example.onion\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                "GET /mail HTTP/1.1\r\nHost: example.onion\r\nConnection: close\r\n\r\n",
+                "GET /escrow/mail HTTP/1.1\r\nHost: example.onion\r\nConnection: close\r\n\r\n",
+            ] {
+                let answer = talk(gate_addr, closed);
+                assert!(answer.starts_with("HTTP/1.1 404"), "{answer}");
+            }
+            thread::sleep(Duration::from_millis(150));
+            let forwarded = seen.lock().unwrap().clone();
+            assert_eq!(forwarded.len(), 1, "a closed route was forwarded: {forwarded:?}");
+            assert!(forwarded[0].starts_with("GET /public/store "), "{forwarded:?}");
+            assert!(forwarded[0].contains(&format!("Host: 127.0.0.1:{shop_port}")), "{forwarded:?}");
+            assert!(!forwarded[0].contains("example"), "{forwarded:?}");
+
+            let started = Instant::now();
+            for clearnet in ["http://example.com/public/store", "http://203.0.113.5:8787/public/store"] {
+                let err = crate::peer_http::call(
+                    &crate::peer_http::PeerLink::default(),
+                    "GET",
+                    clearnet,
+                    None,
+                    None,
+                    Duration::from_secs(1),
+                    1024,
+                )
+                .unwrap_err();
+                assert!(started.elapsed() < Duration::from_millis(500), "a clearnet host was dialed: {err}");
+                assert!(err.contains("not a loopback"), "{clearnet}: {err}");
+            }
+            thread::sleep(Duration::from_millis(100));
+            assert_eq!(trap_hits.load(Ordering::SeqCst), 0, "a clearnet host was dialed");
+            stop.store(true, Ordering::SeqCst);
+        });
+    }
+
+    fn serve_shop(listener: TcpListener, port: u16, node: &Node, seen: &Mutex<Vec<String>>, stop: &AtomicBool) {
+        listener.set_nonblocking(true).ok();
+        while !stop.load(Ordering::Relaxed) {
+            match listener.accept() {
+                Ok((mut stream, _)) => {
+                    let _ = stream.set_nonblocking(false);
+                    let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+                    let Ok(raw) = crate::http_parse::read(&mut stream) else {
+                        continue;
+                    };
+                    seen.lock().unwrap().push(String::from_utf8_lossy(&raw).into_owned());
+                    let response = crate::http::respond(node, &raw, crate::http::Client { loopback: true, port });
+                    let _ = stream.write_all(&response);
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => thread::sleep(Duration::from_millis(20)),
+                Err(_) => thread::sleep(Duration::from_millis(20)),
+            }
+        }
+    }
+
+    fn talk(addr: std::net::SocketAddr, request: &str) -> String {
+        use std::net::TcpStream;
+        let mut last = String::new();
+        for _ in 0..25 {
+            if let Ok(mut stream) = TcpStream::connect_timeout(&addr, Duration::from_millis(200)) {
+                stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+                stream.write_all(request.as_bytes()).unwrap();
+                let mut buf = Vec::new();
+                let _ = stream.read_to_end(&mut buf);
+                if !buf.is_empty() {
+                    return String::from_utf8_lossy(&buf).into_owned();
+                }
+            } else {
+                last = "connection refused".into();
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        panic!("the sale onion did not answer: {last}");
     }
 }

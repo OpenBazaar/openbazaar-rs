@@ -44,7 +44,7 @@ mod transport;
 
 pub use error::Error;
 pub use forward::{discovery_public, exchange, insert_discovery_key, onion_for_seed, start_onion_forward, Discovery, OnionForward};
-pub use listen::{start_onion_listener, OnionListener, RunningMailbox};
+pub use listen::{is_shop_preface, start_onion_listener, Arrival, OnionListener, RunningMailbox};
 pub use guard::{ReplayGuard, SenderPins};
 pub use letter::{MessageId, Opened, SenderId, SenderKey};
 pub use mailbox::{LetterId, Mailbox};

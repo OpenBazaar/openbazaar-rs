@@ -1,7 +1,8 @@
+use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use futures::io::{AsyncReadExt, AsyncWriteExt};
+use futures::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use futures::Stream;
 use futures::StreamExt;
 use tor_cell::relaycell::msg::{Connected, End, EndReason};
@@ -11,9 +12,32 @@ use tor_rtcompat::Runtime;
 
 use crate::mailbox::Mailbox;
 use crate::onion::{OnionAddress, ORDER_PORT};
-use crate::transport::{read_letter, STORED_ACK};
+use crate::transport::{read_exact, read_letter, STORED_ACK};
 use crate::Error;
 use crate::LetterId;
+
+/// What arrived on the vendor onion. A shop request is answered by the sale
+/// gate. It is not stored as a letter.
+pub enum Arrival {
+    Letter(LetterId),
+    Shop,
+}
+
+/// `GET` / `POST` and the other HTTP methods a buyer might send. A sealed
+/// letter starts with `OBML` and is not a shop request.
+pub fn is_shop_preface(bytes: &[u8]) -> bool {
+    bytes.starts_with(b"GET ")
+        || bytes.starts_with(b"POST")
+        || bytes.starts_with(b"HEAD")
+        || bytes.starts_with(b"PUT ")
+        || bytes.starts_with(b"DELE")
+        || bytes.starts_with(b"OPTI")
+        || bytes.starts_with(b"PATC")
+}
+
+fn is_letter_preface(bytes: &[u8]) -> bool {
+    bytes.starts_with(b"OBML")
+}
 
 /// Handle returned by [`start_onion_listener`].
 ///
@@ -36,8 +60,18 @@ impl OnionListener {
     /// Accept one introduced stream, read one sealed letter, and store it.
     ///
     /// Streams aimed at any port other than [`ORDER_PORT`] are rejected.
-    /// The store secret is not used here.
+    /// A public shop request on that port is not a letter. The store secret
+    /// is not used here.
     pub async fn accept_letter(&mut self, mailbox: &Mailbox) -> Result<LetterId, Error> {
+        match self.accept_next(mailbox, None).await? {
+            Arrival::Letter(id) => Ok(id),
+            Arrival::Shop => Err(Error::Listener("shop request with no sale gate")),
+        }
+    }
+
+    /// Accept one stream. `shop` is the sale gate. An HTTP preface is relayed
+    /// there and is not stored. `OBML` is a sealed letter.
+    pub async fn accept_next(&mut self, mailbox: &Mailbox, shop: Option<SocketAddr>) -> Result<Arrival, Error> {
         let rend = self.requests.next().await.ok_or(Error::ListenerClosed)?;
         let mut streams = rend
             .accept()
@@ -62,15 +96,28 @@ impl OnionListener {
             .accept(Connected::new_empty())
             .await
             .map_err(|err| Error::Arti(err.to_string()))?;
-        let letter = read_letter(&mut stream).await?;
-        let id = mailbox.accept(&letter)?;
-        // The sender blocks until it reads this byte. Close without it and
-        // the sender drops the circuit thinking the letter was lost.
-        stream.write_all(&[STORED_ACK]).await?;
-        stream.flush().await?;
-        let mut done = [0u8; 1];
-        let _ = stream.read(&mut done).await;
-        Ok(id)
+        let mut preface = [0u8; 4];
+        read_exact(&mut stream, &mut preface).await?;
+        if is_letter_preface(&preface) {
+            let mut replay = futures::io::Cursor::new(preface).chain(&mut stream);
+            let letter = read_letter(&mut replay).await?;
+            let id = mailbox.accept(&letter)?;
+            // The sender blocks until it reads this byte. Close without it and
+            // the sender drops the circuit thinking the letter was lost.
+            stream.write_all(&[STORED_ACK]).await?;
+            stream.flush().await?;
+            let mut done = [0u8; 1];
+            let _ = stream.read(&mut done).await;
+            return Ok(Arrival::Letter(id));
+        }
+        if is_shop_preface(&preface) {
+            let Some(shop) = shop else {
+                return Err(Error::Listener("shop request with no sale gate"));
+            };
+            relay_shop(&mut stream, preface, shop).await?;
+            return Ok(Arrival::Shop);
+        }
+        Err(Error::Malformed)
     }
 
     /// Short status for the operator log: high-level state, and the current
@@ -82,6 +129,74 @@ impl OnionListener {
             None => format!("{:?}", status.state()),
         }
     }
+}
+
+/// Copy one HTTP request to the sale gate and copy its answer back.
+///
+/// The gate is on loopback. This does not dial the Host header.
+async fn relay_shop<S>(onion: &mut S, preface: [u8; 4], shop: SocketAddr) -> Result<(), Error>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let mut local = tokio::net::TcpStream::connect(shop).await?;
+    let mut request = preface.to_vec();
+    tokio::io::AsyncWriteExt::write_all(&mut local, &preface).await?;
+    let mut buf = [0u8; 8192];
+    while !http_request_complete(&request) {
+        if request.len() > 4 * 1024 * 1024 + 8192 {
+            return Err(Error::Listener("shop request is too large"));
+        }
+        let n = onion.read(&mut buf).await?;
+        if n == 0 {
+            break;
+        }
+        request.extend_from_slice(&buf[..n]);
+        tokio::io::AsyncWriteExt::write_all(&mut local, &buf[..n]).await?;
+    }
+    tokio::io::AsyncWriteExt::shutdown(&mut local).await?;
+    let mut response = Vec::new();
+    loop {
+        let n = tokio::io::AsyncReadExt::read(&mut local, &mut buf).await?;
+        if n == 0 {
+            break;
+        }
+        if response.len() + n > 4 * 1024 * 1024 + 8192 {
+            return Err(Error::Listener("shop answer is too large"));
+        }
+        response.extend_from_slice(&buf[..n]);
+    }
+    onion.write_all(&response).await?;
+    onion.flush().await?;
+    Ok(())
+}
+
+fn http_request_complete(bytes: &[u8]) -> bool {
+    let Some(end) = bytes.windows(4).position(|window| window == b"\r\n\r\n") else {
+        return false;
+    };
+    let head = &bytes[..end];
+    let mut length = 0usize;
+    for line in head.split(|&byte| byte == b'\n') {
+        let line = line.strip_suffix(b"\r").unwrap_or(line);
+        let Some((name, value)) = split_once_byte(line, b':') else {
+            continue;
+        };
+        if name.eq_ignore_ascii_case(b"content-length") {
+            length = std::str::from_utf8(trim_ascii(value)).ok().and_then(|text| text.parse().ok()).unwrap_or(0);
+        }
+    }
+    bytes.len() >= end + 4 + length
+}
+
+fn split_once_byte(bytes: &[u8], needle: u8) -> Option<(&[u8], &[u8])> {
+    let index = bytes.iter().position(|byte| *byte == needle)?;
+    Some((&bytes[..index], &bytes[index + 1..]))
+}
+
+fn trim_ascii(bytes: &[u8]) -> &[u8] {
+    let start = bytes.iter().position(|byte| !byte.is_ascii_whitespace()).unwrap_or(bytes.len());
+    let end = bytes.iter().rposition(|byte| !byte.is_ascii_whitespace()).map(|index| index + 1).unwrap_or(start);
+    &bytes[start..end]
 }
 
 /// Local keystore name for this node's order mailbox. Not the onion address.
@@ -96,6 +211,9 @@ pub struct RunningMailbox {
     listener: OnionListener,
     /// Arti tasks for this service borrow the client. It has to outlive them.
     client: Arc<arti_client::TorClient<tor_rtcompat::PreferredRuntime>>,
+    /// Sale gate for public shop requests on this same onion. Absent until
+    /// the node binds one. Letters do not need it.
+    shop: Option<SocketAddr>,
 }
 
 impl RunningMailbox {
@@ -107,7 +225,13 @@ impl RunningMailbox {
     pub fn start(state_dir: &std::path::Path) -> Result<Self, Error> {
         let client = crate::client::open_client(state_dir)?;
         let listener = start_onion_listener(&client, ORDER_NICKNAME)?;
-        Ok(Self { listener, client })
+        Ok(Self { listener, client, shop: None })
+    }
+
+    /// Public shop requests on this onion are relayed to `gate`. The gate
+    /// decides which routes are served. This does not open a clearnet socket.
+    pub fn set_shop(&mut self, gate: SocketAddr) {
+        self.shop = Some(gate);
     }
 
     /// The v3 address Arti stored for this service.
@@ -117,9 +241,9 @@ impl RunningMailbox {
             .ok_or(Error::Listener("onion identity is not in the keystore"))
     }
 
-    /// Read one sealed letter and store it in `mailbox`.
-    pub async fn accept_letter(&mut self, mailbox: &Mailbox) -> Result<LetterId, Error> {
-        self.listener.accept_letter(mailbox).await
+    /// Read one sealed letter, or relay one public shop request to the sale gate.
+    pub async fn accept_letter(&mut self, mailbox: &Mailbox) -> Result<Arrival, Error> {
+        self.listener.accept_next(mailbox, self.shop).await
     }
 
     /// Download a Tor directory. Launching the service does not do this.

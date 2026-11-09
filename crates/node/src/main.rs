@@ -22,7 +22,7 @@ Chain data comes from BIP 157/158 compact block filters by default.
 --lightning runs an LDK Lightning node for direct pay (see docs/lightning.md). A public peer, Esplora chain source, or gossip server is reached through --proxy, so it does not see this machine's IP. Without --proxy those stay refused. Electrum and bitcoind stay direct. With --remote, inbound Lightning is an onion on that Tor client, forwarded to a loopback socket that is not announced. A public --ln-listen is refused. Mainnet Lightning requires --proxy and an LSP you name (or --no-lsp). There is no mainnet LSP default.
 --vault passphrase reads OB_VAULT_PASSPHRASE, or asks on the terminal.
 --vault file keeps the key in the data dir; use it only on headless machines and in tests.
---onion listens for one sealed letter on a Tor onion (virtual port 80) and writes that address to onion.address. Shop HTTP stays on 127.0.0.1. A clearnet sale URL is still refused.
+--onion listens for one sealed letter on a Tor onion (virtual port 80) and serves the public shop routes on that same onion: GET /public/store, public media, and reviews. The clearnet listener stays on 127.0.0.1. Wallet, escrow spend, and mail secrets stay closed. A clearnet sale URL is still refused.
 send-letter dials --to. An onion uses Arti and fails if the dial fails or times out. A loopback http:// URL posts the letter to /escrow/mail. Any other URL is refused.
 poll-mail lists id and sha256 for each letter in the sealed mailbox. With --expect, it exits 1 when that digest is absent.";
 const PASSPHRASE_ENV: &str = "OB_VAULT_PASSPHRASE";
