@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="only light">
+  <title>How OpenBazaar holds a sale</title>
+  <meta name="description" content="How the OpenBazaar node on main holds a Bitcoin sale: a 2-of-2 MuSig2 lock, a moderator with no spend key, and a new seller known by finished escrows and a time-locked bond.">
+  <link rel="stylesheet" href="styles.css">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%2314263b'/%3E%3Cpath d='M11 8.5v15M11 14.5h4.2a2.4 2.4 0 0 0 0-4.8H11M19 8.5v15M19 14.5h4.2a2.4 2.4 0 0 0 0-4.8H19' fill='none' stroke='%23f4f1ea' stroke-width='1.5' stroke-linecap='round'/%3E%3C/svg%3E">
+</head>
+<body>
+  <a class="skip" href="#lock">Skip to the lock</a>
+  <header class="hero">
+    <nav class="nav" aria-label="Page">
+      <a class="brand" href="#top">
+        <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true">
+          <path d="M3.2 2.4v13.2M3.2 7.6h3.4a2 2 0 0 0 0-4H3.2M10.2 2.4v13.2M10.2 7.6h3.4a2 2 0 0 0 0-4h-3.4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+        </svg>
+        OpenBazaar
+      </a>
+      <ul class="nav-links">
+        <li><a href="#lock">The lock</a></li>
+        <li><a href="#dispute">A dispute</a></li>
+        <li><a href="#reputation">Reputation</a></li>
+        <li><a href="#network">The network</a></li>
+      </ul>
+    </nav>
+    <div class="hero-grid" id="top">
+      <div>
+        <p class="kicker">Testnet4 · main 339462b</p>
+        <h1>Two keys hold the payment</h1>
+        <p class="lede">A buyer and a vendor fund one Taproot output. A moderator can decide who is paid, and has no key in that lock. A new seller is a count of finished escrows, plus a bond, not a name.</p>
+        <div class="actions">
+          <a class="button" href="#pays">See the five payouts</a>
+          <a class="text-link" href="#reputation">How a new seller starts</a>
+        </div>
+      </div>
+      <div class="steps" aria-label="How a new seller becomes known">
+        <article class="step">
+          <div class="step-top">
+            <svg width="28" height="28" viewBox="0 0 28 28" aria-hidden="true">
+              <rect x="6" y="12" width="16" height="11" rx="2" fill="none" stroke="currentColor" stroke-width="1.5"/>
+              <path d="M10 12V9.2a4 4 0 0 1 8 0V12" fill="none" stroke="currentColor" stroke-width="1.5"/>
+            </svg>
+            <span class="index">01</span>
+          </div>
+          <h2>Time-locked bond</h2>
+          <p class="figure">10,000 <span>sats minimum</span></p>
+          <p>Locked at least 2,016 blocks. CLTV or CSV, spendable only by the store key. No slash key. A buyer can check it.</p>
+        </article>
+        <article class="step">
+          <div class="step-top">
+            <svg width="28" height="28" viewBox="0 0 28 28" aria-hidden="true">
+              <path d="M5.5 11.5h10.5v10H5.5z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+              <path d="M5.5 11.5 10.8 7h7.2l5 4.5V21.5h-7" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+              <circle cx="19.5" cy="16.2" r="1.3" fill="none" stroke="currentColor" stroke-width="1.5"/>
+            </svg>
+            <span class="index">02</span>
+          </div>
+          <h2>Escrow first</h2>
+          <p>At a count of zero the sale is escrow, and the moderator is named. The lock aggregates the buyer and the vendor only.</p>
+        </article>
+        <article class="step">
+          <div class="step-top">
+            <svg width="28" height="28" viewBox="0 0 28 28" aria-hidden="true">
+              <path d="M6 18c2.2-1 3.4-3.6 5.2-3.4 1.5.2 1.6 2.4 3.2 2.2 2-.2 2.4-4.2 4.6-5.2" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+              <path d="M7 22h14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+            </svg>
+            <span class="index">03</span>
+          </div>
+          <h2>Moderator signs</h2>
+          <ul class="cites">
+            <li>Who was paid</li>
+            <li>Store key</li>
+            <li>Listing id</li>
+            <li class="struck">Name</li>
+            <li class="struck">Street</li>
+            <li class="struck">Ship-to</li>
+          </ul>
+        </article>
+        <article class="step">
+          <div class="step-top">
+            <svg width="28" height="28" viewBox="0 0 28 28" aria-hidden="true">
+              <path d="M8 5.5h9.2L21 9.2V22.5H8z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+              <path d="M17 5.5V9.2H21M11 14.2h6M11 18h4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+            </svg>
+            <span class="index">04</span>
+          </div>
+          <h2>Finished escrow counts</h2>
+          <p class="figure">0 <span>until a payout</span></p>
+          <p>A release or a dispute settlement. Not direct pay. Not a sale the seller paid to itself.</p>
+        </article>
+      </div>
+    </div>
+  </header>
+
+  <main class="page">
+    <section id="lock">
+      <p class="section-kicker">Funding</p>
+      <div class="split">
+        <div>
+          <h2>The funding lock</h2>
+          <div class="prose">
+            <p>Escrow funding is a 2-of-2 MuSig2 Taproot key-path spend. <code>crypto::aggregate</code> combines only the buyer and vendor points, sorts them, and applies the unspendable BIP 341 tweak. No moderator key is aggregated. There is no script tree. Every outcome is an ordinary 64-byte key-path signature.</p>
+            <p>The two points are per-order keys, from <code>m/1984'/coin'/1'/index'</code>. They are not the store key. The store key, which signs the store and the listing and does not spend, is <code>m/1984'/coin'/0'/0'</code>. On this derivation, coin is 0 on mainnet and 1 on testnet4.</p>
+            <p>The moderator record holds a ruling key and an encryption key, not a spend key. The same record also fixes the payout script, the fee, and the policy, and both parties copy that record into the terms before funding. The two moderator keys have to differ from each other and from the buyer and the vendor.</p>
+          </div>
+        </div>
+        <div>
+          <ol class="timeline" aria-label="Heights after funding">
+            <li class="mark">
+              <span class="dot" aria-hidden="true"></span>
+              <strong>Funded</strong>
+              <span>Release can be signed any time the buyer is satisfied</span>
+            </li>
+            <li class="mark">
+              <span class="dot" aria-hidden="true"></span>
+              <strong>Dispute deadline</strong>
+              <span>Last height a letter is accepted</span>
+            </li>
+            <li class="mark">
+              <span class="dot" aria-hidden="true"></span>
+              <strong>Ruling window ends</strong>
+              <span>No presigned spend pays the vendor here</span>
+            </li>
+            <li class="mark">
+              <span class="dot" aria-hidden="true"></span>
+              <strong>Refund height</strong>
+              <span>Silence pays the buyer, minable at the next block</span>
+            </li>
+          </ol>
+          <p class="notice"><strong>Mainnet stays refused</strong> Moderated escrow is not available on mainnet. It is a testnet4 demo until the two-party escrow protocol is reviewed. The node calls the demo unsafe and says not to send anything of value.</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="pays">
+      <p class="section-kicker">Escrow terms, version 4</p>
+      <h2>What the lock can pay</h2>
+      <div class="prose">
+        <p>The terms are signed before funding, and nothing outside them can appear in a presigned transaction. Version 4 changed the silent case: a silent moderator does not pay the vendor. The presigned claim is the buyer refund. A version 3 encoding, which paid the vendor on that claim, does not decode.</p>
+        <p>The moderator fee is paid only on a published ruling. A ruling for the vendor still pays the vendor and the fee. Cooperative release and the buyer refund do not pay the moderator. The default policy asks for at least 144 blocks from the dispute deadline to the end of the ruling window, and another 144 to the refund height.</p>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <caption>The claim and the buyer refund are the same transaction. Release has no 240-sat anchor. The refund, the claim, and both rulings set one aside so the recipient can raise the fee later.</caption>
+          <thead>
+            <tr>
+              <th scope="col">Outcome</th>
+              <th scope="col">When it can pay</th>
+              <th scope="col">Who receives the coins</th>
+              <th scope="col">Moderator fee</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Cooperative release</td>
+              <td data-label="When it can pay">After the buyer is satisfied. Locktime is zero. Signed after funding, not before.</td>
+              <td data-label="Who receives the coins">The vendor, for the funding amount minus the network fee.</td>
+              <td class="fee-no" data-label="Moderator fee">Not paid</td>
+            </tr>
+            <tr>
+              <td>Buyer refund</td>
+              <td data-label="When it can pay">At the refund height, the backstop if the vendor has vanished.</td>
+              <td data-label="Who receives the coins">The buyer, after the network fee and a 240-sat anchor.</td>
+              <td class="fee-no" data-label="Moderator fee">Not paid</td>
+            </tr>
+            <tr>
+              <td>Presigned claim</td>
+              <td data-label="When it can pay">The same refund. This is what silence pays.</td>
+              <td data-label="Who receives the coins">The buyer. It does not pay the vendor.</td>
+              <td class="fee-no" data-label="Moderator fee">Not paid</td>
+            </tr>
+            <tr>
+              <td>Ruling for the buyer</td>
+              <td data-label="When it can pay">Once that ruling is published. Locktime is zero.</td>
+              <td data-label="Who receives the coins">The buyer, and the moderator’s payout script.</td>
+              <td class="fee-yes" data-label="Moderator fee">Paid</td>
+            </tr>
+            <tr>
+              <td>Ruling for the vendor</td>
+              <td data-label="When it can pay">Once that ruling is published. Locktime is zero.</td>
+              <td data-label="Who receives the coins">The vendor, and the moderator’s payout script.</td>
+              <td class="fee-yes" data-label="Moderator fee">Paid</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="dispute">
+      <p class="section-kicker">Settlement</p>
+      <div class="split">
+        <div>
+          <h2>One share, then the favored half</h2>
+          <div class="prose">
+            <p>A dispute letter carries one share. That share is the moderator half of one branch, created by the party who loses that branch and encrypted to the moderator’s encryption key. The favored party’s half is derived from their per-order key and the branch sighash. It is never sent.</p>
+            <p>Settlement is those two halves added together, completing the adaptor signature both parties signed before funding. Only the favored party can finish that branch. The moderator’s share alone does not produce a valid signature, so a published secret does not pay the winner, and no one else can broadcast it.</p>
+            <p>The moderator does not sign the Bitcoin transaction. They open one letter, after checking it against their own view of the funding output, and return the decrypted share inside a ruling signed by the ruling key. A second letter for the other branch of the same escrow is refused. Two valid rulings on the same terms and outpoint are proof the moderator equivocated.</p>
+          </div>
+        </div>
+        <ol class="sequence">
+          <li><b>1</b><span>Both parties sign the terms. Every payout, height, fee, and the moderator record are fixed there.</span></li>
+          <li><b>2</b><span>They exchange one encrypted share per branch and presign the refund, the claim, and both dispute outcomes.</span></li>
+          <li><b>3</b><span>The buyer funds the 2-of-2 output. The release signature comes later, if the buyer is satisfied.</span></li>
+          <li><b>4</b><span>A claimant sends one letter. The moderator returns one share, for the branch the letter asked about.</span></li>
+          <li><b>5</b><span>The favored party adds their own half and finishes that branch. The other party cannot.</span></li>
+        </ol>
+      </div>
+    </section>
+
+    <section id="reputation">
+      <p class="section-kicker">Reputation</p>
+      <h2>A count, a bond, and a ruling</h2>
+      <div class="prose">
+        <p>The public ruling is a second record, tagged <code>ob/public-ruling/v1</code>, signed by the moderator’s existing ruling key. It is not the ruling the in-flight claim verifies. It cites who was paid, the store key at <code>m/1984'/coin'/0'/0'</code>, and the listing id covered by the store-signed offer. Name, street, email, phone, coordinates, and ship-to are refused. Buyer keys are not published.</p>
+        <p>Catalog text has the same restraint. A store or listing record refuses an email, a phone number, a street, coordinates, and a postal code. People are not named in public text.</p>
+      </div>
+      <div class="pair">
+        <article class="panel">
+          <h3>The count</h3>
+          <div class="counts">
+            <div class="count">
+              <b>0</b>
+              <span>Direct pay is refused. The sale has to be escrow, with the moderator named.</span>
+            </div>
+            <div class="count">
+              <b>1+</b>
+              <span>Direct pay is allowed. Escrow can start without a bond.</span>
+            </div>
+          </div>
+          <p>Only a finished escrow payout counts: a cooperative release or a dispute settlement. Direct pay does not. A seller paying their own sale does not. The count is a number. Orders are not published with it.</p>
+        </article>
+        <article class="panel">
+          <h3>The bond</h3>
+          <p>Tag <code>ob/bond/v1</code>, testnet4 only. Mainnet is refused with the same sentence as mainnet escrow. The minimum is 10,000 sats. The minimum lock is 2,016 blocks, by CLTV or by CSV.</p>
+          <p>The script pays the store key after that lock, and nothing else. There is no slash key. A buyer checks the signature, the script, the minimums, and the outpoint. A new seller with no passing bond is refused when escrow starts.</p>
+        </article>
+      </div>
+    </section>
+
+    <section id="network">
+      <p class="section-kicker">Where a sale may go</p>
+      <h2>Loopback, or a v3 onion</h2>
+      <div class="prose">
+        <p>A sale URL is loopback HTTP, or <code>http://</code> plus a v3 onion reached through this node’s Tor client. A clearnet host is refused before a connection. A redirect is not followed. This is not a directory and not a DHT.</p>
+        <p>The one store a downloaded test build can open without typing an address is the vendor onion below. A catalog read is <code>GET /public/store</code> on that kind of URL. The code also allows public media, reviews, order mail, and escrow mail on the sale onion, and it leaves wallet and spend routes closed. The clearnet listener stays on loopback.</p>
+        <p>A live <code>GET /public/store</code> on this onion has not been shown. This page does not claim a buyer can already browse that vendor.</p>
+      </div>
+      <p class="onion">gwyf5y2jzymphjmxatxjtivt5tow6oxtosjl53i2ylxr3wj365zourad.onion</p>
+    </section>
+
+    <section id="listings">
+      <p class="section-kicker">What a signed listing can already say</p>
+      <h2>A sale price, or an offer</h2>
+      <div class="prose">
+        <p>A listing can carry a scheduled sale: a percentage off between two days, inclusive, signed onto the listing. It can also take a Best Offer. An accepted offer sets the unit price for that buyer and that quantity, and it does not stack with a coupon. An auction is not part of this node.</p>
+        <p>The behavior on this page is the node at <a href="https://github.com/OpenBazaar/openbazaar-rs/commit/339462bb70f1ba8051b4a1e0813d829637ccd001">339462b</a>. The funding aggregate is <a href="https://github.com/OpenBazaar/openbazaar-rs/blob/main/crates/escrow/src/crypto.rs">crypto::aggregate</a>. The bond and the public ruling are <a href="https://github.com/OpenBazaar/openbazaar-rs/blob/main/crates/protocol/src/reputation.rs">ob/bond/v1 and ob/public-ruling/v1</a>. The test-network onion is <a href="https://github.com/OpenBazaar/openbazaar-rs/blob/main/crates/node/src/test_network.rs">the seed in the node</a>.</p>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="foot">
+      <span>OpenBazaar · testnet4 demo · two keys, no name</span>
+      <a href="https://github.com/OpenBazaar/openbazaar-rs">OpenBazaar/openbazaar-rs</a>
+    </div>
+  </footer>
+</body>
+</html>
