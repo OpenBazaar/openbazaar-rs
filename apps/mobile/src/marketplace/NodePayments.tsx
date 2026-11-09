@@ -27,6 +27,14 @@ import {
   type NetworkInfo
 } from '../nodeWallet'
 import { paymentStatusView } from '../paymentStatus'
+import {
+  canOfferBitcoinPay,
+  confirmationTarget,
+  moneroDue,
+  ORDER_STATUS,
+  orderPollingDone,
+  payKind
+} from '../orderState'
 import { useNodeResource } from '../useNodeResource'
 import { isLocked, quotePayment, type LockStatus, type Quote, type Ticket } from '../walletLock'
 import { RailMark } from './RailMark'
@@ -345,33 +353,38 @@ export function OrderPayment({
     () => fetchOrder(id),
     12000,
     true,
-    o => o.status === 'Paid'
+    orderPollingDone
   )
   const order = resource.data ?? initial
   const due = amountDue(order.totalSats, order.receivedSats)
+  const kind = payKind(order)
+  const monero = moneroDue(order.payment)
+  const escrow = kind === 'escrow'
+  const offerBitcoinPay = canOfferBitcoinPay(order, kind, due)
   const net = network.data?.network
   const orderNetwork = order.network ?? order.payment?.network
   const mismatch =
+    kind === 'btc' &&
     !!net &&
     ((!!orderNetwork && orderNetwork !== net) ||
       (!!wallet.data && wallet.data.network !== net))
-  const escrow =
-    order.settlement === 'escrow' ||
-    !!order.escrow ||
-    order.status === 'Awaiting vendor terms'
   const view = paymentStatusView({
     network: orderNetwork ?? net ?? 'testnet4',
     status: order.status,
     confirmations: order.confirmations,
-    requiredConfirmations: network.data?.confirmations,
+    requiredConfirmations: confirmationTarget(
+      kind,
+      monero?.confirmationsNeeded,
+      network.data?.confirmations
+    ),
     dueSats: due,
     sending: order.paying || sending,
     payTxid: order.payTxid,
-    wallet: wallet.data?.balance
+    wallet: kind === 'btc' ? wallet.data?.balance : null
   })
   const lowBalance = !!view.balance
   const blocked =
-    escrow ||
+    !offerBitcoinPay ||
     !net ||
     !orderNetwork ||
     mismatch ||
@@ -384,10 +397,7 @@ export function OrderPayment({
     !!wallet.data.syncError ||
     lowBalance ||
     sending ||
-    order.paying ||
-    !!order.payTxid ||
-    due === 0 ||
-    order.status !== 'Awaiting payment'
+    order.paying
   // Unlock if needed, then ask the node for the exact terms and step up.
   async function start(status = lock.data) {
     if (submitting.current || blocked || !net) return
@@ -442,18 +452,24 @@ export function OrderPayment({
     >
       <div className='ob-payment-progress' aria-live='polite'>
         <strong>{order.status}</strong>
-        <span>
-          Received {order.receivedSats.toLocaleString()} /{' '}
-          {order.totalSats.toLocaleString()} sats
-        </span>
-        {!escrow && order.status !== 'Declined by the seller' && (
+        {monero ? (
+          <span>
+            Received {monero.receivedXmr} / {monero.amountXmr} XMR
+          </span>
+        ) : (
+          <span>
+            Received {order.receivedSats.toLocaleString()} /{' '}
+            {order.totalSats.toLocaleString()} sats
+          </span>
+        )}
+        {kind === 'btc' && order.status !== ORDER_STATUS.declined && (
           <span>
             Still owed: {due.toLocaleString()} sats ({bitcoinAmount(due)} BTC)
           </span>
         )}
         <span>{view.confirmations}</span>
       </div>
-      {order.status === 'Declined by the seller' && (
+      {order.status === ORDER_STATUS.declined && (
         <p role='alert' className='ob-form-error'>
           {('remote' in order && order.remote?.reason) || 'The seller declined this order.'} Nothing was paid.
         </p>
@@ -482,6 +498,22 @@ export function OrderPayment({
             Escrow payment is not available here yet. You can track this order’s status here.
           </p>
         </>
+      ) : kind === 'xmr' ? (
+        <>
+          {view.progress && <p role='status'>{view.progress}</p>}
+          {monero && monero.awaiting && order.status === ORDER_STATUS.awaitingPayment && !order.payTxid ? (
+            <div className='ob-payment-options'>
+              <PaymentQr value={monero.uri} />
+              <CopyPaymentValue label='Monero subaddress' value={monero.subaddress} />
+              <CopyPaymentValue label='Amount in XMR' value={monero.remainingXmr} />
+              <p className='ob-page-intro'>
+                Send only {monero.network} Monero to this subaddress. The QR code requests the remaining amount.
+              </p>
+            </div>
+          ) : monero ? null : (
+            <p className='ob-page-intro'>This Monero payment could not be read.</p>
+          )}
+        </>
       ) : (
         <>
           {mismatch && (
@@ -495,7 +527,7 @@ export function OrderPayment({
             </p>
           )}
           {view.progress && <p role='status'>{view.progress}</p>}
-          {due > 0 && !order.payTxid && order.status === 'Awaiting payment' && (
+          {offerBitcoinPay && (
             <div className='ob-payment-options'>
               <div className='ob-pay-wallet'>
                 <p className='ob-rail'><RailMark rail='bitcoin' /> Bitcoin on-chain</p>
@@ -562,12 +594,12 @@ export function OrderPayment({
           )}
         </>
       )}
-      {!escrow &&
+      {kind === 'btc' &&
         orderNetwork &&
         order.payTxid &&
         order.confirmations === 0 &&
-        (order.status === 'Awaiting payment' ||
-          order.status === 'Payment seen') && (
+        (order.status === ORDER_STATUS.awaitingPayment ||
+          order.status === ORDER_STATUS.paymentSeen) && (
           <SpeedUpPayment
             orderId={id}
             network={orderNetwork}

@@ -50,6 +50,7 @@ import { CONTENT_TAGS, parseKeywords, safetyVerdict, toggleHidden, visibleListin
 import { readSafety, writeSafety } from "./src/safety/storage";
 
 import { NativeNetworkBadge, NativeOrderPayment, NativeWallet } from "./src/NativePayments";
+import { orderPollingDone, ordersSettled } from "./src/orderState";
 import { NodePaymentsProvider } from "./src/marketplace/NodePayments";
 import { HomeNodeApp } from "./src/native/HomeNodeApp";
 
@@ -1327,10 +1328,10 @@ function Orders({
       });
   }, []);
   useEffect(() => {
-    if (orders && orders.every(o => o.status === "Paid")) return;
+    if (orders && ordersSettled(orders)) return;
     const timer = setInterval(() => { void fetchOrders().then(setOrders).catch(e => setError(e instanceof Error ? e.message : "Orders unavailable")); }, 12000);
     return () => clearInterval(timer);
-  }, [orders?.every(o => o.status === "Paid")]);
+  }, [orders?.every(o => orderPollingDone(o))]);
   const groups = orders ? orderGroups(orders) : [];
   return (
     <ScrollView contentContainerStyle={styles.sheetPad}>
@@ -1387,10 +1388,10 @@ function OrderDetail({
       });
   }, [id]);
   useEffect(() => {
-    if (order?.status === "Paid") return;
+    if (order && orderPollingDone(order)) return;
     const timer = setInterval(() => { void fetchOrder(id).then(setOrder).catch(e => setError(e instanceof Error ? e.message : "Order unavailable")); }, 12000);
     return () => clearInterval(timer);
-  }, [id, order?.status === "Paid"]);
+  }, [id, order ? orderPollingDone(order) : false]);
   if (!order) {
     return <Text style={styles.status}>{error ?? "Loading the order"}</Text>;
   }

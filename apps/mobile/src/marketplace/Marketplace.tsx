@@ -14,6 +14,7 @@ import { VendorLabelPicker } from "./VendorLabelPicker";
 import { LabelersPanel } from "./Labelers";
 import { CanopyDivider, MarketEmptyArtwork } from "./MarketArtwork";
 import { NetworkBadge, NodePaymentsProvider, OrderPayment, WalletPanel } from "./NodePayments";
+import { ordersSettled } from "../orderState";
 import { useNodeResource } from "../useNodeResource";
 import { PageHeading } from "./PageHeading";
 import { BuildLine, BuildMismatchWarning, useBuildInfo } from "./BuildInfo";
@@ -312,7 +313,7 @@ export function Payment({ receipt }: { receipt: BuyerOrder | import("../catalog"
   return <OrderPayment key={id} id={id} initial={receipt}/>;
 }
 function Orders({ rates, currency, onBrowse }: { rates: RateTable; currency: CurrencyCode; onBrowse: () => void }) {
-  const resource = useNodeResource(fetchOrders, 12000, true, orders => orders.length === 0 || orders.every(o => o.remote ? o.status === "Completed" || o.status === "Declined by the seller" : o.status === "Paid"));
+  const resource = useNodeResource(fetchOrders, 12000, true, ordersSettled);
   const [expanded, setExpanded] = useState<string | null>(null);
   const orders = resource.data ?? [];
   return <section className="ob-orders"><PageHeading title="Your orders" description="Track deliveries and complete payments." action={<button className="ob-secondary" disabled={resource.loading} onClick={() => void resource.refresh()}>Refresh orders</button>}/>

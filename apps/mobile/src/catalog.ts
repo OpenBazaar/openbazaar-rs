@@ -208,7 +208,18 @@ export type RemoteOrder = {
 
 export type OrderReview = { rating: number; text: string; published: boolean; sendAfter: number; writtenOn: number | null };
 
+export type MoneroPaymentFields = {
+  network: "stagenet" | "mainnet";
+  subaddress: string;
+  uri: string;
+  amountPiconero: string;
+  receivedPiconero: string;
+  overpaidPiconero: string;
+  confirmationsNeeded: number;
+};
+
 export type DirectPayment = {
+  rail: "btc" | "xmr";
   address: string;
   amountSats: number | null;
   network: NetworkName | null;
@@ -217,6 +228,7 @@ export type DirectPayment = {
   onchain: string;
   /** The order's BOLT 11 invoice when it is paid over Lightning. */
   ln: LnInvoice | null;
+  monero: MoneroPaymentFields | null;
 };
 
 export type EscrowReceipt = {
@@ -864,9 +876,33 @@ function parseLines(value: unknown, fallback: BuyerLine): BuyerLine[] {
   });
 }
 
+function piconeroText(value: unknown): string | null {
+  return typeof value === "string" && /^\d{1,20}$/.test(value) ? value : null;
+}
+
+function parseMonero(payment: Record<string, unknown>): MoneroPaymentFields | null {
+  const network = payment.network === "stagenet" || payment.network === "mainnet" ? payment.network : null;
+  const subaddress = typeof payment.subaddress === "string" ? payment.subaddress : "";
+  const uri = typeof payment.uri === "string" ? payment.uri : "";
+  const amountPiconero = piconeroText(payment.amountPiconero);
+  if (!network || !subaddress || !uri || !amountPiconero) return null;
+  const needed = payment.confirmationsNeeded;
+  return {
+    network,
+    subaddress,
+    uri,
+    amountPiconero,
+    receivedPiconero: piconeroText(payment.receivedPiconero) ?? "0",
+    overpaidPiconero: piconeroText(payment.overpaidPiconero) ?? "0",
+    confirmationsNeeded: typeof needed === "number" && Number.isSafeInteger(needed) && needed > 0 ? needed : 10,
+  };
+}
+
 function parsePayment(value: unknown): DirectPayment {
   const payment = recordOf(value, "The shop accepted the order but the page could not read the receipt.");
+  const rail = payment.rail === "xmr" ? "xmr" : "btc";
   return {
+    rail,
     address: typeof payment.address === "string" ? payment.address : "",
     amountSats: typeof payment.amountSats === "number" ? requiredNumber(payment.amountSats) : null,
     network: parseNetworkName(payment.network),
@@ -874,6 +910,7 @@ function parsePayment(value: unknown): DirectPayment {
     lightning: typeof payment.lightning === "string" ? payment.lightning : "",
     onchain: typeof payment.onchain === "string" ? payment.onchain : "",
     ln: parseLnInvoice(payment),
+    monero: rail === "xmr" ? parseMonero(payment) : null,
   };
 }
 
