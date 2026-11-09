@@ -4,7 +4,9 @@ import { termsOf } from "../cart";
 import type { ListingHeader } from "../catalog";
 import { basePrice, formatMinor, NO_VARIANT } from "../pricing";
 import { initialSelection, listingSellable, maxQuantity, selectedVariant, sellable, type Selection } from "../variants";
-import { ListingFacts, PriceTag, useListingStyles, VariantPicker } from "./VariantPicker";
+import { ListingFacts, PriceTag, QuantityStepper, useListingStyles, VariantPicker } from "./VariantPicker";
+
+export { QuantityStepper };
 
 /** What the buyer picked on a version 7 listing. */
 export type BuyChoice = { variant?: string; quantity: number };
@@ -22,9 +24,9 @@ export function useBuyChoice(listing: ListingHeader) {
   const variant = commerce ? selectedVariant(commerce, selection) : null;
   const available = !commerce ? listing.stock : variant ? sellable(commerce, variant) : commerce.axes.length ? 0 : listingSellable(commerce, listing.stock);
   const max = commerce ? maxQuantity(commerce, available) : Math.min(listing.stock, 99);
-  const choice: BuyChoice = { variant: variant?.id, quantity: Math.min(quantity, Math.max(max, 1)) };
+  const choice: BuyChoice = { variant: variant?.id, quantity: max > 0 ? Math.min(Math.max(1, quantity), max) : 0 };
   const select = (next: Selection) => { setSelection(next); setQuantity(1); };
-  return { selection, select, quantity: choice.quantity, setQuantity, choice, canBuy: max > 0 };
+  return { selection, select, quantity: choice.quantity, setQuantity, choice, canBuy: max > 0, max };
 }
 
 /// Price, options and quantity for a version 7 listing, in place of the sats price.
