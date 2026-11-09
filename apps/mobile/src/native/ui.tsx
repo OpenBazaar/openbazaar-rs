@@ -69,11 +69,11 @@ export function ago(unixSecs: number | null | undefined): string {
 }
 
 export const ui = StyleSheet.create({
-  screen: { padding: 16, gap: 14, paddingBottom: 40 },
+  screen: { padding: 20, gap: 20, paddingBottom: 40 },
   title: { fontSize: 26, fontWeight: "700", color: NAVY },
   subtitle: { fontSize: 16, color: INK, lineHeight: 22 },
-  muted: { fontSize: 14, color: MUTED, lineHeight: 20 },
-  button: { backgroundColor: NAVY, borderRadius: 10, paddingVertical: 14, paddingHorizontal: 18, alignItems: "center" },
+  muted: { fontSize: 15, color: MUTED, lineHeight: 22 },
+  button: { backgroundColor: NAVY, borderRadius: 10, minHeight: 48, paddingVertical: 14, paddingHorizontal: 18, alignItems: "center", justifyContent: "center" },
   buttonPlain: { backgroundColor: SOFT },
   buttonDanger: { backgroundColor: "#f6e3e3" },
   buttonText: { color: "#fff", fontSize: 16, fontWeight: "600" },
@@ -81,12 +81,12 @@ export const ui = StyleSheet.create({
   dangerText: { color: ERROR },
   disabled: { opacity: 0.45 },
   pressed: { opacity: 0.8 },
-  card: { backgroundColor: CARD, borderRadius: 14, padding: 16, gap: 10, borderWidth: 1, borderColor: LINE },
-  cardTitle: { fontSize: 13, fontWeight: "700", color: MUTED, textTransform: "uppercase", letterSpacing: 0.6 },
-  row: { flexDirection: "row", justifyContent: "space-between", gap: 12 },
-  rowLabel: { fontSize: 15, color: MUTED },
-  rowValue: { fontSize: 15, color: INK, flexShrink: 1, textAlign: "right" },
-  notice: { fontSize: 14, color: NAVY, backgroundColor: SOFT, padding: 12, borderRadius: 10, lineHeight: 20 },
+  card: { backgroundColor: CARD, borderRadius: 14, padding: 20, gap: 14, borderWidth: 1, borderColor: LINE },
+  cardTitle: { fontSize: 16, lineHeight: 22, fontWeight: "600", color: NAVY },
+  row: { flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start", gap: 16 },
+  rowLabel: { fontSize: 16, lineHeight: 23, color: MUTED, flexShrink: 1 },
+  rowValue: { fontSize: 16, lineHeight: 23, color: INK, flexShrink: 1, textAlign: "right" },
+  notice: { fontSize: 15, color: NAVY, backgroundColor: SOFT, padding: 16, borderRadius: 10, lineHeight: 23 },
   noticeError: { color: ERROR, backgroundColor: "#f6e3e3" },
   input: { backgroundColor: CARD, borderWidth: 1, borderColor: LINE, borderRadius: 10, padding: 12, fontSize: 17, color: INK },
 });

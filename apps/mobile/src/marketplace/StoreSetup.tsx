@@ -62,7 +62,7 @@ export function StoreSetup({ profile, onSaved, onViewStore }: { profile: SellerP
     setBusy(false);
   }
   return <section className="ob-store-setup">
-    <PageHeading title={first ? "Set up your store" : "Store settings"} description={first ? "Name your store and say what you sell. Your node signs it and serves it to buyers." : "Changes are signed by your node and replace the store buyers see."} action={profile.setUp ? <button className="ob-secondary" onClick={onViewStore}>View your store</button> : undefined}/>
+    <PageHeading title={first ? "Set up your store" : "Store settings"} description="Manage store identity, customer policies, shipping coverage, and payment methods." action={profile.setUp ? <button className="ob-secondary" onClick={onViewStore}>View your store</button> : undefined}/>
     <form className="ob-store-form" onSubmit={e => void save(e)}>
       <div className="ob-store-images">
         <div className="ob-store-banner-edit">
@@ -79,7 +79,7 @@ export function StoreSetup({ profile, onSaved, onViewStore }: { profile: SellerP
         </div>
       </div>
       <fieldset className="ob-store-section">
-        <legend>Display name</legend>
+        <legend>Store identity</legend>
         <div className="ob-field-grid">
           <TextField label="Display name" value={fields.name} onChange={set("name")} max={64} placeholder="Brook and Pine"/>
         </div>
@@ -100,17 +100,17 @@ export function StoreSetup({ profile, onSaved, onViewStore }: { profile: SellerP
         <div className="ob-field-grid">
           <TextField label="Ships to (country codes)" value={fields.shipsTo} onChange={set("shipsTo")} max={400} placeholder="US, CA, GB"/>
           <TextField label="Processing time" value={fields.processingTime} onChange={set("processingTime")} max={120} placeholder="Ships in 2–3 days"/>
-          <TextField label="Shipping policy" value={fields.shippingPolicy} onChange={set("shippingPolicy")} max={500} wide multiline/>
-          <TextField label="Returns policy" value={fields.returnsPolicy} onChange={set("returnsPolicy")} max={500} wide multiline/>
+          <TextField label="Shipping policy" value={fields.shippingPolicy} onChange={set("shippingPolicy")} max={500} multiline placeholder="Delivery coverage, tracking, customs and duties, and lost or damaged shipments."/>
+          <TextField label="Returns policy" value={fields.returnsPolicy} onChange={set("returnsPolicy")} max={500} multiline placeholder="Return window, eligibility, item condition, return postage, refunds and exclusions."/>
         </div>
       </fieldset>
       <fieldset className="ob-store-section">
         <legend>Payments</legend>
         <ul className="ob-payment-rails">
-          <li className="is-on"><strong className="ob-rail"><RailMark rail="bitcoin" />Bitcoin, paid to you directly</strong><span>{profile.network === "testnet4" ? "Testnet4 coins. Each order gets a fresh address from your node's wallet." : "Each order gets a fresh address from your node's wallet."}</span></li>
+          <li className="is-on"><strong className="ob-rail"><RailMark rail="bitcoin" />Bitcoin</strong><span>{profile.network === "testnet4" ? "Testnet4 wallet. " : ""}Each accepted order receives a fresh payment address. New sellers must satisfy the node's escrow and reputation requirements before accepting orders.</span></li>
           <li className={profile.xmrAvailable ? "" : "is-off"}><strong className="ob-rail"><RailMark rail="monero" />Monero</strong><span>{profile.xmrAvailable ? "Buyers can pay in Monero." : "Not available for your own store on this node yet."}</span></li>
           <li className={profile.acceptsLightning ? "is-on" : "is-off"}><strong className="ob-rail"><RailMark rail="lightning" />Lightning</strong><span>{profile.acceptsLightning ? "Buyers can pay a Lightning invoice. Direct pay only." : "Turn it on in Lightning settings. It stays off on mainnet until connections run over Tor."}</span></li>
-          <li className={profile.escrowAvailable ? "" : "is-off"}><strong>Moderated escrow</strong><span>{profile.escrowAvailable ? "Buyers can choose a moderator." : "Not available for your own store on this node yet. Orders are paid directly."}</span></li>
+          <li className={profile.escrowAvailable ? "" : "is-off"}><strong>Moderated escrow</strong><span>{profile.escrowAvailable ? "Buyers can choose a moderator." : "Merchant escrow setup is not available in this client. New-seller orders that require escrow cannot be accepted yet."}</span></li>
         </ul>
       </fieldset>
       {profile.setUp ? <fieldset className="ob-store-section">

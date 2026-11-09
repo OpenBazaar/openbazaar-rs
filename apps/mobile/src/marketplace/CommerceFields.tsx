@@ -38,8 +38,8 @@ export function CommerceFields({ commerce, kind, currency, basePrice, images, pa
   };
   const money = (value: string, fallback: number) => value.trim() ? toMinor(value, currency) ?? fallback : 0;
   return <>
-    <fieldset className="ob-store-section">
-      <legend>Condition and options</legend>
+    <fieldset className="ob-store-section" id="ob-listing-options">
+      <legend>Variants and product specifications</legend>
       <div className="ob-field-grid">
         <label className="ob-field"><span>Condition</span><select value={commerce.condition} onChange={e => set({ condition: e.target.value as Condition })}>{Object.entries(CONDITION_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
         <label className="ob-field"><span>Most per order</span><input inputMode="numeric" value={commerce.maxPerOrder || ""} placeholder="No limit" onChange={e => set({ maxPerOrder: Math.min(999, Number(e.target.value.replace(/\D/g, "")) || 0) })}/></label>
@@ -47,21 +47,16 @@ export function CommerceFields({ commerce, kind, currency, basePrice, images, pa
       </div>
       <VariantEditor axes={commerce.axes} rows={rows} currency={currency} basePrice={basePrice} images={images} onChange={(axes, next) => { setRows(next); onVariantWeights(next.map(row => row.weight ?? "")); onChange(withRows(commerce, axes, next)); }}/>
       <div className="ob-field-grid">
-        {specifics.map((row, index) => <div className="ob-service-row" key={index}>
+        {specifics.map((row, index) => <div className="ob-service-row ob-field-wide" key={index}>
           <label className="ob-field"><span>Specific</span><input value={row.key} maxLength={32} placeholder="Brand" onChange={e => onSpecifics(specifics.map((item, at) => at === index ? { ...item, key: e.target.value } : item))}/></label>
           <label className="ob-field"><span>Value</span><input value={row.value} maxLength={120} placeholder="Marlow" onChange={e => onSpecifics(specifics.map((item, at) => at === index ? { ...item, value: e.target.value } : item))}/></label>
           <button type="button" className="ob-text-link" aria-label={`Remove specific ${index + 1}`} onClick={() => onSpecifics(specifics.filter((_, at) => at !== index))}>Remove</button>
         </div>)}
         {specifics.length < 24 && <button type="button" className="ob-secondary" onClick={() => onSpecifics([...specifics, { key: "", value: "" }])}>Add an item specific</button>}
-        <label className="ob-field"><span>Returns</span><select value={returns.kind} onChange={e => onReturns({ kind: e.target.value as ReturnsDraft["kind"] })}><option value="store">Store policy</option><option value="none">No returns</option><option value="days">A set number of days</option></select></label>
-        {returns.kind === "days" && <>
-          <label className="ob-field"><span>Return window (days)</span><input inputMode="numeric" value={returns.days} placeholder="30" onChange={e => onReturns({ days: e.target.value })}/></label>
-          <label className="ob-default-address"><input type="checkbox" checked={returns.sellerPays} onChange={e => onReturns({ sellerPays: e.target.checked })}/>Seller pays return shipping</label>
-        </>}
       </div>
     </fieldset>
-    {kind === "physical" && <fieldset className="ob-store-section">
-      <legend>Shipping services</legend>
+    {kind === "physical" && <fieldset className="ob-store-section" id="ob-listing-shipping">
+      <legend>Shipping and fulfillment</legend>
       <div className="ob-field-grid">
         <label className="ob-field"><span>Package weight (g)</span><input inputMode="numeric" value={packageFields.weightG} placeholder="0" onChange={e => onPackage({ weightG: e.target.value })}/></label>
         <label className="ob-field"><span>Length (mm)</span><input inputMode="numeric" value={packageFields.lengthMm} placeholder="0" onChange={e => onPackage({ lengthMm: e.target.value })}/></label>
@@ -82,5 +77,15 @@ export function CommerceFields({ commerce, kind, currency, basePrice, images, pa
       {shipping.services.length < MAX_SERVICES && <button type="button" className="ob-secondary" onClick={() => { setRegionDrafts([...regionDrafts, ""]); set({ shipping: { ...shipping, services: [...shipping.services, defaultService()] } }); }}>Add a shipping service</button>}
       <label className="ob-field"><span>Local pickup area (optional)</span><input value={shipping.pickup ?? ""} maxLength={40} placeholder="Portland" onChange={e => set({ shipping: { ...shipping, pickup: e.target.value || null } })}/><small className="ob-field-hint">Name a city, state or country only, with no commas or numbers, never an address. Buyers who choose pickup arrange the meeting with you in private messages.</small></label>
     </fieldset>}
+    <fieldset className="ob-store-section" id="ob-listing-returns">
+      <legend>Returns</legend>
+      <div className="ob-field-grid">
+        <label className="ob-field"><span>Returns</span><select value={returns.kind} onChange={e => onReturns({ kind: e.target.value as ReturnsDraft["kind"] })}><option value="store">Store policy</option><option value="none">No returns</option><option value="days">A set number of days</option></select></label>
+        {returns.kind === "days" && <>
+          <label className="ob-field"><span>Return window (days)</span><input inputMode="numeric" value={returns.days} placeholder="30" onChange={e => onReturns({ days: e.target.value })}/></label>
+          <label className="ob-default-address"><input type="checkbox" checked={returns.sellerPays} onChange={e => onReturns({ sellerPays: e.target.checked })}/>Seller pays return shipping</label>
+        </>}
+      </div>
+    </fieldset>
   </>;
 }

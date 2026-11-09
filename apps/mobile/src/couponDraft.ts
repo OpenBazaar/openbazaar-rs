@@ -1,4 +1,5 @@
 /** The coupon body `POST /coupons` signs, or the reason the record would refuse it. */
+import { toMinor } from "./pricing.ts";
 
 export type CouponForm = {
   code: string;
@@ -25,6 +26,16 @@ export type CouponBody = {
 };
 
 const CODE = "A coupon code is 3 to 24 uppercase letters, digits or dashes.";
+
+/** Translate merchant-facing percentages and currency amounts to the node's integer units. */
+export function couponEditorDraft(form: CouponForm): CouponBody | string {
+  const currency = form.currency.trim().toUpperCase();
+  const amount = toMinor(form.amount, form.kind === "percent" ? "USD" : currency);
+  const minimum = form.minSubtotal.trim() ? toMinor(form.minSubtotal, currency) : 0;
+  if (amount == null || !Number.isSafeInteger(amount)) return form.kind === "percent" ? "Enter a percentage with up to two decimal places." : "Enter a valid discount amount in the selected currency.";
+  if (minimum == null || !Number.isSafeInteger(minimum)) return "Enter a valid minimum order amount in the selected currency.";
+  return couponDraft({ ...form, amount: String(amount), minSubtotal: String(minimum) });
+}
 
 function dayNumber(text: string): number | null {
   const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(text.trim());

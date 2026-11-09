@@ -47,7 +47,7 @@ function BidRow({ bid, onDone }: { bid: WaitingBid; onDone: () => void }) {
     });
   }
 
-  return <article className="ob-order-row">
+  return <article className="ob-order-row ob-offer-response">
     <div className="ob-order-expanded">
       <p><strong>{formatPrice(bid.amount, bid.currency)}</strong> for {bid.quantity}{variant ? ` · option ${variant}` : ""}</p>
       <form className="ob-field-grid" onSubmit={event => {

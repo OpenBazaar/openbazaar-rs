@@ -1,11 +1,16 @@
 import { useState, type FormEvent } from "react";
-import { couponDraft, type CouponForm } from "../couponDraft";
-import { fetchCoupons, saveCoupon } from "../seller";
+import { couponEditorDraft, type CouponForm } from "../couponDraft";
+import { fetchCoupons, saveCoupon, formatPrice, type PriceCurrency } from "../seller";
 import { useNodeResource } from "../useNodeResource";
 import { PageHeading } from "./PageHeading";
 import { useLockedAction } from "./SellerKit";
 
 const EMPTY: CouponForm = { code: "", kind: "percent", amount: "", currency: "USD", minSubtotal: "", startsOn: "", endsOn: "", maxUses: "", listings: [] };
+function dateLabel(day: number) {
+  const text = String(day);
+  if (!/^\d{8}$/.test(text)) return '—';
+  return new Date(Number(text.slice(0,4)), Number(text.slice(4,6)) - 1, Number(text.slice(6,8))).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+}
 
 /** Codes the store already signs. A coupon is not a field on the listing. */
 export function Coupons({ onChanged }: { onChanged: (message: string) => void }) {
@@ -16,7 +21,7 @@ export function Coupons({ onChanged }: { onChanged: (message: string) => void })
   const set = <K extends keyof CouponForm>(key: K, value: CouponForm[K]) => setForm(current => ({ ...current, [key]: value }));
   async function save(e: FormEvent) {
     e.preventDefault();
-    const body = couponDraft(form);
+    const body = couponEditorDraft(form);
     if (typeof body === "string") {
       setError(body);
       return;
@@ -26,32 +31,32 @@ export function Coupons({ onChanged }: { onChanged: (message: string) => void })
       await saveCoupon(body);
       setForm(EMPTY);
       await resource.refresh();
-      onChanged("Coupon signed");
+      onChanged("Coupon created");
     });
   }
   const coupons = resource.data ?? [];
   return <section className="ob-store-listings">
-    <PageHeading title="Coupons" description="A code the store signs. Buyers type it at checkout. It is not part of a listing."/>
+    <PageHeading title="Coupons" description="Manage discount codes, order minimums, validity dates and redemption limits."/>
     {(error || resource.error) && <p className="ob-form-error" role="alert">{error || resource.error}</p>}
     <form className="ob-store-section" onSubmit={save}>
       <div className="ob-field-grid">
         <label className="ob-field"><span>Code</span><input value={form.code} maxLength={24} autoCapitalize="characters" placeholder="FALL10" onChange={e => set("code", e.target.value)}/></label>
-        <label className="ob-field"><span>Discount</span><select value={form.kind} onChange={e => set("kind", e.target.value as CouponForm["kind"])}><option value="percent">Percent, in basis points</option><option value="fixed">Fixed amount</option></select></label>
-        <label className="ob-field"><span>{form.kind === "percent" ? "Basis points" : "Amount"}</span><input inputMode="numeric" value={form.amount} placeholder={form.kind === "percent" ? "1000" : "500"} onChange={e => set("amount", e.target.value)}/><small className="ob-field-hint">{form.kind === "percent" ? "1000 is 10%. From 1 to 10000." : "Minor units, at least 1."}</small></label>
-        <label className="ob-field"><span>Currency</span><input value={form.currency} maxLength={3} onChange={e => set("currency", e.target.value)}/></label>
+        <label className="ob-field"><span>Discount type</span><select value={form.kind} onChange={e => set("kind", e.target.value as CouponForm["kind"])}><option value="percent">Percentage</option><option value="fixed">Fixed amount</option></select></label>
+        <label className="ob-field"><span>{form.kind === "percent" ? "Discount (%)" : `Discount (${form.currency})`}</span><input inputMode="decimal" value={form.amount} placeholder={form.kind === "percent" ? "10" : form.currency === "JPY" ? "500" : "5.00"} onChange={e => set("amount", e.target.value)}/><small className="ob-field-hint">{form.kind === "percent" ? "0.01% to 100%." : "Discount applied in the selected currency."}</small></label>
+        <label className="ob-field"><span>Currency</span><select value={form.currency} onChange={e => set("currency", e.target.value)}>{['USD','EUR','GBP','JPY'].map(currency => <option key={currency}>{currency}</option>)}</select></label>
         <label className="ob-field"><span>Starts</span><input type="date" value={form.startsOn} onChange={e => set("startsOn", e.target.value)}/></label>
         <label className="ob-field"><span>Ends</span><input type="date" value={form.endsOn} onChange={e => set("endsOn", e.target.value)}/></label>
-        <label className="ob-field"><span>Minimum</span><input inputMode="numeric" value={form.minSubtotal} placeholder="0" onChange={e => set("minSubtotal", e.target.value)}/></label>
-        <label className="ob-field"><span>Use limit</span><input inputMode="numeric" value={form.maxUses} placeholder="Unlimited" onChange={e => set("maxUses", e.target.value)}/></label>
+        <label className="ob-field"><span>Minimum order ({form.currency})</span><input inputMode="decimal" value={form.minSubtotal} placeholder="No minimum" onChange={e => set("minSubtotal", e.target.value)}/></label>
+        <label className="ob-field"><span>Redemption limit</span><input inputMode="numeric" value={form.maxUses} placeholder="Unlimited" onChange={e => set("maxUses", e.target.value)}/></label>
       </div>
-      <button className="ob-primary" type="submit">Sign coupon</button>
+      <div className="ob-form-actions"><button className="ob-primary" type="submit">Create coupon</button></div>
     </form>
-    {resource.loading ? <p role="status">Loading coupons…</p> : coupons.length ? <ul className="ob-own-listings">{coupons.map(coupon => <li key={coupon.code} className="ob-own-listing">
-      <span className="ob-own-listing-copy">
-        <strong>{coupon.code}</strong>
-        <span>{coupon.percentBps != null ? `${coupon.percentBps / 100}%` : coupon.fixed} {coupon.currency} · {coupon.startsOn}–{coupon.endsOn}{coupon.maxUses ? ` · ${coupon.uses}/${coupon.maxUses}` : ""}</span>
-      </span>
-    </li>)}</ul> : <p className="ob-shipping-note">No coupons yet.</p>}
+    {resource.loading ? <p role="status">Loading coupons…</p> : coupons.length ? <div className="ob-coupon-list"><table className="ob-merchant-table"><thead><tr><th>Code</th><th>Discount</th><th>Validity</th><th>Redemptions</th></tr></thead><tbody>{coupons.map(coupon => <tr key={coupon.code}>
+      <td data-label="Code"><strong>{coupon.code}</strong></td>
+      <td data-label="Discount">{coupon.percentBps != null ? `${coupon.percentBps / 100}%` : formatPrice(coupon.fixed ?? 0, coupon.currency as PriceCurrency)} off</td>
+      <td data-label="Validity">{dateLabel(coupon.startsOn)} – {dateLabel(coupon.endsOn)}</td>
+      <td data-label="Redemptions">{coupon.uses}{coupon.maxUses ? ` / ${coupon.maxUses}` : ' · unlimited'}</td>
+    </tr>)}</tbody></table></div> : <p className="ob-shipping-note">No coupons yet.</p>}
     {dialog}
   </section>;
 }

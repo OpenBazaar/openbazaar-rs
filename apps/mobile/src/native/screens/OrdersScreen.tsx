@@ -57,8 +57,8 @@ export function OrdersScreen({ onRefresh }: { onRefresh: () => void }) {
 }
 
 const styles = StyleSheet.create({
-  order: { gap: 4, paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: LINE },
-  line: { flexDirection: "row", justifyContent: "space-between", gap: 10 },
+  order: { gap: 10, paddingVertical: 16, borderBottomWidth: 1, borderBottomColor: LINE },
+  line: { flexDirection: "row", flexWrap: "wrap", justifyContent: "space-between", gap: 12 },
   title: { flex: 1, fontSize: 16, fontWeight: "600", color: NAVY },
-  total: { fontSize: 15, color: NAVY },
+  total: { fontSize: 16, lineHeight: 23, color: NAVY },
 });
