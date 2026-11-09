@@ -73,6 +73,7 @@ mod remote;
 mod remote_orders;
 mod reputation;
 mod replicas;
+mod test_network;
 mod lock_http;
 mod sale_gate;
 mod sale_terms;

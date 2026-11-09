@@ -1,10 +1,12 @@
 import { useState, type FormEvent } from "react";
-import { fetchFollows, followStore, unfollowStore, type Follow } from "../seller";
+import { fetchFollows, fetchTestNetworkSeeds, followStore, unfollowStore, type Follow } from "../seller";
 import { useNodeResource } from "../useNodeResource";
 
 /** Stores on other nodes that this node keeps a signed copy of. */
 export function Follows({ onChanged }: { onChanged: (message: string) => void }) {
   const resource = useNodeResource(fetchFollows, 15000);
+  const seeds = useNodeResource(fetchTestNetworkSeeds, 15000);
+  const seed = seeds.data?.[0];
   const [url, setUrl] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -32,6 +34,7 @@ export function Follows({ onChanged }: { onChanged: (message: string) => void })
     <form className="ob-follow-form" onSubmit={e => void submit(e)}>
       <label className="ob-field"><span>Store node address</span><input value={url} placeholder="http://127.0.0.1:8788" onChange={e => setUrl(e.target.value)}/></label>
       <button className="ob-primary" disabled={busy || !url.trim()}>{busy ? "Following…" : "Follow store"}</button>
+      {seed ? <button type="button" className="ob-primary" disabled={busy} onClick={() => void change(() => followStore(seed), "Opening the test network store")}>Open the test network store</button> : null}
     </form>
     {(error || resource.error) && <p className="ob-form-error" role="alert">{error || resource.error}</p>}
     {resource.loading && !resource.data ? <p role="status">Loading followed stores…</p> : !follows.length ? <p className="ob-page-intro">You do not follow any stores yet.</p> : <ul className="ob-follow-list">{follows.map(follow => <li key={follow.url}>

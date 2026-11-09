@@ -239,7 +239,10 @@ impl Node {
                 })
             })
             .collect();
-        json!({ "follows": follows })
+        json!({
+            "follows": follows,
+            "seeds": [{ "url": crate::test_network::test_network_seed() }],
+        })
     }
 
     /// Fetch every followed store once. Returns how many copies changed.
