@@ -4,3 +4,7 @@
 /modules/ob-tor/ios/ObMobileTor.xcframework/
 /modules/ob-tor/android/src/main/jniLibs/
 /modules/*/android/build/
+
+# Browser checks and visual review artifacts
+/test-results/
+/playwright-report/

@@ -22,8 +22,8 @@ export function VariantEditor({ axes, rows, currency, basePrice, images, onChang
   return (
     <section className="ob-variant-editor" aria-label="Options and variants">
       <header>
-        <h3>Options</h3>
-        <p>Add up to {MAX_AXES} options, like size, color or material. Every combination gets a row below.</p>
+        <h3>Variant configuration</h3>
+        <p>Manage SKUs, prices, stock and weights for every combination. Up to {MAX_AXES} option axes.</p>
       </header>
       {axes.map((axis, a) => (
         <div className="ob-axis-row" key={a}>
@@ -45,7 +45,7 @@ export function VariantEditor({ axes, rows, currency, basePrice, images, onChang
       ))}
       {axes.length < MAX_AXES && (
         <button type="button" className="ob-secondary ob-add-axis" onClick={() => setAxes([...axes, { name: "", values: [] }], [...drafts, ""])}>
-          {axes.length ? "Add another option" : "Add options like size or color"}
+          Add option
         </button>
       )}
       {rows.length > 0 && (
@@ -63,10 +63,11 @@ export function VariantEditor({ axes, rows, currency, basePrice, images, onChang
             const label = row.options.join(" / ");
             return (
               <div className={`ob-variant-row ${row.offered ? "" : "is-off"}`} role="row" key={label}>
-                <span role="cell"><input type="checkbox" aria-label={`Offer ${label}`} checked={row.offered} onChange={e => setRow(i, { offered: e.target.checked })}/></span>
+                <span role="cell" className="ob-variant-offer"><label><input type="checkbox" aria-label={`Offer ${label}`} checked={row.offered} onChange={e => setRow(i, { offered: e.target.checked })}/><span className="ob-variant-field-label">Offer</span></label></span>
                 <span role="cell" className="ob-variant-name">{label}</span>
-                <span role="cell"><input aria-label={`SKU for ${label}`} value={row.sku} disabled={!row.offered} onChange={e => setRow(i, { sku: e.target.value })}/></span>
+                <span role="cell"><label><span className="ob-variant-field-label">SKU</span><input aria-label={`SKU for ${label}`} value={row.sku} disabled={!row.offered} onChange={e => setRow(i, { sku: e.target.value })}/></label></span>
                 <span role="cell">
+                  <label><span className="ob-variant-field-label">Price ({currency})</span>
                   <input
                     aria-label={`Price for ${label}`}
                     inputMode="decimal"
@@ -74,15 +75,16 @@ export function VariantEditor({ axes, rows, currency, basePrice, images, onChang
                     defaultValue={row.price ? fromMinor(row.price, currency) : ""}
                     disabled={!row.offered}
                     onChange={e => setRow(i, { price: e.target.value.trim() ? toMinor(e.target.value, currency) ?? row.price : 0 })}
-                  />
+                  /></label>
                 </span>
-                <span role="cell"><input aria-label={`Stock for ${label}`} inputMode="numeric" value={row.stock} disabled={!row.offered} onChange={e => setRow(i, { stock: Math.max(0, Math.min(1_000_000, Number(e.target.value.replace(/\D/g, "")) || 0)) })}/></span>
-                <span role="cell"><input aria-label={`Weight for ${label}`} inputMode="numeric" placeholder="Package" value={row.weight ?? ""} disabled={!row.offered} onChange={e => setRow(i, { weight: e.target.value })}/></span>
+                <span role="cell"><label><span className="ob-variant-field-label">Stock</span><input aria-label={`Stock for ${label}`} inputMode="numeric" value={row.stock} disabled={!row.offered} onChange={e => setRow(i, { stock: Math.max(0, Math.min(1_000_000, Number(e.target.value.replace(/\D/g, "")) || 0)) })}/></label></span>
+                <span role="cell"><label><span className="ob-variant-field-label">Weight (g)</span><input aria-label={`Weight for ${label}`} inputMode="numeric" placeholder="Package" value={row.weight ?? ""} disabled={!row.offered} onChange={e => setRow(i, { weight: e.target.value })}/></label></span>
                 <span role="cell">
+                  <label><span className="ob-variant-field-label">Photo</span>
                   <select aria-label={`Photo for ${label}`} value={row.image} disabled={!row.offered} onChange={e => setRow(i, { image: Number(e.target.value) })}>
                     <option value={0}>Cover</option>
                     {images.map((_, n) => <option key={n} value={n + 1}>Photo {n + 1}</option>)}
-                  </select>
+                  </select></label>
                 </span>
               </div>
             );

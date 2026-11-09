@@ -336,15 +336,15 @@ export function StoreScreen({ onRefresh }: { onRefresh: () => void }) {
 }
 
 const styles = StyleSheet.create({
-  listing: { borderTopWidth: 1, borderTopColor: LINE, paddingTop: 10 },
+  listing: { borderTopWidth: 1, borderTopColor: LINE, paddingTop: 16 },
   listingHead: { flexDirection: "row", alignItems: "center", gap: 10, minHeight: 44 },
   thumb: { width: 56, height: 56, borderRadius: 8, backgroundColor: SOFT },
-  listingText: { flex: 1, gap: 2 },
+  listingText: { flex: 1, gap: 6 },
   listingTitle: { fontSize: 16, fontWeight: "600", color: NAVY },
   chevron: { fontSize: 22, color: MUTED, width: 22, textAlign: "center" },
   rating: { gap: 8, paddingTop: 10 },
-  choices: { flexDirection: "row", gap: 8 },
-  choice: { backgroundColor: SOFT, borderRadius: 999, paddingVertical: 8, paddingHorizontal: 14 },
+  choices: { flexDirection: "row", flexWrap: "wrap", gap: 10 },
+  choice: { backgroundColor: SOFT, borderRadius: 999, minHeight: 44, justifyContent: "center", paddingVertical: 10, paddingHorizontal: 14 },
   choiceOn: { backgroundColor: NAVY },
   choiceText: { color: NAVY, fontWeight: "600" },
   choiceTextOn: { color: "#fff" },

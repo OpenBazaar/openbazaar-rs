@@ -126,7 +126,7 @@ const styles = StyleSheet.create({
   center: { flex: 1, alignItems: "center", justifyContent: "center", gap: 18, padding: 24 },
   logo: { width: 96, height: 96 },
   tabs: { flexDirection: "row", borderTopWidth: 1, borderTopColor: LINE, backgroundColor: "#fff" },
-  tab: { flex: 1, minHeight: 49, alignItems: "center", justifyContent: "center", gap: 2, paddingTop: 6, paddingBottom: 4 },
-  tabText: { fontSize: 11, fontWeight: "600", color: MUTED },
+  tab: { flex: 1, minHeight: 60, alignItems: "center", justifyContent: "center", gap: 4, paddingVertical: 8, paddingHorizontal: 2 },
+  tabText: { fontSize: 13, lineHeight: 18, fontWeight: "600", color: MUTED, textAlign: "center" },
   tabOn: { color: NAVY },
 });

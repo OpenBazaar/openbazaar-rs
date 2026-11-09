@@ -28,8 +28,8 @@ export function SasScreen({ pictures, via, hardware, onCancel }: { pictures: { e
 
 const styles = StyleSheet.create({
   grid: { flexDirection: "row", flexWrap: "wrap", justifyContent: "space-between", gap: 12 },
-  tile: { width: "47%", aspectRatio: 1, backgroundColor: CARD, borderRadius: 18, borderWidth: 1, borderColor: LINE, alignItems: "center", justifyContent: "center", gap: 6 },
-  emoji: { fontSize: 72 },
-  name: { fontSize: 20, fontWeight: "600", color: MUTED },
+  tile: { flexBasis: "46%", flexGrow: 1, minHeight: 168, padding: 16, backgroundColor: CARD, borderRadius: 18, borderWidth: 1, borderColor: LINE, alignItems: "center", justifyContent: "center", gap: 10 },
+  emoji: { fontSize: 56 },
+  name: { fontSize: 20, lineHeight: 27, textAlign: "center", fontWeight: "600", color: MUTED },
   waiting: { flexDirection: "row", alignItems: "center", gap: 10 },
 });

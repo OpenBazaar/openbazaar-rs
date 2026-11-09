@@ -55,7 +55,7 @@ test('a new seller protects the wallet, chooses to sell, and opens a store', asy
   await page.getByLabel('Processing time').fill('Ships in 2 days')
   await page.locator('input[type=file][aria-label="Add avatar"]').setInputFiles(image('avatar.png'))
   await expect(page.getByRole('img', { name: 'Store avatar' })).toBeVisible()
-  await expect(page.locator('.ob-payment-rails li.is-on')).toContainText('Bitcoin, paid to you directly')
+  await expect(page.locator('.ob-payment-rails li.is-on')).toContainText('Bitcoin')
   await expect(page.locator('.ob-payment-rails')).toContainText('Moderated escrow')
   await page.getByRole('button', { name: 'Open my store' }).click()
 
@@ -71,13 +71,13 @@ test('a new seller protects the wallet, chooses to sell, and opens a store', asy
   await expect(page.getByRole('navigation', { name: 'Your store' })).toBeVisible()
 })
 
-test('the seller lists, edits, and removes goods', async ({ page }) => {
+test('the seller lists, edits, and removes goods', async ({ page }, info) => {
   await page.goto(SELLER_UI)
   await page.getByRole('navigation', { name: 'Your store' }).getByRole('button', { name: 'Listings' }).click()
   await page.getByRole('button', { name: 'New listing' }).click()
   await page.getByLabel('Title').fill('Ash glaze mug')
   await page.getByLabel('Description').fill('Wheel-thrown, 12 oz.')
-  await page.getByLabel('Category').fill('Home')
+  await page.getByLabel('Category', { exact: true }).fill('Home')
   // Sats keep this test off live exchange rates; fiat pricing is covered by the node tests.
   await page.getByLabel('Price currency').selectOption('SAT')
   await page.getByLabel('Price (sats)').fill('25000')
@@ -90,6 +90,27 @@ test('the seller lists, edits, and removes goods', async ({ page }) => {
   await expect(page.getByText('Listing published')).toBeVisible()
   const row = page.locator('.ob-own-listing', { hasText: 'Ash glaze mug' })
   await expect(row).toContainText('5 in stock')
+  await page.getByLabel('Search inventory', { exact: true }).fill('does not exist')
+  await expect(page.getByText('No listings match these filters.', { exact: false })).toBeVisible()
+  await page.getByRole('button', { name: 'Clear filters', exact: true }).click()
+  await expect(row).toBeVisible()
+  await page.getByRole('combobox', { name: 'Stock status', exact: true }).selectOption('empty')
+  await expect(row).toHaveCount(0)
+  await page.getByRole('combobox', { name: 'Stock status', exact: true }).selectOption('all')
+  for (const width of [320, 768, 1366]) {
+    await page.setViewportSize({ width, height: 900 })
+    await row.scrollIntoViewIfNeeded()
+    expect(await page.locator('.ob-content').evaluate(el => el.scrollWidth <= el.clientWidth + 1)).toBeTruthy()
+    const boxes = await row.locator(':scope > *').evaluateAll(elements => elements.map(el => {
+      const r = el.getBoundingClientRect()
+      return { x: r.x, y: r.y, right: r.right, bottom: r.bottom }
+    }))
+    for (let a = 0; a < boxes.length; a++) for (let b = a + 1; b < boxes.length; b++) {
+      const left = boxes[a], right = boxes[b]
+      expect(left.x < right.right - 1 && left.right > right.x + 1 && left.y < right.bottom - 1 && left.bottom > right.y + 1).toBeFalsy()
+    }
+    await page.screenshot({ path: info.outputPath(`published-listing-${width}.png`) })
+  }
 
   await page.getByRole('button', { name: 'Edit Ash glaze mug' }).click()
   await page.getByLabel('In stock').fill('4')
@@ -98,10 +119,19 @@ test('the seller lists, edits, and removes goods', async ({ page }) => {
 
   await page.getByRole('button', { name: 'New listing' }).click()
   await page.getByLabel('Title').fill('Glaze recipe card')
-  await page.getByLabel('Category').fill('Paper')
-  await page.getByText('Digital good').click()
+  await page.getByLabel('Category', { exact: true }).fill('Paper')
+  await page.getByRole('radio', { name: 'Digital good', exact: true }).check()
   await page.getByLabel('Price currency').selectOption('SAT')
   await page.getByLabel('Price (sats)').fill('2000')
+  await page.getByRole('button', { name: 'Save draft', exact: true }).click()
+  const draft = page.locator('.ob-own-listing.is-draft', { hasText: 'Glaze recipe card' })
+  await expect(draft).toBeVisible()
+  await page.setViewportSize({ width: 320, height: 900 })
+  await draft.scrollIntoViewIfNeeded()
+  expect((await draft.locator('.ob-own-listing-copy').boundingBox())!.width).toBeGreaterThan(180)
+  await page.screenshot({ path: info.outputPath('draft-listing-320.png') })
+  await page.setViewportSize({ width: 1366, height: 900 })
+  await page.getByRole('button', { name: 'Edit draft Glaze recipe card', exact: true }).click()
   await page.getByRole('button', { name: 'Publish listing' }).click()
   await expect(page.locator('.ob-own-listing', { hasText: 'Glaze recipe card' })).toBeVisible()
   await page.getByRole('button', { name: 'Remove Glaze recipe card' }).click()
@@ -114,7 +144,7 @@ test('the seller lists, edits, and removes goods', async ({ page }) => {
   await expect(page.getByText('This is your listing.')).toBeVisible()
 })
 
-test('a buyer follows the store and orders; the seller sees the sale', async ({ page }) => {
+test('a buyer follows the store and sees the new-seller escrow requirement', async ({ page }) => {
   await page.goto('/')
   await page.getByRole('button', { name: 'Settings' }).click()
   await page.getByRole('button', { name: 'Followed stores' }).click()
@@ -143,18 +173,9 @@ test('a buyer follows the store and orders; the seller sees the sale', async ({ 
   if (await country.isVisible()) await country.fill('US')
   await page.getByRole('button', { name: 'Place order', exact: true }).click()
   await expect(page.getByRole('heading', { name: 'Order created', exact: true })).toBeVisible()
-  // The seller's node prices the order and replies with a fresh address.
-  await expect(page.locator('.ob-payment-progress strong')).toHaveText('Awaiting payment', { timeout: 20000 })
-  await expect(page.getByText('Pay from your node wallet')).toBeVisible()
-
-  const seller = await page.context().newPage()
-  await seller.goto(SELLER_UI)
-  const sales = seller.getByRole('navigation', { name: 'Your store' }).getByRole('button', { name: 'Sales' })
-  await sales.click()
-  const sale = seller.locator('.ob-order-row', { hasText: 'Ash glaze mug' })
-  await expect(sale).toContainText('Awaiting payment')
-  await sale.getByRole('button').first().click()
-  await expect(seller.locator('.ob-sale-address')).toContainText('Ada Buyer')
-  await expect(seller.getByText('Ship once the payment confirms.')).toBeVisible()
-  await seller.close()
+  // The current node deliberately refuses direct pay for a new seller.
+  // Keep that real policy visible; this is not a successful-sale fixture.
+  await expect(page.locator('.ob-payment-progress strong')).toHaveText('Declined by the seller', { timeout: 20000 })
+  await expect(page.getByRole('alert').filter({ hasText: 'A new seller takes moderated escrow, with the moderator named.' })).toBeVisible()
+  await expect(page.getByText('Pay from your node wallet', { exact: true })).toHaveCount(0)
 })

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { couponDraft } from "./couponDraft.ts";
+import { couponDraft, couponEditorDraft } from "./couponDraft.ts";
 
 const form = {
   code: "fall10",
@@ -28,4 +28,25 @@ test("the coupon the editor saves is the signed coupon, and an invalid coupon is
   assert.equal(couponDraft({ ...form, kind: "percent", amount: "0" }), "A coupon takes 0.01% to 100% off.");
   assert.equal(couponDraft({ ...form, kind: "fixed", amount: "0" }), "A coupon takes more than zero off.");
   assert.equal(couponDraft({ ...form, startsOn: "2026-12-01", endsOn: "2026-11-01" }), "A coupon ends before it starts.");
+});
+
+test("merchant percentages and currency amounts reach the node in exact integer units", () => {
+  const percent = couponEditorDraft({ ...form, amount: "12.50", minSubtotal: "49.95" });
+  assert.equal(typeof percent, "object");
+  if (typeof percent !== "string") {
+    assert.equal(percent.percentBps, 1250);
+    assert.equal(percent.minSubtotal, 4995);
+  }
+  const fixed = couponEditorDraft({ ...form, kind: "fixed", amount: "5.25", currency: "EUR" });
+  if (typeof fixed === "string") assert.fail(fixed);
+  assert.equal(fixed.fixed, 525);
+  assert.equal(fixed.currency, "EUR");
+  const yen = couponEditorDraft({ ...form, kind: "fixed", amount: "500", currency: "JPY", minSubtotal: "2000" });
+  if (typeof yen === "string") assert.fail(yen);
+  assert.equal(yen.fixed, 500);
+  assert.equal(yen.minSubtotal, 2000);
+  assert.equal(typeof couponEditorDraft({ ...form, amount: "100.01" }), "string");
+  assert.equal(typeof couponEditorDraft({ ...form, amount: "0" }), "string");
+  assert.equal(typeof couponEditorDraft({ ...form, amount: "1.001" }), "string");
+  assert.equal(typeof couponEditorDraft({ ...form, amount: "10", minSubtotal: "9007199254740993" }), "string");
 });

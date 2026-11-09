@@ -117,9 +117,22 @@ export function ListingEditor({ listing, savedDraft, categories, rates, onSaved,
   const unit = form.currency === "SAT" ? "sats" : form.currency;
   const variants = (form.commerce?.variants.length ?? 0) > 0;
   const services = (form.commerce?.shipping.services.length ?? 0) > 0;
-  return <form className="ob-listing-editor" onSubmit={e => void save(e)} aria-label={listing ? `Edit ${listing.title}` : "New listing"}>
-    <fieldset className="ob-store-section">
-      <legend>Photos</legend>
+  function configure(section = "ob-listing-options") {
+    setForm(current => current.commerce ? current : { ...current, commerce: emptyCommerce(), ...packageFieldsOf(emptyCommerce().shipping, current.currency) });
+    requestAnimationFrame(() => document.getElementById(section)?.scrollIntoView({ block: "start" }));
+  }
+  return <form id="ob-listing-form" className="ob-listing-editor" onSubmit={e => void save(e)} aria-label={listing ? `Edit ${listing.title}` : "New listing"}>
+    <nav className="ob-editor-sections" aria-label="Listing sections">
+      <a href="#ob-listing-details">Details</a>
+      <a href="#ob-listing-pricing">Pricing & inventory</a>
+      <a href="#ob-listing-photos">Media</a>
+      {form.commerce ? <a href="#ob-listing-options">Variants & specifications</a> : <button type="button" disabled={form.currency === "SAT"} onClick={() => configure()}>Variants & specifications</button>}
+      {form.kind === "physical" && (form.commerce ? <a href="#ob-listing-shipping">Shipping</a> : <button type="button" disabled={form.currency === "SAT"} onClick={() => configure("ob-listing-shipping")}>Shipping</button>)}
+      {form.commerce ? <a href="#ob-listing-returns">Returns</a> : <button type="button" disabled={form.currency === "SAT"} onClick={() => configure("ob-listing-returns")}>Returns</button>}
+      <a href="#ob-listing-content">Content rating</a>
+    </nav>
+    <fieldset className="ob-store-section" id="ob-listing-photos">
+      <legend>Product media</legend>
       <div className="ob-listing-photos">
         {form.images.map((hash, i) => <figure key={hash} className="ob-listing-photo">
           <MediaImage hash={hash} alt={`Photo ${i + 1}`}/>
@@ -128,20 +141,20 @@ export function ListingEditor({ listing, savedDraft, categories, rates, onSaved,
         {form.images.length < MAX_LISTING_IMAGES && <ImageUpload label="Add photos" multiple onUploaded={hash => setForm(f => f.images.includes(hash) || f.images.length >= MAX_LISTING_IMAGES ? f : { ...f, images: [...f.images, hash] })}/>}
       </div>
     </fieldset>
-    <fieldset className="ob-store-section">
-      <legend>Details</legend>
+    <fieldset className="ob-store-section" id="ob-listing-details">
+      <legend>Listing details</legend>
       <div className="ob-field-grid">
         <label className="ob-field ob-field-wide"><span>Title</span><input value={form.title} maxLength={120} onChange={e => set("title", e.target.value)}/></label>
         <label className="ob-field ob-field-wide"><span>Description</span><textarea value={form.description} maxLength={5000} onChange={e => set("description", e.target.value)}/></label>
         <label className="ob-field"><span>Category</span><input list="ob-listing-categories" value={form.category} maxLength={40} placeholder="Home" onChange={e => set("category", e.target.value)}/><datalist id="ob-listing-categories">{categories.map(c => <option key={c} value={c}/>)}</datalist></label>
-        {form.currency !== "SAT" && <label className="ob-field"><span>Top-level category</span><select value={form.taxonomy} onChange={e => set("taxonomy", e.target.value)}><option value="0">Uncategorised</option>{TAXONOMY.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select><small className="ob-field-hint">Stored on the listing. The category above stays as the subcategory.</small></label>}
+        {form.currency !== "SAT" && <label className="ob-field"><span>Top-level category</span><select value={form.taxonomy} onChange={e => set("taxonomy", e.target.value)}><option value="0">Uncategorised</option>{TAXONOMY.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select><small className="ob-field-hint">Choose the primary department. Use Category for the product subcategory.</small></label>}
         <div className="ob-field" role="radiogroup" aria-label="Type of good"><span>Type of good</span><div className="ob-kind-choice">
           {(["physical", "digital"] as const).map(kind => <label key={kind} className={form.kind === kind ? "is-selected" : ""}><input type="radio" name="kind" checked={form.kind === kind} onChange={() => set("kind", kind)}/>{kind === "physical" ? "Physical item" : "Digital good"}</label>)}
         </div></div>
       </div>
     </fieldset>
-    <fieldset className="ob-store-section">
-      <legend>Price and stock</legend>
+    <fieldset className="ob-store-section" id="ob-listing-pricing">
+      <legend>Pricing and inventory</legend>
       <div className="ob-field-grid">
         <label className="ob-field"><span>Price currency</span><select value={form.currency} onChange={e => set("currency", e.target.value as PriceCurrency)}>{PRICE_CURRENCIES.map(c => <option key={c} value={c}>{c === "SAT" ? "Bitcoin (sats)" : c}</option>)}</select></label>
         <label className="ob-field"><span>Price ({unit})</span><input inputMode="decimal" value={form.price} placeholder={form.currency === "SAT" ? "25000" : "12.50"} onChange={e => set("price", e.target.value)}/><small className="ob-field-hint">{satsHint(toMinorUnits(form.price, form.currency), form.currency, rates) ?? (form.currency === "SAT" ? "Buyers pay exactly this many sats." : "Buyers pay the sats this is worth when they order.")}</small></label>
@@ -159,7 +172,7 @@ export function ListingEditor({ listing, savedDraft, categories, rates, onSaved,
           <label className="ob-field"><span>Availability</span><select value={form.availability.kind} onChange={e => set("availability", { ...form.availability, kind: e.target.value })}><option value="in-stock">In stock</option><option value="pre-order">Pre-order</option><option value="made-to-order">Made to order</option><option value="away">Away</option></select></label>
           {form.availability.kind === "pre-order" && <label className="ob-field"><span>Ships on</span><input type="date" value={form.availability.shipsOn} onChange={e => set("availability", { ...form.availability, shipsOn: e.target.value })}/></label>}
           {form.availability.kind === "made-to-order" && <label className="ob-field"><span>Ready in (days)</span><input inputMode="numeric" value={form.availability.days} placeholder="14" onChange={e => set("availability", { ...form.availability, days: e.target.value })}/></label>}
-          {form.tiers.map((tier, index) => <div className="ob-service-row" key={index}>
+          {form.tiers.map((tier, index) => <div className="ob-service-row ob-volume-tier ob-field-wide" key={index}>
             <label className="ob-field"><span>Buy at least</span><input inputMode="numeric" value={tier.qty} placeholder="3" onChange={e => set("tiers", form.tiers.map((item, at) => at === index ? { ...item, qty: e.target.value } : item))}/></label>
             <label className="ob-field"><span>Each ({unit})</span><input inputMode="decimal" value={tier.price} placeholder="20.00" onChange={e => set("tiers", form.tiers.map((item, at) => at === index ? { ...item, price: e.target.value } : item))}/></label>
             {form.tiers.length > 1 && <button type="button" className="ob-text-link" onClick={() => set("tiers", form.tiers.filter((_, at) => at !== index))}>Remove</button>}
@@ -168,15 +181,14 @@ export function ListingEditor({ listing, savedDraft, categories, rates, onSaved,
           <p className="ob-shipping-note ob-field-wide">A blank tier row is left off the listing. Each price is below the regular price, and each quantity is higher than the one before it.</p>
         </>}
       </div>
-      <label className="ob-default-address"><input type="checkbox" checked={!!form.commerce} onChange={e => {
-        if (!e.target.checked) { set("commerce", null); return; }
-        const commerce = emptyCommerce();
-        setForm(current => ({ ...current, commerce, ...packageFieldsOf(commerce.shipping, current.currency) }));
-      }}/>Add condition, options like size or color, and shipping services</label>
+      {!form.commerce && <div className="ob-listing-configuration">
+        <div><strong>Specifications and fulfillment</strong><p>{form.currency === "SAT" ? "Choose a fiat price currency to use variants and service-based shipping. Customers still pay in bitcoin." : "Configure item condition, variants, SKUs, package dimensions, delivery services and returns."}</p></div>
+        <button type="button" className="ob-secondary" disabled={form.currency === "SAT"} onClick={() => configure()}>Configure fulfillment</button>
+      </div>}
     </fieldset>
     {form.commerce && <CommerceFields commerce={form.commerce} kind={form.kind} currency={form.currency === "SAT" ? "USD" : form.currency} basePrice={toMinorUnits(form.price, form.currency) ?? 0} images={form.images} packageFields={form} onPackage={patch => setForm(current => ({ ...current, ...patch }))} specifics={form.specifics} onSpecifics={specifics => set("specifics", specifics)} returns={form.returns} onReturns={patch => setForm(current => ({ ...current, returns: { ...current.returns, ...patch } }))} variantWeights={form.variantWeights} onVariantWeights={variantWeights => set("variantWeights", variantWeights)} onChange={c => set("commerce", c)}/>}
-    <fieldset className="ob-store-section">
-      <legend>Content label</legend>
+    <fieldset className="ob-store-section" id="ob-listing-content">
+      <legend>Content rating</legend>
       <div className="ob-field-grid">
         <label className="ob-field"><span>Rating</span><select value={form.contentRating} onChange={e => set("contentRating", e.target.value as ListingDraft["contentRating"])}><option value="general">General</option><option value="sensitive">Sensitive</option><option value="adult">Adult</option></select></label>
         <div className="ob-field"><span>Contains</span><div className="ob-tag-choice">{CONTENT_TAGS.map(tag => <label key={tag}><input type="checkbox" checked={form.contentTags.includes(tag)} onChange={e => set("contentTags", e.target.checked ? [...form.contentTags, tag] : form.contentTags.filter(t => t !== tag))}/>{tag.charAt(0).toUpperCase() + tag.slice(1)}</label>)}</div></div>

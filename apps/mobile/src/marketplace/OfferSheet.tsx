@@ -38,7 +38,7 @@ export function OfferSheet({ listing, choice }: { listing: ListingHeader; choice
 
   if (sent) return <p className="ob-shipping-note" role="status">Offer sent. The seller can accept, counter, or decline. You are not named.</p>;
   if (!open) return <button type="button" className="ob-secondary" onClick={() => setOpen(true)}>Make an offer</button>;
-  return <form className="ob-field-grid" onSubmit={event => void submit(event)} aria-label={`Make an offer on ${listing.title}`}>
+  return <form className="ob-field-grid ob-offer-form" onSubmit={event => void submit(event)} aria-label={`Make an offer on ${listing.title}`}>
     <label className="ob-field ob-field-wide"><span>Your price ({currency})</span>
       <input inputMode="decimal" autoComplete="off" value={amount} placeholder={formatPrice(price.amount, currency)} onChange={event => setAmount(event.target.value)}/>
     </label>

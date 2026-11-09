@@ -446,13 +446,18 @@ export function OrderPayment({
           Received {order.receivedSats.toLocaleString()} /{' '}
           {order.totalSats.toLocaleString()} sats
         </span>
-        {!escrow && (
+        {!escrow && order.status !== 'Declined by the seller' && (
           <span>
             Still owed: {due.toLocaleString()} sats ({bitcoinAmount(due)} BTC)
           </span>
         )}
         <span>{view.confirmations}</span>
       </div>
+      {order.status === 'Declined by the seller' && (
+        <p role='alert' className='ob-form-error'>
+          {('remote' in order && order.remote?.reason) || 'The seller declined this order.'} Nothing was paid.
+        </p>
+      )}
       {txids.map(txid => (
         <CopyPaymentValue
           key={txid}

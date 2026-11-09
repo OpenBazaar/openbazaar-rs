@@ -114,8 +114,8 @@ export function SettingsScreen() {
 }
 
 const styles = StyleSheet.create({
-  device: { gap: 6, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: LINE },
-  deviceHead: { flexDirection: "row", justifyContent: "space-between", gap: 8 },
+  device: { gap: 12, paddingVertical: 16, borderBottomWidth: 1, borderBottomColor: LINE },
+  deviceHead: { flexDirection: "row", flexWrap: "wrap", justifyContent: "space-between", gap: 8 },
   deviceName: { fontSize: 16, fontWeight: "600", color: NAVY, flexShrink: 1 },
   switchRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 12 },
   switchLabel: { fontSize: 16, color: NAVY, flex: 1 },

@@ -203,6 +203,7 @@ export default function Marketplace() {
   const activeTitle = section === "storefront" ? "Your storefront" : section === "listings" ? "Your listings" : section === "coupons" ? "Coupons" : section === "sales" ? "Sales" : section === "store" ? "Store settings" : section === "follows" ? "Followed stores" : section === "saved" ? "Saved goods" : section === "orders" ? "Your orders" : section === "bag" ? "Your bag" : section === "addresses" ? "Your addresses" : section === "wallet" ? "Wallet" : section === "safety" ? "Content filters" : section === "store-labels" ? "Store labels" : section === "home-node" ? "Home node" : section === "lightning" ? "Lightning" : "Products";
   const inSettings = ["safety", "addresses", "store-labels", "home-node", "lightning", "follows"].includes(section);
   const inStore = STORE_SECTIONS.includes(section);
+  const merchantWorkspace = inStore && page.name === "browse";
   const browsing = page.name === "browse" && (section === "discover" || (section === "saved" && saved.length > 0));
   const verdictOf = (listing: ListingHeader) => catalog ? safetyVerdict(listing, catalog.store.contentRating, safety, labels) : { action: "show" as const };
   const detailVerdict = page.name === "detail" ? verdictOf(page.listing) : null;
@@ -221,7 +222,7 @@ export default function Marketplace() {
     return <StoreSetup key={own.storeKey} profile={own} onSaved={(next, message) => { profile.update(next); storeChanged(message); navigate("storefront"); }} onViewStore={() => navigate("storefront")}/>;
   }
   const needsRole = !!profile.data && profile.data.role === null;
-  return <NodePaymentsProvider activeWallet={section === "wallet" || section === "orders" || page.name === "receipt"} onWallet={() => navigate("wallet")}>{needsRole ? <Onboarding onChosen={next => { profile.update(next); if (next.role === "seller") navigate("store"); }}/> : <div className={`ob-app ${resizing ? "is-resizing" : ""}`} style={{ "--ob-sidebar": `${!mobile && collapsed ? 72 : sidebarWidth}px` } as CSSProperties}>
+  return <NodePaymentsProvider activeWallet={section === "wallet" || section === "orders" || page.name === "receipt"} onWallet={() => navigate("wallet")}>{needsRole ? <Onboarding onChosen={next => { profile.update(next); if (next.role === "seller") navigate("store"); }}/> : <div className={`ob-app ${resizing ? "is-resizing" : ""} ${merchantWorkspace ? "is-merchant" : ""}`} style={{ "--ob-sidebar": `${!mobile && collapsed ? 72 : sidebarWidth}px` } as CSSProperties}>
     <a className="ob-skip" href="#ob-content">Skip to content</a>
     {menu && <button className="ob-menu-scrim" aria-label="Close navigation" onClick={() => setMenu(false)}/>}
     <aside ref={sidebarRef} className={`ob-sidebar ${menu ? "is-open" : ""} ${collapsed && !mobile ? "is-collapsed" : ""}`} aria-label="Main navigation" inert={(mobile && !menu)}>
@@ -240,9 +241,9 @@ export default function Marketplace() {
           <NavItem icon="check" active={navSection === "coupons"} onClick={() => navigate("coupons")}>Coupons</NavItem>
           <NavItem icon="paper" active={navSection === "sales"} onClick={() => navigate("sales")} count={toShip || undefined}>Sales</NavItem>
         </nav></>}
-        <CanopyDivider/>
+        {!merchantWorkspace && <><CanopyDivider/>
         <div className="ob-nav-label" id="ob-categories-label">Categories</div>
-        <nav className="ob-categories-nav" aria-label="Shopping categories">{categories.map(c => <NavItem key={c} icon={categoryIcons[c] ?? "grid"} active={navSection === "discover" && category === c} onClick={() => navigate("discover", c)} count={allowed.filter(l => l.category === c).length}>{c}</NavItem>)}</nav>
+        <nav className="ob-categories-nav" aria-label="Shopping categories">{categories.map(c => <NavItem key={c} icon={categoryIcons[c] ?? "grid"} active={navSection === "discover" && category === c} onClick={() => navigate("discover", c)} count={allowed.filter(l => l.category === c).length}>{c}</NavItem>)}</nav></>}
       </div>
       <div className="ob-sidebar-utilities">
         <nav className="ob-utility-nav" aria-label="Orders and wallet">
