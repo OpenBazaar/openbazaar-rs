@@ -186,6 +186,18 @@ export function parseSale(value: unknown): Sale {
   };
 }
 
+const ONION_SEED = /^http:\/\/[a-z2-7]{56}\.onion$/;
+
+/** Onion seeds from `GET /follows`. A clearnet sale URL is not a seed. */
+export function testNetworkSeeds(value: unknown): string[] {
+  const seeds = record(value).seeds;
+  if (!Array.isArray(seeds)) return [];
+  return seeds.flatMap((seed) => {
+    const url = text(record(seed).url);
+    return ONION_SEED.test(url) ? [url] : [];
+  });
+}
+
 export function parseFollows(value: unknown): Follow[] {
   const items = record(value).follows;
   return (Array.isArray(items) ? items : []).map((item) => {
@@ -377,6 +389,10 @@ export async function completeOrder(id: string): Promise<BuyerOrder> {
 
 export async function fetchFollows(): Promise<Follow[]> {
   return parseFollows(await paired("/follows"));
+}
+
+export async function fetchTestNetworkSeeds(): Promise<string[]> {
+  return testNetworkSeeds(await paired("/follows"));
 }
 
 export async function followStore(url: string): Promise<Follow[]> {
