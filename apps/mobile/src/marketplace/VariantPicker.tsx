@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { CONDITION_LABELS, type Commerce, type FiatPrice } from "../commerce";
 import { formatMinor, off } from "../pricing";
+import { nextQuantity } from "../quantity";
 import { choose, listingSellable, maxQuantity, optionStates, selectedVariant, sellable, stockNote, type Selection } from "../variants";
 
 export function useListingStyles() {
@@ -15,6 +16,24 @@ export function useListingStyles() {
 }
 
 const STATE_LABEL = { available: "", "sold-out": " (sold out)", unavailable: " (not offered with this choice)" } as const;
+
+/// The current quantity, and buttons that change it. Hidden only when nothing can be bought.
+export function QuantityStepper({ quantity, max, onQuantity, note }: { quantity: number; max: number; onQuantity: (n: number) => void; note?: string }) {
+  useListingStyles();
+  if (!(max > 0)) return null;
+  const cap = Math.min(max, 99);
+  return (
+    <div className="ob-buy-quantity">
+      <span>Quantity</span>
+      <div className="ob-stepper">
+        <button type="button" aria-label="One fewer" disabled={quantity <= 1} onClick={() => onQuantity(nextQuantity(quantity, -1, cap))}>−</button>
+        <output aria-live="polite" aria-label="Quantity">{quantity}</output>
+        <button type="button" aria-label="One more" disabled={quantity >= cap} onClick={() => onQuantity(nextQuantity(quantity, 1, cap))}>+</button>
+      </div>
+      {note && <small>{note}</small>}
+    </div>
+  );
+}
 
 /// Price block: the price today, the regular or compare-at price struck
 /// through, and a sale badge. All in the listing's own currency.
@@ -72,17 +91,7 @@ export function VariantPicker({ commerce, stock = 0, selection, onSelect, quanti
       ))}
       {commerce.axes.length > 0 && !variant && <p className="ob-stock-note is-info">Choose {commerce.axes.filter((_, a) => selection[a] === null).map(x => x.name.toLowerCase()).join(" and ")}.</p>}
       {note && <p className={`ob-stock-note is-${note.tone}`} role="status">{note.text}</p>}
-      {chosen && max > 0 && (
-        <div className="ob-buy-quantity">
-          <span>Quantity</span>
-          <div className="ob-stepper">
-            <button type="button" aria-label="One fewer" disabled={quantity <= 1} onClick={() => onQuantity(quantity - 1)}>−</button>
-            <output aria-live="polite">{quantity}</output>
-            <button type="button" aria-label="One more" disabled={quantity >= max} onClick={() => onQuantity(quantity + 1)}>+</button>
-          </div>
-          {commerce.maxPerOrder > 0 && <small>Up to {commerce.maxPerOrder} per order</small>}
-        </div>
-      )}
+      {chosen && max > 0 && <QuantityStepper quantity={quantity} max={max} onQuantity={onQuantity} note={commerce.maxPerOrder > 0 ? `Up to ${commerce.maxPerOrder} per order` : undefined}/>}
       {(tier || next) && <p className="ob-tier-note">{tier ? `${tier.offBps / 100}% off for buying ${tier.minQty} or more` : ""}{tier && next ? " · " : ""}{next ? `Buy ${next.minQty}, save ${next.offBps / 100}%` : ""}</p>}
     </div>
   );

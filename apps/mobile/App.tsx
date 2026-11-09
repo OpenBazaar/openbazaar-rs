@@ -40,6 +40,8 @@ import {
   type ShopCatalog,
 } from "./src/catalog";
 import { alsoSoldBy, cartPackages, type CartLine } from "./src/cart";
+import { canOrder, checkoutLine, nextQuantity } from "./src/quantity";
+import { listingSellable } from "./src/variants";
 import { bundledPhotoCount } from "./src/native/bundledGoods";
 import { NativeIcon } from "./src/native/icons";
 import { ListingPhoto } from "./src/native/ListingPhoto";
@@ -265,9 +267,13 @@ function ShopApp() {
   );
 
   const addToCart = (hash: string, quantity: number) => {
+    const listing = listingByHash(hash);
+    const available = listing ? listingSellable(listing.commerce ?? null, listing.stock) : 99;
+    const cap = Math.min(99, Number.isFinite(available) ? available : 99);
+    if (!canOrder(quantity, available)) return;
     const next = cart.some((line) => line.hash === hash)
-      ? cart.map((line) => (line.hash === hash ? { ...line, quantity: Math.min(99, line.quantity + quantity) } : line))
-      : [...cart, { hash, quantity }];
+      ? cart.map((line) => (line.hash === hash ? { ...line, quantity: Math.min(cap, line.quantity + quantity) } : line))
+      : [...cart, { hash, quantity: Math.min(cap, quantity) }];
     rememberCart(next);
   };
 
@@ -759,7 +765,9 @@ function Detail({
   const [photo, setPhoto] = useState(0);
   const [quantityText, setQuantityText] = useState("1");
   const quantity = Number(quantityText);
-  const valid = Number.isInteger(quantity) && quantity >= 1 && quantity <= 99;
+  const available = listingSellable(listing.commerce ?? null, listing.stock);
+  const cap = Math.min(99, Number.isFinite(available) ? available : 99);
+  const valid = canOrder(quantity, available);
   return (
     <ScrollView contentContainerStyle={styles.detail}>
       <View style={styles.detailMain}>
@@ -782,7 +790,7 @@ function Detail({
       <View style={styles.buyBox}>
         <Text style={styles.heroPrice}>{priceLabel(listing.priceSats, rates, currency)}</Text>
         <Field label="Quantity" value={quantityText} onChangeText={setQuantityText} keyboard="number-pad" />
-        {!valid ? <Text style={styles.error}>Enter a quantity from 1 to 99.</Text> : null}
+        {!valid ? <Text style={styles.error}>{cap > 0 ? `Enter a quantity from 1 to ${cap}.` : "This is sold out."}</Text> : null}
         <Button label="Add to cart" onPress={() => valid && onAdd(quantity)} />
         <Button label="Buy now" onPress={() => valid && onBuy(quantity)} />
         <TextButton label={saved ? "Saved" : "Save"} onPress={onToggleSave} />
@@ -851,8 +859,8 @@ function Cart({
                     <Pressable accessibilityRole="button" accessibilityLabel={`Decrease ${item.listing.title}`} onPress={() => onChange(item.listing.hash, item.quantity - 1)} style={styles.step}>
                       <Text style={styles.stepText}>−</Text>
                     </Pressable>
-                    <Text style={styles.stepValue}>{item.quantity}</Text>
-                    <Pressable accessibilityRole="button" accessibilityLabel={`Increase ${item.listing.title}`} onPress={() => onChange(item.listing.hash, Math.min(99, item.quantity + 1))} style={styles.step}>
+                    <Text accessibilityLabel={`Quantity for ${item.listing.title}`} style={styles.stepValue}>{item.quantity}</Text>
+                    <Pressable accessibilityRole="button" accessibilityLabel={`Increase ${item.listing.title}`} disabled={item.quantity >= Math.min(99, Number.isFinite(item.available) ? item.available : 99)} onPress={() => onChange(item.listing.hash, nextQuantity(item.quantity, 1, item.available))} style={styles.step}>
                       <Text style={styles.stepText}>+</Text>
                     </Pressable>
                   </View>
@@ -930,10 +938,14 @@ function Checkout({
 
   async function submit() {
     if (submitting || packages.length === 0) return;
+    if (packages.some((pkg) => pkg.problem || pkg.items.some((item) => !canOrder(item.quantity, item.available)))) {
+      setError("Check the quantity. It has to be at least 1 and no more than what is in stock.");
+      return;
+    }
     const order: Parameters<typeof placeCheckout>[0] = {
       packages: packages.map((pkg) => ({
         settlement: pkg.moderated ? settlement[pkg.seller] ?? "direct" : "direct",
-        lines: pkg.items.map((item) => ({ listingHash: item.listing.hash, quantity: item.quantity })),
+        lines: pkg.items.map((item) => checkoutLine({ listingHash: item.listing.hash, quantity: item.quantity, variant: item.variant })),
       })),
     };
     if (physical) {
