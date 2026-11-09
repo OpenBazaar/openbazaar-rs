@@ -121,7 +121,7 @@ fn a_vendor_restarted_after_round_two_still_finishes_funding() {
     let vendor = VendorAwaitingSignatures::restore(&stored, &order.vendor_secret, &later()).unwrap();
     assert_eq!(vendor.funding_outpoint(), outpoint());
     let vendor = vendor.receive(&signatures).unwrap();
-    assert_eq!(vendor.claim().transaction().lock_time.to_consensus_u32(), CLAIM);
+    assert_eq!(vendor.claim().transaction().lock_time.to_consensus_u32(), REFUND);
 
     // A stored claim partial that is not the vendor's own is refused.
     let mut forged = stored.clone();

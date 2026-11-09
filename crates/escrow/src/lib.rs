@@ -13,7 +13,7 @@
 //! | spend          | `nLockTime`           | pays                              | moderator |
 //! |----------------|-----------------------|-----------------------------------|-----------|
 //! | release        | 0                     | vendor                            | no        |
-//! | vendor claim   | `vendor_claim_height` | vendor + moderator fee + anchor   | no        |
+//! | vendor claim   | `refund_height`       | buyer + anchor (the refund)       | no        |
 //! | buyer refund   | `refund_height`       | buyer + anchor                    | no        |
 //! | buyer wins     | 0                     | buyer + moderator fee + anchor    | picks it  |
 //! | vendor wins    | 0                     | vendor + moderator fee + anchor   | picks it  |
@@ -76,22 +76,22 @@
 //! ```text
 //! funding ──── ship, deliver ──── D ── ruling window ── V ── claim window ── R ──▶
 //!   │                              │                     │                    │
-//!   │ release any time             │ last height a       │ vendor claim       │ buyer refund
-//!   │ dispute letters accepted ────┘ letter is accepted  │ minable at V + 1   │ minable at R + 1
+//!   │ release any time             │ last height a       │ ruling window ends │ buyer refund
+//!   │ dispute letters accepted ────┘ letter is accepted  │ no vendor payout   │ minable at R + 1
 //!   │ dispute outcomes valid at any height once ruled    │                    │
 //! ```
 //!
 //! * Before `D`, a buyer who did not get the goods opens a dispute. The
-//!   moderator must rule, and the winner must confirm, before `V + 1`.
-//! * A buyer who got the goods and stalls loses at `V + 1`: the vendor claim
-//!   becomes final before the refund.
-//! * The refund at `R` only matters if the vendor vanished and never claimed.
+//!   moderator must rule, and the winner must confirm, before the refund.
+//! * A silent moderator does not pay the vendor. The buyer refund at `R` is
+//!   that outcome. The presigned claim is the same refund.
+//! * The cooperative release still pays the vendor, with no moderator fee.
 //!
-//! The default is the vendor from order acceptance onward. A second presigned
-//! set after a shipping attestation would not help: a buyer who wants to
-//! cheat would simply not sign it, and without a third-party oracle a
-//! shipping attestation is not a cryptographic event. So the buyer must be
-//! online and dispute non-delivery before `D`.
+//! Silence is the buyer refund. A vendor who should be paid asks for a
+//! ruling; a ruling for the vendor pays the vendor. A second presigned set
+//! after a shipping attestation would not help: a buyer who wants to cheat
+//! would simply not sign it, and without a third-party oracle a shipping
+//! attestation is not a cryptographic event.
 //!
 //! # Equivocation
 //!
@@ -110,16 +110,11 @@
 //!
 //! # Moderator fee collection
 //!
-//! The fee is an output of both dispute outcomes and of the vendor claim.
-//! The claim pays the vendor exactly what the vendor-wins outcome pays, so a
-//! vendor who wins a ruling close to `V` saves nothing by waiting for the
-//! claim, and the moderator is paid the same whichever branch it opens.
-//! Only the cooperative release and the buyer refund (the vendor vanished)
-//! are fee-free. The cost: an order that ends in a claim without any dispute
-//! still pays the fee, and the claim shows the moderator's payout script on
-//! chain. This is option (a) of the two remedies for the review's M3
-//! finding; the rejected option (b), a separate fee-bond output, would put a
-//! moderator-spendable output in the funding transaction.
+//! The fee is an output of a published ruling, buyer-wins or vendor-wins.
+//! It is not an output of the presigned claim. Silence follows the buyer
+//! refund, so a missing moderator pays neither the vendor nor the fee.
+//! A ruling for the vendor still pays the vendor and the fee. The cooperative
+//! release and the buyer refund are fee-free.
 //!
 //! # Caller obligations
 //!
@@ -130,8 +125,8 @@
 //!   CPFP instead. [`FundingPlan::Psbt`] enforces the input rules. With
 //!   [`FundingPlan::Outpoint`] they are on the caller.
 //! * **Fees.** Presigned spends carry a fee fixed at funding, at least
-//!   [`Policy::min_fee_rate_sat_vb`]. Near `V` the vendor claim and a ruled
-//!   outcome can race; the winner should CPFP through the anchor at once.
+//!   [`Policy::min_fee_rate_sat_vb`]. A ruled outcome and the later refund
+//!   can race; the winner should CPFP through the anchor at once.
 //! * **Moderator chain view and store.** [`FundingChain`] must answer from a
 //!   node the moderator runs, and [`RulingStore`] must persist atomically.
 //! * **Per-order keys.** Derive keys with [`order_secret_key`] /

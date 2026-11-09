@@ -4,9 +4,10 @@
 //! protocol and is not encoded here.
 //!
 //! - Happy path: MuSig2 of the buyer and vendor per-order keys.
-//! - Vendor claim: presigned, pays the vendor at `vendor_claim_height`.
+//! - Vendor claim: presigned, and it does not pay the vendor. Silence is the
+//!   buyer refund.
 //! - Buyer refund: presigned, pays the buyer at `refund_locktime`, which is
-//!   later than the vendor claim.
+//!   later than the ruling window.
 //! - Dispute: two adaptor-signed outcomes, one per branch, each paying the
 //!   winner plus `moderator_fee`. The moderator can reveal the secret for at
 //!   most one branch it was asked about; it never signs a transaction.

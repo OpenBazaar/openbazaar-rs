@@ -6,7 +6,7 @@ import { sha256 } from "@noble/hashes/sha2.js";
 
 import { parseBuyerOrder } from "./catalog.ts";
 import { bytesToHex, verifyListingRecord } from "./records.ts";
-import { displayNameError, draftOf, formatPrice, fromMinorUnits, parseFollows, parseOwnListings, parseProfile, parseSale, salesToShip, toMinorUnits } from "./seller.ts";
+import { displayNameError, draftOf, formatPrice, fromMinorUnits, parseFollows, parseOwnListings, parseProfile, parseSale, salesToShip, testNetworkSeeds, toMinorUnits } from "./seller.ts";
 
 const SECRET = new Uint8Array(32).fill(7);
 const STORE = bytesToHex(schnorr.getPublicKey(SECRET));
@@ -134,6 +134,14 @@ test("a sale parses with its fulfillment, and paid sales are the ones to ship", 
   assert.equal(shipped.fulfillment?.carrier, "USPS");
   assert.equal(salesToShip([sale, shipped]), 1);
   assert.throws(() => parseSale({ id: "../x" }));
+});
+
+test("the test network seed is the vendor onion and a clearnet sale url is not", () => {
+  const vendor = "http://gwyf5y2jzymphjmxatxjtivt5tow6oxtosjl53i2ylxr3wj365zourad.onion";
+  assert.deepEqual(
+    testNetworkSeeds({ seeds: [{ url: vendor }, { url: "http://example.com" }, { url: "https://shop.example" }] }),
+    [vendor],
+  );
 });
 
 test("follows parse, and a remote buyer order without payment terms yet reads", () => {

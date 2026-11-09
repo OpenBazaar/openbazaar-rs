@@ -7,28 +7,48 @@ use crate::{
     SignedClaim, SignedRefund, SignedTerms, VerifiableShare, ANCHOR_VALUE,
 };
 
+/// A missing moderator must not pay the vendor. The presigned claim is the
+/// buyer refund: it is not final in the old claim window, it pays the buyer,
+/// and it does not pay the moderator fee.
 #[test]
-fn stalling_buyer_loses_at_the_vendor_claim_height() {
+fn a_missing_moderator_does_not_pay_the_vendor() {
     let (mut buyer, mut vendor) = funded();
-    let mut chain = Chain::at(CLAIM - 1);
+    let claim_tx = vendor.claim().transaction().clone();
+    assert_eq!(claim_tx.output, buyer.refund().transaction().output);
+    assert_eq!(claim_tx.lock_time, buyer.refund().transaction().lock_time);
+    assert_eq!(claim_tx.output[0].script_pubkey, buyer.terms().buyer_payout);
+    assert_ne!(
+        claim_tx.output[0].script_pubkey,
+        vendor.terms().vendor_payout
+    );
+    assert!(claim_tx
+        .output
+        .iter()
+        .all(|out| out.script_pubkey != buyer.terms().moderator.payout));
+    assert_eq!(
+        claim_tx.output[0].value,
+        FUNDING - NETWORK_FEE - ANCHOR_VALUE
+    );
+
+    let mut chain = Chain::at(CLAIM);
     assert!(matches!(
-        vendor.broadcast_claim(chain.next_height() - 1),
+        vendor.broadcast_claim(chain.next_height()),
         Err(Error::LockTimeNotSatisfied { .. })
     ));
     assert_eq!(vendor.phase(), Phase::Funded);
-    assert!(chain.mine(vendor.claim().transaction()).is_err());
+    assert_eq!(chain.mine(&claim_tx), Err("non-final"));
 
-    // Height CLAIM + 1: the claim is final, the refund is not.
-    chain.advance_to(CLAIM);
-    assert!(buyer.broadcast_refund(chain.next_height()).is_err());
-    let claim = vendor.broadcast_claim(chain.next_height()).unwrap();
-    chain.mine(&claim).unwrap();
-    assert_eq!(vendor.phase(), Phase::Claimed);
-
-    // Later, the refund conflicts with the confirmed claim.
     chain.advance_to(REFUND);
     let refund = buyer.broadcast_refund(chain.next_height()).unwrap();
-    assert_eq!(chain.mine(&refund), Err("double spend"));
+    assert_eq!(refund.output[0].script_pubkey, buyer.terms().buyer_payout);
+    assert!(refund
+        .output
+        .iter()
+        .all(|out| out.script_pubkey != vendor.terms().vendor_payout));
+    chain.mine(&refund).unwrap();
+    let claim = vendor.broadcast_claim(chain.next_height()).unwrap();
+    assert_eq!(claim.output, refund.output);
+    assert_eq!(chain.mine(&claim), Err("double spend"));
 }
 
 #[test]
@@ -49,11 +69,18 @@ fn buyer_who_disputes_in_time_wins() {
     );
     chain.mine(&won).unwrap();
 
+    // The claim is the buyer refund, so it is not final in the old claim window.
     chain.advance_to(CLAIM);
+    assert!(matches!(
+        vendor.claim().broadcastable_at(chain.next_height()),
+        Err(Error::LockTimeNotSatisfied { .. })
+    ));
+    chain.advance_to(REFUND);
     let claim = vendor
         .claim()
         .broadcastable_at(chain.next_height())
         .unwrap();
+    assert_eq!(claim.output[0].script_pubkey, buyer.terms().buyer_payout);
     assert_eq!(chain.mine(&claim), Err("double spend"));
 }
 
@@ -83,6 +110,17 @@ fn vendor_can_win_a_dispute_and_buyer_cannot_use_its_ruling() {
     let won = vendor.settle_dispute(&ruling).unwrap();
     vendor.verify_key_spend(&won).unwrap();
     assert_eq!(won.output[0].script_pubkey, vendor.terms().vendor_payout);
+    assert_eq!(
+        won.output[0].value,
+        FUNDING - NETWORK_FEE - MODERATOR_FEE - ANCHOR_VALUE
+    );
+    assert_eq!(won.output[1].script_pubkey, vendor.terms().moderator.payout);
+    assert_eq!(won.output[1].value, MODERATOR_FEE);
+    assert_eq!(ruling.to_bytes()[4], 2, "ModeratorRuling v2 still verifies");
+    ModeratorRuling::from_bytes(&ruling.to_bytes())
+        .unwrap()
+        .verify(&moderator_keys().signing_public())
+        .unwrap();
     assert_eq!(won.input[0].witness.nth(0).unwrap().len(), 64);
 }
 
@@ -131,8 +169,8 @@ fn rulings_are_signed_and_equivocation_is_provable() {
 }
 
 #[test]
-fn m3_claim_and_both_dispute_outcomes_pay_the_moderator_fee() {
-    let (mut buyer, vendor) = funded();
+fn a_vendor_ruling_pays_the_vendor_and_the_claim_does_not() {
+    let (mut buyer, mut vendor) = funded();
     let moderator_script = buyer.terms().moderator.payout.clone();
     let pays_moderator = |tx: &bitcoin::Transaction| {
         tx.output
@@ -146,14 +184,20 @@ fn m3_claim_and_both_dispute_outcomes_pay_the_moderator_fee() {
     assert_eq!(release.output.len(), 1);
     assert_eq!(release.output[0].value, FUNDING - NETWORK_FEE);
 
-    let claim = vendor.claim().transaction();
+    let claim = vendor.claim().transaction().clone();
+    assert!(!pays_moderator(&claim), "a missing moderator is not paid");
+    assert_ne!(claim.output[0].script_pubkey, buyer.terms().vendor_payout);
+    assert_eq!(claim.output, buyer.refund().transaction().output);
+
     for (outcome, favored) in [
         (buyer.dispute_outcome(Party::Buyer), Party::Buyer),
         (buyer.dispute_outcome(Party::Vendor), Party::Vendor),
-        (claim, Party::Vendor),
     ] {
         assert_eq!(outcome.output.len(), 3);
-        assert_eq!(&outcome.output[0].script_pubkey, buyer.terms().payout(favored));
+        assert_eq!(
+            &outcome.output[0].script_pubkey,
+            buyer.terms().payout(favored)
+        );
         assert_eq!(
             outcome.output[0].value,
             FUNDING - NETWORK_FEE - MODERATOR_FEE - ANCHOR_VALUE
@@ -161,14 +205,15 @@ fn m3_claim_and_both_dispute_outcomes_pay_the_moderator_fee() {
         assert_eq!(outcome.output[1].script_pubkey, moderator_script);
         assert_eq!(outcome.output[1].value, MODERATOR_FEE);
     }
-    // A vendor who won a ruling gets the same from the claim as from the
-    // outcome, so skipping the ruling saves it nothing.
+    let ruling = rule(&vendor.dispute_letter(b"shipped").unwrap(), TIP).unwrap();
+    assert_eq!(ruling.favored(), Party::Vendor);
+    let won = vendor.settle_dispute(&ruling).unwrap();
+    assert_eq!(won.output[0].script_pubkey, vendor.terms().vendor_payout);
     assert_eq!(
-        claim.output,
-        buyer.dispute_outcome(Party::Vendor).output,
-        "claim and vendor-wins differ only in nLockTime"
+        won.output[0].value,
+        buyer.dispute_outcome(Party::Vendor).output[0].value
     );
-    assert_ne!(claim.lock_time, buyer.dispute_outcome(Party::Vendor).lock_time);
+    assert!(pays_moderator(&won));
 
     let letter = buyer.dispute_letter(b"x").unwrap();
     let ruling = rule(&letter, TIP).unwrap();
@@ -183,30 +228,30 @@ fn m3_claim_and_both_dispute_outcomes_pay_the_moderator_fee() {
 }
 
 #[test]
-fn m3_terms_are_version_3_and_reject_a_version_2_encoding() {
+fn terms_are_version_4_and_reject_a_version_3_encoding() {
     let order = order(ORDER_SECRET);
     let encoded = order.terms.encode();
     assert_eq!(&encoded[..4], b"OBET");
-    assert_eq!(encoded[4], 3);
+    assert_eq!(encoded[4], 4);
     assert_eq!(
         order.terms.digest(),
-        crate::proofs::tagged("ob-escrow/terms/v3", &[&encoded])
+        crate::proofs::tagged("ob-escrow/terms/v4", &[&encoded])
     );
     assert_ne!(
         order.terms.digest(),
-        crate::proofs::tagged("ob-escrow/terms/v2", &[&encoded])
+        crate::proofs::tagged("ob-escrow/terms/v3", &[&encoded])
     );
-    let mut version_2 = encoded.clone();
-    version_2[4] = 2;
-    assert_eq!(EscrowTerms::decode(&version_2), Err(Error::Malformed));
+    let mut version_3 = encoded.clone();
+    version_3[4] = 3;
+    assert_eq!(EscrowTerms::decode(&version_3), Err(Error::Malformed));
     assert_eq!(EscrowTerms::decode(&encoded).unwrap(), order.terms);
 
     let signed = sign(&order).encode();
     assert_eq!(&signed[..4], b"OBTS");
-    assert_eq!(signed[4], 3);
-    let mut signed_v2 = signed.clone();
-    signed_v2[4] = 2;
-    assert_eq!(SignedTerms::decode(&signed_v2), Err(Error::Malformed));
+    assert_eq!(signed[4], 4);
+    let mut signed_v3 = signed.clone();
+    signed_v3[4] = 3;
+    assert_eq!(SignedTerms::decode(&signed_v3), Err(Error::Malformed));
     assert_eq!(SignedTerms::decode(&signed).unwrap().terms(), &order.terms);
 }
 
@@ -279,7 +324,7 @@ fn happy_path_release_needs_both_parties() {
         Err(Error::InvalidTransition { .. })
     ));
     assert!(matches!(
-        vendor.broadcast_claim(CLAIM + 1),
+        vendor.broadcast_claim(REFUND + 1),
         Err(Error::InvalidTransition { .. })
     ));
 
@@ -398,22 +443,32 @@ fn the_moderator_key_is_paid_the_signed_fee_and_a_larger_fee_or_a_name_is_refuse
     let key = buyer.terms().moderator.payout.clone();
     let signed_fee = buyer.terms().moderator.fee;
     assert_eq!(signed_fee, MODERATOR_FEE);
-    assert!(key.is_p2tr(), "the fee is paid to the moderator key in the terms");
+    assert!(
+        key.is_p2tr(),
+        "the fee is paid to the moderator key in the terms"
+    );
 
     let ruling = rule(&buyer.dispute_letter(b"x").unwrap(), TIP).unwrap();
     let settled = buyer.settle_dispute(&ruling).unwrap();
-    for tx in [&settled, vendor.claim().transaction()] {
-        let paid: Vec<_> = tx
+    let paid: Vec<_> = settled
+        .output
+        .iter()
+        .filter(|out| out.script_pubkey == key)
+        .collect();
+    assert_eq!(paid.len(), 1, "a ruling pays the moderator key once");
+    assert_eq!(paid[0].value, signed_fee);
+    let script = paid[0].script_pubkey.as_bytes();
+    assert!(!script.windows(5).any(|window| window == b"Alice"));
+    assert!(!script.windows(8).any(|window| window == b"12 Cedar"));
+    assert!(
+        vendor
+            .claim()
+            .transaction()
             .output
             .iter()
-            .filter(|out| out.script_pubkey == key)
-            .collect();
-        assert_eq!(paid.len(), 1, "the moderator key is paid once");
-        assert_eq!(paid[0].value, signed_fee);
-        let script = paid[0].script_pubkey.as_bytes();
-        assert!(!script.windows(5).any(|window| window == b"Alice"));
-        assert!(!script.windows(8).any(|window| window == b"12 Cedar"));
-    }
+            .all(|out| out.script_pubkey != key),
+        "a missing moderator is not paid from the claim"
+    );
 
     let policy = crate::Policy::default();
     for label in [*b"Alice\0\0\0", *b"12 Cedar"] {

@@ -125,7 +125,8 @@ impl VendorEscrow {
         self.contract.verify_key_spend(tx)
     }
 
-    /// Broadcast the vendor claim. Fails without changing phase before `vendor_claim_height + 1`.
+    /// Broadcast the presigned claim. It pays the buyer at `refund_height`.
+    /// Fails without changing phase before `refund_height + 1`.
     pub fn broadcast_claim(&mut self, height: u32) -> Result<Transaction, Error> {
         let tx = self.claim.broadcastable_at(height)?;
         contract::enter(&mut self.phase, Phase::Claimed)?;
