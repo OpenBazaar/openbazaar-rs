@@ -5,7 +5,7 @@
 // The screen has to know the rail before it offers a wallet button or a QR,
 // because those controls move different money.
 
-import { formatXmr, parseXmrPayment, XMR_CONFIRMATIONS } from './xmr.ts'
+import { formatXmr, XMR_CONFIRMATIONS } from './xmr.ts'
 
 export const ORDER_STATUS = {
   awaitingPayment: 'Awaiting payment',
@@ -18,7 +18,9 @@ export const ORDER_STATUS = {
   fundedWithoutRefund: 'Funded without a refund',
   released: 'Released',
   disputed: 'Disputed',
-  settled: 'Settled by the moderator'
+  settled: 'Settled by the moderator',
+  completed: 'Completed',
+  declined: 'Declined by the seller'
 } as const
 
 const ESCROW_STATUSES = new Set<string>([
@@ -45,9 +47,16 @@ export function isPaid(status: string | undefined): boolean {
   return status === ORDER_STATUS.paid
 }
 
-/** Stop polling a list once every order has confirmed, including an empty list. */
-export function ordersSettled(orders: { status: string }[]): boolean {
-  return orders.length === 0 || orders.every(order => isPaid(order.status))
+/** Polling stops when a local order is paid, or a remote order is finished. */
+export function orderPollingDone(order: { status: string; remote?: unknown }): boolean {
+  if (order.remote) {
+    return order.status === ORDER_STATUS.completed || order.status === ORDER_STATUS.declined
+  }
+  return isPaid(order.status)
+}
+
+export function ordersSettled(orders: { status: string; remote?: unknown }[]): boolean {
+  return orders.length === 0 || orders.every(orderPollingDone)
 }
 
 export function payKind(order: PayOrder): PayKind {
@@ -56,7 +65,6 @@ export function payKind(order: PayOrder): PayKind {
   return 'btc'
 }
 
-/** The bitcoin wallet button. Monero and escrow never take this path. */
 export function canOfferBitcoinPay(
   order: { status: string; payTxid?: string | null },
   kind: PayKind,
@@ -65,7 +73,6 @@ export function canOfferBitcoinPay(
   return kind === 'btc' && order.status === ORDER_STATUS.awaitingPayment && dueSats > 0 && !order.payTxid
 }
 
-/** Confirmations the status line should count toward. Monero always needs 10. */
 export function confirmationTarget(
   kind: PayKind,
   moneroNeeded: number | null | undefined,
@@ -73,6 +80,16 @@ export function confirmationTarget(
 ): number | undefined {
   if (kind === 'xmr') return moneroNeeded ?? XMR_CONFIRMATIONS
   return bitcoinNeeded
+}
+
+export type MoneroFields = {
+  network: 'stagenet' | 'mainnet'
+  subaddress: string
+  uri: string
+  amountPiconero: string
+  receivedPiconero: string
+  overpaidPiconero: string
+  confirmationsNeeded: number
 }
 
 export type MoneroDue = {
@@ -87,19 +104,29 @@ export type MoneroDue = {
   awaiting: boolean
 }
 
-/** A Monero amount line from the node's flat payment object. Bitcoin payments are null. */
-export function moneroDue(payment: unknown): MoneroDue | null {
-  const fields = parseXmrPayment(payment)
+export function moneroDue(payment: { rail?: string; monero?: MoneroFields | null } | null | undefined): MoneroDue | null {
+  const fields = payment?.rail === 'xmr' ? payment.monero : null
   if (!fields) return null
+  let amount: bigint
+  let received: bigint
+  let overpaid: bigint
+  try {
+    amount = BigInt(fields.amountPiconero)
+    received = BigInt(fields.receivedPiconero)
+    overpaid = BigInt(fields.overpaidPiconero)
+  } catch {
+    return null
+  }
+  const remaining = amount > received ? amount - received : 0n
   return {
     network: fields.network,
     subaddress: fields.subaddress,
     uri: fields.uri,
-    amountXmr: formatXmr(fields.amount),
-    receivedXmr: formatXmr(fields.received),
-    remainingXmr: formatXmr(fields.remaining),
-    overpaidXmr: fields.overpaid > 0n ? formatXmr(fields.overpaid) : null,
+    amountXmr: formatXmr(amount),
+    receivedXmr: formatXmr(received),
+    remainingXmr: formatXmr(remaining),
+    overpaidXmr: overpaid > 0n ? formatXmr(overpaid) : null,
     confirmationsNeeded: fields.confirmationsNeeded,
-    awaiting: fields.remaining > 0n
+    awaiting: remaining > 0n
   }
 }
