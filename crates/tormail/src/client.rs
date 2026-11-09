@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use crate::Error;
 
-pub(crate) fn open_client(
+pub fn open_client(
     state_dir: &Path,
 ) -> Result<Arc<arti_client::TorClient<tor_rtcompat::PreferredRuntime>>, Error> {
     let state = state_dir.join("state");

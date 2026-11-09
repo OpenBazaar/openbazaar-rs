@@ -73,6 +73,7 @@ impl Sidecar {
             .arg(app_data_dir)
             .arg("--no-pair-codes")
             .args(if home_mode(app_data_dir) { &["--remote", "--lan"][..] } else { &[] })
+            .arg("--onion")
             .current_dir(&data_dir)
             .env("OB_EXIT_ON_STDIN_EOF", "1")
             .stdin(Stdio::piped())

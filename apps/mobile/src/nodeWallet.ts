@@ -27,6 +27,8 @@ export type NetworkInfo = {
   clearnet: boolean
   privacyWarning: string | null
   chainBackend: ChainBackend | null
+  /** This node's onion, once the listener has published it. */
+  onion: string | null
 }
 /** Copying stays on this device. Opening an explorer does not use the node's Tor settings. */
 export const EXTERNAL_TX_NOTE =
@@ -104,7 +106,8 @@ export async function fetchNetwork(): Promise<NetworkInfo> {
     proxy: textOrNull(r.proxy),
     clearnet: r.clearnet === true,
     privacyWarning: textOrNull(r.privacyWarning),
-    chainBackend: chainBackend(r.chainBackend)
+    chainBackend: chainBackend(r.chainBackend),
+    onion: textOrNull(r.onion) ?? textOrNull(r.letterOnion)
   }
 }
 export async function fetchWallet(): Promise<NodeWallet> {

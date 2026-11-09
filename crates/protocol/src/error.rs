@@ -31,6 +31,8 @@ pub enum Error {
     BadListing(&'static str),
     /// A coupon, offer, receipt or review is out of range or not canonical.
     BadTerms(&'static str),
+    /// A seed document is out of order, repeated, or not a v3 onion list.
+    BadSeed(&'static str),
 }
 
 impl fmt::Display for Error {
@@ -47,6 +49,9 @@ impl fmt::Display for Error {
         if let Error::BadTerms(what) = self {
             return f.write_str(what);
         }
+        if let Error::BadSeed(what) = self {
+            return write!(f, "seed document: {what}");
+        }
         let message = match self {
             Error::Truncated => "truncated record",
             Error::TrailingBytes => "trailing bytes after a canonical record",
@@ -62,7 +67,11 @@ impl fmt::Display for Error {
             Error::BadLabel => "label set entry is not canonical",
             Error::FieldTooLong => "field exceeds the canonical length limit",
             Error::Sealed => "sealed envelope is not opened in this phase",
-            Error::PrivateText { .. } | Error::BadProfile(_) | Error::BadListing(_) | Error::BadTerms(_) => unreachable!("handled above"),
+            Error::PrivateText { .. }
+            | Error::BadProfile(_)
+            | Error::BadListing(_)
+            | Error::BadTerms(_)
+            | Error::BadSeed(_) => unreachable!("handled above"),
         };
         f.write_str(message)
     }

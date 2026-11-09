@@ -263,6 +263,10 @@ impl Node {
     }
 }
 
+pub(crate) fn today_yyyymmdd() -> u32 {
+    today()
+}
+
 /// Today as YYYYMMDD in UTC.
 pub(crate) fn today() -> u32 {
     let days = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs() / 86_400) as i64;

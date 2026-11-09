@@ -187,10 +187,10 @@ impl Node {
         let mut next_status = std::time::Instant::now();
         loop {
             tokio::select! {
-                result = running.accept_letter(&self.mailbox) => {
+                result = running.accept_letter(&self.mailbox, |kind, id| self.directory_reply(kind, &id)) => {
                     match result {
                         Ok(tormail::Arrival::Letter(id)) => eprintln!("ob-node: stored letter {id}"),
-                        Ok(tormail::Arrival::Shop) => {}
+                        Ok(tormail::Arrival::Shop) | Ok(tormail::Arrival::Query) => {}
                         Err(tormail::Error::ListenerClosed) => break,
                         Err(err) => {
                             eprintln!("ob-node: {err}");

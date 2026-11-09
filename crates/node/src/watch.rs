@@ -62,6 +62,18 @@ fn txids(txs: &[AddressTx]) -> Vec<String> {
     txs.iter().map(|tx| tx.txid.to_string()).collect()
 }
 
+/// Direct pay on either rail: nothing due stays awaiting; the full amount
+/// seen but not confirmed is payment seen; the full amount confirmed is paid.
+pub(crate) fn direct_progress(due: u64, received: u64, confirmed: u64) -> &'static str {
+    if due > 0 && confirmed >= due {
+        PAID
+    } else if due > 0 && received >= due {
+        PAYMENT_SEEN
+    } else {
+        AWAITING_PAYMENT
+    }
+}
+
 pub(crate) fn direct_status(due: u64, txs: &[AddressTx], tip: u32, needed: u32) -> Observation {
     let received: u64 = txs.iter().map(AddressTx::value).sum();
     let settled: u64 = txs
@@ -69,13 +81,7 @@ pub(crate) fn direct_status(due: u64, txs: &[AddressTx], tip: u32, needed: u32) 
         .filter(|tx| confirmations(tip, tx.height) >= needed)
         .map(AddressTx::value)
         .sum();
-    let status = if due > 0 && settled >= due {
-        PAID
-    } else if due > 0 && received >= due {
-        PAYMENT_SEEN
-    } else {
-        AWAITING_PAYMENT
-    };
+    let status = direct_progress(due, received, settled);
     Observation {
         status,
         received_sats: received,
@@ -247,5 +253,20 @@ impl Node {
                 slept += step;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn direct_payment_waits_until_the_full_amount_is_confirmed() {
+        assert_eq!(direct_progress(10, 0, 0), AWAITING_PAYMENT);
+        assert_eq!(direct_progress(10, 4, 4), AWAITING_PAYMENT);
+        assert_eq!(direct_progress(10, 10, 0), PAYMENT_SEEN);
+        assert_eq!(direct_progress(10, 10, 9), PAYMENT_SEEN);
+        assert_eq!(direct_progress(10, 12, 12), PAID);
+        assert_eq!(direct_progress(0, 0, 0), AWAITING_PAYMENT);
     }
 }

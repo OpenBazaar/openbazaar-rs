@@ -65,6 +65,8 @@ export type ListingHeader = {
   freeOverSats: number;
   contentRating: ContentRating;
   contentTags: string[];
+  /** True when the seller is one of the built-in sample stores. */
+  sample?: boolean;
   /** Set on listings a seller made in the app (signed version 6). */
   listingId: string | null;
   /** SHA-256 hashes of the listing's images, served at `/media/{hash}`. */

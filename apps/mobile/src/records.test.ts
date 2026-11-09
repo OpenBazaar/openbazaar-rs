@@ -42,6 +42,16 @@ test("every demo store and listing record verifies, as signed by the node", () =
   }
 });
 
+test("a sample store flag from the node is kept on the card", () => {
+  const { listings } = raw();
+  const item = { ...listings[0], sample: true };
+  const record = verifyListingRecord(item.record);
+  assert.ok(record);
+  const header = verifiedListing(item, new Set([record.storeId]));
+  assert.equal(header?.sample, true);
+  assert.equal(verifiedListing({ ...listings[0], sample: false }, new Set([record.storeId]))?.sample, false);
+});
+
 test("a changed byte, a missing record, or trailing bytes fail", () => {
   const { stores, listings } = raw();
   const store = String(stores[0].record);

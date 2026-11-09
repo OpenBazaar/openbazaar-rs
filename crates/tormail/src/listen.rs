@@ -12,7 +12,7 @@ use tor_rtcompat::Runtime;
 
 use crate::mailbox::Mailbox;
 use crate::onion::{OnionAddress, ORDER_PORT};
-use crate::transport::{read_exact, read_letter, STORED_ACK};
+use crate::transport::{read_exact, read_letter, read_query_after_magic, write_query_reply, QUERY_MAGIC, STORED_ACK};
 use crate::Error;
 use crate::LetterId;
 
@@ -21,6 +21,8 @@ use crate::LetterId;
 pub enum Arrival {
     Letter(LetterId),
     Shop,
+    /// A directory query was answered on this stream.
+    Query,
 }
 
 /// `GET` / `POST` and the other HTTP methods a buyer might send. A sealed
@@ -57,21 +59,26 @@ impl OnionListener {
         self.service.onion_address().map(OnionAddress::from_hs_id)
     }
 
-    /// Accept one introduced stream, read one sealed letter, and store it.
+    /// Accept one introduced stream.
     ///
     /// Streams aimed at any port other than [`ORDER_PORT`] are rejected.
     /// A public shop request on that port is not a letter. The store secret
     /// is not used here.
     pub async fn accept_letter(&mut self, mailbox: &Mailbox) -> Result<LetterId, Error> {
-        match self.accept_next(mailbox, None).await? {
+        match self.accept_next(mailbox, None, |_, _| None).await? {
             Arrival::Letter(id) => Ok(id),
             Arrival::Shop => Err(Error::Listener("shop request with no sale gate")),
+            Arrival::Query => Err(Error::Listener("directory query with no answer")),
         }
     }
 
     /// Accept one stream. `shop` is the sale gate. An HTTP preface is relayed
-    /// there and is not stored. `OBML` is a sealed letter.
-    pub async fn accept_next(&mut self, mailbox: &Mailbox, shop: Option<SocketAddr>) -> Result<Arrival, Error> {
+    /// there and is not stored. `OBML` is a sealed letter. `OBQR` is a
+    /// directory query answered with `answer`.
+    pub async fn accept_next<F>(&mut self, mailbox: &Mailbox, shop: Option<SocketAddr>, answer: F) -> Result<Arrival, Error>
+    where
+        F: FnOnce(u8, [u8; 32]) -> Option<Vec<u8>>,
+    {
         let rend = self.requests.next().await.ok_or(Error::ListenerClosed)?;
         let mut streams = rend
             .accept()
@@ -109,6 +116,12 @@ impl OnionListener {
             let mut done = [0u8; 1];
             let _ = stream.read(&mut done).await;
             return Ok(Arrival::Letter(id));
+        }
+        if preface == *QUERY_MAGIC {
+            let (kind, id) = read_query_after_magic(&mut stream).await?;
+            write_query_reply(&mut stream, answer(kind, id).as_deref()).await?;
+            stream.flush().await?;
+            return Ok(Arrival::Query);
         }
         if is_shop_preface(&preface) {
             let Some(shop) = shop else {
@@ -241,9 +254,12 @@ impl RunningMailbox {
             .ok_or(Error::Listener("onion identity is not in the keystore"))
     }
 
-    /// Read one sealed letter, or relay one public shop request to the sale gate.
-    pub async fn accept_letter(&mut self, mailbox: &Mailbox) -> Result<Arrival, Error> {
-        self.listener.accept_next(mailbox, self.shop).await
+    /// Read one sealed letter, relay one public shop request, or answer one directory query.
+    pub async fn accept_letter<F>(&mut self, mailbox: &Mailbox, answer: F) -> Result<Arrival, Error>
+    where
+        F: FnOnce(u8, [u8; 32]) -> Option<Vec<u8>>,
+    {
+        self.listener.accept_next(mailbox, self.shop, answer).await
     }
 
     /// Download a Tor directory. Launching the service does not do this.
