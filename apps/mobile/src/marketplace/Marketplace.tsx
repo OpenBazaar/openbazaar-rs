@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
-import { fetchCatalog, fetchLabelers, fetchOrders, fetchRates, type LabelerState, type BuyerOrder, type CurrencyCode, type ListingHeader, type RateTable, type ShopCatalog } from "../catalog";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type ReactNode } from "react";
+import { fetchCatalog, fetchLabelers, fetchOrders, fetchRates, paired, type LabelerState, type BuyerOrder, type CurrencyCode, type ListingHeader, type RateTable, type ShopCatalog } from "../catalog";
 import { filterListings } from "../search";
 import { Bag, Addresses, MarketplaceCheckout, CheckoutConfirmation } from "./Commerce";
 import { lineKey, type CartLine } from "../cart";
@@ -88,6 +88,54 @@ function fiat(sats: number, rates: RateTable, currency: CurrencyCode) { const r 
 function btc(sats: number) { return `${(sats / 1e8).toFixed(8).replace(/0+$/, "").replace(/\.$/, "")} BTC`; }
 export function Money({ sats, rates, currency, large = false }: { sats: number; rates: RateTable; currency: CurrencyCode; large?: boolean }) { const estimate = fiat(sats, rates, currency); return <div className={`ob-money ${large ? "ob-money-large" : ""}`}><span>{sats.toLocaleString("en-US")} <small>sats</small></span>{estimate && <span className="ob-estimate" title={`Estimated value in ${currency}`}>≈ {estimate}</span>}</div>; }
 function Brand({ theme }: { theme: "light" | "dark" }) { return <span className="ob-brand"><span className="ob-brand-icon"><img src={theme === "light" ? "brand/ob-market-logo-light.png" : "brand/ob-market-logo-256.png"} alt="" width={42} height={42}/></span><span>OpenBazaar<span className="ob-brand-dot">.</span></span></span>; }
+
+function DirectoryActions({ onChanged, onNote }: { onChanged: () => void; onNote: (text: string) => void }) {
+  const [storeId, setStoreId] = useState("");
+  const [title, setTitle] = useState("");
+  const [description, setDescription] = useState("");
+  const [price, setPrice] = useState("");
+  const [busy, setBusy] = useState(false);
+  async function addStore(event: FormEvent) {
+    event.preventDefault();
+    setBusy(true);
+    try {
+      await paired("/follow", { method: "POST", body: JSON.stringify({ storeId: storeId.trim() }), headers: { "Content-Type": "application/json" } });
+      setStoreId("");
+      onNote("Store key saved. The node will keep its records.");
+      onChanged();
+    } catch (err) {
+      onNote(err instanceof Error ? err.message : "The store key was not saved.");
+    } finally { setBusy(false); }
+  }
+  async function publish(event: FormEvent) {
+    event.preventDefault();
+    setBusy(true);
+    try {
+      await paired("/listings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ title: title.trim(), category: "Home", shipFrom: "Local", description: description.trim(), priceSats: Number(price), stock: 1, kind: "physical" }) });
+      setTitle("");
+      setDescription("");
+      setPrice("");
+      onNote("Listing signed with your store key.");
+      onChanged();
+    } catch (err) {
+      onNote(err instanceof Error ? err.message : "The listing was not signed.");
+    } finally { setBusy(false); }
+  }
+  return (
+    <div className="ob-directory-actions">
+      <form onSubmit={event => void addStore(event)}>
+        <label className="ob-field">Add store<input aria-label="Store key" value={storeId} spellCheck={false} autoCapitalize="off" placeholder="64 hex characters" onChange={e => setStoreId(e.target.value)}/></label>
+        <button className="ob-secondary" type="submit" disabled={busy}>Add</button>
+      </form>
+      <form onSubmit={event => void publish(event)}>
+        <label className="ob-field">Your listing<input aria-label="Listing title" value={title} onChange={e => setTitle(e.target.value)}/></label>
+        <label className="ob-field">Description<input aria-label="Listing description" value={description} onChange={e => setDescription(e.target.value)}/></label>
+        <label className="ob-field">Price in sats<input aria-label="Price in sats" inputMode="numeric" value={price} onChange={e => setPrice(e.target.value)}/></label>
+        <button className="ob-secondary" type="submit" disabled={busy}>Publish</button>
+      </form>
+    </div>
+  );
+}
 
 type Section = "discover" | "saved" | "orders" | "bag" | "addresses" | "safety" | "wallet" | "store-labels" | "home-node" | "lightning" | "follows" | StoreSection;
 type StoreSection = "storefront" | "listings" | "coupons" | "sales" | "store";
@@ -279,7 +327,7 @@ export default function Marketplace() {
       <BuildMismatchWarning build={build}/>
       <main className="ob-content" id="ob-content" ref={content}>
         <div className="ob-content-inner">
-          {browsing && <div className="ob-discovery-bar"><div className="ob-search"><Icon name="search" size={18}/><input ref={searchRef} aria-label="Search listings" placeholder="Search marketplace" value={query} onChange={e => { setQuery(e.target.value); setPage({ name: "browse" }); }}/>{query ? <button className="ob-icon-button" aria-label="Clear search" onClick={() => setQuery("")}><Icon name="close" size={16}/></button> : <kbd>⌘ K</kbd>}</div></div>}
+          {browsing && <div className="ob-discovery-bar"><div className="ob-search"><Icon name="search" size={18}/><input ref={searchRef} aria-label="Search listings" placeholder="Search marketplace" value={query} onChange={e => { setQuery(e.target.value); setPage({ name: "browse" }); }}/>{query ? <button className="ob-icon-button" aria-label="Clear search" onClick={() => setQuery("")}><Icon name="close" size={16}/></button> : <kbd>⌘ K</kbd>}</div><DirectoryActions onChanged={() => void load()} onNote={setToast}/></div>}
           {utilityView ?? (loading ? <div className="ob-loading" role="status"><span className="ob-spinner"/><h1>Loading products</h1><p>Connecting to your marketplace…</p></div> : loadError || !catalog ? <Empty icon="globe" title="Unable to connect" text={loadError || "Your node could not be reached."}><button className="ob-primary" onClick={() => void load()}>Try again <Icon name="arrow" size={16}/></button></Empty> : page.name === "detail" && detailVerdict && detailVerdict.action !== "show" && !revealed.includes(page.listing.hash) ? <SafetyInterstitial reason={detailVerdict.reason} onShow={() => setRevealed(r => [...r, page.listing.hash])} onBack={() => setPage({ name: "browse" })}/> : page.name === "detail" ? <><ProductDetail key={page.listing.hash} own={!!profile.data && page.listing.storeId === profile.data.storeKey} onEdit={() => navigate("listings")} listing={page.listing} alternatives={page.listing.product ? allowed.filter(l => l.product === page.listing.product && l.hash !== page.listing.hash) : []} onAlternative={open} {...money} saved={saved.includes(page.listing.hash)} onSave={() => toggleSaved(page.listing)} onBack={() => setPage({ name: "browse" })} onAdd={pick => addToBag(page.listing, pick)} onBuy={pick => setPage({ name: "checkout", lines: [{ hash: page.listing.hash, variant: pick.variant, quantity: pick.quantity }], returnTo: page.listing })}/><HideActions listing={page.listing} settings={safety} onChange={next => { setSafety(next); setPage({ name: "browse" }); setToast("Hidden on this device. Undo in Content filters."); }}/></> : page.name === "checkout" ? <MarketplaceCheckout lines={page.lines} catalog={catalog} {...money} backLabel={page.returnTo ? "Back to product" : "Back to bag"} onBack={() => page.returnTo ? setPage({ name: "detail", listing: page.returnTo }) : navigate("bag")} onDone={receipt => { const bought = new Set(receipt.orders.flatMap(o => o.lines.map(l => l.listingHash))); setCart(c => c.filter(l => !bought.has(l.hash))); setPage({ name: "receipt", receipt }); }}/> : page.name === "receipt" ? <CheckoutConfirmation receipt={page.receipt} {...money} onBrowse={() => navigate("discover")}/> : section === "bag" ? <Bag catalog={catalog} lines={cart} {...money} onChange={(key, quantity) => setCart(c => quantity === 0 ? c.filter(l => lineKey(l) !== key) : c.map(l => lineKey(l) === key ? { ...l, quantity } : l))} onCheckout={() => setPage({ name: "checkout", lines: cart })} onBrowse={() => navigate("discover")}/> : section === "store-labels" ? <div className="ob-settings-page"><header className="ob-settings-heading"><h1>Store labels</h1><p>Set the content ratings buyers see for your store and listings.</p></header><VendorLabelPicker catalog={catalog} onCatalog={setCatalog}/></div> : <>
             <section className="ob-catalog" aria-labelledby="ob-catalog-title"><div className="ob-section-heading"><div><h1 id="ob-catalog-title">{section === "saved" ? "Saved goods" : query ? `Results for “${query}”` : category ? category : "All products"}<span aria-label={`${visible.length} products`}>{visible.length}</span></h1></div><label className="ob-sort">Sort by <select aria-label="Sort goods" value={sort} onChange={e => setSort(e.target.value)}><option value="name">Name</option><option value="newest">Newest first</option><option value="price-asc">Price: low to high</option><option value="price-desc">Price: high to low</option></select></label></div>
               <div className="ob-filter-row" role="group" aria-label="Filter by category"><button className={`ob-filter ${!category ? "is-active" : ""}`} aria-pressed={!category} onClick={() => setCategory(null)}><Icon name="grid" size={15}/>All goods</button>{categories.map(c => <button key={c} className={`ob-filter ${category === c ? "is-active" : ""}`} aria-pressed={category === c} onClick={() => setCategory(c)}><Icon name={categoryIcons[c] ?? "grid"} size={15}/>{c}</button>)}</div>
@@ -299,7 +347,7 @@ function NavItem({ icon, children, active, count, onClick }: { icon: IconName; c
 export function Empty({ icon, illustration, title, text, children }: { icon: IconName; illustration?: "bag" | "saved"; title: string; text: string; children?: ReactNode }) { return <div className="ob-empty">{illustration ? <MarketEmptyArtwork variant={illustration}/> : <span className="ob-empty-icon"><Icon name={icon} size={30}/></span>}<h2>{title}</h2><p>{text}</p>{children && <div className="ob-empty-actions">{children}</div>}</div>; }
 export function ProductImage({ listing, image = listing.images[0], ...props }: { listing: ListingHeader; image?: string; className?: string }) { const src = photo(listing); const placeholder = <Icon name={categoryIcons[listing.category] ?? "bag"} size={55}/>; return <div className={`ob-product-image ${src || image ? "" : "ob-product-placeholder"} ${props.className ?? ""}`}>{image ? <MediaImage hash={image} alt={listing.title} fallback={placeholder}/> : src ? <img src={src} alt={listing.title} loading="lazy"/> : placeholder}</div>; }
 export function ProductCard({ listing, rates, currency, saved, onSave, onOpen }: { listing: ListingHeader; rates: RateTable; currency: CurrencyCode; saved: boolean; onSave?: () => void; onOpen: () => void }) {
-  return <article className="ob-product-card"><div className="ob-card-image-wrap"><button className="ob-product-open" onClick={onOpen} aria-label={`View ${listing.title}`}><ProductImage listing={listing}/></button>{onSave && <button className={`ob-save ${saved ? "is-saved" : ""}`} aria-label={`${saved ? "Unsave" : "Save"} ${listing.title}`} aria-pressed={saved} onClick={onSave}><Icon name="heart" size={17}/></button>}{listing.kind === "digital" && <span className="ob-digital-badge"><Icon name="bolt" size={12}/>Digital</span>}</div><div className="ob-card-category">{listing.category}<span>{listing.shipFrom}</span></div><button className="ob-product-title" onClick={onOpen}>{listing.title}</button>{listing.price && <span className="ob-seller-price">{formatPrice(listing.price.amount, listing.price.currency)}</span>}<Money sats={listing.priceSats} rates={rates} currency={currency}/><div className="ob-card-seller"><span className="ob-seller-avatar">{listing.seller.charAt(0)}</span>{listing.seller}</div></article>;
+  return <article className="ob-product-card"><div className="ob-card-image-wrap"><button className="ob-product-open" onClick={onOpen} aria-label={`View ${listing.title}`}><ProductImage listing={listing}/></button>{onSave && <button className={`ob-save ${saved ? "is-saved" : ""}`} aria-label={`${saved ? "Unsave" : "Save"} ${listing.title}`} aria-pressed={saved} onClick={onSave}><Icon name="heart" size={17}/></button>}{listing.kind === "digital" && <span className="ob-digital-badge"><Icon name="bolt" size={12}/>Digital</span>}{listing.sample && <span className="ob-sample-badge">Sample</span>}</div><div className="ob-card-category">{listing.category}<span>{listing.shipFrom}</span></div><button className="ob-product-title" onClick={onOpen}>{listing.title}</button>{listing.price && <span className="ob-seller-price">{formatPrice(listing.price.amount, listing.price.currency)}</span>}<Money sats={listing.priceSats} rates={rates} currency={currency}/><div className="ob-card-seller"><span className="ob-seller-avatar">{listing.seller.charAt(0)}</span>{listing.seller}</div></article>;
 }
 function ProductDetail({ listing, own, onEdit, rates, currency, saved, onSave, onBack, onBuy, onAdd, alternatives, onAlternative }: { own: boolean; onEdit: () => void; alternatives: ListingHeader[]; onAlternative: (listing: ListingHeader) => void; listing: ListingHeader; rates: RateTable; currency: CurrencyCode; saved: boolean; onSave: () => void; onBack: () => void; onBuy: (pick: BuyChoice) => void; onAdd: (pick: BuyChoice) => void }) {
   const [alternate, setAlternate] = useState(false);

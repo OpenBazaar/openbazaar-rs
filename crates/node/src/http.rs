@@ -271,6 +271,8 @@ fn route(node: &Node, request: &Request<'_>, client: Client, origin: Option<&str
             listing_response(node, &path["/listings/".len()..], origin)
         }
         ("POST", "/orders") => order_response(node, client, head, body, origin),
+        ("POST", "/listings") => crate::directory::listing_publish_response(node, client, head, body, origin),
+        ("POST", "/follow") => crate::directory::follow_response(node, client, head, body, origin),
         ("POST", "/checkout") => checkout_response(node, client, head, body, origin),
         ("GET", "/labelers") | ("PUT", "/labelers") => labelers::response(node, client, head, method, body, origin),
         ("GET", "/stores") => stores::list_response(node, client, head, origin),

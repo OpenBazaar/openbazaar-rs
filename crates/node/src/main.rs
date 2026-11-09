@@ -1,12 +1,14 @@
 #![forbid(unsafe_code)]
 
 use std::env;
+use std::fs;
+use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
 
 use ob_node::{LocalConfig, NetworkMode, NodeConfig, RemoteConfig, ServeOptions, VaultChoice, VaultMode};
 
-const USAGE: &str = "ob-node [print | --version | pair [port] [--network N] [--data-dir DIR] [--lan-page] | devices [port] [--remove ID [--rotate] | --remove-all --rotate] | serve [port] [--remote] [--lan] [--lan-listen ADDR] [--remote-listen 127.0.0.1:PORT] [--web-dir DIR] [--local-shop DIR] [--push-gateway http://ONION] [--network testnet4|mainnet] [--data-dir DIR] [--peer HOST:PORT[,...] | --esplora URL[,URL...]] [--public-fallback | --no-public-fallback] [--confirmations N] [--poll-secs S] [--escrow-vendor SELLER=URL] [--moderator URL] [--moderate] [--vault keystore|passphrase|file] [--shop-origin URL] [--no-pair-codes] [--proxy socks5h://HOST:PORT] [--no-rates] [--xmr-daemon URL[,URL...]] [--onion] [--lightning [--ln-network signet|testnet4|regtest] [--ln-chain esplora:URL|electrum:URL|bitcoind:USER:PASS@HOST:PORT] [--lsp NODE_ID@HOST:PORT [--lsp-token T] | --no-lsp] [--lsp-max-fee-sats N] [--ln-rgs URL | --ln-p2p-gossip] [--ln-listen HOST:PORT]] | send-letter --to ONION|http://127.0.0.1:PORT --file FILE [--data-dir DIR] [--network testnet4|mainnet] [--timeout SECS] | poll-mail [--data-dir DIR] [--network testnet4|mainnet] [--expect SHA256]]
+const USAGE: &str = "ob-node [print | --version | pair [port] [--network N] [--data-dir DIR] [--lan-page] | devices [port] [--remove ID [--rotate] | --remove-all --rotate] | serve [port] [--remote] [--lan] [--lan-listen ADDR] [--remote-listen 127.0.0.1:PORT] [--web-dir DIR] [--local-shop DIR] [--push-gateway http://ONION] [--network testnet4|mainnet] [--data-dir DIR] [--peer HOST:PORT[,...] | --esplora URL[,URL...]] [--public-fallback | --no-public-fallback] [--confirmations N] [--poll-secs S] [--escrow-vendor SELLER=URL] [--moderator URL] [--moderate] [--vault keystore|passphrase|file] [--shop-origin URL] [--no-pair-codes] [--proxy socks5h://HOST:PORT] [--no-rates] [--xmr-daemon URL[,URL...]] [--onion] [--lightning [--ln-network signet|testnet4|regtest] [--ln-chain esplora:URL|electrum:URL|bitcoind:USER:PASS@HOST:PORT] [--lsp NODE_ID@HOST:PORT [--lsp-token T] | --no-lsp] [--lsp-max-fee-sats N] [--ln-rgs URL | --ln-p2p-gossip] [--ln-listen HOST:PORT]] | send-letter --to ONION|http://127.0.0.1:PORT --file FILE [--data-dir DIR] [--network testnet4|mainnet] [--timeout SECS] | poll-mail [--data-dir DIR] [--network testnet4|mainnet] [--expect SHA256] | sign-seed --key FILE --sequence N [--stores HEX,HEX] --out FILE | fetch-seed --data-dir DIR --from ONION [--from ONION...]]
 
 Chain data comes from BIP 157/158 compact block filters by default.
 --peer uses only your own node (bitcoind with blockfilterindex=1 and peerblockfilters=1).
@@ -22,9 +24,11 @@ Chain data comes from BIP 157/158 compact block filters by default.
 --lightning runs an LDK Lightning node for direct pay (see docs/lightning.md). A public peer, Esplora chain source, or gossip server is reached through --proxy, so it does not see this machine's IP. Without --proxy those stay refused. Electrum and bitcoind stay direct. With --remote, inbound Lightning is an onion on that Tor client, forwarded to a loopback socket that is not announced. A public --ln-listen is refused. Mainnet Lightning requires --proxy and an LSP you name (or --no-lsp). There is no mainnet LSP default.
 --vault passphrase reads OB_VAULT_PASSPHRASE, or asks on the terminal.
 --vault file keeps the key in the data dir; use it only on headless machines and in tests.
---onion listens for one sealed letter on a Tor onion (virtual port 80) and serves the public shop routes on that same onion: GET /public/store, public media, and reviews. The clearnet listener stays on 127.0.0.1. Wallet, escrow spend, and mail secrets stay closed. A clearnet sale URL is still refused.
+--onion listens for one sealed letter on a Tor onion (virtual port 80) and serves the public shop routes on that same onion: GET /public/store, public media, and reviews. It also answers a seed-document query. The clearnet listener stays on 127.0.0.1. Wallet, escrow spend, and mail secrets stay closed. A clearnet sale URL is still refused.
 send-letter dials --to. An onion uses Arti and fails if the dial fails or times out. A loopback http:// URL posts the letter to /escrow/mail. Any other URL is refused.
-poll-mail lists id and sha256 for each letter in the sealed mailbox. With --expect, it exits 1 when that digest is absent.";
+poll-mail lists id and sha256 for each letter in the sealed mailbox. With --expect, it exits 1 when that digest is absent.
+sign-seed --key FILE --sequence N [--stores HEX,HEX] --out FILE signs a seed document with the operator key. The key file is 64 hex characters and must match the public key in this binary. Copy the output file onto both introduction hosts; do not copy the key.
+fetch-seed --data-dir DIR --from ONION [--from ONION...] asks those introductions and prints the sequence that verified.";
 const PASSPHRASE_ENV: &str = "OB_VAULT_PASSPHRASE";
 
 fn main() -> ExitCode {
@@ -36,6 +40,8 @@ fn main() -> ExitCode {
         Some("poll-mail") => poll_mail(&args[1..]),
         Some("pair") => ob_node::pair_command(&args[1..]),
         Some("devices") => ob_node::devices_command(&args[1..]),
+        Some("sign-seed") => sign_seed(&args[1..]),
+        Some("fetch-seed") => fetch_seed(&args[1..]),
         Some("version") | Some("-V") | Some("--version") => {
             println!("ob-node {}", ob_node::BUILD.summary());
             ExitCode::SUCCESS
@@ -250,6 +256,124 @@ fn poll_mail(args: &[String]) -> ExitCode {
             ExitCode::from(2)
         }
     }
+}
+
+fn fetch_seed(args: &[String]) -> ExitCode {
+    let mut root = PathBuf::from("data");
+    let mut onions = Vec::new();
+    let mut index = 0;
+    while index < args.len() {
+        let value = args.get(index + 1).map(String::as_str);
+        match args[index].as_str() {
+            "--data-dir" => root = PathBuf::from(value.unwrap_or("")),
+            "--from" => onions.push(value.unwrap_or("").to_string()),
+            other => {
+                eprintln!("ob-node: unknown fetch-seed argument {other}");
+                eprintln!("{USAGE}");
+                return ExitCode::from(2);
+            }
+        }
+        if value.is_none() {
+            eprintln!("ob-node: {0} needs a value", args[index]);
+            return ExitCode::from(2);
+        }
+        index += 2;
+    }
+    if onions.is_empty() || onions.iter().any(|onion| onion.is_empty()) {
+        eprintln!("ob-node: fetch-seed needs --from ONION");
+        eprintln!("{USAGE}");
+        return ExitCode::from(2);
+    }
+    let dir = NetworkMode::Testnet4.data_dir(&root);
+    match ob_node::pull_seed(&dir, &onions) {
+        Ok(sequence) => {
+            println!("{sequence}");
+            ExitCode::SUCCESS
+        }
+        Err(err) => {
+            eprintln!("ob-node: {err}");
+            ExitCode::from(1)
+        }
+    }
+}
+
+fn sign_seed(args: &[String]) -> ExitCode {
+    let mut key_path = None;
+    let mut sequence = None;
+    let mut stores = String::new();
+    let mut out = None;
+    let mut index = 0;
+    while index < args.len() {
+        let value = args.get(index + 1).map(String::as_str);
+        match args[index].as_str() {
+            "--key" => key_path = value.map(str::to_string),
+            "--sequence" => sequence = value.and_then(|text| text.parse::<u64>().ok()),
+            "--stores" => stores = value.unwrap_or("").to_string(),
+            "--out" => out = value.map(str::to_string),
+            other => {
+                eprintln!("ob-node: unknown sign-seed argument {other}");
+                eprintln!("{USAGE}");
+                return ExitCode::from(2);
+            }
+        }
+        index += 2;
+    }
+    let (Some(key_path), Some(sequence), Some(out)) = (key_path, sequence, out) else {
+        eprintln!("ob-node: sign-seed needs --key, --sequence, and --out");
+        eprintln!("{USAGE}");
+        return ExitCode::from(2);
+    };
+    let key_text = match fs::read_to_string(&key_path) {
+        Ok(text) => text,
+        Err(err) => {
+            eprintln!("ob-node: {err}");
+            return ExitCode::from(1);
+        }
+    };
+    let secret = match unhex32(key_text.trim()) {
+        Some(bytes) => bytes,
+        None => {
+            eprintln!("ob-node: the key file is 64 hex characters");
+            return ExitCode::from(2);
+        }
+    };
+    let mut store_ids = Vec::new();
+    if !stores.is_empty() {
+        for piece in stores.split(',') {
+            let Some(id) = unhex32(piece.trim()) else {
+                eprintln!("ob-node: a store id is 64 hex characters");
+                return ExitCode::from(2);
+            };
+            store_ids.push(id);
+        }
+    }
+    match ob_node::sign_document(sequence, store_ids, secret) {
+        Ok(bytes) => match fs::write(&out, bytes) {
+            Ok(()) => {
+                println!("wrote {out}");
+                ExitCode::SUCCESS
+            }
+            Err(err) => {
+                eprintln!("ob-node: {err}");
+                ExitCode::from(1)
+            }
+        },
+        Err(err) => {
+            eprintln!("ob-node: {err}");
+            ExitCode::from(1)
+        }
+    }
+}
+
+fn unhex32(text: &str) -> Option<[u8; 32]> {
+    if text.len() != 64 || !text.as_bytes().iter().all(u8::is_ascii_hexdigit) {
+        return None;
+    }
+    let mut out = [0u8; 32];
+    for (index, byte) in out.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&text[index * 2..index * 2 + 2], 16).ok()?;
+    }
+    Some(out)
 }
 
 fn vault_mode(options: &ServeOptions) -> Result<VaultMode, String> {

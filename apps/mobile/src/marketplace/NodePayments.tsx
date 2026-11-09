@@ -26,6 +26,7 @@ import {
   EXTERNAL_TX_NOTE,
   type NetworkInfo
 } from '../nodeWallet'
+import { networkInfo, networkStatus } from '../networkInfo'
 import { paymentStatusView } from '../paymentStatus'
 import {
   canOfferBitcoinPay,
@@ -87,9 +88,7 @@ export function NetworkBadge() {
           ? 'Network unavailable · payments disabled'
           : !network.data
             ? 'Checking bitcoin network…'
-            : network.data.network === 'testnet4'
-              ? 'Testnet4 · test coins, no value'
-              : 'Mainnet'}
+            : networkStatus(networkInfo(network.data))}
       </span>
       {network.data && privacyStatus(network.data) ? (
         <span>{privacyStatus(network.data)}</span>

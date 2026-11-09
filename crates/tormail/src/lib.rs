@@ -56,6 +56,7 @@ pub use seal::{
     ReplyPublic, ReplySecret, SealedLetter, SealedReply, StoreKey, StoreKeypair, StoreSecret,
     LETTER_BUCKETS, MAX_MESSAGE_LEN, MAX_REPLY_LEN, REPLY_BUCKETS,
 };
-pub use transport::{ArtiOrderTransport, MemoryTransport, OrderTransport};
+pub use client::open_client;
+pub use transport::{ask_directory, ArtiOrderTransport, MemoryTransport, OrderTransport, QUERY_LISTINGS, QUERY_SEED, QUERY_STORE};
 
 pub use tor_hscrypto::pk::HsId;

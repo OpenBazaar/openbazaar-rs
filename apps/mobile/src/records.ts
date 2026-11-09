@@ -360,6 +360,7 @@ export function verifiedListing(
     freeOverSats: record.freeOverSats,
     contentRating: record.contentRating,
     contentTags: record.contentTags,
+    sample: item.sample === true,
     listingId: record.listingId,
     images: record.images,
     price: record.price,

@@ -8,8 +8,14 @@ use crate::onion::{OnionAddress, ORDER_PORT};
 use crate::seal::{SealedLetter, MAX_SEALED_LEN};
 use crate::Error;
 
-const FRAME_MAGIC: &[u8; 4] = b"OBML";
+pub(crate) const FRAME_MAGIC: &[u8; 4] = b"OBML";
+pub(crate) const QUERY_MAGIC: &[u8; 4] = b"OBQR";
 const FRAME_VERSION: u8 = 1;
+/// A directory reply larger than this is refused.
+const MAX_QUERY_LEN: usize = 1_048_576;
+pub const QUERY_SEED: u8 = 1;
+pub const QUERY_STORE: u8 = 2;
+pub const QUERY_LISTINGS: u8 = 3;
 /// Sent by the vendor on the same stream, after `Mailbox::accept`.
 pub(crate) const STORED_ACK: u8 = 1;
 
@@ -156,15 +162,31 @@ where
     Ok(())
 }
 
-pub(crate) async fn read_letter<R>(reader: &mut R) -> Result<SealedLetter, Error>
+pub(crate) async fn read_magic<R>(reader: &mut R) -> Result<[u8; 4], Error>
 where
     R: AsyncRead + Unpin,
 {
     let mut magic = [0u8; 4];
     read_exact(reader, &mut magic).await?;
+    Ok(magic)
+}
+
+#[allow(dead_code)] // used by this crate's tests; the listener reads the body after the magic
+pub(crate) async fn read_letter<R>(reader: &mut R) -> Result<SealedLetter, Error>
+where
+    R: AsyncRead + Unpin,
+{
+    let magic = read_magic(reader).await?;
     if &magic != FRAME_MAGIC {
         return Err(Error::Malformed);
     }
+    read_letter_after_magic(reader).await
+}
+
+pub(crate) async fn read_letter_after_magic<R>(reader: &mut R) -> Result<SealedLetter, Error>
+where
+    R: AsyncRead + Unpin,
+{
     let mut version = [0u8; 1];
     read_exact(reader, &mut version).await?;
     if version[0] != FRAME_VERSION {
@@ -181,6 +203,84 @@ where
     SealedLetter::from_bytes(&payload)
 }
 
+/// Ask one introduction for the seed document (`kind` 1), one store (2), or
+/// that store's listings (3). `Ok(None)` means the introduction answered and
+/// does not have it. An error means it did not answer.
+pub async fn ask_directory<R>(
+    client: &arti_client::TorClient<R>,
+    onion: &OnionAddress,
+    kind: u8,
+    id: [u8; 32],
+) -> Result<Option<Vec<u8>>, Error>
+where
+    R: Runtime + Send + Sync,
+{
+    client.bootstrap().await.map_err(|err| Error::Arti(err.to_string()))?;
+    let target = format!("{}:{}", onion.as_str(), ORDER_PORT);
+    let mut stream = client.connect(target).await.map_err(|err| Error::Arti(err.to_string()))?;
+    stream.write_all(QUERY_MAGIC).await?;
+    stream.write_all(&[FRAME_VERSION, kind]).await?;
+    stream.write_all(&id).await?;
+    stream.flush().await.map_err(|err| Error::Arti(err.to_string()))?;
+    read_query_reply(&mut stream).await
+}
+
+pub(crate) async fn read_query_after_magic<R>(reader: &mut R) -> Result<(u8, [u8; 32]), Error>
+where
+    R: AsyncRead + Unpin,
+{
+    let mut head = [0u8; 2];
+    read_exact(reader, &mut head).await?;
+    if head[0] != FRAME_VERSION {
+        return Err(Error::Malformed);
+    }
+    let mut id = [0u8; 32];
+    read_exact(reader, &mut id).await?;
+    Ok((head[1], id))
+}
+
+pub(crate) async fn write_query_reply<W>(writer: &mut W, body: Option<&[u8]>) -> Result<(), Error>
+where
+    W: AsyncWrite + Unpin,
+{
+    match body {
+        None => writer.write_all(&[1, 0, 0, 0, 0]).await?,
+        Some(body) => {
+            if body.len() > MAX_QUERY_LEN {
+                return Err(Error::Malformed);
+            }
+            let len = u32::try_from(body.len()).map_err(|_| Error::Malformed)?;
+            writer.write_all(&[0]).await?;
+            writer.write_all(&len.to_le_bytes()).await?;
+            writer.write_all(body).await?;
+        }
+    }
+    Ok(())
+}
+
+async fn read_query_reply<R>(reader: &mut R) -> Result<Option<Vec<u8>>, Error>
+where
+    R: AsyncRead + Unpin,
+{
+    let mut status = [0u8; 1];
+    read_exact(reader, &mut status).await?;
+    let mut len_bytes = [0u8; 4];
+    read_exact(reader, &mut len_bytes).await?;
+    let len = u32::from_le_bytes(len_bytes) as usize;
+    if len > MAX_QUERY_LEN {
+        return Err(Error::Malformed);
+    }
+    let mut body = vec![0u8; len];
+    if len > 0 {
+        read_exact(reader, &mut body).await?;
+    }
+    match status[0] {
+        0 => Ok(Some(body)),
+        1 => Ok(None),
+        _ => Err(Error::Malformed),
+    }
+}
+
 pub(crate) async fn read_exact<R>(reader: &mut R, buf: &mut [u8]) -> Result<(), Error>
 where
     R: AsyncRead + Unpin,
@@ -194,6 +294,28 @@ where
 
 #[cfg(test)]
 mod tests {
+    use super::read_query_reply;
+    use super::write_query_reply;
+
+    #[test]
+    fn a_directory_reply_round_trips_and_a_missing_one_is_empty() {
+        let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+        runtime.block_on(async {
+            let mut present = Vec::new();
+            write_query_reply(&mut present, Some(b"obsd")).await.unwrap();
+            let mut cursor = futures::io::Cursor::new(present);
+            assert_eq!(read_query_reply(&mut cursor).await.unwrap().as_deref(), Some(&b"obsd"[..]));
+
+            let mut missing = Vec::new();
+            write_query_reply(&mut missing, None).await.unwrap();
+            let mut cursor = futures::io::Cursor::new(missing);
+            assert!(read_query_reply(&mut cursor).await.unwrap().is_none());
+        });
+    }
+}
+
+#[cfg(test)]
+mod letter_tests {
     use std::collections::BTreeMap;
 
     use futures::io::Cursor;

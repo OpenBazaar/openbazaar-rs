@@ -5,7 +5,8 @@
 //! escrow mail for a node on another machine go through this process's Tor
 //! client to that node's sale onion (`--remote`). A redirect off that onion
 //! is not followed. `--onion` accepts one sealed letter on a v3 onion and
-//! serves the same public shop routes there. Wallet, escrow spend, and mail
+//! serves the same public shop routes there. It also answers a seed-document
+//! query from the introduction replica. Wallet, escrow spend, and mail
 //! secrets stay closed. `send-letter` dials that onion with Arti, or posts
 //! to a loopback `http://` URL. A clearnet host is refused before a socket opens.
 //! The server broadcasts a transaction only when `POST /orders/{id}/pay`
@@ -22,6 +23,7 @@ mod chain;
 mod checkout_terms;
 mod chain_backend;
 mod chain_filters;
+mod directory;
 mod coin_locks;
 mod coin_provenance;
 mod commerce_draft;
@@ -74,6 +76,7 @@ mod remote;
 mod remote_orders;
 mod reputation;
 mod replicas;
+mod seeds;
 mod test_network;
 mod lock_http;
 mod sale_gate;
@@ -171,6 +174,12 @@ pub use http::{http_response, serve_on};
 pub use lightning::LnFlags;
 pub use network::{NetworkMode, ServeOptions, VaultChoice};
 pub use onion_mail::{deliver_letter, letter_digest, poll_mailbox, PollMail, SendLetter, StoredLetter};
+pub use seeds::sign_document;
+
+/// Fetch the seed document from `onions` into `data_dir` and return the sequence kept.
+pub fn pull_seed(data_dir: &std::path::Path, onions: &[String]) -> Result<u64, String> {
+    directory::pull_onions(data_dir, onions)
+}
 pub use orders::OrderError;
 pub use pay_order::PayError;
 pub use remote::{devices_command, pair_command, RemoteConfig};
@@ -307,6 +316,8 @@ pub struct Node {
     onion_shop: Mutex<Option<std::net::SocketAddr>>,
     /// v3 address published by the onion listener. Absent until it has an identity.
     advertised_onion: Mutex<Option<String>>,
+    /// Signed seed document and the store records replicated from introductions.
+    seed_replica: Mutex<directory::Replica>,
     pub(crate) escrow: escrow_mail::Escrow,
     pairing_token: String,
     /// True only in the process that created `pairing.token`.
@@ -377,6 +388,8 @@ impl Node {
         let own_store = own.id;
         catalog.stores.retain(|store| store.id != own_store);
         catalog.stores.extend(own.record);
+        let seed_replica = directory::Replica::open(&dir)?;
+        seed_replica.apply(&mut catalog, own_store);
         let own_secret = wallet_keys::vault_tier_seed(&buyer_wallet.dir, &vault, network)?.map(|seed| seed.store_signing_key());
         let secrets: Vec<_> = catalog
             .stores
@@ -449,6 +462,7 @@ impl Node {
             onion_dir: Mutex::new(None),
             onion_shop: Mutex::new(None),
             advertised_onion: Mutex::new(None),
+            seed_replica: Mutex::new(seed_replica),
             escrow: escrow_mail::Escrow::open(config.escrow, escrow_inbox, &dir, &vault, escrow_peers)?,
             pairing_token,
             pairing_fresh,
@@ -541,6 +555,7 @@ impl Node {
             scope.spawn(|| self.run_lightning(&stop));
             scope.spawn(|| self.run_order_mail(&stop));
             scope.spawn(|| self.run_replicas(poll.min(Duration::from_secs(30)), &stop));
+            scope.spawn(|| self.run_introductions(&stop));
             if self.onion_dir.lock().unwrap_or_else(|err| err.into_inner()).is_some() {
                 match crate::sale_gate::bind() {
                     Ok(listener) => match listener.local_addr() {
@@ -693,6 +708,7 @@ pub(crate) fn listing_value(catalog: &Catalog, listing: &Listing) -> Result<Valu
         "shippingSats": listing.shipping_sats,
         "freeOverSats": listing.free_over_sats,
         "acceptsModerator": accepts_moderator(catalog, listing),
+        "sample": openbazaar_protocol::fixture_store_keys(&listing.seller).is_some(),
         "contentRating": rating_name(listing.content.map(|label| label.rating)),
         "contentTags": listing.content.map(|label| label.tags.names()).unwrap_or_default(),
         "record": listing.encode()?.iter().map(|byte| format!("{byte:02x}")).collect::<String>(),

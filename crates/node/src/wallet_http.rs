@@ -19,6 +19,7 @@ pub(crate) fn network_response(node: &Node, origin: Option<&str>) -> Vec<u8> {
         "lightningBackend": node.ln_backend_value(),
         "silentPayments": "code-only",
         "letterOnion": node.advertised_onion(),
+        "onion": node.advertised_onion(),
     });
     if let (Some(map), Value::Object(egress)) = (value.as_object_mut(), node.local.egress.value(chain.public_server())) {
         map.extend(egress);
