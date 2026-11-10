@@ -154,3 +154,31 @@ test('followed stores take a store key and no address', async ({ page }) => {
   await expect(page.getByLabel('Store key', { exact: true })).toBeVisible()
   await expect(page.getByRole('button', { name: 'Add store', exact: true })).toBeVisible()
 })
+
+// A page the node serves to a signed-in browser signs every request, an image
+// upload too (src/homeNode/transport.ts). The node's answers are mocked.
+test('a browser signed in on the node’s web address uploads a store avatar', async ({ page }) => {
+  const hash = 'c414cd0e204de974f73753c7e28d7638e7b3691bb8b1a2bab6b25bb7fed7ce77'
+  const uploads: (string | undefined)[] = []
+  await page.addInitScript(() => localStorage.setItem('ob-home-device', '01'.repeat(32)))
+  await page.route('**/', async route => {
+    const response = await route.fetch()
+    await route.fulfill({ response, body: (await response.text()).replace('<head>', '<head><meta name="ob-home-node" content="true">') })
+  })
+  await page.route('**/remote/hello', route => route.fulfill({ json: { nodeId: '90'.repeat(32) } }))
+  await page.route('**/remote/devices', route => route.fulfill({ json: { devices: [] } }))
+  await page.route('**/store/profile', route => route.fulfill({ json: { storeKey: '34'.repeat(32), role: 'seller', name: 'My store', network: 'testnet4' } }))
+  await page.route('**/media', async route => {
+    const headers = await route.request().allHeaders()
+    uploads.push(headers['x-ob-signature'] && headers['content-type'])
+    return route.fulfill({ json: { hash, contentType: 'image/png' } })
+  })
+  await page.route(`**/media/${hash}`, route => route.fulfill({ contentType: 'image/png', body: PNG }))
+  await page.goto('/')
+  await page.getByRole('button', { name: 'Settings' }).click()
+  await page.getByRole('button', { name: 'Store settings' }).click()
+  await page.locator('input[type=file][aria-label="Add avatar"]').setInputFiles(image('avatar.png'))
+  await expect(page.getByRole('img', { name: 'Store avatar' })).toBeVisible()
+  await expect(page.getByRole('alert')).toHaveCount(0)
+  expect(uploads).toEqual(['image/png'])
+})
