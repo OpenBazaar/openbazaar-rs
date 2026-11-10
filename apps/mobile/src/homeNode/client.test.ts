@@ -173,6 +173,43 @@ test("pairing over the derived onion, then approval", async () => {
   assert.deepEqual(result, { state: "approved", link, discoverySecret: null });
 });
 
+test("pairing keeps asking a pairing onion that Tor cannot reach yet", async () => {
+  const secret = hexToBytes("0a0b0c0d0e0f10111213");
+  const request = { key: keyText, name: "Test phone", platform: "ios" as const, sign: async (text: string) => signer.sign(text) };
+  const pictures = sas(secret, nodePublic, transcript(request));
+  const accepted = answer(202, { requestId: "r".repeat(32), nodeKey: bytesToHex(nodePublic), sasNames: pictures.map(p => p.name) });
+  // The first two attempts end the way Arti ends them while a new onion is not reachable.
+  const failures = ["the home node did not answer over Tor in time", "tor: Onion Service not found"];
+  let dials = 0;
+  const channels: Channels = {
+    async tor(target) {
+      assert.equal(target, pairingOnion(secret));
+      dials++;
+      const failure = failures.shift();
+      if (failure) throw new Error(failure);
+      return accepted;
+    },
+    async lan() {
+      throw new Error("no route to host");
+    },
+  };
+  const reasons: string[] = [];
+  const pending = await requestPairing(channels, { secret, lan: [] }, request, { forMs: 60_000, pauseMs: 0, retrying: reason => reasons.push(reason) });
+  assert.equal(pending.requestId, "r".repeat(32));
+  assert.equal(dials, 3);
+  assert.deepEqual(reasons, ["the home node did not answer over Tor in time", "tor: Onion Service not found"]);
+
+  // When the patience runs out, the last reason is in the message.
+  failures.push("the home node did not answer over Tor in time");
+  await assert.rejects(requestPairing(channels, { secret, lan: [] }, request, { forMs: 0, pauseMs: 0 }), /did not answer over Tor \(the home node did not answer over Tor in time\)/);
+  assert.equal(dials, 4);
+
+  // An answer from the node is final, whatever it says.
+  const refusing: Channels = { ...channels, tor: async () => { dials++; return answer(409, { error: "taken", code: "code_taken" }); } };
+  await assert.rejects(requestPairing(refusing, { secret, lan: [] }, request, { forMs: 60_000, pauseMs: 0 }), /Another device already used this code/);
+  assert.equal(dials, 5);
+});
+
 test("pairing refuses a node key that differs from the QR code", async () => {
   const node = fakeNode(() => answer(202, { requestId: "r".repeat(32), nodeKey: "00".repeat(32) }));
   const request = { key: keyText, name: "Test phone", platform: "ios" as const, sign: async () => "00" };

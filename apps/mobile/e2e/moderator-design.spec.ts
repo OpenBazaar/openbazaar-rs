@@ -211,3 +211,26 @@ test('a shop that still needs its pairing code offers the desk only once it is p
   await expect(page.getByRole('button', { name: 'Moderator desk', exact: true })).toBeVisible()
   expect(pairs).toEqual([{}, { code: 'ABCD-EFGH' }])
 })
+
+test('a device that asks to pair is approved in the pairing dialog that covers the desk', async ({ page }) => {
+  await desk(page)
+  // Fixture values, never a real code.
+  const code = { words: ['one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight'], link: `openbazaar://pair?v=2&s=${'a'.repeat(16)}&k=${'90'.repeat(32)}&o=${'a'.repeat(56)}`, expiresInSecs: 600 }
+  const request = { requestId: '33'.repeat(16), name: 'Field phone', platform: 'ios', sas: ['🐶', '🐱', '🦊', '🐻'], sasNames: ['dog', 'cat', 'fox', 'bear'] }
+  let waiting = false
+  const decisions: unknown[] = []
+  await page.route('**/remote/pairing', route => { waiting = true; return route.fulfill({ json: code }) })
+  await page.route('**/remote/pending', route => route.fulfill({ json: { pending: waiting ? [request] : [] } }))
+  await page.route('**/remote/pending/*', route => { decisions.push(route.request().postDataJSON()); waiting = false; return route.fulfill({ json: { device: null } }) })
+  await page.getByRole('button', { name: 'Access & devices', exact: true }).click()
+  await page.getByRole('button', { name: 'Pair a new device', exact: true }).click()
+  const dialog = page.getByRole('dialog', { name: 'Pair a new device', exact: true })
+  await expect(dialog.getByRole('group', { name: 'New pairing code', exact: true })).toBeVisible()
+  // The phone's request arrives while the modal dialog is open; the page polls for it.
+  const asking = dialog.getByRole('group', { name: 'Field phone wants to pair', exact: true })
+  await expect(asking).toContainText('dog')
+  await expect(page.getByRole('group', { name: 'Field phone wants to pair', exact: true })).toHaveCount(1)
+  await asking.getByRole('button', { name: 'Approve', exact: true }).click()
+  await expect(dialog).toHaveCount(0)
+  expect(decisions).toEqual([{ approve: true }])
+})

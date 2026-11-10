@@ -114,6 +114,18 @@ export function HomeDevicesCard({ presentation = "default" }: { presentation?: "
     {offer && <PairingOffer code={offer.code} expires={offer.expires} onDone={() => { setOffer(null); void refresh(); }}/>}
     {credential && <BrowserCredentialOffer credential={credential} onDone={() => setCredential(null)}/>}
   </>;
+  // On the desk the pairing code is in a modal dialog, which covers the card: show the requests in it.
+  const requests = pending.map(request => <div key={request.requestId} className="ob-pairing-offer" role="group" aria-label={`${request.name} wants to pair`}>
+    <div>
+      <h3>“{request.name}” ({PLATFORMS[request.platform] ?? request.platform}) wants to pair</h3>
+      <Sas sas={request.sas} names={request.sasNames}/>
+      <p>Approve only if the new device shows these same four emoji.</p>
+      <div className="ob-form-actions">
+        <button className="ob-primary" disabled={busy} onClick={() => void decide(request, true)}>Approve</button>
+        <button className="ob-secondary" disabled={busy} onClick={() => void decide(request, false)}>Reject</button>
+      </div>
+    </div>
+  </div>);
   return <div className={`ob-settings-card ${presentation === "desk" ? "ob-moderator-devices" : ""}`}>
     <div className="ob-settings-card-heading">
       <h2>{presentation === "desk" ? "Paired devices" : remoteTarget ? "Devices paired with your home node" : "Devices paired with this node"}</h2>
@@ -122,17 +134,7 @@ export function HomeDevicesCard({ presentation = "default" }: { presentation?: "
     {status && !status.enabled && <p className="ob-settings-notice">Remote access is off on this node. Start it with <code>ob-node serve --remote --lan</code>, or turn on Run this computer as a home node, to pair devices.</p>}
     {status?.moving && <p className="ob-settings-notice">The node is moving to a new onion address. Paired devices switch over the next time they connect.</p>}
     {status?.onion && <CopyPaymentValue label="Onion address" value={`http://${status.onion}/`}/>}
-    {pending.map(request => <div key={request.requestId} className="ob-pairing-offer" role="group" aria-label={`${request.name} wants to pair`}>
-      <div>
-        <h3>“{request.name}” ({PLATFORMS[request.platform] ?? request.platform}) wants to pair</h3>
-        <Sas sas={request.sas} names={request.sasNames}/>
-        <p>Approve only if the new device shows these same four emoji.</p>
-        <div className="ob-form-actions">
-          <button className="ob-primary" disabled={busy} onClick={() => void decide(request, true)}>Approve</button>
-          <button className="ob-secondary" disabled={busy} onClick={() => void decide(request, false)}>Reject</button>
-        </div>
-      </div>
-    </div>)}
+    {!(presentation === "desk" && offer) && requests}
     {devices === null ? null : devices.length === 0
       ? <div className="ob-settings-empty">No device is paired yet.</div>
       : <ul className="ob-labeler-list ob-device-list">{devices.map(device => <li key={device.id}>
@@ -150,6 +152,7 @@ export function HomeDevicesCard({ presentation = "default" }: { presentation?: "
     </div>}
     {presentation === "desk" ? (naming !== null || offer || credential) && <Dialog label={credential ? "Browser access keys" : offer ? "Pair a new device" : "Set up Tor Browser"} onCancel={() => { if (!busy) { setNaming(null); setOffer(null); setCredential(null); } }}>
       {setupFlow}
+      {offer && requests}
       {error && <p className="ob-form-error" role="alert">{error}</p>}
     </Dialog> : setupFlow}
     {error && <p className="ob-form-error" role="alert">{error}</p>}

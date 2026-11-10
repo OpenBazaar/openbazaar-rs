@@ -33,15 +33,32 @@ export async function beginPairing(code: PairingCode, name: string, onStep: (ste
     await waitForTor(180_000, status => onStep("tor", `${Math.round(status.progress * 100)}%`));
   }
   onStep("request");
-  const pending = await requestPairing(channels, code, {
-    key: keyText,
-    watchKey: watchKeyText,
-    discoveryKey: discoveryKeyText(x25519.getPublicKey(discovery)),
-    name,
-    platform: Platform.OS === "ios" ? "ios" : "android",
-    sign: text => signWith(DEVICE_ALIAS, "device", text),
-  });
-  return { pending, keyText, watchKeyText, discoverySecret: base32(discovery), hardware: device.hardware };
+  // Reaching a new code over Tor can take minutes: show the time passing, and why a try ended.
+  const asked = Date.now();
+  let tries = 1;
+  let ended = "";
+  const clock = setInterval(() => {
+    const secs = Math.floor((Date.now() - asked) / 1000);
+    onStep("request", `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, "0")}${ended && ` (try ${tries}; the last one ended: ${ended})`}`);
+  }, 1000);
+  try {
+    const pending = await requestPairing(channels, code, {
+      key: keyText,
+      watchKey: watchKeyText,
+      discoveryKey: discoveryKeyText(x25519.getPublicKey(discovery)),
+      name,
+      platform: Platform.OS === "ios" ? "ios" : "android",
+      sign: text => signWith(DEVICE_ALIAS, "device", text),
+    }, {
+      retrying: reason => {
+        tries++;
+        ended = reason;
+      },
+    });
+    return { pending, keyText, watchKeyText, discoverySecret: base32(discovery), hardware: device.hardware };
+  } finally {
+    clearInterval(clock);
+  }
 }
 
 /** Long-poll until the owner approves or rejects on the node, or the code expires. */
