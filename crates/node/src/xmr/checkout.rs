@@ -26,10 +26,10 @@ pub(crate) const ESCROW_IS_BITCOIN_ONLY: &str = "Escrow is Bitcoin-only. Pay in 
 /// `true` for the Monero rail. Refuses Monero with escrow.
 pub(crate) fn rail_of(value: Option<&Value>, escrow: bool) -> Result<bool, OrderError> {
     match value.map(Value::as_str) {
-        None | Some(Some("btc" | "ln")) => Ok(false),
+        None | Some(Some("btc" | "ln" | "zec")) => Ok(false),
         Some(Some("xmr")) if escrow => Err(OrderError::Invalid(ESCROW_IS_BITCOIN_ONLY)),
         Some(Some("xmr")) => Ok(true),
-        Some(_) => Err(OrderError::Invalid("Choose the btc, xmr, or ln rail.")),
+        Some(_) => Err(OrderError::Invalid("Choose the btc, xmr, ln, or zec rail.")),
     }
 }
 
@@ -44,6 +44,7 @@ pub(crate) fn catalog_response(node: &Node, origin: Option<&str>) -> Vec<u8> {
     };
     add_xmr_flags(node, &mut value);
     crate::lightning::add_ln_flags(node, &mut value);
+    crate::zec::add_zec_flags(node, &mut value);
     json_body("200 OK", &value, origin)
 }
 

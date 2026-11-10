@@ -4548,6 +4548,7 @@ dependencies = [
  "openbazaar-pay",
  "openbazaar-protocol",
  "openbazaar-xmr",
+ "openbazaar-zec",
  "p256",
  "proptest",
  "qrcode",

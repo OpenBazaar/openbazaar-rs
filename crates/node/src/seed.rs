@@ -15,9 +15,13 @@
 //! | Lightning     | `m/1984'/coin'/6'/0'` (secret for `openbazaar_lightning::keys`: LDK entropy and the state key) |
 //! | BIP 352 scan  | `m/352'/coin'/0'/1'/0`       |
 //! | BIP 352 spend | `m/352'/coin'/0'/0'/0`       |
+//! | Zcash         | ZIP 32 from the BIP 39 seed, account 0 (see `openbazaar_zec::keys`), not BIP 32 |
 //!
 //! `coin` is 0 on mainnet and 1 on testnet4, so the same phrase never yields
-//! the same key on both networks.
+//! the same key on both networks. ZIP 32 uses Zcash's coin type (133 on
+//! mainnet, 1 on testnet) and hashes the seed under its own personalization,
+//! so a Zcash key is never one of the BIP 32 keys above, and the phrase
+//! restores the Zcash funds in any ZIP 32 wallet.
 
 use std::path::Path;
 use std::str::FromStr;
@@ -34,6 +38,8 @@ use crate::Error;
 
 pub(crate) struct Seed {
     master: Xpriv,
+    /// The BIP 39 seed of the phrase, empty passphrase. Only ZIP 32 reads it.
+    bip39: zeroize::Zeroizing<[u8; 64]>,
     network: NetworkMode,
 }
 
@@ -59,9 +65,15 @@ impl Seed {
     pub(crate) fn from_phrase(phrase: &str, network: NetworkMode) -> Result<Self, Error> {
         let mnemonic = Mnemonic::parse(phrase)
             .map_err(|_| Error::Detail("the backup phrase is not valid BIP 39".to_string()))?;
-        let master = Xpriv::new_master(network.bitcoin(), &mnemonic.to_seed(""))
+        let bip39 = zeroize::Zeroizing::new(mnemonic.to_seed(""));
+        let master = Xpriv::new_master(network.bitcoin(), &bip39[..])
             .map_err(|err| Error::Detail(err.to_string()))?;
-        Ok(Self { master, network })
+        Ok(Self { master, bip39, network })
+    }
+
+    /// The Zcash viewing key of this phrase: ZIP 32 account 0 of the BIP 39 seed.
+    pub(crate) fn zcash_view_key(&self) -> Result<openbazaar_zec::ViewKey, Error> {
+        openbazaar_zec::ViewKey::from_seed(&self.bip39[..], self.network.zcash()).map_err(Error::Detail)
     }
 
     /// External and change descriptors for the spend wallet, with private keys.
@@ -162,5 +174,21 @@ mod tests {
         assert!(external.starts_with("tr(tprv") && external.contains("/86'/1'/0'/0/*"));
         assert!(change.contains("/86'/1'/0'/1/*"));
         assert!(main.wallet_descriptors().0.starts_with("tr(xprv"));
+    }
+
+    #[test]
+    fn zcash_keys_come_from_the_bip39_seed_as_in_a_zcash_wallet() {
+        let test = Seed::from_phrase(PHRASE, NetworkMode::Testnet4).unwrap();
+        // BIP 39's published seed for this phrase with an empty passphrase.
+        let expected = "5eb00bbddcf069084889a8ab9155568165f5c453ccb85e70811aaed6f6da5fc1\
+                        9a5ac40b389cd370d086206dec8aa6c43daea6690f20ad3d8d48b2d2ce9e38e4";
+        assert_eq!(crate::escrow_mail::hex(&test.bip39[..]), expected);
+        let key = test.zcash_view_key().unwrap();
+        let wallet = openbazaar_zec::ViewKey::from_seed(&test.bip39[..], openbazaar_zec::ZecNetwork::Testnet).unwrap();
+        assert_eq!(*key.ufvk(), *wallet.ufvk(), "what a Zcash wallet restored from the phrase sees");
+        assert!(key.ufvk().starts_with("uviewtest1"), "testnet4 mode is Zcash testnet");
+        let main = Seed::from_phrase(PHRASE, NetworkMode::Mainnet).unwrap().zcash_view_key().unwrap();
+        assert!(main.ufvk().starts_with("uview1"));
+        assert_ne!(main.address(1), key.address(1));
     }
 }

@@ -1,7 +1,7 @@
 \section{Payments}
 \label{sec:payments}
 
-Moderated payment, and a sale between two nodes, are in bitcoin. A store on this node can also accept Monero for a direct payment; a sale to another node's store declines that rail, and escrow stays in bitcoin. There is no swap service, mixer, or ecash mint. Direct payment goes from the buyer to the vendor with no intermediary; moderated payment goes through the escrow of \S\ref{sec:escrow}.
+Moderated payment, and a sale between two nodes, are in bitcoin. A store on this node can also accept Monero or Zcash for a direct payment; a sale to another node's store declines those rails, and escrow stays in bitcoin. A Zcash order gets a fresh shielded address whose payment lands in the Ironwood pool, and the seller's node finds it by trial-decrypting compact blocks with its viewing key, so the server that supplies them does not learn which outputs are the seller's. There is no swap service, mixer, or ecash mint. Direct payment goes from the buyer to the vendor with no intermediary; moderated payment goes through the escrow of \S\ref{sec:escrow}.
 
 \subsection{One payment per seller}
 

@@ -21,7 +21,7 @@ Last checked against `main` at `98da40a` plus the `payment-rbf` branch.
 | `lightning` | Lightning for direct pay only, on test networks (mainnet refused until it runs over Tor): embedded LDK node in `crates/lightning`, LSPS2 just-in-time channels from an LSP the operator names, per-order BOLT 11 invoices, keys from the seed, sealed state, wallet-lock gating, store opt-in in the rail-flags byte, seller settings and checkout in the web shop; [lightning.md](lightning.md) |
 | `seller-e2e` | Selling from the node: buyer or seller onboarding, storefront editor, listing v6 (stable id, images, fiat price) with create, edit, and delete, following stores on other nodes with signed copies, order mail between nodes with an outbox, sales with fulfillment and buyer confirmation, a stable desktop node port, and separate desktop profiles |
 | `payment-rbf` | Speed up an unconfirmed direct payment (RBF, passphrase and fee cap), a "sent" letter so the seller sees a payment before a block, and the public fallback when the filter scan stalls |
-| `zcash-direct` (phase 1a) | Zcash for direct pay only, library stage: `crates/zec` on upstream librustzcash (ZIP 32 viewing key from the phrase, an Orchard-protocol address per order, compact-block scanning with Ironwood as the pool that pays orders and Orchard as outbound only, reorgs, spend detection, a mock chain of real encrypted notes); store record bit 2 read by the node and the web shop, set by no node yet. No node route takes a Zcash order; [zcash.md](zcash.md) |
+| `zcash-direct` (phases 1a, 1b) | Zcash for direct pay only: `crates/zec` on upstream librustzcash (ZIP 32 viewing key from the phrase, an Orchard-protocol address per order, compact-block scanning with Ironwood as the pool that pays orders and Orchard as outbound only, reorgs, spend detection, a mock chain of real encrypted notes); store record bit 2, read by the node and the web shop; the node's `zec` module (demo store opt-in, checkout, order status, rate, network status, sync thread). No command-line chain source yet; [zcash.md](zcash.md) |
 
 ## Mechanisms
 
@@ -120,6 +120,20 @@ Labels: **tested** = code on main with automated tests; **demo** = code runs, bu
 | Spend detection | tested | Only spends made by this node: without the spend key the receive tier cannot compute key images. Restoring a seed elsewhere and spending there leaves this balance too high. |
 | Remote sellers | specified | Order status comes from the seller wallet on this node, as with the fixture sellers. |
 
+### Zcash (direct pay only)
+
+| Mechanism | Status | Notes |
+|---|---|---|
+| Wallet library | tested | `crates/zec` on upstream librustzcash (`zcash_client_backend` 0.25 scanning, `zcash_keys` 0.17, `orchard` 0.16, `zip321` 0.10). No `zcash_client_sqlite` (a second `libsqlite3-sys`, and a plaintext database) and no backend `tor` feature (a second Arti). [zcash.md](zcash.md) |
+| Keys | tested | ZIP 32 account 0 of the phrase's BIP 39 seed, as Zcash wallets derive it, so the phrase restores the funds there. The UFVK in `zec-watch.obv` (receive tier); it also computes nullifiers, so a spend made elsewhere shows. |
+| Pools | tested | Ironwood is the pool that pays an order. Orchard is outbound only: notes from before NU6.3 show as their own balance and can leave; an Orchard note at or after NU6.3 is not believed. |
+| Store opt-in | tested | Bit 2 of the rail-flags byte in store record v3. `PUT /zec/stores` for the demo stores; the own store answers 409 until phase 2, since a release from before bit 2 drops the whole record. |
+| Fresh address per order, status | tested (mocked) | Orchard-protocol receiver only, never reused across restarts; `zcashAddress` (no `address`, so the bitcoin watcher skips it), a ZIP 321 URI with the amount only. Awaiting payment → Payment seen → Paid at 30 confirmations (12.5 minutes at 25-second blocks), with received, remaining, and overpaid zatoshi. Works while locked. No mempool view yet. |
+| Rate | tested | Kraken ZEC/USD crossed with the node's BTC/USD (Kraken lists no ZEC/BTC), over `--proxy`, off with `--no-rates`. |
+| Chain access | specified | Phase 1c: a Zaino or lightwalletd the user names, compact blocks only, over `--proxy` when not on loopback or the LAN. Until then Zcash is off in `ob-node serve`. |
+| Escrow | refused | `"rail": "zec"` with escrow is refused: shielded pools have no scripts or timelocks, and a refund cannot be built before the funding confirms. |
+| Remote sellers, paying from the node | specified | Phases 2 and 3 in [zcash.md](zcash.md). |
+
 ### Lightning (direct pay only)
 
 | Mechanism | Status | Notes |
@@ -170,7 +184,7 @@ Labels: **tested** = code on main with automated tests; **demo** = code runs, bu
 - A buyer's first order letter cannot prove who the buyer is: by design the buyer has no identity to prove. Letters are signed by per-conversation keys instead of HPKE Auth mode, which would need the sender's key in the clear.
 - The crate supports per-order keys tweaked by an order secret; the node derives per-order keys from the seed instead.
 - Exchange rates come from Coinbase over clearnet unless `--proxy` is set. Chain data comes from compact filters; public Esplora is asked only with `--esplora` or `--public-fallback`. The desktop app has no proxy, peer, or fallback setting yet.
-- The paper describes bitcoin payments only. Monero direct pay is an addition of this implementation; escrow stays bitcoin-only.
+- The paper describes bitcoin payments only. Monero and Zcash direct pay are additions of this implementation; escrow stays bitcoin-only.
 
 ## Escrow review
 

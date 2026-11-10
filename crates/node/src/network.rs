@@ -68,6 +68,14 @@ impl NetworkMode {
 
     /// The Monero network paid on this network. Monero has no testnet4, so
     /// testnet4 pays on stagenet; mainnet pays on mainnet.
+    /// Testnet4 mode pays Zcash on Zcash testnet; there is no Zcash testnet4.
+    pub fn zcash(self) -> openbazaar_zec::ZecNetwork {
+        match self {
+            NetworkMode::Testnet4 => openbazaar_zec::ZecNetwork::Testnet,
+            NetworkMode::Mainnet => openbazaar_zec::ZecNetwork::Mainnet,
+        }
+    }
+
     pub fn monero(self) -> openbazaar_xmr::XmrNetwork {
         match self {
             NetworkMode::Testnet4 => openbazaar_xmr::XmrNetwork::Stagenet,
