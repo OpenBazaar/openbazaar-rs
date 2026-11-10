@@ -278,11 +278,15 @@ fn authority(server: &Server) -> String {
     }
 }
 
+/// The error and its causes, each once: a cause already in the text is not repeated.
 fn failed(server: &Server, err: &dyn std::error::Error) -> String {
     let mut text = err.to_string();
     let mut source = err.source();
     while let Some(cause) = source {
-        text = format!("{text}: {cause}");
+        let cause_text = cause.to_string();
+        if !text.contains(&cause_text) {
+            text = format!("{text}: {cause_text}");
+        }
         source = cause.source();
     }
     format!("{}: {text}", server.url)
