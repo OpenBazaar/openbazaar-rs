@@ -163,28 +163,78 @@ test("follows parse, and a remote buyer order without payment terms yet reads", 
   assert.equal(order.remote?.fulfillment?.tracking, "9400");
 });
 
-// The node keeps images up to 2 MiB (MAX_MEDIA in crates/node/src/media.rs)
-// and answers a larger `POST /media` 413 with a plain-text body.
-test("an image over the node's cap is refused before it is sent, and the node's 413 reads the same", async () => {
-  const tooLarge = { message: "That image is larger than 2 MB. Choose a smaller one." };
+/// Runs `run` against a node whose `POST /media` answers `respond`; `sent` collects the bodies it was sent.
+async function withMediaNode(respond: () => Response, run: (sent: Blob[]) => Promise<void>): Promise<void> {
   const realFetch = globalThis.fetch;
-  let uploads = 0;
-  globalThis.fetch = (async (input: RequestInfo | URL) => {
+  const sent: Blob[] = [];
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     if (new URL(String(input)).pathname === "/pair") return Response.json({ token: "ab".repeat(32) });
-    uploads += 1;
-    return new Response("request body too large", { status: 413 });
+    sent.push(init?.body as Blob);
+    return respond();
   }) as typeof fetch;
   const forget = showPairingWith(async (trade) => {
     await trade("GOOD-CODE");
     return true;
   });
   try {
-    await assert.rejects(uploadImage(new Blob([new Uint8Array(2 * 1024 * 1024 + 1)])), tooLarge);
-    assert.equal(uploads, 0);
-    await assert.rejects(uploadImage(new Blob([new Uint8Array(2 * 1024 * 1024)])), tooLarge);
-    assert.equal(uploads, 1);
+    await run(sent);
   } finally {
     forget();
     globalThis.fetch = realFetch;
+  }
+}
+
+// The node keeps images up to 2 MiB (MAX_MEDIA in crates/node/src/media.rs)
+// and answers a larger `POST /media` 413 with a plain-text body. These tests
+// run without a canvas, as the native app does, so nothing is shrunk.
+test("with no canvas an image over the node's cap is refused before it is sent, and the node's 413 reads the same", async () => {
+  const tooLarge = { message: "That image is larger than 2 MB. Choose a smaller one." };
+  await withMediaNode(
+    () => new Response("request body too large", { status: 413 }),
+    async (sent) => {
+      await assert.rejects(uploadImage(new Blob([new Uint8Array(2 * 1024 * 1024 + 1)])), tooLarge);
+      assert.equal(sent.length, 0);
+      await assert.rejects(uploadImage(new Blob([new Uint8Array(2 * 1024 * 1024)])), tooLarge);
+      assert.equal(sent.length, 1);
+    },
+  );
+});
+
+test("in a browser an image over the cap is sent shrunk, one that fits is sent as it is, and one that cannot be shrunk says so", async () => {
+  const globals = globalThis as { document?: unknown; createImageBitmap?: unknown };
+  const canvas = {
+    width: 0,
+    height: 0,
+    getContext: () => ({ drawImage() {}, getImageData: () => ({ data: [] }) }),
+    toBlob(done: (blob: Blob) => void, type: string) {
+      done(new Blob([new Uint8Array(1000)], { type }));
+    },
+  };
+  let decodes = true;
+  // The page is also asked whether a home node served it: it was not.
+  globals.document = { createElement: () => canvas, querySelector: () => null };
+  globals.createImageBitmap = async () => {
+    if (!decodes) throw new Error("not an image");
+    return { width: 4000, height: 3000, close() {} };
+  };
+  try {
+    await withMediaNode(
+      () => Response.json({ hash: IMAGE }),
+      async (sent) => {
+        const small = new Blob([new Uint8Array(2 * 1024 * 1024)], { type: "image/png" });
+        assert.equal(await uploadImage(small), IMAGE);
+        assert.equal(sent[0], small);
+        assert.equal(await uploadImage(new Blob([new Uint8Array(2 * 1024 * 1024 + 1)], { type: "image/png" })), IMAGE);
+        assert.deepEqual([sent[1].size, sent[1].type, canvas.width, canvas.height], [1000, "image/jpeg", 2000, 1500]);
+        decodes = false;
+        await assert.rejects(uploadImage(new Blob([new Uint8Array(2 * 1024 * 1024 + 1)])), {
+          message: "That image is larger than 2 MB and could not be shrunk to fit. Choose a smaller one.",
+        });
+        assert.equal(sent.length, 2);
+      },
+    );
+  } finally {
+    delete globals.document;
+    delete globals.createImageBitmap;
   }
 });

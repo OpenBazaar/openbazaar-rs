@@ -8,6 +8,7 @@ import { forKind } from "./commerceDraft.ts";
 import type { CouponBody } from "./couponDraft.ts";
 import { BULK_PATH, bulkEditBody, type BulkChange } from "./bulkEdit.ts";
 import { draftPath } from "./listingDraft.ts";
+import { canShrink, shrinkImage } from "./imageShrink.ts";
 
 export type Role = "buyer" | "seller";
 
@@ -288,11 +289,22 @@ export async function setVacation(away: boolean): Promise<SellerProfile> {
 /** Bytes in one uploaded image: the node's cap, `MAX_MEDIA` in crates/node/src/media.rs. */
 const MAX_IMAGE_BYTES = 2 * 1024 * 1024;
 const IMAGE_TOO_LARGE = `That image is larger than ${MAX_IMAGE_BYTES / (1024 * 1024)} MB. Choose a smaller one.`;
+const IMAGE_NOT_SHRUNK = `That image is larger than ${MAX_IMAGE_BYTES / (1024 * 1024)} MB and could not be shrunk to fit. Choose a smaller one.`;
+
+/// The image to send: `file` as it is when it fits the cap, a shrunk copy
+/// when it does not. The native app cannot shrink and refuses it.
+async function imageThatFits(file: Blob): Promise<Blob> {
+  if (file.size <= MAX_IMAGE_BYTES) return file;
+  if (!canShrink()) throw new Error(IMAGE_TOO_LARGE);
+  const shrunk = await shrinkImage(file, MAX_IMAGE_BYTES);
+  if (!shrunk) throw new Error(IMAGE_NOT_SHRUNK);
+  return shrunk;
+}
 
 /// Upload one image; the node answers its SHA-256, which records name.
-/// The file is sent as it is, so its own size is checked against the cap.
-export async function uploadImage(file: Blob): Promise<string> {
-  if (file.size > MAX_IMAGE_BYTES) throw new Error(IMAGE_TOO_LARGE);
+/// An image over the cap is shrunk in the browser first.
+export async function uploadImage(picked: Blob): Promise<string> {
+  const file = await imageThatFits(picked);
   const response = await pairedResponse("/media", { method: "POST", headers: { "Content-Type": file.type || "application/octet-stream" }, body: file }).catch((error: unknown) => {
     // The node answers an oversized upload 413 with a plain-text body.
     throw error instanceof NodeApiError && error.status === 413 ? new Error(IMAGE_TOO_LARGE) : error;
