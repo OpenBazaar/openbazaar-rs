@@ -2,7 +2,7 @@
 
 Zcash as a direct-pay rail next to Monero and Lightning: a store opts in, each order gets its own shielded address, and the seller's node marks the order paid when the payment is deep enough. Escrow stays bitcoin-only (see [Escrow](#escrow-is-refused)).
 
-Status: phase 1 (1a to 1d), on the `zcash-direct` branch. `ob-node serve --zec-indexer URL` turns Zcash on; a demo store on the node opts in under Settings → Zcash, a buyer picks Zcash at checkout and pays the order's QR from any Zcash wallet, and the node marks the order paid.
+Status: phase 1 (1a to 1d) is done. `ob-node serve --zec-indexer URL` turns Zcash on; a demo store on the node opts in under Settings → Zcash, a buyer picks Zcash at checkout and pays the order's QR from any Zcash wallet, and the node marks the order paid.
 
 ```sh
 # Your own Zebra and Zaino on this machine or the LAN:
@@ -24,9 +24,9 @@ ob-node serve --proxy socks5h://127.0.0.1:9050 --zec-indexer https://testnet.zec
 | Per-order address | Diversified address `j` of the external scope, `j` from 1, never reused, saved before it is shown. Index 0 is the address a restored wallet shows first. Diversified addresses are unlinkable without the viewing key. A received note is matched to its order by its diversifier index, so a payment needs no memo. |
 | Payment request | ZIP 321 `zcash:` URI carrying the amount only: no label, message, or memo, since whatever is in the URI lands in the payer's history. |
 | Confirmations | 30 blocks, about 12.5 minutes at NU7's 25-second spacing. ZIP 315's 10 confirmations for outputs from others were set at 75 seconds per block; both networks are past NU7. |
-| Amounts | Zatoshi (10^-8 ZEC), integer math. Owed = sats × 10^8 / sats-per-ZEC, rounded up so the seller is never paid less than the price. Kraken has ZEC/USD but no ZEC/BTC, so the rate is crossed with the node's BTC/USD (phase 1b). |
+| Amounts | Zatoshi (10^-8 ZEC), integer math. Owed = sats × 10^8 / sats-per-ZEC, rounded up so the seller is never paid less than the price. Kraken has ZEC/USD but no ZEC/BTC, so the rate is crossed with the node's BTC/USD. |
 | Chain | Compact blocks over the lightwalletd protocol, from a Zaino or lightwalletd the user names (`--zec-indexer`); no default server. Trial decryption runs on the node, so the server cannot tell which outputs are ours; it sees the IP address and sync timing. Fetching a full transaction by id would tell it which one matters, so the rail never does. Own node: Zebra (or Zakura) plus Zaino on loopback. |
-| Store opt-in | Bit 2 of the rail-flags byte at the end of store record v3 (bit 0 Monero, bit 1 Lightning). Decoders before this branch refuse a byte above 3 and then drop the whole record. So only the demo stores set it (`PUT /zec/stores`); their records stay on the node that plays them. The node's own store, whose record goes to every node that follows it, answers 409 until phase 2, when releases that read the bit are out and a sale from another node can carry Zcash terms. |
+| Store opt-in | Bit 2 of the rail-flags byte at the end of store record v3 (bit 0 Monero, bit 1 Lightning). Decoders from before Zcash refuse a byte above 3 and then drop the whole record. So only the demo stores set it (`PUT /zec/stores`); their records stay on the node that plays them. The node's own store, whose record goes to every node that follows it, answers 409 until phase 2, when releases that read the bit are out and a sale from another node can carry Zcash terms. |
 
 ### Escrow is refused
 
@@ -36,7 +36,7 @@ The bitcoin escrow presigns a refund before the buyer funds anything. Zcash's sh
 
 ### Phase 1: receive, for stores on this node
 
-Buyers pay from any Zcash wallet with the `zcash:` URI. Exit: a demo store on testnet takes a Zcash order paid from Zodl, the order turns Paid at 30 confirmations, and a locked node does all of it.
+Buyers pay from any Zcash wallet with the `zcash:` URI. Exit: a demo store on testnet takes a Zcash order paid from Zodl, the order turns Paid at 30 confirmations, and a locked node does all of it. Each piece is tested against the mock chain, and the client against a live testnet indexer; the whole loop with a real testnet payment is still to be run by hand, since pricing an order needs `--proxy` for the rate.
 
 | Step | What | Status |
 |---|---|---|
@@ -55,9 +55,9 @@ Spend tickets bound to order, address, amount, and fee cap, as for Monero. Fees 
 
 ## Tests
 
+- `cargo test -p openbazaar-zec`: key derivation against `zcash_keys`' own ZIP 32 path, address reuse across restarts, Ironwood payments on the mock chain, Orchard notes from before NU6.3 counted apart and spent out, a server that puts new value in Orchard, confirmations, reorgs, spends, encoding, URIs, amounts.
 - `cargo test -p openbazaar-zec --test indexer`: the gRPC client against a stand-in lightwalletd over the mock chain (a wallet syncs and finds an Ironwood payment, a server on another chain or without Ironwood is refused, a dead server is skipped, a remote server goes through SOCKS with its own username per connection and no local DNS).
 - `OB_ZEC_LIVE_INDEXER=https://testnet.zec.rocks:443 cargo test -p openbazaar-zec live_testnet_indexer -- --ignored --nocapture` (or with `OB_ZEC_LIVE_PROXY=socks5h://127.0.0.1:9050`): a real testnet indexer, the last 21 blocks, and a wallet scanning the last 100. On 2026-11-10 it answered as ECC LightWalletD v0.6.1 with lightwallet-protocol v0.5.0 at height 4,603,552, Ironwood tree 905,886 notes.
-- `cargo test -p openbazaar-zec`: key derivation against `zcash_keys`' own ZIP 32 path, address reuse across restarts, Ironwood payments on the mock chain, Orchard notes from before NU6.3 counted apart and spent out, a server that puts new value in Orchard, confirmations, reorgs, spends, encoding, URIs, amounts.
 - `cargo test -p openbazaar-protocol`: the rail-flags byte with bit 2.
 - `apps/mobile`: `npm test` (`src/zec.test.ts`, the Zcash cases in `src/orderState.test.ts` and `src/records.test.ts`) and `npm run test:e2e` (`e2e/settings.spec.ts`: Settings → Zcash on a node without an indexer).
 - `cargo test -p ob-node zec`: the node against the mock chain (each order its own address across restarts, the exact price in zatoshi, partial, full, and over payment, 30 confirmations, an Orchard payment that does not pay, refusals, a locked node, the opt-in signed and kept, the own store refused, `GET /network` and `GET /rates`), the rate parser and its proxy, and a store on another node refused. `seed::tests::zcash_keys_come_from_the_bip39_seed_as_in_a_zcash_wallet` checks the seed bytes against BIP 39's published vector.

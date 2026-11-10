@@ -221,5 +221,6 @@ Remaining blockers before any mainnet escrow: an external cryptographic review (
 | `home-node` | 180 (+4) | 44 + 5 doc | 13 | 42 | 16 (+1) | 318 passed (xmr 10 + 8), 5 ignored; web 61 unit |
 | `seller-e2e` | 225 (+4) | 44 + 5 doc | 13 | 48 | 16 (+1) | 376 passed (xmr 10 + 8, lightning 5 + 1, version CLI 1), 5 ignored; desktop 2; web 73 unit, 18 Playwright |
 | `payment-rbf` | 229 (+4) | 44 + 5 doc | 13 | 48 | 16 (+1) | 380 passed (xmr 10 + 8, lightning 5 + 1, version CLI 1), 6 ignored; desktop 2; web 73 unit, 19 Playwright |
+| `zcash-direct` (on `182936a`) | 333 (+6) | 48 + 5 doc | 13 | 83 | 22 (+1) | 566 passed (xmr 19, zec 28 (+1), lightning 10 (+1), mobile-tor 4, version CLI 1), 9 ignored; web 165 unit, 25 Playwright, of which the 7 in `payments.spec.ts` fail as they do on `182936a` |
 
-The ignored tests need the live network: an Arti onion dial, a real testnet4 payment and send, a testnet4 compact filter sync, and a stagenet Monero payment (`live_stagenet`).
+The ignored tests need the live network: an Arti onion dial, a real testnet4 payment and send, a testnet4 compact filter sync, a stagenet Monero payment (`live_stagenet`), and a Zcash testnet indexer (`live_testnet_indexer`).
