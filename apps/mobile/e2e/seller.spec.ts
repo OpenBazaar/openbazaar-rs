@@ -182,3 +182,32 @@ test('a browser signed in on the node’s web address uploads a store avatar', a
   await expect(page.getByRole('alert')).toHaveCount(0)
   expect(uploads).toEqual(['image/png'])
 })
+
+// The node keeps images up to 2 MiB and answers a larger upload 413 with a
+// plain-text body. Both read as the image being too large, next to the control.
+test('an image over the node’s size cap says so next to the control', async ({ page }) => {
+  const tooLarge = 'That image is larger than 2 MB. Choose a smaller one.'
+  let uploads = 0
+  await page.addInitScript(() => localStorage.setItem('ob-home-device', '01'.repeat(32)))
+  await page.route('**/', async route => {
+    const response = await route.fetch()
+    await route.fulfill({ response, body: (await response.text()).replace('<head>', '<head><meta name="ob-home-node" content="true">') })
+  })
+  await page.route('**/remote/hello', route => route.fulfill({ json: { nodeId: '90'.repeat(32) } }))
+  await page.route('**/remote/devices', route => route.fulfill({ json: { devices: [] } }))
+  await page.route('**/store/profile', route => route.fulfill({ json: { storeKey: '34'.repeat(32), role: 'seller', name: 'My store', network: 'testnet4' } }))
+  await page.route('**/media', route => {
+    uploads += 1
+    return route.fulfill({ status: 413, contentType: 'text/plain', body: 'request body too large' })
+  })
+  await page.goto('/')
+  await page.getByRole('button', { name: 'Settings' }).click()
+  await page.getByRole('button', { name: 'Store settings' }).click()
+  const avatar = page.locator('input[type=file][aria-label="Add avatar"]')
+  await avatar.setInputFiles({ name: 'big.png', mimeType: 'image/png', buffer: Buffer.alloc(2 * 1024 * 1024 + 1) })
+  await expect(page.getByRole('alert')).toHaveText(tooLarge)
+  expect(uploads).toBe(0)
+  await avatar.setInputFiles(image('avatar.png'))
+  await expect.poll(() => uploads).toBe(1)
+  await expect(page.getByRole('alert')).toHaveText(tooLarge)
+})

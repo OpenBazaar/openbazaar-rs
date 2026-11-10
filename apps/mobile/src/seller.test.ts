@@ -4,9 +4,9 @@ import { test } from "node:test";
 import { schnorr } from "@noble/curves/secp256k1.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 
-import { parseBuyerOrder } from "./catalog.ts";
+import { parseBuyerOrder, showPairingWith } from "./catalog.ts";
 import { bytesToHex, verifyListingRecord } from "./records.ts";
-import { displayNameError, draftOf, formatPrice, fromMinorUnits, parseFollows, parseOwnListings, parseProfile, parseSale, salesToShip, testNetworkSeeds, toMinorUnits } from "./seller.ts";
+import { displayNameError, draftOf, formatPrice, fromMinorUnits, parseFollows, parseOwnListings, parseProfile, parseSale, salesToShip, testNetworkSeeds, toMinorUnits, uploadImage } from "./seller.ts";
 
 const SECRET = new Uint8Array(32).fill(7);
 const STORE = bytesToHex(schnorr.getPublicKey(SECRET));
@@ -161,4 +161,30 @@ test("follows parse, and a remote buyer order without payment terms yet reads", 
   assert.equal(order.payment, null);
   assert.equal(order.remote?.delivered, true);
   assert.equal(order.remote?.fulfillment?.tracking, "9400");
+});
+
+// The node keeps images up to 2 MiB (MAX_MEDIA in crates/node/src/media.rs)
+// and answers a larger `POST /media` 413 with a plain-text body.
+test("an image over the node's cap is refused before it is sent, and the node's 413 reads the same", async () => {
+  const tooLarge = { message: "That image is larger than 2 MB. Choose a smaller one." };
+  const realFetch = globalThis.fetch;
+  let uploads = 0;
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    if (new URL(String(input)).pathname === "/pair") return Response.json({ token: "ab".repeat(32) });
+    uploads += 1;
+    return new Response("request body too large", { status: 413 });
+  }) as typeof fetch;
+  const forget = showPairingWith(async (trade) => {
+    await trade("GOOD-CODE");
+    return true;
+  });
+  try {
+    await assert.rejects(uploadImage(new Blob([new Uint8Array(2 * 1024 * 1024 + 1)])), tooLarge);
+    assert.equal(uploads, 0);
+    await assert.rejects(uploadImage(new Blob([new Uint8Array(2 * 1024 * 1024)])), tooLarge);
+    assert.equal(uploads, 1);
+  } finally {
+    forget();
+    globalThis.fetch = realFetch;
+  }
 });

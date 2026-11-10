@@ -1,7 +1,7 @@
 // The seller side of the paired node: the storefront, its listings, its
 // sales, and the stores this node follows. Own listings come back as the
 // signed records the node serves and are checked here like any other.
-import { paired, pairedResponse, type BuyerOrder, type ContentRating, type ListingHeader, type ListingKind, parseBuyerOrder } from "./catalog.ts";
+import { NodeApiError, paired, pairedResponse, type BuyerOrder, type ContentRating, type ListingHeader, type ListingKind, parseBuyerOrder } from "./catalog.ts";
 import { verifiedListings } from "./records.ts";
 import type { Commerce } from "./commerce.ts";
 import { forKind } from "./commerceDraft.ts";
@@ -285,9 +285,18 @@ export async function setVacation(away: boolean): Promise<SellerProfile> {
   return parseProfile(await paired("/store/vacation", json("PUT", { away })));
 }
 
+/** Bytes in one uploaded image: the node's cap, `MAX_MEDIA` in crates/node/src/media.rs. */
+const MAX_IMAGE_BYTES = 2 * 1024 * 1024;
+const IMAGE_TOO_LARGE = `That image is larger than ${MAX_IMAGE_BYTES / (1024 * 1024)} MB. Choose a smaller one.`;
+
 /// Upload one image; the node answers its SHA-256, which records name.
+/// The file is sent as it is, so its own size is checked against the cap.
 export async function uploadImage(file: Blob): Promise<string> {
-  const response = await pairedResponse("/media", { method: "POST", headers: { "Content-Type": file.type || "application/octet-stream" }, body: file });
+  if (file.size > MAX_IMAGE_BYTES) throw new Error(IMAGE_TOO_LARGE);
+  const response = await pairedResponse("/media", { method: "POST", headers: { "Content-Type": file.type || "application/octet-stream" }, body: file }).catch((error: unknown) => {
+    // The node answers an oversized upload 413 with a plain-text body.
+    throw error instanceof NodeApiError && error.status === 413 ? new Error(IMAGE_TOO_LARGE) : error;
+  });
   const id = hash(record(await response.json()).hash);
   if (!id) throw new Error("The node did not keep the image.");
   return id;
