@@ -256,6 +256,12 @@ fn a_device_session_never_spends_without_the_passphrase_and_a_ticket() {
         status_line.contains("400"),
         "a ticket needs the passphrase: {status_line} {value}"
     );
+    // Until the backup is confirmed, a device can read the phrase again:
+    // it may be the only screen the node has. After that, never.
+    let phrase = json!({ "passphrase": PASSPHRASE }).to_string();
+    let (status_line, value) = device.call(&node, "POST", "/wallet/phrase", &phrase);
+    assert!(status_line.contains("200") && value["phrase"].is_string(), "{status_line}");
+    node.lock.mark_backup_confirmed().unwrap();
     for (method, path, body) in [
         (
             "POST",

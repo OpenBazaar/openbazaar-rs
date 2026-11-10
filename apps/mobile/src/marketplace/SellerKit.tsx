@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
+import { afterShopPair } from "../catalog";
 import { fetchStoreImage } from "../stores";
 import { uploadImage } from "../seller";
 import { isLocked } from "../walletLock";
@@ -11,7 +12,8 @@ function imageUrl(hash: string): Promise<string> {
   let url = images.get(hash);
   if (!url) {
     url = fetchStoreImage(hash).then(image => URL.createObjectURL(new Blob([image.bytes.slice().buffer], { type: image.contentType })));
-    url.catch(() => images.delete(hash));
+    const pending = url;
+    pending.catch(() => { if (images.get(hash) === pending) images.delete(hash); });
     images.set(hash, url);
   }
   return url;
@@ -21,13 +23,15 @@ function imageUrl(hash: string): Promise<string> {
 export function MediaImage({ hash, alt, className, fallback = null }: { hash: string; alt: string; className?: string; fallback?: ReactNode }) {
   const [src, setSrc] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
+  const [generation, setGeneration] = useState(0);
+  useEffect(() => afterShopPair(() => setGeneration(n => n + 1)), []);
   useEffect(() => {
     let active = true;
     setSrc(null);
     setFailed(false);
     imageUrl(hash).then(url => { if (active) setSrc(url); }, () => { if (active) setFailed(true); });
     return () => { active = false; };
-  }, [hash]);
+  }, [hash, generation]);
   if (failed) return <>{fallback}</>;
   return src ? <img className={className} src={src} alt={alt} loading="lazy"/> : <span className={`ob-media-loading ${className ?? ""}`} role="img" aria-label={alt}/>;
 }

@@ -38,11 +38,11 @@ export function HideActions({ listing, settings, onChange }: { listing: ListingH
   </div>;
 }
 
-export function SafetyInterstitial({ reason, onShow, onBack }: { reason: string; onShow: () => void; onBack: () => void }) {
+export function SafetyInterstitial({ reason, onShow, onBack, backLabel = "Back to products" }: { reason: string; onShow: () => void; onBack: () => void; backLabel?: string }) {
   return <div className="ob-empty" role="alert">
     <h2>This listing is hidden on this device.</h2>
     <p>{reason} You can change this in Content filters.</p>
-    <div className="ob-empty-actions"><button className="ob-secondary" onClick={onShow}>Show listing</button><button className="ob-primary" onClick={onBack}>Back to products</button></div>
+    <div className="ob-empty-actions"><button className="ob-secondary" onClick={onShow}>Show listing</button><button className="ob-primary" onClick={onBack}>{backLabel}</button></div>
   </div>;
 }
 

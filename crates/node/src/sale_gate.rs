@@ -1,7 +1,7 @@
 //! The public sale onion's loopback side.
 //!
 //! Tor accepts the connection and hands the bytes here. Only the catalog,
-//! media, review, order-mail, and escrow-mail routes are forwarded to the
+//! media, review, moderator-profile, order-mail, and escrow-mail routes are forwarded to the
 //! shop listener,
 //! with `Host` rewritten to that listener and `Origin` removed. Every other
 //! path is answered here and is not opened on the shop. The shop's response
@@ -37,7 +37,7 @@ pub(crate) fn serve(listener: TcpListener, main_port: u16, stop: &AtomicBool) {
 
 pub(crate) fn allowed(method: &str, path: &str) -> bool {
     match (method, path) {
-        ("GET", "/public/store") => true,
+        ("GET", "/public/store" | "/public/moderator" | "/public/moderators") => true,
         ("GET", path) if media(path) => true,
         ("GET" | "POST", "/public/reviews") => true,
         ("POST", "/mail" | "/mail/reply" | "/escrow/mail") => true,
@@ -145,6 +145,11 @@ mod tests {
     #[test]
     fn the_allowlist_is_the_sale_routes_only() {
         assert!(allowed("GET", "/public/store"));
+        assert!(allowed("GET", "/public/moderator"));
+        assert!(allowed("GET", "/public/moderators"));
+        assert!(!allowed("GET", "/moderator/profile"));
+        assert!(!allowed("PUT", "/public/moderator"));
+        assert!(!allowed("POST", "/moderators"));
         assert!(allowed("GET", "/public/media/0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"));
         assert!(allowed("POST", "/public/reviews"));
         assert!(allowed("GET", "/public/reviews"));

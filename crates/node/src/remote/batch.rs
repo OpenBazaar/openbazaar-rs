@@ -98,7 +98,7 @@ pub(crate) fn response(
             );
             continue;
         }
-        if let Some(message) = device.and(policy::refusal(method, path, &body)) {
+        if let Some(message) = device.and(policy::refusal(method, path, &body, node.lock.backup_confirmed())) {
             results
                 .push(json!({ "status": 403, "body": { "error": message, "code": "node_only" } }));
             continue;

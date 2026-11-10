@@ -92,7 +92,7 @@ impl Node {
             return Err(OrderError::Invalid("Order from this store at checkout."));
         }
         let settlement = settlement_of(body.get("settlement"))?;
-        self.allow_settlement(settlement, &seller)?;
+        self.allow_settlement(settlement, &seller, None)?;
         if settlement == Settlement::Escrow
             && lines
                 .iter()
@@ -143,7 +143,7 @@ impl Node {
             "status": settlement.initial_status(),
             "network": self.network.as_str(),
         });
-        let (payment, escrow) = self.payment_for(settlement, total, &seller, listing.id().map(|id| id.0))?;
+        let (payment, escrow) = self.payment_for(settlement, total, &seller, listing.id().map(|id| id.0), None)?;
         if let Some(payment) = &payment {
             response["payment"] = payment.clone();
         }
@@ -191,7 +191,7 @@ impl Node {
         let catalog = self.catalog();
         let packages = checkout_packages(&catalog, body)?;
         for package in &packages {
-            self.allow_settlement(package.settlement, &package.lines[0].0.seller)?;
+            self.allow_settlement(package.settlement, &package.lines[0].0.seller, package.moderator)?;
             if package.xmr {
                 self.xmr_ready(&package.lines[0].0.seller)?;
             }
@@ -291,7 +291,7 @@ impl Node {
             } else if package.ln {
                 (Some(self.ln_payment(total, &id)?), None)
             } else {
-                self.payment_for(package.settlement, total, &seller, listing.id().map(|id| id.0))?
+                self.payment_for(package.settlement, total, &seller, listing.id().map(|id| id.0), package.moderator)?
             };
             let remote_record = match remote {
                 Some(url) => Some(self.remote_record(url, &checkout_id, listing, &package.lines, total)?).map(|mut record| {
@@ -384,10 +384,13 @@ impl Node {
     }
 
     /// Escrow is a testnet4 demo with a vendor on another node. Refuse it
-    /// before any letter is sealed.
-    fn allow_settlement(&self, settlement: Settlement, seller: &str) -> Result<(), OrderError> {
+    /// before any letter is sealed, and with it a moderator the store's
+    /// signed record does not accept or the vendor's node cannot take.
+    fn allow_settlement(&self, settlement: Settlement, seller: &str, moderator: Option<[u8; 32]>) -> Result<(), OrderError> {
         if settlement == Settlement::Escrow {
             self.escrow_ready(seller)?;
+            let profile = self.checkout_moderator(seller, moderator)?;
+            self.vendor_takes_moderator(seller, profile.as_ref())?;
         }
         Ok(())
     }
@@ -406,10 +409,11 @@ impl Node {
         total: u64,
         seller: &str,
         listing_id: Option<[u8; 16]>,
+        moderator: Option<[u8; 32]>,
     ) -> Result<(Option<Value>, Option<Value>), OrderError> {
         match settlement {
             Settlement::Direct => Ok((Some(self.direct_payment(total, seller)?), None)),
-            Settlement::Escrow => Ok((None, Some(self.escrow_request(total, seller, listing_id)?))),
+            Settlement::Escrow => Ok((None, Some(self.escrow_request(total, seller, listing_id, moderator)?))),
         }
     }
 
@@ -491,6 +495,8 @@ impl Node {
 struct PackagePlan<'a> {
     lines: Vec<(&'a Listing, u32)>,
     settlement: Settlement,
+    /// The moderator the buyer chose for an escrow package. `None`: the built-in one.
+    moderator: Option<[u8; 32]>,
     /// Paid in Monero (direct pay only).
     xmr: bool,
     /// Paid over Lightning (direct pay only).
@@ -507,7 +513,7 @@ const CHECKOUT_FIELDS: &[&str] = &[
     "packages",
 ];
 
-const PACKAGE_FIELDS: &[&str] = &["settlement", "rail", "lines", "service", "coupon"];
+const PACKAGE_FIELDS: &[&str] = &["settlement", "rail", "lines", "service", "coupon", "moderator"];
 
 fn checkout_packages<'a>(catalog: &'a Catalog, body: &Value) -> Result<Vec<PackagePlan<'a>>, OrderError> {
     let Some(list) = body.get("packages").and_then(Value::as_array) else {
@@ -544,12 +550,20 @@ fn checkout_packages<'a>(catalog: &'a Catalog, body: &Value) -> Result<Vec<Packa
                 "This listing does not accept a moderator.",
             ));
         }
+        let moderator = match package.get("moderator") {
+            None => None,
+            Some(id) if settlement == Settlement::Escrow => Some(
+                id.as_str().and_then(crate::stores::unhex32).ok_or(OrderError::Invalid("That is not a moderator's key."))?,
+            ),
+            Some(_) => return Err(OrderError::Invalid("A moderator is chosen for an escrow order only.")),
+        };
         let xmr = crate::xmr::rail_of(package.get("rail"), settlement == Settlement::Escrow)?;
         let ln = crate::lightning::ln_rail_of(package.get("rail"), settlement == Settlement::Escrow)?;
         let (items, shipping) = package_shipping(&lines)?;
         plans.push(PackagePlan {
             lines,
             settlement,
+            moderator,
             xmr,
             ln,
             items,

@@ -25,7 +25,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use bdk_wallet::chain::BlockId;
 use bdk_wallet::{KeychainKind, Update};
 use bitcoin::constants::genesis_block;
-use bitcoin::{Address, BlockHash, Network, OutPoint, Script, ScriptBuf, Transaction, TxOut};
+use bitcoin::{Address, BlockHash, Network, OutPoint, Script, ScriptBuf, Transaction, TxOut, Txid};
 use tokio::sync::Notify;
 
 use crate::buyer_orders::now_secs;
@@ -281,7 +281,13 @@ impl FilterChain {
     }
 
     fn watch(&self, scripts: Vec<ScriptBuf>) {
-        if self.shared.index().watch(scripts) {
+        let notify = {
+            let mut index = self.shared.index();
+            let before = index.scripts.len();
+            let rescan = index.watch(scripts);
+            rescan || index.scripts.len() > before
+        };
+        if notify {
             self.shared.wake.notify_one();
         }
     }
@@ -439,8 +445,20 @@ impl ChainSource for FilterChain {
         };
         let scripts: Vec<ScriptBuf> = spks.iter().map(|(_, script)| script.clone()).collect();
         self.watch(scripts.clone());
-        self.ready(&scripts)?;
-        Ok(self.shared.index().wallet_update(&spks))
+        match self.ready(&scripts) {
+            Ok(()) => Ok(self.shared.index().wallet_update(&spks)),
+            Err(err) => {
+                // A scan that has not reached the tip still knows about
+                // unconfirmed transactions from this node's mempool watch.
+                // Those count as pending without moving the wallet checkpoint.
+                let update = self.shared.index().unconfirmed_wallet_update(&spks);
+                if update.tx_update.txs.is_empty() && update.tx_update.evicted_ats.is_empty() {
+                    Err(err)
+                } else {
+                    Ok(update)
+                }
+            }
+        }
     }
 
     fn output(&self, outpoint: &OutPoint) -> Result<Option<(TxOut, Option<u32>)>, String> {
@@ -448,5 +466,9 @@ impl ChainSource for FilterChain {
         self.shared.index().output(outpoint).map(Some).ok_or_else(|| {
             "compact block filters find transactions by address; this output does not pay an address the node follows".to_string()
         })
+    }
+
+    fn transaction(&self, txid: &Txid) -> Result<Option<(Transaction, Option<u32>)>, String> {
+        Ok(self.shared.index().transaction(txid))
     }
 }

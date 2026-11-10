@@ -24,6 +24,9 @@ use crate::proofs::tagged;
 use crate::wire::{Reader, Writer};
 use crate::{Error, Party};
 
+const RECORD_MAGIC: &[u8; 4] = b"OBMR";
+const RECORD_VERSION: u8 = 1;
+
 /// What a moderator publishes. Parties copy it verbatim into the terms.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ModeratorRecord {
@@ -72,6 +75,29 @@ impl ModeratorRecord {
             fee: r.amount()?,
             policy: Policy::read(r)?,
         })
+    }
+
+    /// The record as a signed moderator profile carries it.
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut w = Writer::new(RECORD_MAGIC, RECORD_VERSION);
+        self.write(&mut w);
+        w.finish()
+    }
+
+    /// Read and validate a record written by [`Self::to_bytes`].
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, Error> {
+        let mut r = Reader::new(bytes, RECORD_MAGIC, RECORD_VERSION)?;
+        let record = Self::read(&mut r)?;
+        r.finish()?;
+        record.validate()?;
+        Ok(record)
+    }
+
+    /// The moderator's id: the x-only form of the key that signs its rulings.
+    pub fn id(&self) -> [u8; 32] {
+        let mut id = [0u8; 32];
+        id.copy_from_slice(&self.signing_key[1..]);
+        id
     }
 }
 
@@ -199,6 +225,33 @@ impl LetterCache {
     }
 }
 
+/// Verify a letter written under `record` that arrived at `received_height`.
+///
+/// This needs no moderator secret, so a moderator whose keys are locked away
+/// can still check the letters it receives. [`Moderator::review_gated`]
+/// describes `gate` and `cache`.
+pub fn review_letter(
+    record: &ModeratorRecord,
+    chain: &impl FundingChain,
+    cache: &LetterCache,
+    letter: &[u8],
+    received_height: u32,
+    gate: &mut dyn FnMut(&RulingKey, Party) -> Result<(), Error>,
+) -> Result<DisputeCase, Error> {
+    let ctx = Context {
+        tip: received_height,
+        moderator: record.clone(),
+        policy: record.policy,
+    };
+    let hash = DisputeCase::letter_hash(letter);
+    let cached = cache.contains(&hash);
+    let case = DisputeCase::verify(letter, &ctx, chain, cached, gate)?;
+    if !cached {
+        cache.insert(hash);
+    }
+    Ok(case)
+}
+
 /// A moderator able to review letters and issue at most one ruling per escrow.
 pub struct Moderator<C, S> {
     keys: ModeratorKeys,
@@ -248,14 +301,6 @@ impl<C: FundingChain, S: RulingStore> Moderator<C, S> {
         &self.chain
     }
 
-    fn context(&self, received_height: u32) -> Context {
-        Context {
-            tip: received_height,
-            moderator: self.record.clone(),
-            policy: self.record.policy,
-        }
-    }
-
     /// Verify a letter that arrived at `received_height`.
     ///
     /// The expensive proof checks are skipped for a letter whose exact bytes
@@ -275,14 +320,7 @@ impl<C: FundingChain, S: RulingStore> Moderator<C, S> {
         received_height: u32,
         gate: &mut dyn FnMut(&RulingKey, Party) -> Result<(), Error>,
     ) -> Result<DisputeCase, Error> {
-        let ctx = self.context(received_height);
-        let hash = DisputeCase::letter_hash(letter);
-        let cached = self.verified.contains(&hash);
-        let case = DisputeCase::verify(letter, &ctx, &self.chain, cached, gate)?;
-        if !cached {
-            self.verified.insert(hash);
-        }
-        Ok(case)
+        review_letter(&self.record, &self.chain, &self.verified, letter, received_height, gate)
     }
 
     /// Review a letter and rule for its branch, unless the other branch of

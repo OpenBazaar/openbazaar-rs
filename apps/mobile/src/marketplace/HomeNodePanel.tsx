@@ -3,6 +3,7 @@ import { canRunAsHomeNode, homeNodeMode, setHomeNodeMode } from "../homeNode/api
 import { nodeTarget, servedByHomeNode } from "../homeNode/transport";
 import { HomeConnectCard } from "./HomeConnectCard";
 import { HomeDevicesCard } from "./HomeDevicesCard";
+import { PasskeysCard } from "./PasskeysCard";
 
 const failed = (e: unknown, fallback: string) => (e instanceof Error && e.message ? e.message : fallback);
 
@@ -15,6 +16,7 @@ export function HomeNodePanel() {
     {ownNode && canRunAsHomeNode() && <HomeModeCard onChange={() => setGeneration(n => n + 1)}/>}
     {!served && <HomeConnectCard/>}
     <HomeDevicesCard key={generation}/>
+    {served && <PasskeysCard/>}
   </section>;
 }
 

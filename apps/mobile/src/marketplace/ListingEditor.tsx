@@ -2,7 +2,7 @@ import { useState, type FormEvent } from "react";
 import type { CurrencyCode, ListingHeader, RateTable } from "../catalog";
 import { CONTENT_TAGS, MAX_LISTING_IMAGES, PRICE_CURRENCIES, deleteDraft, draftOf, formatPrice, fromMinorUnits, saveDraft, saveListing, toMinorUnits, type ListingDraft, type PriceCurrency, type SavedDraft } from "../seller";
 import { ImageUpload, MediaImage, useLockedAction } from "./SellerKit";
-import { TAXONOMY, axesProblem, compareAtText, emptyCommerce, listingFacts, packageFieldsOf, priceTerms, purchaseFields, purchaseTerms, returnsDraft, rowsOf, saleFieldsOf, scheduledSale, shippingTerms, signedTaxonomy, specificRows, tierRows, volumeTiers, withFacts, withPackage, withPrice, withPurchase, withSale, withTaxonomy, withTiers, withVariantWeights, type AvailabilityDraft, type PackageInput, type ReturnsDraft, type SpecificRow, type TierRow } from "../commerceDraft";
+import { axesProblem, compareAtText, emptyCommerce, listingFacts, packageFieldsOf, priceTerms, purchaseFields, purchaseTerms, returnsDraft, rowsOf, saleFieldsOf, scheduledSale, shippingTerms, signedTaxonomy, specificRows, tierRows, volumeTiers, withFacts, withPackage, withPrice, withPurchase, withSale, withTaxonomy, withTiers, withVariantWeights, type AvailabilityDraft, type PackageInput, type ReturnsDraft, type SpecificRow, type TierRow } from "../commerceDraft";
 import { CommerceFields } from "./CommerceFields";
 
 type PackageFields = Omit<PackageInput, "regions">;
@@ -23,7 +23,7 @@ function draftFrom(form: Form): ListingDraft | string {
   const shipping = form.kind === "digital" || !form.shipping.trim() ? 0 : toMinorUnits(form.shipping, form.currency);
   const stock = Number(form.stock);
   if (!form.title.trim()) return "Give the listing a title.";
-  if (!form.category.trim()) return "Choose a category.";
+  if (!form.category.trim()) return "Give the listing a category.";
   if (!price) return form.currency === "SAT" ? "Enter a price in whole sats." : `Enter a price in ${form.currency}, like 12.50.`;
   if (shipping === null) return "Enter shipping as a plain amount, or leave it empty for free shipping.";
   if (!Number.isInteger(stock) || stock < 0 || stock > 1_000_000) return "Enter how many you have, from 0 to 1,000,000.";
@@ -83,7 +83,7 @@ function satsHint(amount: number | null, currency: PriceCurrency, rates: RateTab
   return `≈ ${Math.round((major / rate) * 1e8).toLocaleString("en-US")} sats today`;
 }
 
-export function ListingEditor({ listing, savedDraft, categories, rates, onSaved, onCancel }: { listing: ListingHeader | null; savedDraft?: SavedDraft | null; categories: string[]; rates: RateTable; onSaved: (message: string) => void; onCancel: () => void }) {
+export function ListingEditor({ listing, savedDraft, rates, onSaved, onCancel }: { listing: ListingHeader | null; savedDraft?: SavedDraft | null; rates: RateTable; onSaved: (message: string) => void; onCancel: () => void }) {
   const [form, setForm] = useState<Form>(() => formOf(savedDraft?.listing ?? (listing ? draftOf(listing) : EMPTY)));
   const [draftId, setDraftId] = useState(savedDraft?.draftId ?? null);
   const [busy, setBusy] = useState(false);
@@ -146,8 +146,7 @@ export function ListingEditor({ listing, savedDraft, categories, rates, onSaved,
       <div className="ob-field-grid">
         <label className="ob-field ob-field-wide"><span>Title</span><input value={form.title} maxLength={120} onChange={e => set("title", e.target.value)}/></label>
         <label className="ob-field ob-field-wide"><span>Description</span><textarea value={form.description} maxLength={5000} onChange={e => set("description", e.target.value)}/></label>
-        <label className="ob-field"><span>Category</span><input list="ob-listing-categories" value={form.category} maxLength={40} placeholder="Home" onChange={e => set("category", e.target.value)}/><datalist id="ob-listing-categories">{categories.map(c => <option key={c} value={c}/>)}</datalist></label>
-        {form.currency !== "SAT" && <label className="ob-field"><span>Top-level category</span><select value={form.taxonomy} onChange={e => set("taxonomy", e.target.value)}><option value="0">Uncategorised</option>{TAXONOMY.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select><small className="ob-field-hint">Choose the primary department. Use Category for the product subcategory.</small></label>}
+        <label className="ob-field"><span>Category</span><input value={form.category} maxLength={40} placeholder="Wool blankets" autoCapitalize="off" onChange={e => set("category", e.target.value)}/></label>
         <div className="ob-field" role="radiogroup" aria-label="Type of good"><span>Type of good</span><div className="ob-kind-choice">
           {(["physical", "digital"] as const).map(kind => <label key={kind} className={form.kind === kind ? "is-selected" : ""}><input type="radio" name="kind" checked={form.kind === kind} onChange={() => set("kind", kind)}/>{kind === "physical" ? "Physical item" : "Digital good"}</label>)}
         </div></div>
@@ -159,7 +158,7 @@ export function ListingEditor({ listing, savedDraft, categories, rates, onSaved,
         <label className="ob-field"><span>Price currency</span><select value={form.currency} onChange={e => set("currency", e.target.value as PriceCurrency)}>{PRICE_CURRENCIES.map(c => <option key={c} value={c}>{c === "SAT" ? "Bitcoin (sats)" : c}</option>)}</select></label>
         <label className="ob-field"><span>Price ({unit})</span><input inputMode="decimal" value={form.price} placeholder={form.currency === "SAT" ? "25000" : "12.50"} onChange={e => set("price", e.target.value)}/><small className="ob-field-hint">{satsHint(toMinorUnits(form.price, form.currency), form.currency, rates) ?? (form.currency === "SAT" ? "Buyers pay exactly this many sats." : "Buyers pay the sats this is worth when they order.")}</small></label>
         {form.kind === "physical" && !services && <label className="ob-field"><span>Shipping ({unit})</span><input inputMode="decimal" value={form.shipping} placeholder="Free" onChange={e => set("shipping", e.target.value)}/></label>}
-        {form.kind === "physical" && <label className="ob-field"><span>Ships from</span><input value={form.shipFrom} maxLength={40} placeholder="US" onChange={e => set("shipFrom", e.target.value)}/></label>}
+        {form.kind === "physical" && <label className="ob-field"><span>Ships from</span><input value={form.shipFrom} maxLength={40} placeholder="Portland" autoCapitalize="off" onChange={e => set("shipFrom", e.target.value)}/></label>}
         {!variants && <label className="ob-field"><span>In stock</span><input inputMode="numeric" value={form.stock} onChange={e => set("stock", e.target.value)}/></label>}
         {form.currency !== "SAT" && <>
           <label className="ob-field"><span>Sale price ({unit})</span><input inputMode="decimal" value={form.salePrice} placeholder="Optional" onChange={e => set("salePrice", e.target.value)}/></label>

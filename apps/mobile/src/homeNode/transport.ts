@@ -89,6 +89,13 @@ async function hello(): Promise<string> {
   return body.nodeId;
 }
 
+/** What the node that served this page says on its web address: whether it has a passkey to sign in with, and whether nobody owns it yet. */
+export async function webSignInState(): Promise<{ passkeys: boolean; claimable: boolean }> {
+  const response = await fetch("/remote/hello", { cache: "no-store" });
+  const body = (await response.json()) as { passkeys?: unknown; claimable?: unknown };
+  return { passkeys: body.passkeys === true, claimable: body.claimable === true };
+}
+
 function bodyBytes(body: BodyInit | null | undefined): Uint8Array {
   if (body === undefined || body === null) return new Uint8Array();
   if (typeof body === "string") return utf8ToBytes(body);

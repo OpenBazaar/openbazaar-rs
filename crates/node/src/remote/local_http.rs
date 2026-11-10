@@ -10,6 +10,7 @@
 //! | `POST /remote/pairing` | a one-time code for one more device: words, link, QR |
 //! | `GET /remote/pending`, `POST /remote/pending/{id}` | pairing requests waiting for the owner |
 //! | `POST /remote/browser-credential` | a ready-made device for Tor Browser |
+//! | `GET /remote/passkeys`, `POST /remote/passkeys`, `DELETE /remote/passkeys/{id}` | see [`super::passkeys`] |
 //! | `POST /remote/rotate` | move the admin onion to a fresh address |
 //! | `POST /remote/lan-page` | show the LAN setup page for 10 minutes (the node's own client only) |
 //! | `POST /remote/sync`, `POST /remote/batch` | see [`super::sync`], [`super::batch`] |
@@ -22,7 +23,8 @@ use serde_json::{json, Value};
 use super::devices::{clean_name, NewDevice, Push};
 use super::protocol::{base32, words, DeviceKey};
 use super::{
-    batch, pair_cli, pair_http, push, services, sync, REMOTE_DEVICE_HEADER, REMOTE_VIA_HEADER,
+    batch, pair_cli, pair_http, passkeys, push, services, sync, REMOTE_DEVICE_HEADER,
+    REMOTE_VIA_HEADER,
 };
 use crate::http::{json_body, json_error, local_guard, Client};
 use crate::http_parse::header;
@@ -98,6 +100,18 @@ pub(crate) fn response(
             }
         }
         ("POST", "/remote/browser-credential") => browser_credential(node, this, &value, origin),
+        ("GET", "/remote/passkeys") => ok(passkeys::list(node)),
+        ("POST", "/remote/passkeys") => match passkeys::add(node, &value) {
+            Ok(list) => ok(list),
+            Err(message) => fail("409 Conflict", &message),
+        },
+        ("DELETE", path) if path.starts_with("/remote/passkeys/") => {
+            match passkeys::remove(node, &path["/remote/passkeys/".len()..]) {
+                Ok(Some(list)) => ok(list),
+                Ok(None) => fail("404 Not Found", "This node has no such passkey."),
+                Err(message) => fail("500 Internal Server Error", &message),
+            }
+        }
         ("POST", "/remote/rotate") => match services::rotate(node) {
             Ok(onion) => ok(json!({ "nextOnion": onion })),
             Err(message) => fail("409 Conflict", &message),

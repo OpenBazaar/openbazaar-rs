@@ -12,10 +12,17 @@ pub(crate) const FRAME_MAGIC: &[u8; 4] = b"OBML";
 pub(crate) const QUERY_MAGIC: &[u8; 4] = b"OBQR";
 const FRAME_VERSION: u8 = 1;
 /// A directory reply larger than this is refused.
-const MAX_QUERY_LEN: usize = 1_048_576;
+pub const MAX_QUERY_LEN: usize = 1_048_576;
 pub const QUERY_SEED: u8 = 1;
 pub const QUERY_STORE: u8 = 2;
 pub const QUERY_LISTINGS: u8 = 3;
+pub const QUERY_INBOX: u8 = 4;
+pub const QUERY_ADMISSIONS: u8 = 5;
+pub(crate) const SUBMIT_MAGIC: &[u8; 4] = b"OBSB";
+pub const SUBMIT_STORE: u8 = 1;
+pub const SUBMIT_LISTING: u8 = 2;
+pub const SUBMIT_DOCUMENT: u8 = 3;
+pub const SUBMIT_ADMISSION: u8 = 4;
 /// Sent by the vendor on the same stream, after `Mailbox::accept`.
 pub(crate) const STORED_ACK: u8 = 1;
 
@@ -203,9 +210,10 @@ where
     SealedLetter::from_bytes(&payload)
 }
 
-/// Ask one introduction for the seed document (`kind` 1), one store (2), or
-/// that store's listings (3). `Ok(None)` means the introduction answered and
-/// does not have it. An error means it did not answer.
+/// Ask one introduction for the seed document (`kind` 1), one store (2),
+/// that store's listings (3), the inbox (4), or one page of admissions (5).
+/// The 32-byte id is the store id, or the admission cursor. `Ok(None)` means
+/// the introduction answered and does not have it. An error means it did not answer.
 pub async fn ask_directory<R>(
     client: &arti_client::TorClient<R>,
     onion: &OnionAddress,
@@ -223,6 +231,60 @@ where
     stream.write_all(&id).await?;
     stream.flush().await.map_err(|err| Error::Arti(err.to_string()))?;
     read_query_reply(&mut stream).await
+}
+
+/// Push one signed store (1), listing (2), seed document (3), or admission (4).
+/// `Ok(true)` means the introduction kept it. `Ok(false)` means it refused the bytes.
+pub async fn submit_directory<R>(
+    client: &arti_client::TorClient<R>,
+    onion: &OnionAddress,
+    kind: u8,
+    body: &[u8],
+) -> Result<bool, Error>
+where
+    R: Runtime + Send + Sync,
+{
+    if body.len() > MAX_QUERY_LEN {
+        return Err(Error::Malformed);
+    }
+    client.bootstrap().await.map_err(|err| Error::Arti(err.to_string()))?;
+    let target = format!("{}:{}", onion.as_str(), ORDER_PORT);
+    let mut stream = client.connect(target).await.map_err(|err| Error::Arti(err.to_string()))?;
+    let len = u32::try_from(body.len()).map_err(|_| Error::Malformed)?;
+    stream.write_all(SUBMIT_MAGIC).await?;
+    stream.write_all(&[FRAME_VERSION, kind]).await?;
+    stream.write_all(&len.to_le_bytes()).await?;
+    stream.write_all(body).await?;
+    stream.flush().await.map_err(|err| Error::Arti(err.to_string()))?;
+    let mut status = [0u8; 1];
+    read_exact(&mut stream, &mut status).await?;
+    match status[0] {
+        0 => Ok(true),
+        1 => Ok(false),
+        _ => Err(Error::Malformed),
+    }
+}
+
+pub(crate) async fn read_submit_after_magic<R>(reader: &mut R) -> Result<(u8, Vec<u8>), Error>
+where
+    R: AsyncRead + Unpin,
+{
+    let mut head = [0u8; 2];
+    read_exact(reader, &mut head).await?;
+    if head[0] != FRAME_VERSION {
+        return Err(Error::Malformed);
+    }
+    let mut len_bytes = [0u8; 4];
+    read_exact(reader, &mut len_bytes).await?;
+    let len = u32::from_le_bytes(len_bytes) as usize;
+    if len > MAX_QUERY_LEN {
+        return Err(Error::Malformed);
+    }
+    let mut body = vec![0u8; len];
+    if len > 0 {
+        read_exact(reader, &mut body).await?;
+    }
+    Ok((head[1], body))
 }
 
 pub(crate) async fn read_query_after_magic<R>(reader: &mut R) -> Result<(u8, [u8; 32]), Error>

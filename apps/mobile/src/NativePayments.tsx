@@ -187,12 +187,7 @@ function PrivacyLines({ info }: { info: NetworkInfo }) {
       {info.privacyWarning ?? ''}
       {backend?.reveals ? ` ${backend.reveals}` : ''}
       {backend?.error ? ` ${backend.error}` : ''}
-      {backend?.fallbackActive
-        ? ` Public fallback${backend.fallback ? `: ${backend.fallback}` : ''} is active.`
-        : ''}
-      {info.proxy
-        ? ` Configured proxy: ${info.proxy}. A configured proxy is not a verified connection.`
-        : ''}
+      {backend?.fallbackActive ? ' Public fallback is active.' : ''}
     </Text>
   )
 }

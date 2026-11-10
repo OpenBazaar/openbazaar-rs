@@ -534,6 +534,7 @@ fn network_and_wallet_endpoints() {
     let (_, again) = request(&node, "GET", "/wallet", "");
     assert_eq!(first["receiveAddress"], again["receiveAddress"], "unused address is stable");
     assert_eq!(first["balance"]["totalSats"], 0);
+    assert!(first["activity"].as_array().unwrap().is_empty());
     let (_, fresh) = request(&node, "POST", "/wallet/address", "");
     let (_, fresher) = request(&node, "POST", "/wallet/address", "");
     assert_ne!(fresh["address"], fresher["address"]);
@@ -545,6 +546,14 @@ fn network_and_wallet_endpoints() {
     let (_, funded) = request(&node, "GET", "/wallet", "");
     assert_eq!(funded["balance"]["totalSats"], 25_000);
     assert_ne!(funded["receiveAddress"], first["receiveAddress"], "a used address is not shown again");
+    let activity = funded["activity"].as_array().unwrap();
+    assert_eq!(activity.len(), 1);
+    assert_eq!(activity[0]["direction"], "in");
+    assert_eq!(activity[0]["sats"], 25_000);
+    assert_eq!(activity[0]["label"], "Deposit");
+    assert_eq!(activity[0]["confirmed"], true);
+    let rendered = serde_json::to_string(activity).unwrap();
+    assert!(!rendered.contains(funded["receiveAddress"].as_str().unwrap()));
 }
 
 /// Live testnet4 run. Opt in with:

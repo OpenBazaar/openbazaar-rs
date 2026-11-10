@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react'
+import { shopPairingMessage } from '../catalog'
+import { nodeTarget, servedByHomeNode } from '../homeNode/transport'
 import { bitcoinAmount } from '../nodeWallet'
 import { useNodeResource } from '../useNodeResource'
 import {
@@ -258,7 +260,7 @@ export function UnlockForm({
       )}
       <FormError message={error} />
       <div className='ob-form-actions'>
-        {status.rememberDevice && (
+        {status.rememberDevice && !servedByHomeNode() && nodeTarget() !== "home" && (
           <button
             className='ob-secondary'
             type='button'
@@ -280,6 +282,8 @@ function BackupReminder({ onStatus }: { onStatus: (s: LockStatus) => void }) {
   const [passphrase, setPassphrase] = useState('')
   const [shown, setShown] = useState<{ phrase: string[]; confirmWords: number[] } | null>(null)
   const { busy, error, run } = useSubmit()
+  const [localOnly, setLocalOnly] = useState(false)
+  if (localOnly) return <div className='ob-wallet-lock'><h2>Backup recovery is local only</h2><p>Open this node on its own computer to view the backup phrase. Remote access cannot reveal a confirmed backup.</p></div>
   if (shown)
     return (
       <BackupCheck
@@ -297,8 +301,16 @@ function BackupReminder({ onStatus }: { onStatus: (s: LockStatus) => void }) {
       onSubmit={(e: FormEvent) => {
         e.preventDefault()
         void run(async () => {
-          setShown(await revealPhrase(passphrase))
-          setPassphrase('')
+          try {
+            setShown(await revealPhrase(passphrase))
+          } catch (err) {
+            if (err instanceof Error && err.message.includes("backup phrase is shown only on the node's own machine")) {
+              setLocalOnly(true)
+              void fetchLock().then(onStatus, () => undefined)
+              return
+            }
+            throw err
+          } finally { setPassphrase('') }
         }, 'The backup phrase could not be shown.')
       }}
     >
@@ -321,22 +333,23 @@ function LockSettings({ status, onStatus }: { status: LockStatus; onStatus: (s: 
     [passphrase, setPassphrase] = useState('')
   const { busy, error, run } = useSubmit()
   const [min, max] = status.autoLockRange
+  const remote = servedByHomeNode() || nodeTarget() === "home"
   const choices = [...new Set([...AUTO_LOCK_CHOICES, status.autoLockMinutes])]
     .filter(m => m >= min && m <= max)
     .sort((a, b) => a - b)
-  const changed = minutes !== status.autoLockMinutes || remember !== status.rememberDevice
+  const changed = minutes !== status.autoLockMinutes || (!remote && remember !== status.rememberDevice)
   return (
     <form
       className='ob-wallet-lock'
       onSubmit={(e: FormEvent) => {
         e.preventDefault()
+        if (!changed || !passphrase) return
         void run(async () => {
-          onStatus(await updateLockSettings({ passphrase, autoLockMinutes: minutes, rememberDevice: remember }))
+          onStatus(await updateLockSettings({ passphrase, autoLockMinutes: minutes, ...(!remote ? { rememberDevice: remember } : {}) }))
           setPassphrase('')
         }, 'The lock settings could not be saved.')
       }}
     >
-      <h2>Lock settings</h2>
       <label className='ob-field'>
         <span>Lock after inactivity</span>
         <select value={minutes} onChange={e => setMinutes(Number(e.target.value))}>
@@ -347,37 +360,43 @@ function LockSettings({ status, onStatus }: { status: LockStatus; onStatus: (s: 
           ))}
         </select>
       </label>
-      {status.rememberAvailable && (
+      {status.rememberAvailable && !servedByHomeNode() && nodeTarget() !== "home" && (
         <label className='ob-checkbox'>
           <input type='checkbox' checked={remember} onChange={e => setRemember(e.target.checked)} /> Remember on this
-          device (unlock without the passphrase; payments still ask for it)
+          device. Viewing stays open. Payments still ask for the passphrase.
         </label>
       )}
       {changed && <Passphrase label='Wallet passphrase' value={passphrase} onChange={setPassphrase} />}
       <FormError message={error} />
-      <div className='ob-form-actions'>
-        <button className='ob-secondary' disabled={busy || !changed || !passphrase}>
-          {busy ? 'Saving…' : 'Save lock settings'}
-        </button>
-      </div>
+      {changed && passphrase ? (
+        <div className='ob-form-actions'>
+          <button className='ob-secondary' disabled={busy}>
+            {busy ? 'Saving…' : 'Save lock settings'}
+          </button>
+        </div>
+      ) : null}
     </form>
   )
 }
 
-/** The lock card at the top of the wallet page. */
-export function WalletLockPanel({ lock }: { lock: LockResource }) {
+/** The lock card on the wallet page. Settings stay collapsed until opened. */
+export function WalletLockPanel({ lock, purpose = "wallet" }: { lock: LockResource; purpose?: "wallet" | "moderator" }) {
   const status = lock.data
   const [error, setError] = useState('')
-  if (!status)
+  if (!status) {
+    if (lock.error && shopPairingMessage(lock.error)) return null
     return <p role='status'>{lock.error || 'Checking the wallet lock…'}</p>
+  }
   if (status.state === 'setup') return <SetupWallet status={status} onStatus={lock.update} />
-  if (status.state === 'locked') return <UnlockForm status={status} onStatus={lock.update} />
+  if (status.state === 'locked') return <UnlockForm status={status} onStatus={lock.update} reason={purpose === "moderator" ? "Unlock this node’s wallet to sign a final escrow ruling. You can review disputes while it stays locked." : undefined} />
+  const minutesLeft = status.lockInSecs == null ? null : Math.max(1, Math.ceil(status.lockInSecs / 60))
   return (
-    <section className='ob-wallet-fund'>
-      <div className='ob-section-heading'>
-        <h2>Wallet unlocked</h2>
+    <section className='ob-wallet-fund' aria-labelledby='ob-wallet-lock'>
+      <div className='ob-section-heading ob-lock-line'>
+        <h2 id='ob-wallet-lock'>{purpose === 'moderator' ? 'Wallet unlocked · signing enabled' : 'Viewing unlocked · payments require passphrase'}</h2>
         <button
           className='ob-secondary'
+          type='button'
           onClick={() => {
             setError('')
             void lockWallet().then(lock.update, (e: unknown) =>
@@ -388,14 +407,17 @@ export function WalletLockPanel({ lock }: { lock: LockResource }) {
           Lock now
         </button>
       </div>
-      <p>
-        {status.lockInSecs == null
-          ? 'Locks after inactivity.'
-          : `Locks after ${Math.max(1, Math.ceil(status.lockInSecs / 60))} more minutes without activity.`}
-      </p>
       <FormError message={error} />
       {!status.backupConfirmed && <BackupReminder onStatus={lock.update} />}
-      <LockSettings key={`${status.autoLockMinutes}-${status.rememberDevice}`} status={status} onStatus={lock.update} />
+      <details className='ob-lock-details'>
+        <summary>Lock settings</summary>
+        <p>
+          {minutesLeft == null
+            ? 'The wallet locks after a period without activity.'
+            : `The wallet locks after ${minutesLeft} more ${minutesLeft === 1 ? 'minute' : 'minutes'} without activity.`}
+        </p>
+        <LockSettings key={`${status.autoLockMinutes}-${status.rememberDevice}`} status={status} onStatus={lock.update} />
+      </details>
     </section>
   )
 }

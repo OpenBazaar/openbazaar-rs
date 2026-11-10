@@ -15,6 +15,8 @@
 //!
 //! On the admin gateway the Host must be one of this node's admin onions or
 //! the gateway's own loopback address, and a browser `Origin` must match it.
+//! The web gateway ([`super::web_origin`]) is the admin gateway at one
+//! `https://` address, without the pairing routes.
 
 use std::io::{ErrorKind, Write};
 use std::net::{TcpListener, TcpStream};
@@ -26,7 +28,8 @@ use serde_json::json;
 
 use super::auth::{Refused, Signed};
 use super::{
-    now_secs, pair_http, policy, web, NEXT_ONION_HEADER, REMOTE_DEVICE_HEADER, REMOTE_VIA_HEADER,
+    now_secs, pair_http, passkeys, policy, web, NEXT_ONION_HEADER, REMOTE_DEVICE_HEADER,
+    REMOTE_VIA_HEADER,
 };
 use crate::http::{http_response_cors, json_body, json_error};
 use crate::http_parse::{self, header};
@@ -39,6 +42,7 @@ pub(crate) enum Entry {
     Admin,
     Pairing,
     Lan,
+    Web,
 }
 
 pub(crate) fn serve(
@@ -115,14 +119,28 @@ pub(crate) fn respond(node: &Node, raw: &[u8], entry: Entry, main_port: u16) -> 
         }
     };
     let (method, path, body) = (request.method, request.path, request.body);
-    if let Some(answer) = pair_http::response(node, method, path, body) {
-        return answer;
+    if entry != Entry::Web {
+        if let Some(answer) = pair_http::response(node, method, path, body) {
+            return answer;
+        }
     }
     let via = match entry {
         Entry::Pairing => {
             return json_error("404 Not Found", "This address only pairs devices.", None)
         }
         Entry::Lan => "lan".to_string(),
+        Entry::Web => {
+            let Some(origin) = node.remote.web_origin() else {
+                return misdirected();
+            };
+            if let Some(refusal) = origin.refusal(method, request.head) {
+                return refusal;
+            }
+            if let Some(answer) = passkeys::public_response(node, origin, method, path, body) {
+                return answer;
+            }
+            "web".to_string()
+        }
         Entry::Admin => {
             let Some(host) = header(request.head, "host").map(str::to_ascii_lowercase) else {
                 return misdirected();
@@ -140,11 +158,16 @@ pub(crate) fn respond(node: &Node, raw: &[u8], entry: Entry, main_port: u16) -> 
     };
     let signed = Signed::read(request.head);
     match (method, path, signed) {
-        ("GET", "/remote/hello", _) => json_body(
-            "200 OK",
-            &json!({ "service": "openbazaar-home-node", "nodeId": node.remote.node_id() }),
-            None,
-        ),
+        ("GET", "/remote/hello", _) => {
+            let mut hello = json!({ "service": "openbazaar-home-node", "nodeId": node.remote.node_id() });
+            if entry == Entry::Web {
+                // The sign-in page offers a passkey only when the node has one,
+                // and offers to create the first on a node nobody owns yet.
+                hello["passkeys"] = json!(!node.remote.devices().passkeys.is_empty());
+                hello["claimable"] = json!(passkeys::claimable(node));
+            }
+            json_body("200 OK", &hello, None)
+        }
         (_, _, Some(signed)) => signed_request(
             node,
             request.head,
@@ -155,7 +178,7 @@ pub(crate) fn respond(node: &Node, raw: &[u8], entry: Entry, main_port: u16) -> 
             body,
             main_port,
         ),
-        ("GET", _, None) if entry == Entry::Admin => match node
+        ("GET", _, None) if matches!(entry, Entry::Admin | Entry::Web) => match node
             .remote
             .web_dir()
             .and_then(|dir| web::response(dir, path))
@@ -240,7 +263,7 @@ fn signed_request(
         );
         device_id
     };
-    if let Some(message) = policy::refusal(method, path, body) {
+    if let Some(message) = policy::refusal(method, path, body, node.lock.backup_confirmed()) {
         return json_body(
             "403 Forbidden",
             &json!({ "error": message, "code": "node_only" }),

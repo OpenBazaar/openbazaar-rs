@@ -1,10 +1,9 @@
 import { test, expect, type Page } from '@playwright/test'
 
 // Two real disposable nodes (see server.mjs): a fresh seller node and the
-// shop's buyer node. The buyer follows the seller's node, orders, and the
-// seller's node answers with payment terms over its order mail.
+// shop's buyer node. The seller publishes a listing. Followed stores takes a
+// store key, not a node address.
 const SELLER_UI = `http://127.0.0.1:${process.env.OB_E2E_SELLER_UI_PORT || 48174}`
-const SELLER_NODE = `http://127.0.0.1:${process.env.OB_E2E_SELLER_NODE_PORT || 48188}`
 const PASSPHRASE = 'seller e2e passphrase'
 // A valid 1×1 PNG; the node only keeps real images.
 const PNG = Buffer.from(
@@ -90,13 +89,13 @@ test('the seller lists, edits, and removes goods', async ({ page }, info) => {
   await expect(page.getByText('Listing published')).toBeVisible()
   const row = page.locator('.ob-own-listing', { hasText: 'Ash glaze mug' })
   await expect(row).toContainText('5 in stock')
-  await page.getByLabel('Search inventory', { exact: true }).fill('does not exist')
-  await expect(page.getByText('No listings match these filters.', { exact: false })).toBeVisible()
+  await page.getByLabel('Search', { exact: true }).fill('does not exist')
+  await expect(page.getByText('No listings match these filters', { exact: false })).toBeVisible()
   await page.getByRole('button', { name: 'Clear filters', exact: true }).click()
   await expect(row).toBeVisible()
-  await page.getByRole('combobox', { name: 'Stock status', exact: true }).selectOption('empty')
+  await page.getByRole('combobox', { name: 'Stock', exact: true }).selectOption('empty')
   await expect(row).toHaveCount(0)
-  await page.getByRole('combobox', { name: 'Stock status', exact: true }).selectOption('all')
+  await page.getByRole('combobox', { name: 'Stock', exact: true }).selectOption('all')
   for (const width of [320, 768, 1366]) {
     await page.setViewportSize({ width, height: 900 })
     await row.scrollIntoViewIfNeeded()
@@ -144,38 +143,14 @@ test('the seller lists, edits, and removes goods', async ({ page }, info) => {
   await expect(page.getByText('This is your listing.')).toBeVisible()
 })
 
-test('a buyer follows the store and sees the new-seller escrow requirement', async ({ page }) => {
+test('followed stores take a store key and no address', async ({ page }) => {
   await page.goto('/')
+  await expect(page.getByLabel('Store node address')).toHaveCount(0)
   await page.getByRole('button', { name: 'Settings' }).click()
   await page.getByRole('button', { name: 'Followed stores' }).click()
-  await page.getByLabel('Store node address').fill(SELLER_NODE)
-  await page.getByRole('button', { name: 'Follow store' }).click()
-  await expect(page.locator('.ob-follow-list')).toContainText('Brook and Pine')
-  await expect(page.locator('.ob-follow-list')).toContainText('1 listing')
-
-  await page.getByRole('button', { name: 'Products', exact: true }).click()
-  await page.getByLabel('Search listings', { exact: true }).fill('Ash glaze mug')
-  await page.getByRole('button', { name: 'View Ash glaze mug' }).click()
-  await expect(page.getByText('Sold by')).toContainText('Brook and Pine')
-  await expect(page.getByRole('img', { name: 'Ash glaze mug' }).first()).toBeVisible()
-  const addresses = page.waitForResponse(r => new URL(r.url()).pathname === '/addresses')
-  await page.getByRole('button', { name: 'Buy now', exact: true }).click()
-  await addresses
-  // Other specs save a default address on the shared buyer node.
-  const saved = page.locator('.ob-address-picker select')
-  if (await saved.isVisible()) await saved.selectOption('')
-  await page.getByLabel('Full name', { exact: true }).fill('Ada Buyer')
-  await page.getByLabel('Street address', { exact: true }).fill('1 Test Lane')
-  await page.getByLabel('City', { exact: true }).fill('Portland')
-  await page.getByLabel('State / region', { exact: true }).fill('OR')
-  await page.getByLabel('Postal code', { exact: true }).fill('97201')
-  const country = page.getByLabel('Country', { exact: true })
-  if (await country.isVisible()) await country.fill('US')
-  await page.getByRole('button', { name: 'Place order', exact: true }).click()
-  await expect(page.getByRole('heading', { name: 'Order created', exact: true })).toBeVisible()
-  // The current node deliberately refuses direct pay for a new seller.
-  // Keep that real policy visible; this is not a successful-sale fixture.
-  await expect(page.locator('.ob-payment-progress strong')).toHaveText('Declined by the seller', { timeout: 20000 })
-  await expect(page.getByRole('alert').filter({ hasText: 'A new seller takes moderated escrow, with the moderator named.' })).toBeVisible()
-  await expect(page.getByText('Pay from your node wallet', { exact: true })).toHaveCount(0)
+  await expect(page.getByLabel('Store node address')).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Open the test network store' })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Follow store' })).toHaveCount(0)
+  await expect(page.getByLabel('Store key', { exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Add store', exact: true })).toBeVisible()
 })

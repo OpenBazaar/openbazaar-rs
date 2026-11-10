@@ -18,22 +18,24 @@ import { Dialog, FormError, Passphrase, UnlockDialog, useSubmit } from './Wallet
 
 /** The Lightning part of the wallet page. Nothing while Lightning is off. */
 export function LightningWalletCard({ rates, currency }: { rates: RateTable; currency: CurrencyCode }) {
+  const { network } = usePairedNode()
   const status = useNodeResource(fetchLnStatus, 15000)
   const ln = status.data
+  const showFiat = network.data?.network === 'mainnet'
   if (!ln?.enabled) return null
   return (
-    <section className='ob-wallet-fund' aria-labelledby='ob-ln-wallet'>
+    <section className='ob-wallet-page ob-wallet-fund' aria-labelledby='ob-ln-wallet'>
       <h2 id='ob-ln-wallet' className='ob-rail'><RailMark rail='lightning' /> Lightning</h2>
       <p>{ln.network ? lnNetworkLabel(ln.network) : ''} · {ln.running ? `${ln.channels.length} channel${ln.channels.length === 1 ? '' : 's'}` : 'starting'}</p>
       {ln.balances && (
         <div className='ob-wallet-balances'>
           <article>
             <h2>Can spend</h2>
-            <WalletAmount sats={ln.balances.lightningSats} rates={rates} currency={currency} />
+            <WalletAmount sats={ln.balances.lightningSats} rates={rates} currency={currency} showFiat={showFiat} />
           </article>
           <article className='is-pending'>
             <h2>Can receive</h2>
-            <WalletAmount sats={ln.balances.inboundSats} rates={rates} currency={currency} />
+            <WalletAmount sats={ln.balances.inboundSats} rates={rates} currency={currency} showFiat={showFiat} />
           </article>
         </div>
       )}

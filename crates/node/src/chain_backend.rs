@@ -61,6 +61,20 @@ impl ChainPlan {
         }
     }
 
+    /// Dial mempool.space at its onion. The path stays. Blockstream stays on clearnet.
+    pub(crate) fn through_proxy(mut self) -> Self {
+        let rewrite = |urls: &mut [String]| {
+            for url in urls {
+                *url = crate::network::esplora_base(url, true);
+            }
+        };
+        match &mut self {
+            ChainPlan::Filters { fallback, .. } => rewrite(fallback),
+            ChainPlan::Esplora { urls } => rewrite(urls),
+        }
+        self
+    }
+
     /// Every Esplora server this plan may contact. A public one is not asked for addresses.
     pub fn esplora_servers(&self) -> &[String] {
         match self {
@@ -219,6 +233,10 @@ impl ChainSource for FallbackChain {
 
     fn output(&self, outpoint: &OutPoint) -> Result<Option<(TxOut, Option<u32>)>, String> {
         self.primary.output(outpoint)
+    }
+
+    fn transaction(&self, txid: &bitcoin::Txid) -> Result<Option<(Transaction, Option<u32>)>, String> {
+        self.primary.transaction(txid)
     }
 }
 

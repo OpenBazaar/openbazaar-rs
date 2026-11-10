@@ -250,6 +250,10 @@ pub(crate) struct Escrow {
     pub buyer: Mutex<BuyerDesk>,
     pub vendor: Mutex<VendorDesk>,
     pub moderator: Mutex<ModeratorDesk>,
+    /// The moderator profiles this node knows and the ones its stores accept.
+    pub book: Mutex<crate::moderators::Book>,
+    /// This node's own moderator identity, once a `--moderate` node has made one.
+    pub identity: Mutex<Option<crate::moderator_identity::Identity>>,
 }
 
 impl Escrow {
@@ -276,6 +280,8 @@ impl Escrow {
             buyer: Mutex::new(BuyerDesk::default()),
             vendor: Mutex::new(vendor),
             moderator: Mutex::new(moderator),
+            book: Mutex::new(crate::moderators::Book::open(dir)?),
+            identity: Mutex::new(crate::moderator_identity::Identity::open(dir, vault)?),
         })
     }
 }
@@ -390,6 +396,7 @@ impl Node {
         while !stop.load(Ordering::Relaxed) {
             self.process_escrow_mail();
             self.flush_escrow_outbox(false);
+            self.refresh_moderator_identity();
             std::thread::sleep(MAIL_POLL);
         }
     }
@@ -448,9 +455,12 @@ impl Node {
             }
         }
         if self.escrow.config.moderates {
-            match open_message(letter, &moderator_mail_secret()) {
-                Ok(opened) => return Ok((Desk::Moderator, opened)),
-                Err(err) => refuse(err)?,
+            // The built-in test moderator's mailbox, then this node's own.
+            for secret in [Some(moderator_mail_secret()), self.own_moderator_mail_secret()].into_iter().flatten() {
+                match open_message(letter, &secret) {
+                    Ok(opened) => return Ok((Desk::Moderator, opened)),
+                    Err(err) => refuse(err)?,
+                }
             }
         }
         Err("no key on this node opens it".into())

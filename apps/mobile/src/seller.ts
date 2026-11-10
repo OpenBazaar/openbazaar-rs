@@ -386,19 +386,3 @@ export async function fulfillSale(id: string, fulfill: Fulfill): Promise<Sale> {
 export async function completeOrder(id: string): Promise<BuyerOrder> {
   return parseBuyerOrder(await paired(`/orders/${id}/complete`, { method: "POST" }));
 }
-
-export async function fetchFollows(): Promise<Follow[]> {
-  return parseFollows(await paired("/follows"));
-}
-
-export async function fetchTestNetworkSeeds(): Promise<string[]> {
-  return testNetworkSeeds(await paired("/follows"));
-}
-
-export async function followStore(url: string): Promise<Follow[]> {
-  return parseFollows(await paired("/follows", json("POST", { url })));
-}
-
-export async function unfollowStore(url: string): Promise<Follow[]> {
-  return parseFollows(await paired("/follows", json("DELETE", { url })));
-}
