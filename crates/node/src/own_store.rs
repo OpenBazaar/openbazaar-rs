@@ -130,6 +130,8 @@ pub(crate) fn unsigned(
             },
             accepts_xmr: rails.xmr,
             accepts_lightning: rails.lightning && network != NetworkMode::Mainnet,
+            // Not set until releases that read it are out (docs/zcash.md).
+            accepts_zec: false,
         }),
         signature: [0u8; 64],
     }))

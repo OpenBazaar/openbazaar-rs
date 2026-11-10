@@ -23,9 +23,11 @@ pub const MAX_PROCESSING: usize = 120;
 pub const MAX_MODERATORS: usize = 16;
 pub const MAX_SHIPS_TO: usize = 64;
 const ONION_HOST_LEN: usize = 56;
-/// The last byte of a v3 record: bit 0 Monero, bit 1 Lightning. A record
-/// signed before Lightning existed has 0 or 1 there and reads the same.
-const RAIL_FLAGS: u8 = 0b11;
+/// The last byte of a v3 record: bit 0 Monero, bit 1 Lightning, bit 2
+/// Zcash. A record signed before a rail existed has its bit clear and reads
+/// the same. A decoder from before a bit refuses the whole record, so a node
+/// sets a new bit only once releases that read it are out.
+const RAIL_FLAGS: u8 = 0b111;
 
 /// X-only store key. Listings name the store by this value.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -112,6 +114,9 @@ pub struct StoreDetails {
     /// The store's node issues Lightning invoices for direct pay. Escrow
     /// stays on-chain.
     pub accepts_lightning: bool,
+    /// The store takes Zcash direct pay, to a shielded address per order.
+    /// Escrow stays Bitcoin-only.
+    pub accepts_zec: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -341,7 +346,7 @@ impl StoreDetails {
             writer.bytes(&country.0);
         }
         writer.u32(profile.created_on);
-        writer.u8(u8::from(self.accepts_xmr) | u8::from(self.accepts_lightning) << 1);
+        writer.u8(u8::from(self.accepts_xmr) | u8::from(self.accepts_lightning) << 1 | u8::from(self.accepts_zec) << 2);
         Ok(())
     }
 
@@ -393,6 +398,7 @@ impl StoreDetails {
             },
             accepts_xmr: rails & 1 != 0,
             accepts_lightning: rails & 2 != 0,
+            accepts_zec: rails & 4 != 0,
         })
     }
 }
@@ -455,6 +461,7 @@ mod tests {
             },
             accepts_xmr: true,
             accepts_lightning: true,
+            accepts_zec: true,
         }
     }
 
@@ -534,6 +541,7 @@ mod tests {
             Box::new(|d| d.profile.created_on += 1),
             Box::new(|d| d.accepts_xmr = !d.accepts_xmr),
             Box::new(|d| d.accepts_lightning = !d.accepts_lightning),
+            Box::new(|d| d.accepts_zec = !d.accepts_zec),
         ];
         for tamper in tampers {
             let mut changed = store.clone();
@@ -569,14 +577,30 @@ mod tests {
 
         let mut bytes = sample().encode().unwrap();
         let rails = bytes.len() - 64 - 1;
-        assert_eq!(bytes[rails], 3, "Monero and Lightning flags");
-        bytes[rails] = 4;
+        assert_eq!(bytes[rails], 7, "Monero, Lightning, and Zcash flags");
+        bytes[rails] = 8;
         assert!(matches!(Store::decode(&bytes), Err(Error::BadProfile(_))));
         bytes[rails] = 1;
         let monero_only = Store::decode(&bytes).unwrap();
         let details = monero_only.details.as_ref().unwrap();
-        assert!(details.accepts_xmr && !details.accepts_lightning);
-        assert!(monero_only.verify().is_err(), "dropping the Lightning flag kept the signature valid");
+        assert!(details.accepts_xmr && !details.accepts_lightning && !details.accepts_zec);
+        assert!(monero_only.verify().is_err(), "dropping the Lightning and Zcash flags kept the signature valid");
+        bytes[rails] = 4;
+        let zcash_only = Store::decode(&bytes).unwrap().details.unwrap();
+        assert!(zcash_only.accepts_zec && !zcash_only.accepts_xmr && !zcash_only.accepts_lightning);
+    }
+
+    #[test]
+    fn a_record_signed_before_zcash_reads_the_same() {
+        let secret = sign::secret_from_label("store-test");
+        let mut before = details();
+        before.accepts_zec = false;
+        let store = Store::sign("Marlow Goods", "Oregon", pay(), ContentRating::General, before, &secret).unwrap();
+        let bytes = store.encode().unwrap();
+        assert_eq!(bytes[bytes.len() - 64 - 1], 3, "the byte a Monero and Lightning store signed");
+        let read = Store::decode(&bytes).unwrap();
+        read.verify().unwrap();
+        assert!(!read.details.unwrap().accepts_zec);
     }
 
     #[test]

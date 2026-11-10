@@ -1,0 +1,31 @@
+[package]
+name = "openbazaar-zec"
+description = "Direct Zcash payments for OpenBazaar: a ZIP 32 viewing key from the wallet phrase, a fresh Orchard address per order, and compact-block scanning that finds payments in the Orchard and Ironwood pools."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+# An in-memory chain of compact blocks for offline tests of the node.
+mock = ["dep:rand"]
+
+[dependencies]
+hex = "0.4"
+# No proving in this crate yet, so no circuit.
+orchard = { version = "0.16", default-features = false, features = ["std", "zeroize"] }
+rand = { version = "0.9", optional = true }
+serde_json = "1"
+# Without `tor` (a second Arti) and without `zcash_client_sqlite` (a second libsqlite3-sys).
+zcash_address = "0.14"
+zcash_client_backend = { version = "0.25", default-features = false, features = ["orchard"] }
+zcash_keys = { version = "0.17", default-features = false, features = ["std", "orchard", "zeroize"] }
+zcash_note_encryption = "0.5.1"
+zcash_primitives = { version = "0.31", default-features = false }
+zcash_protocol = "0.11"
+zip32 = { version = "0.3", default-features = false }
+zip321 = "0.10"
+zeroize = "1.8"
+
+[dev-dependencies]
+openbazaar-zec = { path = ".", features = ["mock"] }

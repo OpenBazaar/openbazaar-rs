@@ -116,7 +116,7 @@ test("Monero stands only if the store's signed record takes it", () => {
   const last = store.length / 2 - 64 - 1;
   const bytes = hexToBytes(store)!;
   assert.equal(bytes[last], 0, "the rail flags are the last signed byte");
-  bytes[last] = 4;
+  bytes[last] = 8;
   assert.equal(verifyStoreRecord(bytesToHex(bytes)), null, "an unknown rail flag does not decode");
   assert.equal(verifyStoreRecord(flip(store, last)), null, "the flag is signed");
 
@@ -125,6 +125,17 @@ test("Monero stands only if the store's signed record takes it", () => {
   assert.equal(verifiedListing(listing, new Set([key]))?.acceptsXmr, false, "the node's word alone is not enough");
   assert.equal(verifiedListing(listing, new Set([key]), new Set([key]))?.acceptsXmr, true);
   assert.equal(verifiedListing({ ...listing, acceptsXmr: false }, new Set([key]), new Set([key]))?.acceptsXmr, false);
+});
+
+test("the Zcash flag is read from the signed record, beside the other rails", () => {
+  const zcash = verifyStoreRecord(resignedStore(4).hex)?.details;
+  assert.deepEqual([zcash?.acceptsXmr, zcash?.acceptsLightning, zcash?.acceptsZec], [false, false, true]);
+  const all = verifyStoreRecord(resignedStore(7).hex)?.details;
+  assert.deepEqual([all?.acceptsXmr, all?.acceptsLightning, all?.acceptsZec], [true, true, true]);
+  assert.equal(verifyStoreRecord(resignedStore(3).hex)?.details?.acceptsZec, false, "a record signed before Zcash reads the same");
+  assert.equal(verifyStoreRecord(raw().stores[0].record)?.details?.acceptsZec, false);
+  const store = resignedStore(4).hex;
+  assert.equal(verifyStoreRecord(flip(store, store.length / 2 - 64 - 1)), null, "the flag is signed");
 });
 
 /// The demo store record with the rail flags set to `rails`, signed again by a new key.
@@ -151,7 +162,7 @@ test("Lightning stands only if the store's signed record takes it", () => {
   assert.equal(details?.acceptsLightning, true);
   const lightning = verifyStoreRecord(resignedStore(2).hex)?.details;
   assert.deepEqual([lightning?.acceptsXmr, lightning?.acceptsLightning], [false, true]);
-  assert.equal(verifyStoreRecord(resignedStore(4).hex), null, "an unknown rail flag does not decode");
+  assert.equal(verifyStoreRecord(resignedStore(8).hex), null, "an unknown rail flag does not decode");
   assert.equal(verifyStoreRecord(raw().stores[0].record)?.details?.acceptsLightning, false);
 
   const listing = { ...raw().listings[0], acceptsLightning: true };

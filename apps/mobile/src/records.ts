@@ -34,6 +34,8 @@ export type StoreDetails = {
   acceptsXmr: boolean;
   /** The store takes Lightning direct pay. */
   acceptsLightning: boolean;
+  /** The store takes Zcash direct pay. */
+  acceptsZec: boolean;
 };
 
 export type StoreRecord = {
@@ -204,12 +206,13 @@ function readStoreDetails(reader: Reader): StoreDetails {
   const processingTime = reader.str();
   const shipsTo = Array.from({ length: reader.u8() }, () => new TextDecoder().decode(reader.take(2)));
   const createdOn = reader.u32();
-  // Payment rails: bit 0 Monero, bit 1 Lightning.
+  // Payment rails: bit 0 Monero, bit 1 Lightning, bit 2 Zcash.
   const rails = reader.u8();
-  if (rails > 3) throw new Error("flag");
+  if (rails > 7) throw new Error("flag");
   const acceptsXmr = (rails & 1) === 1;
   const acceptsLightning = (rails & 2) === 2;
-  return { mailboxKey, onion: onion || null, moderators, tagline, about, avatar, banner, shippingPolicy, returnsPolicy, processingTime, shipsTo, createdOn, acceptsXmr, acceptsLightning };
+  const acceptsZec = (rails & 4) === 4;
+  return { mailboxKey, onion: onion || null, moderators, tagline, about, avatar, banner, shippingPolicy, returnsPolicy, processingTime, shipsTo, createdOn, acceptsXmr, acceptsLightning, acceptsZec };
 }
 
 /// A store record (versions 1 to 3) whose signature checks against its own key.

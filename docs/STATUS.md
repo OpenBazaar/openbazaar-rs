@@ -21,6 +21,7 @@ Last checked against `main` at `98da40a` plus the `payment-rbf` branch.
 | `lightning` | Lightning for direct pay only, on test networks (mainnet refused until it runs over Tor): embedded LDK node in `crates/lightning`, LSPS2 just-in-time channels from an LSP the operator names, per-order BOLT 11 invoices, keys from the seed, sealed state, wallet-lock gating, store opt-in in the rail-flags byte, seller settings and checkout in the web shop; [lightning.md](lightning.md) |
 | `seller-e2e` | Selling from the node: buyer or seller onboarding, storefront editor, listing v6 (stable id, images, fiat price) with create, edit, and delete, following stores on other nodes with signed copies, order mail between nodes with an outbox, sales with fulfillment and buyer confirmation, a stable desktop node port, and separate desktop profiles |
 | `payment-rbf` | Speed up an unconfirmed direct payment (RBF, passphrase and fee cap), a "sent" letter so the seller sees a payment before a block, and the public fallback when the filter scan stalls |
+| `zcash-direct` (phase 1a) | Zcash for direct pay only, library stage: `crates/zec` on upstream librustzcash (ZIP 32 viewing key from the phrase, an Orchard-protocol address per order, compact-block scanning with Ironwood as the pool that pays orders and Orchard as outbound only, reorgs, spend detection, a mock chain of real encrypted notes); store record bit 2 read by the node and the web shop, set by no node yet. No node route takes a Zcash order; [zcash.md](zcash.md) |
 
 ## Mechanisms
 
