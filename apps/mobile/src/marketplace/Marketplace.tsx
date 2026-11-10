@@ -21,6 +21,7 @@ import { BuildLine, BuildMismatchWarning, useBuildInfo } from "./BuildInfo";
 import { HomeNodePanel } from "./HomeNodePanel";
 import { HomeNodeBadge } from "./HomeNodeGate";
 import { LightningSettings } from "./LightningSettings";
+import { ZcashSettings } from "./ZcashSettings";
 import { LightningOrderPayment, LightningWalletCard } from "./LightningPayment";
 import { priceDrops, rememberPrices, savedHashesAfterRefresh, sameWatches, signedPrice, type WatchedListing } from "../priceNotices";
 import { fetchProfile, formatPrice, salesToShip, setRole } from "../seller";
@@ -137,7 +138,7 @@ function DirectoryActions({ onChanged, onNote }: { onChanged: () => void; onNote
   );
 }
 
-type Section = "discover" | "saved" | "orders" | "bag" | "addresses" | "safety" | "wallet" | "store-labels" | "home-node" | "lightning" | "follows" | StoreSection;
+type Section = "discover" | "saved" | "orders" | "bag" | "addresses" | "safety" | "wallet" | "store-labels" | "home-node" | "lightning" | "zcash" | "follows" | StoreSection;
 type StoreSection = "storefront" | "listings" | "coupons" | "sales" | "store";
 const STORE_SECTIONS: readonly Section[] = ["storefront", "listings", "coupons", "sales", "store"];
 type Page = { name: "browse" } | { name: "detail"; listing: ListingHeader } | { name: "checkout"; lines: CartLine[]; returnTo?: ListingHeader } | { name: "receipt"; receipt: CheckoutReceipt };
@@ -249,8 +250,8 @@ export default function Marketplace() {
   function open(listing: ListingHeader) { setPage({ name: "detail", listing }); }
   async function startSelling() { try { profile.update(await setRole("seller")); navigate("store"); } catch (e) { setToast(e instanceof Error ? e.message : "Your node could not open a store."); } }
   function storeChanged(message: string) { setToast(message); void load(); void profile.refresh(); }
-  const activeTitle = section === "storefront" ? "Your storefront" : section === "listings" ? "Your listings" : section === "coupons" ? "Coupons" : section === "sales" ? "Sales" : section === "store" ? "Store settings" : section === "follows" ? "Followed stores" : section === "saved" ? "Saved goods" : section === "orders" ? "Your orders" : section === "bag" ? "Your bag" : section === "addresses" ? "Your addresses" : section === "wallet" ? "Wallet" : section === "safety" ? "Content filters" : section === "store-labels" ? "Store labels" : section === "home-node" ? "Home node" : section === "lightning" ? "Lightning" : "Products";
-  const inSettings = ["safety", "addresses", "store-labels", "home-node", "lightning", "follows"].includes(section);
+  const activeTitle = section === "storefront" ? "Your storefront" : section === "listings" ? "Your listings" : section === "coupons" ? "Coupons" : section === "sales" ? "Sales" : section === "store" ? "Store settings" : section === "follows" ? "Followed stores" : section === "saved" ? "Saved goods" : section === "orders" ? "Your orders" : section === "bag" ? "Your bag" : section === "addresses" ? "Your addresses" : section === "wallet" ? "Wallet" : section === "safety" ? "Content filters" : section === "store-labels" ? "Store labels" : section === "home-node" ? "Home node" : section === "lightning" ? "Lightning" : section === "zcash" ? "Zcash" : "Products";
+  const inSettings = ["safety", "addresses", "store-labels", "home-node", "lightning", "zcash", "follows"].includes(section);
   const inStore = STORE_SECTIONS.includes(section);
   const merchantWorkspace = inStore && page.name === "browse";
   const browsing = page.name === "browse" && (section === "discover" || (section === "saved" && saved.length > 0));
@@ -259,7 +260,7 @@ export default function Marketplace() {
 
   const money = { rates, currency };
   const navSection: Section = page.name === "receipt" ? "orders" : section;
-  const utilityView = page.name !== "browse" ? null : section === "saved" && saved.length === 0 ? <section><PageHeading title="Saved goods"/><Empty illustration="saved" icon="heart" title="No saved products" text="Save products using the heart button."><button className="ob-primary" onClick={() => navigate("discover")}>Browse products <Icon name="arrow" size={17}/></button></Empty></section> : section === "wallet" ? <><WalletPanel {...money}/><LightningWalletCard {...money}/></> : section === "lightning" ? <LightningSettings/> : section === "home-node" ? <div className="ob-settings-page"><header className="ob-settings-heading"><h1>Home node</h1><p>Run your store on an always-on computer and manage it from anywhere over Tor.</p></header><HomeNodePanel/></div> : section === "addresses" ? <Addresses/> : section === "safety" ? <SafetySettingsPanel settings={safety} onChange={setSafety} labelSources={<LabelersPanel state={labelers} onState={setLabelerState}/>}/> : section === "orders" ? <Orders {...money} onBrowse={() => navigate("discover")}/> : section === "follows" ? <Follows onChanged={message => { setToast(message); void load(); }}/> : storeView();
+  const utilityView = page.name !== "browse" ? null : section === "saved" && saved.length === 0 ? <section><PageHeading title="Saved goods"/><Empty illustration="saved" icon="heart" title="No saved products" text="Save products using the heart button."><button className="ob-primary" onClick={() => navigate("discover")}>Browse products <Icon name="arrow" size={17}/></button></Empty></section> : section === "wallet" ? <><WalletPanel {...money}/><LightningWalletCard {...money}/></> : section === "lightning" ? <LightningSettings/> : section === "zcash" ? <ZcashSettings/> : section === "home-node" ? <div className="ob-settings-page"><header className="ob-settings-heading"><h1>Home node</h1><p>Run your store on an always-on computer and manage it from anywhere over Tor.</p></header><HomeNodePanel/></div> : section === "addresses" ? <Addresses/> : section === "safety" ? <SafetySettingsPanel settings={safety} onChange={setSafety} labelSources={<LabelersPanel state={labelers} onState={setLabelerState}/>}/> : section === "orders" ? <Orders {...money} onBrowse={() => navigate("discover")}/> : section === "follows" ? <Follows onChanged={message => { setToast(message); void load(); }}/> : storeView();
   function storeView() {
     const own = profile.data;
     if (!inStore) return null;
@@ -307,6 +308,7 @@ export default function Marketplace() {
           <NavItem icon="grid" active={section === "store-labels"} onClick={() => navigate("store-labels")}>Store labels</NavItem>
           <NavItem icon="globe" active={section === "home-node"} onClick={() => navigate("home-node")}>Home node</NavItem>
           <NavItem icon="bolt" active={section === "lightning"} onClick={() => navigate("lightning")}>Lightning</NavItem>
+          <NavItem icon="wallet" active={section === "zcash"} onClick={() => navigate("zcash")}>Zcash</NavItem>
           <NavItem icon="globe" active={section === "follows"} onClick={() => navigate("follows")}>Followed stores</NavItem>
           {profile.data && (seller ? <NavItem icon="home" active={section === "store"} onClick={() => navigate("store")}>Store settings</NavItem> : <NavItem icon="home" active={false} onClick={() => void startSelling()}>Start selling</NavItem>)}
           <div className="ob-settings-currency"><label className="ob-field">Display currency<select aria-label="Display currency" value={currency} onChange={e => { const c = e.target.value as CurrencyCode; setCurrency(c); try { localStorage.setItem("ob-shop-currency", c); } catch {} }}><option value="USD">USD · US dollar</option><option value="EUR">EUR · Euro</option><option value="GBP">GBP · British pound</option><option value="JPY">JPY · Japanese yen</option></select></label><p>Used for price estimates.</p></div>

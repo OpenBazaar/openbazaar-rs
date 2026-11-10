@@ -136,6 +136,14 @@ test("the Zcash flag is read from the signed record, beside the other rails", ()
   assert.equal(verifyStoreRecord(raw().stores[0].record)?.details?.acceptsZec, false);
   const store = resignedStore(4).hex;
   assert.equal(verifyStoreRecord(flip(store, store.length / 2 - 64 - 1)), null, "the flag is signed");
+
+  const listing = { ...raw().listings[0], acceptsZec: true };
+  const key = String(listing.storeId);
+  const zecStores = new Set([key]);
+  assert.equal(verifiedListing(listing, new Set([key]))?.acceptsZec, false, "the node's word alone is not enough");
+  assert.equal(verifiedListing(listing, new Set([key]), new Set(), new Set(), zecStores)?.acceptsZec, true);
+  assert.equal(verifiedListing({ ...listing, acceptsZec: false }, new Set([key]), new Set(), new Set(), zecStores)?.acceptsZec, false, "the store signed it, but Zcash is off on the node");
+  assert.equal(verifiedListing(listing, new Set([key]), new Set([key]), new Set([key]))?.acceptsZec, false, "Monero and Lightning are not Zcash");
 });
 
 /// The demo store record with the rail flags set to `rails`, signed again by a new key.
