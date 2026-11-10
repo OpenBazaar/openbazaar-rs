@@ -96,17 +96,19 @@ export async function webSignInState(): Promise<{ passkeys: boolean; claimable: 
   return { passkeys: body.passkeys === true, claimable: body.claimable === true };
 }
 
-function bodyBytes(body: BodyInit | null | undefined): Uint8Array {
+async function bodyBytes(body: BodyInit | null | undefined): Promise<Uint8Array> {
   if (body === undefined || body === null) return new Uint8Array();
   if (typeof body === "string") return utf8ToBytes(body);
-  throw new Error("Only text bodies can be sent to a home node.");
+  // An uploaded image (`POST /media`) is a file. Its bytes are signed as they are.
+  if (body instanceof Blob) return new Uint8Array(await body.arrayBuffer());
+  throw new Error("Only text and files can be sent to a home node.");
 }
 
 /** fetch() for a page served by the home node: signed, with one retry on the node's clock. */
 export async function signedFetch(path: string, init: RequestInit = {}): Promise<Response> {
   if (!session) throw new HomeSignInRequired();
   const method = (init.method ?? "GET").toUpperCase();
-  const body = bodyBytes(init.body);
+  const body = await bodyBytes(init.body);
   for (let attempt = 0; ; attempt++) {
     const headers = { ...(init.headers as Record<string, string> | undefined), ...signedHeaders(session.key, session.nodeId, now(), method, path, body) };
     const response = await fetch(path, { ...init, method, headers });
