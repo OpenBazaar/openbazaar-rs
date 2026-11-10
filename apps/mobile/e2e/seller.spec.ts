@@ -11,6 +11,13 @@ const PNG = Buffer.from(
   'base64'
 )
 const image = (name: string) => ({ name, mimeType: 'image/png', buffer: PNG })
+// Width and height from a JPEG's frame header.
+function jpegSize(jpeg: Buffer): [number, number] | null {
+  for (let at = 2; at + 9 < jpeg.length && jpeg[at] === 0xff; at += 2 + jpeg.readUInt16BE(at + 2)) {
+    if (jpeg[at + 1] >= 0xc0 && jpeg[at + 1] <= 0xc2) return [jpeg.readUInt16BE(at + 7), jpeg.readUInt16BE(at + 5)]
+  }
+  return null
+}
 
 test.describe.configure({ mode: 'serial' })
 
@@ -160,6 +167,7 @@ test('followed stores take a store key and no address', async ({ page }) => {
 test('a browser signed in on the node’s web address uploads a store avatar', async ({ page }) => {
   const hash = 'c414cd0e204de974f73753c7e28d7638e7b3691bb8b1a2bab6b25bb7fed7ce77'
   const uploads: (string | undefined)[] = []
+  const bodies: (Buffer | null)[] = []
   await page.addInitScript(() => localStorage.setItem('ob-home-device', '01'.repeat(32)))
   await page.route('**/', async route => {
     const response = await route.fetch()
@@ -171,6 +179,7 @@ test('a browser signed in on the node’s web address uploads a store avatar', a
   await page.route('**/media', async route => {
     const headers = await route.request().allHeaders()
     uploads.push(headers['x-ob-signature'] && headers['content-type'])
+    bodies.push(route.request().postDataBuffer())
     return route.fulfill({ json: { hash, contentType: 'image/png' } })
   })
   await page.route(`**/media/${hash}`, route => route.fulfill({ contentType: 'image/png', body: PNG }))
@@ -181,12 +190,69 @@ test('a browser signed in on the node’s web address uploads a store avatar', a
   await expect(page.getByRole('img', { name: 'Store avatar' })).toBeVisible()
   await expect(page.getByRole('alert')).toHaveCount(0)
   expect(uploads).toEqual(['image/png'])
+  // An image that fits the node's cap is sent as the file is, byte for byte.
+  expect(bodies[0]?.equals(PNG)).toBe(true)
 })
 
-// The node keeps images up to 2 MiB and answers a larger upload 413 with a
-// plain-text body. Both read as the image being too large, next to the control.
-test('an image over the node’s size cap says so next to the control', async ({ page }) => {
+// The node keeps images up to 2 MiB. A larger one is drawn smaller in the
+// browser and that copy is sent, with no extra step for the seller.
+test('an image over the node’s size cap is shrunk in the browser and uploaded', async ({ page }) => {
+  const hash = 'c414cd0e204de974f73753c7e28d7638e7b3691bb8b1a2bab6b25bb7fed7ce77'
+  const uploads: { type: string | undefined; body: Buffer | null }[] = []
+  await page.addInitScript(() => localStorage.setItem('ob-home-device', '01'.repeat(32)))
+  await page.route('**/', async route => {
+    const response = await route.fetch()
+    await route.fulfill({ response, body: (await response.text()).replace('<head>', '<head><meta name="ob-home-node" content="true">') })
+  })
+  await page.route('**/remote/hello', route => route.fulfill({ json: { nodeId: '90'.repeat(32) } }))
+  await page.route('**/remote/devices', route => route.fulfill({ json: { devices: [] } }))
+  await page.route('**/store/profile', route => route.fulfill({ json: { storeKey: '34'.repeat(32), role: 'seller', name: 'My store', network: 'testnet4' } }))
+  await page.route('**/media', async route => {
+    const headers = await route.request().allHeaders()
+    uploads.push({ type: headers['x-ob-signature'] && headers['content-type'], body: route.request().postDataBuffer() })
+    return route.fulfill({ json: { hash, contentType: 'image/jpeg' } })
+  })
+  await page.route(`**/media/${hash}`, route => route.fulfill({ contentType: 'image/png', body: PNG }))
+  await page.goto('/')
+  await page.getByRole('button', { name: 'Settings' }).click()
+  await page.getByRole('button', { name: 'Store settings' }).click()
+  // A 3000 × 2000 photo-like PNG: a gradient with grain, several times the cap.
+  const big = Buffer.from(await page.evaluate(() => {
+    const canvas = document.createElement('canvas')
+    canvas.width = 3000
+    canvas.height = 2000
+    const context = canvas.getContext('2d')!
+    const pixels = context.createImageData(canvas.width, canvas.height)
+    for (let i = 0; i < pixels.data.length; i += 4) {
+      const x = (i / 4) % canvas.width
+      pixels.data[i] = (x / canvas.width) * 200 + Math.random() * 24
+      pixels.data[i + 1] = 90 + Math.random() * 24
+      pixels.data[i + 2] = 160 + Math.random() * 24
+      pixels.data[i + 3] = 255
+    }
+    context.putImageData(pixels, 0, 0)
+    return canvas.toDataURL('image/png').split(',')[1]
+  }), 'base64')
+  expect(big.length).toBeGreaterThan(4 * 1024 * 1024)
+  await page.locator('input[type=file][aria-label="Add avatar"]').setInputFiles({ name: 'photo.png', mimeType: 'image/png', buffer: big })
+  await expect(page.getByRole('img', { name: 'Store avatar' })).toBeVisible()
+  await expect(page.getByRole('alert')).toHaveCount(0)
+  expect(uploads).toHaveLength(1)
+  const { type, body } = uploads[0]
+  expect(type).toBe('image/jpeg')
+  expect(body!.length).toBeLessThan(2 * 1024 * 1024)
+  expect(body!.subarray(0, 3).equals(Buffer.from([0xff, 0xd8, 0xff]))).toBe(true)
+  // The first step: the longest side at 2000 pixels, the same shape.
+  expect(jpegSize(body!)).toEqual([2000, 1333])
+})
+
+// An image over the cap that the browser cannot shrink (it does not decode,
+// or it is a GIF) says so next to the control and is not sent. The node
+// answers a larger upload 413 with a plain-text body, which reads as the
+// image being too large.
+test('an image over the node’s size cap that cannot be shrunk says so next to the control', async ({ page }) => {
   const tooLarge = 'That image is larger than 2 MB. Choose a smaller one.'
+  const notShrunk = 'That image is larger than 2 MB and could not be shrunk to fit. Choose a smaller one.'
   let uploads = 0
   await page.addInitScript(() => localStorage.setItem('ob-home-device', '01'.repeat(32)))
   await page.route('**/', async route => {
@@ -205,9 +271,11 @@ test('an image over the node’s size cap says so next to the control', async ({
   await page.getByRole('button', { name: 'Store settings' }).click()
   const avatar = page.locator('input[type=file][aria-label="Add avatar"]')
   await avatar.setInputFiles({ name: 'big.png', mimeType: 'image/png', buffer: Buffer.alloc(2 * 1024 * 1024 + 1) })
-  await expect(page.getByRole('alert')).toHaveText(tooLarge)
+  await expect(page.locator('.ob-store-avatar-edit').getByRole('alert')).toHaveText(notShrunk)
+  await page.locator('input[type=file][aria-label="Add banner"]').setInputFiles({ name: 'big.gif', mimeType: 'image/gif', buffer: Buffer.concat([Buffer.from('GIF89a'), Buffer.alloc(2 * 1024 * 1024)]) })
+  await expect(page.locator('.ob-store-banner-edit').getByRole('alert')).toHaveText(notShrunk)
   expect(uploads).toBe(0)
   await avatar.setInputFiles(image('avatar.png'))
   await expect.poll(() => uploads).toBe(1)
-  await expect(page.getByRole('alert')).toHaveText(tooLarge)
+  await expect(page.locator('.ob-store-avatar-edit').getByRole('alert')).toHaveText(tooLarge)
 })
