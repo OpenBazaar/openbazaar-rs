@@ -37,7 +37,7 @@ pub(crate) fn response(
     }
 }
 
-fn refuse_pages(head: &str) -> Option<Vec<u8>> {
+pub(crate) fn refuse_pages(head: &str) -> Option<Vec<u8>> {
     has_header(head, "origin").then(|| json_error("403 Forbidden", "Stores are copied by nodes, not pages.", None))
 }
 
@@ -53,7 +53,10 @@ fn store(node: &Node) -> Vec<u8> {
     let listings: Result<Vec<String>, _> =
         node.own_listings().entries.iter().map(|entry| entry.listing.encode().map(|bytes| hex(&bytes))).collect();
     match (encoded, listings) {
-        (Ok(store), Ok(listings)) => json_body("200 OK", &json!({ "store": store, "listings": listings }), None),
+        // The accepted moderators' signed profiles, so a node that copies the store can show and verify them.
+        (Ok(store), Ok(listings)) => {
+            json_body("200 OK", &json!({ "store": store, "listings": listings, "moderators": node.accepted_profiles() }), None)
+        }
         _ => json_error("500 Internal Server Error", "The store could not be read.", None),
     }
 }

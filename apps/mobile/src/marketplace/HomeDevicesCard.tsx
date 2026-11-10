@@ -16,14 +16,15 @@ import {
 import { nodeTarget, servedByHomeNode, signOut } from "../homeNode/transport";
 import { BrowserCredentialOffer, PairingOffer, Sas } from "./HomePairingParts";
 import { CopyPaymentValue } from "./NodePayments";
+import { Dialog } from "./WalletLock";
 
 const failed = (e: unknown, fallback: string) => (e instanceof Error && e.message ? e.message : fallback);
 const when = (secs: number) => (secs ? new Date(secs * 1000).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" }) : "never");
-const PLATFORMS: Record<string, string> = { ios: "iPhone", android: "Android", desktop: "Desktop", browser: "Tor Browser" };
-const VIA: Record<string, string> = { tor: "over Tor", lan: "on your network", local: "on the node" };
+const PLATFORMS: Record<string, string> = { ios: "iPhone", android: "Android", desktop: "Desktop", browser: "Browser" };
+const VIA: Record<string, string> = { tor: "over Tor", lan: "on your network", local: "on the node", web: "on the web" };
 
 /** The devices of the node in use: waiting approvals, the list, pairing, removal. */
-export function HomeDevicesCard() {
+export function HomeDevicesCard({ presentation = "default" }: { presentation?: "default" | "desk" }) {
   const served = servedByHomeNode();
   const remoteTarget = served || nodeTarget() === "home";
   const [status, setStatus] = useState<RemoteStatus | null>(null);
@@ -31,6 +32,8 @@ export function HomeDevicesCard() {
   const [pending, setPending] = useState<PendingDevice[]>([]);
   const [offer, setOffer] = useState<{ code: PairingCode; expires: number } | null>(null);
   const [credential, setCredential] = useState<BrowserCredential | null>(null);
+  // The name being typed for a new Tor Browser, or null while that form is closed.
+  const [naming, setNaming] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const refresh = useCallback(async () => {
@@ -39,6 +42,7 @@ export function HomeDevicesCard() {
       setStatus(nextStatus);
       setDevices(nextDevices);
       setPending(nextPending);
+      setError("");
     } catch (err) {
       setError(failed(err, "The node's devices could not be read."));
     }
@@ -68,11 +72,10 @@ export function HomeDevicesCard() {
     setOffer({ code, expires: Date.now() + code.expiresInSecs * 1000 });
   }, "A pairing code could not be made.");
 
-  const browser = () => act(async () => {
-    const name = window.prompt("Name this browser", "Tor Browser")?.trim();
-    if (!name) return;
+  const browser = (name: string) => act(async () => {
     setOffer(null);
     setCredential(await createBrowserCredential(name));
+    setNaming(null);
     await refresh();
   }, "A browser credential could not be made.");
 
@@ -94,10 +97,26 @@ export function HomeDevicesCard() {
     }
   }, "The device could not be removed.");
 
-  const nameOf = (id: string | null) => (id ? devices?.find(d => d.id === id)?.name ?? "a removed device" : "the node itself");
-  return <div className="ob-settings-card">
+  const nameOf = (id: string | null) => (!id ? "the node itself" : id.startsWith("passkey:") ? "a passkey" : devices?.find(d => d.id === id)?.name ?? "a removed device");
+  const setupFlow = <>
+    {naming !== null && <form className="ob-pairing-offer" aria-label="Set up Tor Browser" onSubmit={e => { e.preventDefault(); void browser(naming.trim()); }}>
+      <div>
+        <h3>Set up Tor Browser</h3>
+        <label className="ob-field"><span>Name this browser</span>
+          <input value={naming} onChange={e => setNaming(e.target.value)} autoComplete="off" autoFocus/>
+        </label>
+        <div className="ob-form-actions">
+          <button type="submit" className="ob-primary" disabled={busy || !naming.trim()}>Create keys</button>
+          <button type="button" className="ob-secondary" disabled={busy} onClick={() => setNaming(null)}>Cancel</button>
+        </div>
+      </div>
+    </form>}
+    {offer && <PairingOffer code={offer.code} expires={offer.expires} onDone={() => { setOffer(null); void refresh(); }}/>}
+    {credential && <BrowserCredentialOffer credential={credential} onDone={() => setCredential(null)}/>}
+  </>;
+  return <div className={`ob-settings-card ${presentation === "desk" ? "ob-moderator-devices" : ""}`}>
     <div className="ob-settings-card-heading">
-      <h2>{remoteTarget ? "Devices paired with your home node" : "Devices paired with this node"}</h2>
+      <h2>{presentation === "desk" ? "Paired devices" : remoteTarget ? "Devices paired with your home node" : "Devices paired with this node"}</h2>
       <p>Each device holds its own key. Remove a lost or stolen device here; anything it paired is removed with it. Paying from the wallet still needs the wallet passphrase on every device.</p>
     </div>
     {status && !status.enabled && <p className="ob-settings-notice">Remote access is off on this node. Start it with <code>ob-node serve --remote --lan</code>, or turn on Run this computer as a home node, to pair devices.</p>}
@@ -126,11 +145,13 @@ export function HomeDevicesCard() {
         </li>)}</ul>}
     {status?.enabled && <div className="ob-form-actions ob-device-actions">
       <button className="ob-primary" disabled={busy} onClick={() => void pairAnother()}>Pair a new device</button>
-      {status.webShop && <button className="ob-secondary" disabled={busy} onClick={() => void browser()}>Set up Tor Browser</button>}
+      {status.webShop && <button className="ob-secondary" disabled={busy} onClick={() => setNaming("Tor Browser")}>Set up Tor Browser</button>}
       <button className="ob-secondary" disabled={busy} onClick={() => void refresh()}>Refresh</button>
     </div>}
-    {offer && <PairingOffer code={offer.code} expires={offer.expires} onDone={() => { setOffer(null); void refresh(); }}/>}
-    {credential && <BrowserCredentialOffer credential={credential} onDone={() => setCredential(null)}/>}
+    {presentation === "desk" ? (naming !== null || offer || credential) && <Dialog label={credential ? "Browser access keys" : offer ? "Pair a new device" : "Set up Tor Browser"} onCancel={() => { if (!busy) { setNaming(null); setOffer(null); setCredential(null); } }}>
+      {setupFlow}
+      {error && <p className="ob-form-error" role="alert">{error}</p>}
+    </Dialog> : setupFlow}
     {error && <p className="ob-form-error" role="alert">{error}</p>}
   </div>;
 }

@@ -426,6 +426,11 @@ impl WalletLock {
         self.inner().record.confirm.clone()
     }
 
+    /// The owner has proved the backup phrase is written down.
+    pub(crate) fn backup_confirmed(&self) -> bool {
+        self.inner().record.backup_confirmed
+    }
+
     pub(crate) fn mark_backup_confirmed(&self) -> Result<(), LockError> {
         let mut inner = self.inner();
         inner.record.backup_confirmed = true;

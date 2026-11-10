@@ -23,6 +23,7 @@ mod chain;
 mod checkout_terms;
 mod chain_backend;
 mod chain_filters;
+mod admission;
 mod directory;
 mod coin_locks;
 mod coin_provenance;
@@ -36,6 +37,7 @@ mod reviews_http;
 mod egress;
 mod escrow_bump;
 mod escrow_buyer;
+mod escrow_choice;
 mod escrow_fee;
 mod escrow_fixture;
 mod escrow_http;
@@ -59,6 +61,9 @@ mod listing_drafts;
 mod live_stock;
 mod mail_drop;
 mod media;
+mod moderator_http;
+mod moderator_identity;
+mod moderators;
 mod network;
 mod onion_mail;
 mod order_mail;
@@ -110,6 +115,8 @@ mod harness;
 mod lock_tests;
 #[cfg(test)]
 mod lock_receive_tests;
+#[cfg(test)]
+mod multinode_moderator_tests;
 #[cfg(test)]
 mod multinode_tests;
 #[cfg(test)]
@@ -380,16 +387,19 @@ impl Node {
         let vault = Vault::open(&dir, &local.vault)?;
         let wallets = dir.join("wallets");
         let buyer_wallet = NodeWallet::open(&wallets, "node", &vault, network)?;
-        let moderators: Vec<[u8; 32]> =
-            (!catalog.moderator.name.is_empty()).then_some(catalog.moderator.id).into_iter().collect();
+        let moderators = moderators::accepted_at_boot(&dir, &mut catalog, network)?;
         xmr::apply_signed_accepts(&dir, &vault, &mut catalog, network)?;
         lightning::apply_signed_accepts(&dir, &vault, &mut catalog, network)?;
         let own = own_store::open(&dir, &vault, &buyer_wallet, network, &moderators)?;
         let own_store = own.id;
         catalog.stores.retain(|store| store.id != own_store);
         catalog.stores.extend(own.record);
-        let seed_replica = directory::Replica::open(&dir)?;
-        seed_replica.apply(&mut catalog, own_store);
+        let mut seed_replica = directory::Replica::open(&dir)?;
+        let live = admission::live_admissions(config.chain.as_ref(), network, seed_replica.head().as_ref(), &seed_replica.admissions());
+        seed_replica.set_live(live);
+        // Nothing replicated is in the catalog yet: every store in it is one
+        // this node serves itself, and a pull never removes those.
+        seed_replica.apply(&mut catalog, own_store, |_| true, |admission| seed_replica.is_live(admission));
         let own_secret = wallet_keys::vault_tier_seed(&buyer_wallet.dir, &vault, network)?.map(|seed| seed.store_signing_key());
         let secrets: Vec<_> = catalog
             .stores
@@ -678,7 +688,7 @@ pub(crate) fn accepts_moderator(catalog: &Catalog, listing: &Listing) -> bool {
         && catalog
             .store_of(listing)
             .and_then(|store| store.details.as_ref())
-            .is_some_and(|details| details.moderators.contains(&catalog.moderator.id))
+            .is_some_and(|details| !details.moderators.is_empty())
 }
 
 pub(crate) fn find_listing<'a>(catalog: &'a Catalog, hash: &str) -> Option<&'a Listing> {

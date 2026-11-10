@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { afterShopPair } from './catalog'
 
 // Resources are scoped to mounted panels. Background browser tabs pause polling;
 // returning to the app refreshes immediately, without overlapping requests.
@@ -83,6 +84,8 @@ export function useNodeResource<T>(
         document.removeEventListener('visibilitychange', poll)
     }
   }, [refresh, intervalMs])
+  // A request that failed for want of a pairing code can succeed once one is typed.
+  useEffect(() => afterShopPair(() => void refresh()), [refresh])
   const update = useCallback((next: T) => {
     if (!active.current) return
     generation.current += 1

@@ -256,10 +256,9 @@ impl Node {
         self.own_pending.store(false, Ordering::Relaxed);
     }
 
-    /// The moderators the own store accepts: the one this node uses, if any.
+    /// The moderators the own store accepts: the owner's list ([`crate::moderators`]).
     pub(crate) fn own_moderators(&self) -> Vec<[u8; 32]> {
-        let catalog = self.catalog();
-        (!catalog.moderator.name.is_empty()).then_some(catalog.moderator.id).into_iter().collect()
+        self.accepted_moderators()
     }
 }
 

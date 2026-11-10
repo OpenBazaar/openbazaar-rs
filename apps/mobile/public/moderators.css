@@ -1,0 +1,58 @@
+/* Moderator identity: the desk's profile, the store's accepted list, and the checkout picker. */
+
+/* One moderator: name, key, fee, verified track record. */
+.ob-moderator-summary { display: grid; gap: 4px; min-width: 0; font-size: 14px; line-height: 1.55; }
+.ob-moderator-summary > strong { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; font-size: 15px; font-weight: 600; color: var(--ob-ink); overflow-wrap: anywhere; }
+.ob-moderator-badge { padding: 2px 8px; border-radius: 5px; background: var(--ob-selected); color: var(--ob-secondary); font-size: 12px; font-weight: 500; }
+.ob-moderator-facts { display: flex; flex-wrap: wrap; gap: 2px 16px; color: var(--ob-ink); }
+.ob-moderator-facts code { font-size: 13px; }
+.ob-moderator-track, .ob-moderator-summary p, .ob-moderator-summary summary { color: var(--ob-secondary); font-size: 13px; }
+.ob-moderator-summary p { margin: 0; overflow-wrap: anywhere; white-space: pre-line; }
+.ob-moderator-summary summary { cursor: pointer; width: fit-content; padding: 4px 0; }
+
+/* Store settings */
+.ob-store-moderators { margin-top: 28px; }
+.ob-store-moderators h2 { margin: 0 0 8px; font-size: 16px; font-weight: 600; line-height: 1.5; }
+.ob-store-moderators h3 { margin: 24px 0 0; font-size: 14px; font-weight: 600; }
+.ob-store-moderators > .ob-field-hint + .ob-field-hint { margin-top: 8px; }
+.ob-moderator-list { list-style: none; margin: 16px 0 0; padding: 0; display: grid; gap: 12px; }
+.ob-moderator-list > li { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 12px 16px; padding: 16px; border: 1px solid var(--ob-line); border-radius: 8px; }
+.ob-moderator-list > li > button { min-height: 44px; }
+.ob-moderator-none { margin: 16px 0 0; padding: 14px 16px; border: 1px dashed var(--ob-line); border-radius: 8px; font-size: 14px; color: var(--ob-secondary); }
+.ob-moderator-add { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 12px; margin: 24px 0 8px; }
+.ob-moderator-add .ob-field { margin: 0; }
+
+/* Checkout */
+.ob-moderator-choice { margin: 12px 0 0; padding: 0; border: 0; min-width: 0; display: grid; gap: 10px; }
+.ob-moderator-choice legend { padding: 0; font-size: 14px; font-weight: 600; color: var(--ob-ink); }
+.ob-moderator-choice-note { margin: 0; color: var(--ob-secondary); font-size: 13px; line-height: 1.6; }
+.ob-moderator-option { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: 12px; padding: 14px 16px; border: 1px solid var(--ob-line); border-radius: 8px; cursor: pointer; }
+.ob-moderator-option.is-selected { background: var(--ob-selected); border-color: var(--ob-brand); }
+.ob-moderator-option input { width: 18px; height: 18px; margin: 2px 0 0; accent-color: var(--ob-brand); }
+
+/* Moderator desk */
+.ob-moderator-profile { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 6fr); align-items: start; gap: 20px; padding-top: 20px; }
+.ob-moderator-identity, .ob-moderator-profile-form { display: grid; gap: 14px; min-width: 0; padding: 24px; border: 1px solid var(--ob-line); border-radius: 10px; background: var(--ob-surface); }
+.ob-moderator-profile h2 { margin: 0; font-size: 17px; font-weight: 600; line-height: 1.5; }
+.ob-moderator-identity > p { margin: 0; font-size: 14px; line-height: 1.6; color: var(--ob-secondary); }
+.ob-moderator-profile .ob-moderator-inline-note { margin-top: 0 !important; }
+.ob-moderator-published { padding: 10px 14px; border-radius: 8px; background: var(--ob-selected); color: var(--ob-ink) !important; }
+.ob-moderator-tiers { display: grid; gap: 12px; margin: 0; padding-top: 14px; border-top: 1px solid var(--ob-line); }
+.ob-moderator-tiers dt { font-size: 14px; font-weight: 600; color: var(--ob-ink); }
+.ob-moderator-tiers dd { margin: 2px 0 0; font-size: 13px; line-height: 1.6; color: var(--ob-secondary); }
+.ob-moderator-profile-form .ob-field-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; }
+.ob-moderator-profile-form .ob-field-wide { grid-column: 1 / -1; }
+.ob-moderator-profile-form textarea { min-height: 132px; }
+.ob-moderator-profile-form .ob-field-hint { margin: 0; color: var(--ob-secondary); font-size: 13px; line-height: 1.6; }
+.ob-moderator-profile-form .ob-form-actions { display: flex; justify-content: flex-end; }
+
+@media (max-width: 860px) {
+  .ob-moderator-profile { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 560px) {
+  .ob-moderator-list > li, .ob-moderator-add { grid-template-columns: minmax(0, 1fr); }
+  .ob-moderator-list > li > button, .ob-moderator-add > button { justify-self: start; }
+  .ob-moderator-identity, .ob-moderator-profile-form { padding: 16px; }
+  .ob-moderator-profile-form .ob-field-grid { grid-template-columns: minmax(0, 1fr); }
+  .ob-moderator-profile-form .ob-form-actions > button { width: 100%; }
+}

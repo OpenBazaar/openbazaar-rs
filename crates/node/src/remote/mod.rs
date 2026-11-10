@@ -28,6 +28,7 @@ mod local_http;
 mod pair_cli;
 mod pair_http;
 mod pairing;
+mod passkeys;
 mod policy;
 mod protocol;
 mod push;
@@ -36,6 +37,8 @@ mod sync;
 mod tor;
 pub(crate) use tor::{Tor, LIGHTNING_PORT};
 mod web;
+mod web_origin;
+pub use web_origin::WebOrigin;
 
 /// The web export for a browser on this machine. Unlike [`web::response`],
 /// the page is not marked as a remote home-node client.
@@ -88,6 +91,9 @@ pub struct RemoteConfig {
     /// `--allow-loopback-home`: as a client, accept a home node reached on a
     /// loopback LAN address. Tests only.
     pub loopback_homes: bool,
+    /// `--web-listen ADDR` with `--web-origin https://HOST`: the admin
+    /// gateway for a browser on the open web, behind a proxy that ends TLS.
+    pub web: Option<(SocketAddr, WebOrigin)>,
 }
 
 impl RemoteConfig {
@@ -95,6 +101,7 @@ impl RemoteConfig {
     pub fn extract(args: &[String]) -> Result<(Self, Vec<String>), String> {
         let mut config = Self::default();
         let mut rest = Vec::new();
+        let (mut web_listen, mut web_origin) = (None, None);
         let mut iter = args.iter();
         while let Some(arg) = iter.next() {
             let mut value =
@@ -120,6 +127,13 @@ impl RemoteConfig {
                     config.listen = Some(addr);
                 }
                 "--web-dir" => config.web_dir = Some(PathBuf::from(value("--web-dir")?)),
+                "--web-listen" => {
+                    let text = value("--web-listen")?;
+                    web_listen = Some(text.parse::<SocketAddr>().map_err(|_| {
+                        format!("--web-listen must look like 0.0.0.0:8080, not {text:?}")
+                    })?);
+                }
+                "--web-origin" => web_origin = Some(WebOrigin::parse(&value("--web-origin")?)?),
                 "--push-gateway" => {
                     let url = value("--push-gateway")?;
                     push::gateway_target(&url)?;
@@ -128,11 +142,16 @@ impl RemoteConfig {
                 _ => rest.push(arg.clone()),
             }
         }
+        config.web = match (web_listen, web_origin) {
+            (Some(listen), Some(origin)) => Some((listen, origin)),
+            (None, None) => None,
+            _ => return Err("--web-listen and --web-origin go together: the address to listen on, and the https address browsers use.".into()),
+        };
         Ok((config, rest))
     }
 
     fn serves(&self) -> bool {
-        self.onion || self.listen.is_some() || self.lan.is_some()
+        self.onion || self.listen.is_some() || self.lan.is_some() || self.web.is_some()
     }
 }
 
@@ -142,6 +161,7 @@ pub(crate) struct Remote {
     pub(crate) replay: auth::ReplayGuard,
     pub(crate) batches: batch::Batches,
     pub(crate) push: push::PushState,
+    pub(crate) passkey_challenges: passkeys::Challenges,
     config: OnceLock<RemoteConfig>,
     gateway: OnceLock<SocketAddr>,
     pairing_gateway: OnceLock<SocketAddr>,
@@ -159,6 +179,7 @@ impl Remote {
             replay: auth::ReplayGuard::new(now_secs()),
             batches: batch::Batches::default(),
             push: push::PushState::default(),
+            passkey_challenges: passkeys::Challenges::default(),
             config: OnceLock::new(),
             gateway: OnceLock::new(),
             pairing_gateway: OnceLock::new(),
@@ -189,6 +210,13 @@ impl Remote {
         self.config
             .get()
             .and_then(|config| config.web_dir.as_deref())
+    }
+
+    pub(crate) fn web_origin(&self) -> Option<&WebOrigin> {
+        self.config
+            .get()
+            .and_then(|config| config.web.as_ref())
+            .map(|(_, origin)| origin)
     }
 
     pub(crate) fn enabled(&self) -> bool {
@@ -370,6 +398,18 @@ pub(crate) fn run(node: &Node, main_port: u16, stop: &AtomicBool) {
         }
         if let Some(addr) = config.lan {
             scope.spawn(move || lan::serve(node, addr, main_port, stop));
+        }
+        if let Some((addr, origin)) = &config.web {
+            match TcpListener::bind(addr) {
+                Ok(listener) => {
+                    eprintln!("ob-node: web sign-in at {}/ (passkeys and access keys)", origin.as_str());
+                    if passkeys::claimable(node) {
+                        eprintln!("ob-node: nobody owns this node yet: the first browser to open that address creates its passkey and owns it");
+                    }
+                    scope.spawn(move || gateway::serve(node, listener, gateway::Entry::Web, main_port, stop));
+                }
+                Err(err) => eprintln!("ob-node: the web gateway could not listen on {addr}: {err}"),
+            }
         }
         scope
             .spawn(move || gateway::serve(node, pairing, gateway::Entry::Pairing, main_port, stop));

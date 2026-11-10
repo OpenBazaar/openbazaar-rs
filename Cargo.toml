@@ -9,8 +9,9 @@ members = [
     "crates/xmr",
     "crates/lightning",
     "crates/mobile-tor",
+    "vendor/bip157",
 ]
-exclude = ["vendor"]
+exclude = ["vendor/ldk-node"]
 
 [workspace.package]
 edition = "2021"
@@ -31,4 +32,5 @@ opt-level = 3
 
 # ldk-node 0.7.1 pins rusqlite 0.31; Arti needs 0.36 or later. See vendor/ldk-node/Cargo.toml.
 [patch.crates-io]
+bip157 = { path = "vendor/bip157" }
 ldk-node = { path = "vendor/ldk-node" }

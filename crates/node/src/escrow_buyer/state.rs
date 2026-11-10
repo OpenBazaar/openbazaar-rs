@@ -30,7 +30,7 @@ impl Node {
             let wallet = self.buyer_wallet();
             self.escrow_secret(&wallet, key_index(escrow)?)?.secret_bytes()
         };
-        let ctx = self.escrow_context()?;
+        let ctx = self.escrow_context(self.order_moderator_record(escrow)?)?;
         BuyerEscrow::restore(&bytes, &secret, &ctx).map_err(failed)
     }
 

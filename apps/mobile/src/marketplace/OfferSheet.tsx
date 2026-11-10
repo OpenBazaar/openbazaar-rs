@@ -40,9 +40,9 @@ export function OfferSheet({ listing, choice }: { listing: ListingHeader; choice
   if (!open) return <button type="button" className="ob-secondary" onClick={() => setOpen(true)}>Make an offer</button>;
   return <form className="ob-field-grid ob-offer-form" onSubmit={event => void submit(event)} aria-label={`Make an offer on ${listing.title}`}>
     <label className="ob-field ob-field-wide"><span>Your price ({currency})</span>
-      <input inputMode="decimal" autoComplete="off" value={amount} placeholder={formatPrice(price.amount, currency)} onChange={event => setAmount(event.target.value)}/>
+      <input inputMode="decimal" autoComplete="off" value={amount} onChange={event => setAmount(event.target.value)}/>
     </label>
-    <p className="ob-shipping-note">One offer for {choice.quantity}, in this listing's currency. The seller answers in private.</p>
+    <p className="ob-shipping-note">The list price is {formatPrice(price.amount, currency)}. One offer for {choice.quantity}, in this listing's currency. The seller answers in private.</p>
     {error && <p className="ob-form-error" role="alert">{error}</p>}
     <div className="ob-form-actions">
       <button type="submit" className="ob-primary" disabled={busy}>{busy ? "Sending…" : "Send offer"}</button>

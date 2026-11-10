@@ -15,6 +15,7 @@ use x25519_dalek::{PublicKey as XPublic, StaticSecret};
 use zeroize::Zeroizing;
 
 use super::auth::decode_hex;
+use super::passkeys::Passkey;
 use super::protocol::{node_id, DeviceKey};
 use crate::vault::Vault;
 use crate::vault_key::{encode_hex, random_bytes};
@@ -145,6 +146,8 @@ pub(crate) struct Devices {
     pub generation: u32,
     pub moving: Option<Move>,
     list: Vec<Device>,
+    /// Passkeys that may sign a browser in on the web gateway ([`super::passkeys`]).
+    pub passkeys: Vec<Passkey>,
 }
 
 impl Devices {
@@ -176,6 +179,12 @@ impl Devices {
             .flatten()
             .filter_map(Device::load)
             .collect();
+        devices.passkeys = value["passkeys"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Passkey::load)
+            .collect();
         Ok(devices)
     }
 
@@ -190,6 +199,7 @@ impl Devices {
             generation: 0,
             moving: None,
             list: Vec::new(),
+            passkeys: Vec::new(),
         }
     }
 
@@ -204,6 +214,7 @@ impl Devices {
             "generation": self.generation,
             "moving": self.moving.map(|moving| json!({ "from": moving.from, "started": moving.started })),
             "devices": self.list.iter().map(Device::stored).collect::<Vec<_>>(),
+            "passkeys": self.passkeys.iter().map(Passkey::stored).collect::<Vec<_>>(),
         });
         self.vault
             .write_sealed(&self.path, Zeroizing::new(body.to_string()).as_bytes())?;

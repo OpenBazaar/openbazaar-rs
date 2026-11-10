@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
 import { networkInfo, networkStatus } from './networkInfo.ts'
+import { connectionRows, type ConnectionInfo } from './walletConnection.ts'
 
 const txid = 'a'.repeat(64)
 
@@ -31,7 +32,8 @@ test('network info keeps the node privacy warning and chain backend', () => {
   assert.equal(info.onion?.endsWith('.onion'), true)
   assert.match(networkStatus(info), /Testnet4/)
   assert.match(networkStatus(info), /Chain height 159000/)
-  assert.match(networkStatus(info), /Onion abcdefghijklmnopqrstuvwxyz234567abcdefghijklmnopqrstuvwx\.onion/)
+  assert.equal(networkStatus(info).includes('Onion'), false)
+  assert.equal(networkStatus(info).includes('.onion'), false)
   assert.match(info.privacyWarning ?? '', /IP address/)
   assert.equal(info.chain?.privacy, 'private')
   assert.match(info.chain?.reveals ?? '', /not asked which addresses/)
@@ -52,7 +54,7 @@ test('a missing warning stays empty instead of being replaced with a claim about
   assert.equal(info.clearnet, false)
   assert.equal(info.onion, null)
   assert.equal(info.scannedHeight, null)
-  assert.match(networkStatus(info), /Onion not published/)
+  assert.equal(networkStatus(info).includes('Onion'), false)
   assert.match(networkStatus(info), /Chain height unavailable/)
   assert.equal(info.chainFailed, false)
   assert.equal(JSON.stringify(info).includes('mempool.space'), false)
@@ -76,4 +78,56 @@ test('a chain error is a failure and syncing stays a separate state', () => {
     chainBackend: { backend: 'compact-filters', privacy: 'private', reveals: 'none', error: 'peer timed out', syncing: true, scannedHeight: 12 }
   })
   assert.match(networkStatus(syncing), /Chain syncing · height 12/)
+})
+
+function walletNetwork(patch: Partial<ConnectionInfo>): ConnectionInfo {
+  return {
+    proxy: null,
+    proxyReachable: null,
+    chainBackend: null,
+    ...patch
+  }
+}
+
+test('connection rows name the source, the proxy result, and what a server sees', () => {
+  const rows = connectionRows(walletNetwork({
+    proxy: 'socks5h://127.0.0.1:9050',
+    proxyReachable: true,
+    chainBackend: {
+      backend: 'esplora',
+      privacy: 'public',
+      peers: null,
+      scannedHeight: 160251,
+      syncing: false,
+      error: null,
+      fallbackActive: true
+    }
+  }))
+  const text = rows.map(row => `${row.label}: ${row.value}`).join('\n')
+  assert.match(text, /Chain data source: Public chain server/)
+  assert.match(text, /Proxy: 127\.0\.0\.1:9050 answered/)
+  assert.match(text, /Your addresses stay on this node/)
+  assert.equal(text.includes('--proxy'), false)
+  assert.equal(text.includes('not a verified connection'), false)
+  assert.equal(text.includes('Public fallback active'), false)
+  const filters = connectionRows(walletNetwork({
+    proxy: 'socks5h://127.0.0.1:9050',
+    proxyReachable: true,
+    chainBackend: {
+      backend: 'compact-filters',
+      privacy: 'private',
+      peers: null,
+      scannedHeight: 160257,
+      syncing: false,
+      error: null,
+      fallbackActive: false
+    }
+  })).find(row => row.label === 'Chain data source')
+  assert.equal(filters?.value, 'Compact block filters.')
+  const closed = connectionRows(walletNetwork({
+    proxy: 'socks5h://127.0.0.1:9050',
+    proxyReachable: false
+  })).find(row => row.label === 'Proxy')
+  assert.match(closed?.value ?? '', /did not answer/)
+  assert.match(closed?.value ?? '', /Start Tor/)
 })

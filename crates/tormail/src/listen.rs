@@ -12,7 +12,9 @@ use tor_rtcompat::Runtime;
 
 use crate::mailbox::Mailbox;
 use crate::onion::{OnionAddress, ORDER_PORT};
-use crate::transport::{read_exact, read_letter, read_query_after_magic, write_query_reply, QUERY_MAGIC, STORED_ACK};
+use crate::transport::{
+    read_exact, read_letter, read_query_after_magic, read_submit_after_magic, write_query_reply, QUERY_MAGIC, SUBMIT_MAGIC, STORED_ACK,
+};
 use crate::Error;
 use crate::LetterId;
 
@@ -65,7 +67,7 @@ impl OnionListener {
     /// A public shop request on that port is not a letter. The store secret
     /// is not used here.
     pub async fn accept_letter(&mut self, mailbox: &Mailbox) -> Result<LetterId, Error> {
-        match self.accept_next(mailbox, None, |_, _| None).await? {
+        match self.accept_next(mailbox, None, |_, _| None, |_, _| false).await? {
             Arrival::Letter(id) => Ok(id),
             Arrival::Shop => Err(Error::Listener("shop request with no sale gate")),
             Arrival::Query => Err(Error::Listener("directory query with no answer")),
@@ -74,10 +76,18 @@ impl OnionListener {
 
     /// Accept one stream. `shop` is the sale gate. An HTTP preface is relayed
     /// there and is not stored. `OBML` is a sealed letter. `OBQR` is a
-    /// directory query answered with `answer`.
-    pub async fn accept_next<F>(&mut self, mailbox: &Mailbox, shop: Option<SocketAddr>, answer: F) -> Result<Arrival, Error>
+    /// directory query answered with `answer`. `OBSB` is a signed record;
+    /// `ingest` keeps it and the reply is one byte, 0 kept or 1 refused.
+    pub async fn accept_next<F, G>(
+        &mut self,
+        mailbox: &Mailbox,
+        shop: Option<SocketAddr>,
+        answer: F,
+        ingest: G,
+    ) -> Result<Arrival, Error>
     where
         F: FnOnce(u8, [u8; 32]) -> Option<Vec<u8>>,
+        G: FnOnce(u8, &[u8]) -> bool,
     {
         let rend = self.requests.next().await.ok_or(Error::ListenerClosed)?;
         let mut streams = rend
@@ -120,6 +130,13 @@ impl OnionListener {
         if preface == *QUERY_MAGIC {
             let (kind, id) = read_query_after_magic(&mut stream).await?;
             write_query_reply(&mut stream, answer(kind, id).as_deref()).await?;
+            stream.flush().await?;
+            return Ok(Arrival::Query);
+        }
+        if preface == *SUBMIT_MAGIC {
+            let (kind, body) = read_submit_after_magic(&mut stream).await?;
+            let kept = ingest(kind, &body);
+            stream.write_all(&[u8::from(!kept)]).await?;
             stream.flush().await?;
             return Ok(Arrival::Query);
         }
@@ -255,11 +272,12 @@ impl RunningMailbox {
     }
 
     /// Read one sealed letter, relay one public shop request, or answer one directory query.
-    pub async fn accept_letter<F>(&mut self, mailbox: &Mailbox, answer: F) -> Result<Arrival, Error>
+    pub async fn accept_letter<F, G>(&mut self, mailbox: &Mailbox, answer: F, ingest: G) -> Result<Arrival, Error>
     where
         F: FnOnce(u8, [u8; 32]) -> Option<Vec<u8>>,
+        G: FnOnce(u8, &[u8]) -> bool,
     {
-        self.listener.accept_next(mailbox, self.shop, answer).await
+        self.listener.accept_next(mailbox, self.shop, answer, ingest).await
     }
 
     /// Download a Tor directory. Launching the service does not do this.

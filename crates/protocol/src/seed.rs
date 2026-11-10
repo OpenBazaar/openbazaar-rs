@@ -1,26 +1,27 @@
-//! The signed seed document introductions serve.
+//! The signed directory head introductions serve.
 //!
-//! A peer trusts the document for availability only. The signature proves
-//! which key published this sequence, the introduction list, and the store
-//! keys a node may replicate. A later sequence replaces an earlier one. An
-//! introduction that withholds the document, or serves an older one, cannot
-//! forge a store.
+//! Version 2 is a head: the sequence, the introduction list, and the fee a
+//! store pays to be admitted. It has no store list. A store joins with an
+//! admission record, not with a new sequence. A later sequence replaces an
+//! earlier one. An introduction serves the bytes. It does not sign them.
 //!
-//! Wire format, version 1 (integers little-endian, `str` = u16 byte length
+//! A version 1 decoder rejects the version byte and keeps its old file, so
+//! an old node does not blank its catalog. This decoder reads version 2.
+//!
+//! Wire format, version 2 (integers little-endian, `str` = u16 byte length
 //! then UTF-8):
 //!
 //! ```text
-//! body = "OBSD" | 0x01 | signer [32] | sequence u64
+//! body = "OBSD" | 0x02 | signer [32] | sequence u64
 //!      | intro_count u16 | onion str * intro_count
-//!      | store_count u16 | store_id [32] * store_count
+//!      | fee key [32] | fee_sats u64 | fee_confs u32 | epoch_blocks u32
 //!      | moderator u8 | onion str if moderator is 1
 //! doc  = body | signature [64]
 //! ```
 //!
-//! The signature is BIP-340 over the tagged hash `ob/seed/v1` of `body`.
-//! Onions and store ids are sorted, with no repeats, so one document has
-//! one encoding. An onion is a v3 host: 56 lowercase base32 characters and
-//! `.onion`.
+//! The signature is BIP-340 over the tagged hash `ob/seed/v2` of `body`.
+//! Onion hosts are sorted, with no repeats. An onion is a v3 host: 56
+//! lowercase base32 characters and `.onion`.
 
 use bitcoin::secp256k1::SecretKey;
 
@@ -28,40 +29,61 @@ use crate::encode::{Reader, Writer};
 use crate::sign::{self, PUBKEY_LEN, SIG_LEN};
 use crate::Error;
 
-const TAG: &str = "ob/seed/v1";
+const TAG: &str = "ob/seed/v2";
 const MAGIC: [u8; 4] = *b"OBSD";
-const VERSION: u8 = 1;
-const MAX_INTRODUCTIONS: usize = 8;
-const MAX_STORES: usize = 256;
+const VERSION: u8 = 2;
+/// Introduction hosts one head may name. A pass dials three of them.
+pub const MAX_INTRODUCTIONS: usize = 64;
+/// The fee on the first head the operator signs, in satoshis.
+pub const FEE_SATS: u64 = 20_000;
+/// Testnet4's default confirmation depth for that fee.
+pub const FEE_CONFS: u32 = 1;
+/// Blocks a confirmed fee stays inside the market index. Same span as the reputation bond lock.
+pub const EPOCH_BLOCKS: u32 = 2_016;
 const ONION_HOST_LEN: usize = 56;
+
+/// The fee rules a head names. The document signature stays the shipped key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DirectoryTerms {
+    pub fee_key: [u8; PUBKEY_LEN],
+    pub fee_sats: u64,
+    pub fee_confs: u32,
+    pub epoch_blocks: u32,
+}
+
+impl DirectoryTerms {
+    /// 20,000 sats, 1 confirmation, 2,016 blocks, paid to `fee_key`.
+    pub fn standard(fee_key: [u8; PUBKEY_LEN]) -> Self {
+        Self { fee_key, fee_sats: FEE_SATS, fee_confs: FEE_CONFS, epoch_blocks: EPOCH_BLOCKS }
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SeedDocument {
     pub signer: [u8; PUBKEY_LEN],
     pub sequence: u64,
     pub introductions: Vec<String>,
-    pub stores: Vec<[u8; PUBKEY_LEN]>,
+    pub terms: DirectoryTerms,
     /// Onion of the demo moderator, when the document names one.
     pub moderator: Option<String>,
     pub signature: [u8; SIG_LEN],
 }
 
 impl SeedDocument {
-    /// Sort the lists into the one canonical encoding and sign.
+    /// Sort the introduction list into the one canonical encoding and sign.
     pub fn sign(
         sequence: u64,
         mut introductions: Vec<String>,
-        mut stores: Vec<[u8; PUBKEY_LEN]>,
+        terms: DirectoryTerms,
         moderator: Option<String>,
         secret: &SecretKey,
     ) -> Result<Self, Error> {
         introductions.sort();
-        stores.sort();
         let document = Self {
             signer: sign::xonly(secret),
             sequence,
             introductions,
-            stores,
+            terms,
             moderator,
             signature: [0u8; SIG_LEN],
         };
@@ -85,10 +107,6 @@ impl SeedDocument {
         self.verify()
     }
 
-    pub fn allows(&self, store: &[u8; PUBKEY_LEN]) -> bool {
-        self.stores.binary_search(store).is_ok()
-    }
-
     pub fn encode(&self) -> Result<Vec<u8>, Error> {
         let mut bytes = self.encode_body()?;
         bytes.extend_from_slice(&self.signature);
@@ -108,14 +126,12 @@ impl SeedDocument {
         for _ in 0..intro_count {
             introductions.push(reader.str()?);
         }
-        let store_count = reader.u16()? as usize;
-        if store_count > MAX_STORES {
-            return Err(Error::BadSeed("too many stores"));
-        }
-        let mut stores = Vec::with_capacity(store_count);
-        for _ in 0..store_count {
-            stores.push(reader.array()?);
-        }
+        let terms = DirectoryTerms {
+            fee_key: reader.array()?,
+            fee_sats: reader.u64()?,
+            fee_confs: reader.u32()?,
+            epoch_blocks: reader.u32()?,
+        };
         let moderator = match reader.u8()? {
             0 => None,
             1 => Some(reader.str()?),
@@ -123,7 +139,7 @@ impl SeedDocument {
         };
         let signature = reader.array()?;
         reader.finish()?;
-        let document = Self { signer, sequence, introductions, stores, moderator, signature };
+        let document = Self { signer, sequence, introductions, terms, moderator, signature };
         document.check_shape()?;
         Ok(document)
     }
@@ -139,11 +155,10 @@ impl SeedDocument {
         for onion in &self.introductions {
             writer.str(onion)?;
         }
-        let store_count = u16::try_from(self.stores.len()).map_err(|_| Error::BadSeed("too many stores"))?;
-        writer.u16(store_count);
-        for store in &self.stores {
-            writer.bytes(store);
-        }
+        writer.bytes(&self.terms.fee_key);
+        writer.u64(self.terms.fee_sats);
+        writer.u32(self.terms.fee_confs);
+        writer.u32(self.terms.epoch_blocks);
         match &self.moderator {
             None => writer.u8(0),
             Some(onion) => {
@@ -158,14 +173,8 @@ impl SeedDocument {
         if self.introductions.len() > MAX_INTRODUCTIONS {
             return Err(Error::BadSeed("too many introductions"));
         }
-        if self.stores.len() > MAX_STORES {
-            return Err(Error::BadSeed("too many stores"));
-        }
         if self.introductions.windows(2).any(|pair| pair[0] >= pair[1]) {
             return Err(Error::BadSeed("introductions are not sorted and unique"));
-        }
-        if self.stores.windows(2).any(|pair| pair[0] >= pair[1]) {
-            return Err(Error::BadSeed("store keys are not sorted and unique"));
         }
         for onion in self.introductions.iter().chain(self.moderator.as_ref()) {
             if !is_onion_host(onion) {
@@ -196,7 +205,7 @@ mod tests {
         let doc = SeedDocument::sign(
             sequence,
             vec![onion('b'), onion('a')],
-            vec![[2u8; 32], [1u8; 32]],
+            DirectoryTerms::standard(sign::xonly(&secret)),
             Some(onion('c')),
             &secret,
         )
@@ -205,17 +214,23 @@ mod tests {
     }
 
     #[test]
-    fn a_document_round_trips_and_a_changed_byte_fails() {
+    fn a_head_round_trips_and_names_no_stores() {
         let (doc, secret) = sample(4);
         assert_eq!(doc.signer, sign::xonly(&secret));
         assert_eq!(doc.introductions, vec![onion('a'), onion('b')]);
-        assert_eq!(doc.stores, vec![[1u8; 32], [2u8; 32]]);
+        assert_eq!(doc.terms.fee_sats, FEE_SATS);
+        assert_eq!(doc.terms.fee_confs, FEE_CONFS);
+        assert_eq!(doc.terms.epoch_blocks, EPOCH_BLOCKS);
         doc.verify().unwrap();
         let bytes = doc.encode().unwrap();
         assert_eq!(SeedDocument::decode(&bytes).unwrap(), doc);
+        assert!(!bytes.windows(4).any(|window| window == [0x01, 0x00]), "the body has no store count");
         let mut tampered = bytes.clone();
         tampered[10] ^= 0x01;
         assert!(SeedDocument::decode(&tampered).unwrap().verify().is_err());
+        let mut version1 = bytes.clone();
+        version1[4] = 1;
+        assert!(SeedDocument::decode(&version1).is_err(), "a version 1 document is not a head");
     }
 
     #[test]
@@ -225,8 +240,15 @@ mod tests {
         assert!(doc.verify_signer(&other).is_err());
         doc.verify_signer(&doc.signer).unwrap();
         let mut unsorted = doc.clone();
-        unsorted.stores.reverse();
+        unsorted.introductions.reverse();
         assert!(unsorted.verify().is_err());
-        assert!(SeedDocument::sign(1, vec!["example.com".into()], vec![], None, &secret_from_label("seed-document-test")).is_err());
+        assert!(SeedDocument::sign(
+            1,
+            vec!["example.com".into()],
+            DirectoryTerms::standard([1u8; 32]),
+            None,
+            &secret_from_label("seed-document-test"),
+        )
+        .is_err());
     }
 }

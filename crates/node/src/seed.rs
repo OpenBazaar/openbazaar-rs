@@ -13,6 +13,7 @@
 //! | letter root   | `m/1984'/coin'/4'/0'` (hashed with a conversation id into one signing key per order, escrow, or dispute) |
 //! | Monero        | `m/1984'/coin'/5'/0'` (secret for `openbazaar_xmr::SpendKey`) |
 //! | Lightning     | `m/1984'/coin'/6'/0'` (secret for `openbazaar_lightning::keys`: LDK entropy and the state key) |
+//! | moderator     | `m/1984'/coin'/7'/0'` (seed of the ruling and share keys), `7'/1'` (X25519 mailbox for dispute letters) |
 //! | BIP 352 scan  | `m/352'/coin'/0'/1'/0`       |
 //! | BIP 352 spend | `m/352'/coin'/0'/0'/0`       |
 //!
@@ -110,6 +111,17 @@ impl Seed {
             .secret_bytes()
     }
 
+    /// The seed of this node's moderator keys (`openbazaar_escrow::ModeratorKeys`).
+    pub(crate) fn moderator_seed(&self) -> zeroize::Zeroizing<[u8; 32]> {
+        zeroize::Zeroizing::new(self.derive(&format!("m/1984'/{}'/7'/0'", self.network.coin_type())).secret_bytes())
+    }
+
+    /// The X25519 secret of the mailbox key in this node's moderator profile.
+    pub(crate) fn moderator_mailbox_secret(&self) -> [u8; 32] {
+        self.derive(&format!("m/1984'/{}'/7'/1'", self.network.coin_type()))
+            .secret_bytes()
+    }
+
     pub(crate) fn scan_key(&self) -> SecretKey {
         self.derive(&format!("m/352'/{}'/0'/1'/0", self.network.coin_type()))
     }
@@ -149,6 +161,8 @@ mod tests {
                 seed.silent_spend_key(),
                 SecretKey::from_slice(&seed.monero_secret()[..]).unwrap(),
                 SecretKey::from_slice(&seed.lightning_secret()[..]).unwrap(),
+                SecretKey::from_slice(&seed.moderator_seed()[..]).unwrap(),
+                SecretKey::from_slice(&seed.moderator_mailbox_secret()).unwrap(),
             ]
         };
         let mut all = roles(&test);

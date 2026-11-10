@@ -9,6 +9,7 @@ import {
 import QRCode from 'qrcode'
 import {
   fetchOrder,
+  fetchOrders,
   type BuyerOrder,
   type CurrencyCode,
   type RateTable,
@@ -24,9 +25,11 @@ import {
   payOrder,
   privacyStatus,
   EXTERNAL_TX_NOTE,
-  type NetworkInfo
+  type NetworkInfo,
+  type WalletActivity
 } from '../nodeWallet'
-import { networkInfo, networkStatus } from '../networkInfo'
+import { chainHeightLabel, networkInfo } from '../networkInfo'
+import { connectionRows } from '../walletConnection'
 import { paymentStatusView } from '../paymentStatus'
 import {
   canOfferBitcoinPay,
@@ -37,10 +40,11 @@ import {
   payKind
 } from '../orderState'
 import { useNodeResource } from '../useNodeResource'
-import { isLocked, quotePayment, type LockStatus, type Quote, type Ticket } from '../walletLock'
+import { isLocked, lockWallet, quotePayment, type LockStatus, type Quote, type Ticket } from '../walletLock'
 import { RailMark } from './RailMark'
-import { SpendConfirmDialog, UnlockDialog, WalletLockPanel, useLockState } from './WalletLock'
+import { Dialog, SpendConfirmDialog, UnlockDialog, WalletLockPanel, useLockState } from './WalletLock'
 import { PageHeading } from './PageHeading'
+import { pairShop, shopPairingMessage } from '../catalog'
 import { SpeedUpPayment } from './SpeedUpPayment'
 
 function usePaymentState(activeWallet: boolean, onWallet: () => void) {
@@ -73,59 +77,63 @@ export function NodePaymentsProvider({
 }
 export function NetworkBadge() {
   const { network } = usePairedNode()
-  const state = network.error
-    ? 'is-offline'
-    : !network.data
-      ? 'is-loading'
-      : network.data.network === 'testnet4'
-        ? 'is-testnet'
-        : 'is-mainnet'
+  const info = network.data ? networkInfo(network.data) : null
+  const warning = network.data ? privacyStatus(network.data) : ''
+  const networkLabel = info
+    ? info.network === 'testnet4'
+      ? 'Testnet4 · test coins, no value'
+      : 'Mainnet'
+    : ''
   return (
-    <div className={`ob-network-badge ${state}`} role='status'>
+    <div
+      className={`ob-network-badge ${network.error ? 'is-offline' : !network.data ? 'is-loading' : ''}`}
+      role='status'
+    >
       <span className='ob-status-dot' aria-hidden='true' />
-      <span>
+      <span className='ob-network-facts'>
         {network.error
           ? 'Network unavailable · payments disabled'
-          : !network.data
+          : !info
             ? 'Checking bitcoin network…'
-            : networkStatus(networkInfo(network.data))}
+            : (
+              <>
+                <span>{networkLabel}</span>
+                <span>{` · ${chainHeightLabel(info)}`}</span>
+              </>
+            )}
       </span>
-      {network.data && privacyStatus(network.data) ? (
-        <span>{privacyStatus(network.data)}</span>
-      ) : null}
+      {warning ? <span className='ob-network-warning'>{warning}</span> : null}
     </div>
   )
 }
-function PrivacyNotice({ info }: { info: NetworkInfo }) {
-  const status = privacyStatus(info)
-  const backend = info.chainBackend
-  if (!status && !info.privacyWarning && !backend?.reveals && !backend?.error)
-    return null
+function ConnectionCard({ info }: { info: NetworkInfo }) {
+  const rows = connectionRows(info)
   return (
-    <p className='ob-wallet-note' role='status'>
-      {status ? `${status}. ` : null}
-      {info.privacyWarning}
-      {backend?.reveals ? ` ${backend.reveals}` : null}
-      {backend?.error ? ` ${backend.error}` : null}
-      {backend?.fallbackActive
-        ? ` Public fallback${backend.fallback ? `: ${backend.fallback}` : ''} is active.`
-        : null}
-      {info.proxy
-        ? ` Configured proxy: ${info.proxy}. A configured proxy is not a verified connection.`
-        : null}
-    </p>
+    <details className='ob-wallet-connection'>
+      <summary>Connection and privacy<span>{privacyStatus(info) || 'Connection details'}</span></summary>
+      <dl className='ob-privacy-rows'>
+        {rows.map(row => (
+          <div key={row.label}>
+            <dt>{row.label}</dt>
+            <dd>{row.value}</dd>
+          </div>
+        ))}
+      </dl>
+    </details>
   )
 }
 export function WalletAmount({
   sats,
   rates,
-  currency
+  currency,
+  showFiat = true
 }: {
   sats: number
   rates: RateTable
   currency: CurrencyCode
+  showFiat?: boolean
 }) {
-  const rate = rates[currency]
+  const rate = showFiat ? rates[currency] : undefined
   return (
     <div className='ob-wallet-amount'>
       <strong>
@@ -135,7 +143,9 @@ export function WalletAmount({
         {bitcoinAmount(sats)} BTC
         {rate
           ? ` ≈ ${new Intl.NumberFormat('en-US', { style: 'currency', currency }).format((sats / 1e8) * rate)}`
-          : ' · fiat estimate unavailable'}
+          : showFiat
+            ? ' · fiat estimate unavailable'
+            : ''}
       </span>
     </div>
   )
@@ -143,36 +153,49 @@ export function WalletAmount({
 export function CopyPaymentValue({
   label,
   value,
-  children
+  children,
+  button = false
 }: {
   label: string
   value: string
   children?: ReactNode
+  button?: boolean
 }) {
   const [message, setMessage] = useState('')
+  const timer = useRef<number | null>(null)
+  const copyLabel = `Copy ${label.charAt(0).toLowerCase()}${label.slice(1)}`
+  useEffect(() => {
+    setMessage('')
+    return () => { if (timer.current) window.clearTimeout(timer.current) }
+  }, [value])
   return (
     <div className='ob-copy-value'>
       <span>{label}</span>
       <code>{value}</code>
       <div className='ob-copy-actions'>
         <button
-          className='ob-text-link'
+          className={button ? 'ob-secondary' : 'ob-text-link'}
           type='button'
+          aria-live='polite'
           onClick={() => {
             void navigator.clipboard.writeText(value).then(
-              () => setMessage('Copied'),
+              () => {
+                setMessage('Copied')
+                if (timer.current) window.clearTimeout(timer.current)
+                timer.current = window.setTimeout(() => setMessage(''), 2000)
+              },
               () => setMessage('Copy the text above manually')
             )
           }}
         >
-          {message || `Copy ${label.charAt(0).toLowerCase()}${label.slice(1)}`}
+          {message || copyLabel}
         </button>
         {children}
       </div>
     </div>
   )
 }
-export function PaymentQr({ value }: { value: string }) {
+export function PaymentQr({ value, paper = false }: { value: string; paper?: boolean }) {
   const [src, setSrc] = useState('')
   const [error, setError] = useState(false)
   useEffect(() => {
@@ -180,10 +203,10 @@ export function PaymentQr({ value }: { value: string }) {
     setSrc('')
     setError(false)
     void QRCode.toDataURL(value, {
-      width: 224,
-      margin: 4,
+      width: paper ? 448 : 224,
+      margin: paper ? 2 : 4,
       errorCorrectionLevel: 'M',
-      color: { dark: '#071824', light: '#ffffff' }
+      color: { dark: '#071824', light: paper ? '#fbfaf7' : '#ffffff' }
     }).then(
       s => {
         if (active) setSrc(s)
@@ -195,12 +218,12 @@ export function PaymentQr({ value }: { value: string }) {
     return () => {
       active = false
     }
-  }, [value])
+  }, [value, paper])
   return error ? (
     <p role='alert'>QR code unavailable. Copy the address instead.</p>
   ) : src ? (
     <img
-      className='ob-payment-qr'
+      className={paper ? 'ob-payment-qr is-paper' : 'ob-payment-qr'}
       width={224}
       height={224}
       src={src}
@@ -211,128 +234,150 @@ export function PaymentQr({ value }: { value: string }) {
     <p role='status'>Preparing QR code…</p>
   )
 }
-export function WalletPanel({
-  rates,
-  currency
-}: {
+export function WalletPanel({ rates, currency, onOrders }: {
   rates: RateTable
   currency: CurrencyCode
+  onOrders?: () => void
 }) {
   const { wallet, network, lock } = usePairedNode()
-  const [busy, setBusy] = useState(false),
-    [error, setError] = useState('')
-  const [freshAddress, setFreshAddress] = useState<{
-    network: string
-    address: string
-  } | null>(null)
+  const orders = useNodeResource(fetchOrders, 15000, !!onOrders)
+  const [busy, setBusy] = useState(false)
+  const [refreshing, setRefreshing] = useState(false)
+  const [error, setError] = useState('')
+  const [settings, setSettings] = useState(false)
+  const [receive, setReceive] = useState(false)
+  const [locking, setLocking] = useState(false)
+  const [freshAddress, setFreshAddress] = useState<{ network: string; address: string } | null>(null)
+  const current = wallet.data
+  const status = lock.data
+  const mismatch = !!current && !!network.data && current.network !== network.data.network
+  const pairing = [error, wallet.error, network.error, lock.error].some(message => !!message && shopPairingMessage(message))
+  const address = current && freshAddress?.network === current.network ? freshAddress.address : current?.receiveAddress
+  const showFiat = current?.network === 'mainnet'
+  const receiveBlocked = !address || mismatch || !!wallet.error || !!network.error || pairing
+  const dueOrders = (orders.data ?? []).filter(order =>
+    order.status === ORDER_STATUS.awaitingPayment && payKind(order) === 'btc' && !order.payTxid && !order.paying && amountDue(order.totalSats, order.receivedSats) > 0)
+  async function refresh() {
+    if (refreshing) return
+    setRefreshing(true)
+    try { await Promise.all([wallet.refresh(), network.refresh(), lock.refresh(), orders.refresh()]) }
+    finally { setRefreshing(false) }
+  }
   async function nextAddress() {
-    if (busy) return
+    if (busy || receiveBlocked) return
     setBusy(true)
     setError('')
     try {
-      const next = await newWalletAddress()
-      setFreshAddress(next)
+      setFreshAddress(await newWalletAddress())
       await wallet.refresh()
-    } catch (e) {
-      setError(
-        e instanceof Error ? e.message : 'A new address could not be created.'
-      )
-    } finally {
-      setBusy(false)
+    } catch (e) { setError(e instanceof Error ? e.message : 'A new address could not be created.') }
+    finally { setBusy(false) }
+  }
+  async function enterPairingCode() {
+    setError('')
+    try { await pairShop(); await refresh() }
+    catch (e) {
+      if (!(e instanceof Error && shopPairingMessage(e.message)))
+        setError(e instanceof Error ? e.message : 'The shop could not be paired.')
     }
   }
-  const current = wallet.data
-  const mismatch =
-    current && network.data && current.network !== network.data.network
-  const address =
-    current && freshAddress?.network === current.network
-      ? freshAddress.address
-      : current?.receiveAddress
+  async function lockNow() {
+    if (locking) return
+    setLocking(true)
+    setError('')
+    try { lock.update(await lockWallet()) }
+    catch (e) { setError(e instanceof Error ? e.message : 'The wallet could not be locked.') }
+    finally { setLocking(false) }
+  }
+  const stale = !!wallet.error || !!current?.syncError || mismatch || !current?.lastSync
   return (
-    <section className='ob-wallet-page'>
-      <PageHeading title="Your wallet" description="Your node holds this bitcoin and pays each seller separately." action={
-        <button className='ob-secondary' disabled={wallet.loading} onClick={() => void wallet.refresh()}>Refresh wallet</button>
-      }/>
-      <WalletLockPanel lock={lock} />
-      {(error || wallet.error || network.error) && (
-        <p className='ob-form-error' role='alert'>
-          {error || wallet.error || network.error}
-        </p>
-      )}
-      {mismatch && (
-        <p className='ob-form-error' role='alert'>
-          Wallet and node networks do not match. Payments are disabled.
-        </p>
-      )}
-      {network.data && <PrivacyNotice info={network.data} />}
-      {!current ? (
-        <p className='ob-page-intro' role='status'>
-          {wallet.loading
-            ? 'Loading node wallet…'
-            : 'Wallet unavailable. Try refreshing.'}
-        </p>
-      ) : (
-        <>
-          <div className='ob-wallet-balances'>
-            <article>
-              <h2>Spendable</h2>
-              <WalletAmount
-                sats={current.balance.spendableSats}
-                rates={rates}
-                currency={currency}
-              />
-            </article>
-            <article className='is-pending'>
-              <h2>Pending</h2>
-              <WalletAmount
-                sats={current.balance.pendingSats}
-                rates={rates}
-                currency={currency}
-              />
-            </article>
-            <div
-              className={`ob-wallet-sync ${current.syncError ? 'is-failed' : ''}`}
-            >
-              <p>
-                <span
-                  className={`ob-status-dot ${current.syncError ? 'is-offline' : current.lastSync ? '' : 'is-loading'}`}
-                  aria-hidden='true'
-                />
-                {current.lastSync
-                  ? `Last synced ${new Date(current.lastSync * 1000).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}`
-                  : 'Not synced yet'}
-              </p>
-              {current.syncError && (
-                <p role='alert'>Wallet sync failed: {current.syncError}</p>
-              )}
-            </div>
+    <section className='ob-wallet-page ob-wallet-overview'>
+      <PageHeading title="Your wallet" description="Pay for purchases. Store proceeds are held separately." action={
+        <button type='button' className='ob-secondary' aria-label='Wallet settings' onClick={() => setSettings(true)}>Settings</button>
+      } />
+      {pairing ? <div className='ob-wallet-alert' role='status'><p>Pair this app with your node to view its wallet.</p><button className='ob-secondary' onClick={() => void enterPairingCode()}>Enter pairing code</button></div>
+        : (error || wallet.error || network.error || lock.error) && <p className='ob-form-error' role='alert'>{error || wallet.error || network.error || lock.error}{current && wallet.error ? ' Showing the last available balance.' : ''}</p>}
+      {mismatch && <p className='ob-form-error' role='alert'>Wallet and node networks do not match. Payments are disabled.</p>}
+      <section className='ob-wallet-summary' aria-label='Wallet balance'>
+        <div className='ob-wallet-toolbar'>
+          <span className='ob-wallet-account'><RailMark rail='bitcoin' /> Bitcoin · {current?.network === 'testnet4' ? 'Testnet4' : current?.network === 'mainnet' ? 'Mainnet' : 'Node wallet'}</span>
+          <div className='ob-wallet-security'>
+            <span>{!status ? (lock.error ? 'Lock state unavailable' : 'Checking lock…') : status.state === 'unlocked' ? 'Unlocked · payments require passphrase' : status.state === 'locked' ? 'Locked · receiving available' : 'Wallet setup required'}</span>
+            {status?.state === 'unlocked' ? <button type='button' className='ob-text-link' disabled={locking} onClick={() => void lockNow()}>{locking ? 'Locking…' : 'Lock now'}</button>
+              : status && <button type='button' className='ob-text-link' onClick={() => setSettings(true)}>{status.state === 'locked' ? 'Unlock wallet' : 'Set up wallet'}</button>}
           </div>
-          <section className='ob-wallet-fund'>
-            <h2>Receive bitcoin</h2>
-            <p>
-              {current.network === 'testnet4'
-                ? 'Send testnet4 coins from a faucet or another testnet4 wallet.'
-                : 'Send mainnet bitcoin from another wallet.'}
-            </p>
-            {address && !mismatch && (
-              <div className='ob-wallet-receive'>
-                <PaymentQr value={bitcoinUri(address)} />
-                <CopyPaymentValue label='Receive address' value={address}>
-                  <button
-                    className='ob-text-link'
-                    disabled={busy || !!wallet.error || !!network.error}
-                    onClick={() => void nextAddress()}
-                  >
-                    {busy ? 'Creating address…' : 'New address'}
-                  </button>
-                </CopyPaymentValue>
-              </div>
-            )}
-          </section>
-        </>
-      )}
+        </div>
+        <div className='ob-wallet-balance-grid'>
+          <article className='ob-wallet-spendable'>
+            <h2>{stale && current ? 'Last known spendable balance' : 'Spendable balance'}</h2>
+            {current ? <WalletAmount sats={current.balance.spendableSats} rates={rates} currency={currency} showFiat={showFiat} />
+              : <p className='ob-wallet-loading' role='status'>{wallet.loading ? 'Loading balance…' : 'Balance unavailable'}</p>}
+            {current?.network === 'testnet4' && <p className='ob-wallet-test-note'>Test coins · no monetary value</p>}
+          </article>
+          <article className='ob-wallet-pending'>
+            <h2>Pending confirmation</h2>
+            {current ? <WalletAmount sats={current.balance.pendingSats} rates={rates} currency={currency} showFiat={showFiat} /> : <span>—</span>}
+            <p>Available to spend after confirmation.</p>
+          </article>
+        </div>
+        <div className='ob-wallet-summary-footer'>
+          <div className='ob-wallet-actions'>
+            <button type='button' className='ob-primary' disabled={receiveBlocked} onClick={() => setReceive(true)}>Receive bitcoin</button>
+            {onOrders && <button type='button' className='ob-secondary' onClick={onOrders}>Your orders{dueOrders.length ? ` · ${dueOrders.length} unpaid` : ''}</button>}
+          </div>
+          <div className='ob-wallet-sync'>
+            <span className={`ob-status-dot ${stale ? 'is-loading' : ''}`} aria-hidden='true' />
+            <span>{current?.lastSync ? `Last synced ${new Date(current.lastSync * 1000).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}` : 'Not synced yet'}</span>
+            <button type='button' className='ob-text-link' disabled={refreshing || wallet.loading} onClick={() => void refresh()}>{refreshing ? 'Refreshing…' : 'Refresh wallet'}</button>
+          </div>
+        </div>
+        {current?.syncError && <p className='ob-wallet-sync-error' role='alert'>Balance may be out of date. {current.syncError}</p>}
+      </section>
+      {status && (status.state === 'setup' || !status.backupConfirmed) && <div className='ob-wallet-alert' role='status'>
+        <p>{status.state === 'setup' ? 'Protect your wallet before making a payment.' : 'Your wallet backup has not been confirmed.'}</p>
+        <button type='button' className='ob-secondary' onClick={() => setSettings(true)}>{status.state === 'setup' ? 'Protect wallet' : 'Back up wallet'}</button>
+      </div>}
+      {dueOrders.length > 0 && onOrders && <div className='ob-wallet-attention'>
+        <div><strong>{dueOrders.length} {dueOrders.length === 1 ? 'order awaits' : 'orders await'} payment</strong><p>Review and pay each seller separately from your orders.</p></div>
+        <button type='button' className='ob-text-link' onClick={onOrders}>Review orders</button>
+      </div>}
+      <div className='ob-wallet-workspace'>
+        <WalletActivityList activity={current?.activity ?? []} available={!!current} stale={!!wallet.error || !!current?.syncError} />
+        <aside className='ob-wallet-receive-panel' aria-labelledby='ob-receive-title'>
+          <h2 id='ob-receive-title'>Fund your wallet</h2>
+          <p>{current?.network === 'testnet4' ? 'Receive testnet4 bitcoin from a faucet or another testnet4 wallet.' : 'Transfer bitcoin here from another wallet to pay for purchases.'}</p>
+          {address && !mismatch && !pairing ? <div className='ob-wallet-receive'>
+            <CopyPaymentValue label='Receive address' value={address} button />
+            <div className='ob-wallet-receive-actions'>
+              <button className='ob-secondary' type='button' disabled={receiveBlocked} onClick={() => setReceive(true)}>Show QR code</button>
+              <button className='ob-text-link' type='button' disabled={busy || receiveBlocked} onClick={() => void nextAddress()}>{busy ? 'Creating address…' : 'New address'}</button>
+            </div>
+          </div> : <p className='ob-wallet-note'>The receive address is unavailable until your node connects.</p>}
+          {current?.network === 'testnet4' && <p className='ob-wallet-faucet'>Need test coins? <a className='ob-inline-link' href='https://mempool.space/testnet4/faucet' target='_blank' rel='noreferrer'>Open testnet4 faucet ↗</a><small>Opens an external website.</small></p>}
+        </aside>
+      </div>
+      {network.data && <ConnectionCard info={network.data} />}
+      {settings && <Dialog label='Wallet settings' onCancel={() => setSettings(false)}><h2>Wallet settings</h2><WalletLockPanel lock={lock} /><div className='ob-form-actions'><button type='button' className='ob-secondary' onClick={() => setSettings(false)}>Done</button></div></Dialog>}
+      {receive && !receiveBlocked && address && <Dialog label='Receive bitcoin' onCancel={() => setReceive(false)}>
+        <div className='ob-wallet-receive-dialog'><h2>Receive bitcoin</h2><p>{current?.network === 'testnet4' ? 'Testnet4 only · test coins, no value' : 'Bitcoin mainnet only'}</p><PaymentQr value={bitcoinUri(address)} paper /><p className='ob-wallet-dialog-address'>{address}</p><p>Scan this code from the wallet sending your funds.</p></div>
+        <div className='ob-form-actions'><button className='ob-secondary' type='button' onClick={() => setReceive(false)}>Done</button></div>
+      </Dialog>}
     </section>
   )
+}
+function WalletActivityList({ activity, available, stale }: { activity: WalletActivity[]; available: boolean; stale: boolean }) {
+  const [filter, setFilter] = useState('all')
+  const visible = activity.filter(tx => filter === 'all' || tx.direction === filter)
+  return <section className='ob-wallet-ledger' aria-labelledby='ob-wallet-activity'>
+    <header><h2 id='ob-wallet-activity'>Activity</h2><label>Show<select aria-label='Filter wallet activity' value={filter} onChange={event => setFilter(event.target.value)}><option value='all'>All activity</option><option value='in'>Received</option><option value='out'>Sent</option></select></label></header>
+    {!available ? <p className='ob-wallet-empty'>Activity is unavailable until your node connects.</p>
+      : visible.length === 0 ? <p className='ob-wallet-empty'>{activity.length ? 'No activity matches this filter.' : stale ? 'No activity in the last available wallet data.' : 'No transactions yet. Fund your wallet to get started.'}</p>
+      : <ul className='ob-wallet-activity'>{visible.map(tx => <li key={tx.txid}>
+        <details><summary><span className={`ob-wallet-direction ${tx.direction === 'in' ? 'is-incoming' : ''}`} aria-hidden='true'>{tx.direction === 'in' ? '↙' : '↗'}</span><span className='ob-wallet-transaction'><strong>{tx.label}</strong><span className='ob-activity-meta'>{tx.confirmed ? 'Confirmed' : 'Pending'}{tx.time ? ` · ${new Date(tx.time * 1000).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}` : ''}</span></span><span className='ob-activity-amount'>{tx.direction === 'in' ? '+' : '−'}{tx.sats.toLocaleString('en-US')} sats</span><span className='ob-wallet-expand' aria-hidden='true'>⌄</span></summary>
+          <div className='ob-wallet-transaction-details'><CopyPaymentValue label='Transaction ID' value={tx.txid} />{tx.direction === 'out' && <p>Net wallet movement, including network fees.</p>}<p>{EXTERNAL_TX_NOTE}</p></div>
+        </details>
+      </li>)}</ul>}
+  </section>
 }
 export function OrderPayment({
   id,
@@ -488,6 +533,11 @@ export function OrderPayment({
       )}
       {escrow ? (
         <>
+          {order.escrow?.moderator ? (
+            <p className='ob-page-intro'>
+              Moderator: {order.escrow.moderator.name || 'Unnamed moderator'}{order.escrow.moderator.builtIn ? ' (built-in test moderator)' : ''}, key <code title={order.escrow.moderator.id}>{order.escrow.moderator.id.slice(0, 8)}…{order.escrow.moderator.id.slice(-6)}</code>. A dispute on this order goes to this moderator only.
+            </p>
+          ) : null}
           {order.escrow?.moderatorFeeSats ? (
             <p className='ob-page-intro'>
               Moderator fee {order.escrow.moderatorFeeSats.toLocaleString()} sats, paid from the escrow to the moderator key in the terms.

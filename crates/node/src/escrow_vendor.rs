@@ -1,6 +1,9 @@
 //! The vendor's side of a moderated escrow (testnet4 only).
 //!
-//! A buyer's request names the buyer's per-order key and payout. The vendor
+//! A buyer's request names the buyer's per-order key and payout, and the
+//! moderator it chose when that is not the built-in one. The vendor takes
+//! the moderator only if the store's signed record accepts it
+//! ([`crate::escrow_choice`]),
 //! picks the heights from its own chain tip, adds a fresh per-order key from
 //! the seller's store wallet seed (`m/1984'/coin'/1'/index'`), signs the
 //! terms, and runs round 2 and the funding finish. Its key never leaves
@@ -192,7 +195,7 @@ impl Node {
     /// Round 0: answer a request with terms signed by the vendor's per-order key.
     fn vendor_request(&self, seller: &str, mail: &Mail) -> Result<(), String> {
         let fields = mail.as_fields();
-        if fields.len() != 6 && fields.len() != 7 {
+        if !(6..=8).contains(&fields.len()) {
             return Err("a Request message carries 6 fields".into());
         }
         let buyer: [u8; 33] = fields[0]
@@ -213,20 +216,26 @@ impl Node {
             .as_slice()
             .try_into()
             .map_err(|_| "bad network fee")?;
-        let listing_id = if fields.len() == 7 {
-            let id: [u8; 16] = fields[6].as_slice().try_into().map_err(|_| "bad listing id")?;
-            if !self.seller_has_listing(seller, &id) {
-                return Err("that listing is not this store's".into());
+        // The listing field is empty when the buyer names a moderator but no listing.
+        let listing_id = match fields.get(6).filter(|field| !field.is_empty()) {
+            Some(field) => {
+                let id: [u8; 16] = field.as_slice().try_into().map_err(|_| "bad listing id")?;
+                if !self.seller_has_listing(seller, &id) {
+                    return Err("that listing is not this store's".into());
+                }
+                Some(id)
             }
-            Some(id)
-        } else {
-            None
+            None => None,
+        };
+        let chosen = match fields.get(7) {
+            Some(field) => Some(<[u8; 32]>::try_from(field.as_slice()).map_err(|_| "bad moderator id")?),
+            None => None,
         };
         if let Some(offer) = self.repeated_request(seller, &mail.escrow, &buyer)? {
             return self.send_to_buyer(&mail.escrow, Kind::Offer, offer);
         }
         crate::reputation::escrow_start_allowed(self.finished_escrow_sales(), self.passing_bond())?;
-        let ctx = self.escrow_context()?;
+        let ctx = self.escrow_context(self.sale_moderator(seller, chosen)?)?;
         let (index, secret, payout) = {
             let mut wallet = self.store_wallet(seller).map_err(failed)?;
             let index = wallet.next_escrow_index().map_err(failed)?;
@@ -341,7 +350,7 @@ impl Node {
             return Err("the buyer signed different terms".into());
         }
         let secret = self.vendor_secret(seller, index)?;
-        let ctx = self.escrow_context()?;
+        let ctx = self.escrow_context(terms.moderator.clone())?;
         let (awaiting, reply) =
             VendorSession::accept(signed, &secret, &ctx, &open).map_err(failed)?;
         let reply = reply.to_bytes();

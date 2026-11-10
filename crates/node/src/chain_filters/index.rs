@@ -63,8 +63,11 @@ pub(crate) struct FilterIndex {
     /// Followed scripts and the generation that added each one.
     pub(crate) scripts: BTreeMap<ScriptBuf, u64>,
     pub(crate) blocks: BTreeMap<u32, MatchedBlock>,
-    /// Transactions this node broadcast that no matched block holds yet.
+    /// Transactions this node broadcast, or saw unconfirmed, that no matched block holds yet.
     pub(crate) mempool: BTreeMap<Txid, (Transaction, u64)>,
+    /// Mempool transactions dropped because they conflicted or expired.
+    /// The wallet uses these so a replaced receive stops counting as pending.
+    pub(crate) evicted: BTreeMap<Txid, u64>,
     generation: u64,
     /// Every script with a generation at or below this has been scanned to `processed`.
     covered: u64,
@@ -88,6 +91,7 @@ impl FilterIndex {
             scripts: BTreeMap::new(),
             blocks: BTreeMap::new(),
             mempool: BTreeMap::new(),
+            evicted: BTreeMap::new(),
             generation: 0,
             covered: 0,
             rescan_from: None,
@@ -163,7 +167,9 @@ impl FilterIndex {
         };
         for (_, block) in self.blocks.split_off(&fork) {
             for tx in block.txs {
-                self.mempool.entry(tx.compute_txid()).or_insert((tx, now));
+                let txid = tx.compute_txid();
+                self.evicted.remove(&txid);
+                self.mempool.entry(txid).or_insert((tx, now));
             }
         }
         self.commitments.split_off(&fork);
@@ -227,6 +233,7 @@ impl FilterIndex {
                     }
                 }
                 self.mempool.remove(&txid);
+                self.evicted.remove(&txid);
                 txs.push(tx.clone());
             }
         }
@@ -274,11 +281,58 @@ impl FilterIndex {
     }
 
     pub(crate) fn add_mempool(&mut self, tx: Transaction, now: u64) {
-        self.mempool.insert(tx.compute_txid(), (tx, now));
+        let txid = tx.compute_txid();
+        self.evicted.remove(&txid);
+        self.mempool.insert(txid, (tx, now));
+    }
+
+    /// Keep an unconfirmed transaction that pays a followed script.
+    /// A transaction that spends the same input replaces the one already held.
+    /// Returns whether the mempool view changed.
+    pub(crate) fn note_unconfirmed(&mut self, tx: Transaction, now: u64) -> bool {
+        let txid = tx.compute_txid();
+        if self.confirmed_txid(&txid) {
+            return self.mempool.remove(&txid).is_some();
+        }
+        let conflicts: Vec<Txid> = self
+            .mempool
+            .iter()
+            .filter(|(id, (old, _))| **id != txid && shares_input(old, &tx))
+            .map(|(id, _)| *id)
+            .collect();
+        let mut changed = false;
+        for id in conflicts {
+            self.mempool.remove(&id);
+            self.evicted.insert(id, now);
+            changed = true;
+        }
+        let pays = tx.output.iter().any(|out| self.scripts.contains_key(&out.script_pubkey));
+        if !pays {
+            return changed;
+        }
+        self.evicted.remove(&txid);
+        if self.mempool.contains_key(&txid) {
+            return changed;
+        }
+        self.mempool.insert(txid, (tx, now));
+        true
+    }
+
+    fn confirmed_txid(&self, txid: &Txid) -> bool {
+        self.blocks.values().any(|block| block.txs.iter().any(|tx| tx.compute_txid() == *txid))
     }
 
     pub(crate) fn expire_mempool(&mut self, now: u64) {
-        self.mempool.retain(|_, (_, seen)| now.saturating_sub(*seen) < MEMPOOL_EXPIRY_SECS);
+        let expired: Vec<Txid> = self
+            .mempool
+            .iter()
+            .filter(|(_, (_, seen))| now.saturating_sub(*seen) >= MEMPOOL_EXPIRY_SECS)
+            .map(|(txid, _)| *txid)
+            .collect();
+        for txid in expired {
+            self.mempool.remove(&txid);
+            self.evicted.insert(txid, now);
+        }
     }
 
     pub(crate) fn address_txs(&self, script: &ScriptBuf) -> Vec<AddressTx> {
@@ -294,6 +348,11 @@ impl FilterIndex {
                 (!outputs.is_empty()).then(|| AddressTx { txid: tx.compute_txid(), outputs, height })
             })
             .collect()
+    }
+
+    /// A transaction this index holds, from a matched block or this node's mempool.
+    pub(crate) fn transaction(&self, txid: &Txid) -> Option<(Transaction, Option<u32>)> {
+        self.all_txs().find(|(tx, _)| tx.compute_txid() == *txid).map(|(tx, height)| (tx.clone(), height))
     }
 
     /// Outputs of transactions this index holds. Any other outpoint is unknown here.
@@ -343,6 +402,12 @@ impl FilterIndex {
             }
             tx_update.txs.push(Arc::new(tx.clone()));
         }
+        tx_update.evicted_ats = self
+            .evicted
+            .iter()
+            .filter(|(txid, _)| tx_update.seen_ats.iter().all(|(seen, _)| seen != *txid))
+            .map(|(txid, at)| (*txid, *at))
+            .collect();
         Update {
             tx_update,
             last_active_indices: last_active,
@@ -350,17 +415,36 @@ impl FilterIndex {
         }
     }
 
-    /// Genesis, the blocks that anchor transactions, and the recent headers up to `processed`.
-    fn checkpoint(&self, mut blocks: BTreeSet<BlockId>) -> CheckPoint {
-        blocks.insert(BlockId { height: 0, hash: genesis_block(self.network).block_hash() });
+    /// Mempool receives and evictions only. The chain tip is left alone so a
+    /// scan that has not finished can still show a known unconfirmed payment.
+    pub(crate) fn unconfirmed_wallet_update(&self, spks: &[(Option<(KeychainKind, u32)>, ScriptBuf)]) -> Update {
+        let pending: HashSet<Txid> = self.mempool.keys().copied().collect();
+        let mut update = self.wallet_update(spks);
+        update.chain = None;
+        update.tx_update.anchors.clear();
+        update.tx_update.txs.retain(|tx| pending.contains(&tx.compute_txid()));
+        update.tx_update.seen_ats.retain(|(txid, _)| pending.contains(txid));
+        update
+    }
+
+    /// Genesis, the scan's start block, every checked block, and the recent
+    /// headers. The header window is only the last [`RECENT_HEADERS`] blocks, so
+    /// a wallet that already stored an older window cannot connect through the
+    /// start block alone. The commitments fill that gap, including after a reorg
+    /// replaces the hashes above the fork.
+    fn checkpoint(&self, blocks: BTreeSet<BlockId>) -> CheckPoint {
+        let mut by_height: BTreeMap<u32, BlockHash> = BTreeMap::new();
+        by_height.insert(0, genesis_block(self.network).block_hash());
         if self.start.height > 0 {
-            blocks.insert(self.start);
+            by_height.insert(self.start.height, self.start.hash);
+        }
+        for (height, (hash, _)) in &self.commitments {
+            by_height.insert(*height, *hash);
         }
         for (height, header) in self.headers.range(..=self.processed.height) {
-            blocks.insert(BlockId { height: *height, hash: header.block_hash() });
+            by_height.insert(*height, header.block_hash());
         }
-        blocks.insert(self.processed);
-        let mut by_height: BTreeMap<u32, BlockHash> = BTreeMap::new();
+        by_height.insert(self.processed.height, self.processed.hash);
         for block in blocks {
             by_height.insert(block.height, block.hash);
         }
@@ -368,7 +452,7 @@ impl FilterIndex {
             .expect("heights are ascending and start at genesis")
     }
 
-    /// Stored transactions with their block heights, then own unconfirmed broadcasts.
+    /// Stored transactions with their block heights, then unconfirmed transactions this node holds.
     fn all_txs(&self) -> impl Iterator<Item = (&Transaction, Option<u32>)> {
         self.blocks
             .iter()
@@ -420,4 +504,8 @@ impl FilterIndex {
             .map(|(height, header)| (*height, *header))
             .collect()
     }
+}
+
+fn shares_input(left: &Transaction, right: &Transaction) -> bool {
+    left.input.iter().any(|old| right.input.iter().any(|new| new.previous_output == old.previous_output))
 }

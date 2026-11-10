@@ -1,5 +1,9 @@
 //! The buyer's side of a moderated escrow (testnet4 only).
 //!
+//! The moderator is the one the buyer chose at checkout from the store's
+//! signed record ([`crate::escrow_choice`]). Its verified profile is kept on
+//! the order, and the vendor's terms must carry the record in that profile.
+//!
 //! ```text
 //! checkout         -> Request (buyer key, payout, mail key)     to vendor
 //! Offer            <- terms signed by the vendor and its store key
@@ -38,7 +42,6 @@ use serde_json::{json, Map, Value};
 
 use crate::buyer_orders::BuyerOrder;
 use crate::coin_locks::OPEN_LOCK_TTL;
-use crate::escrow_fixture::{moderator_mail_key, moderator_record, MODERATOR_FEE_SATS};
 use crate::escrow_mail::{hex, id_hex, parse_id, unhex, EscrowId, Kind, Mail};
 use crate::escrow_outbox::{now_secs, Sent};
 use crate::escrow_vendor::{offer_digest, offer_digest_with_listing};
@@ -143,9 +146,10 @@ impl Node {
 
     /// The escrow record for a new order: a fresh buyer key and payout. The
     /// address comes later, from the vendor's terms.
-    pub(crate) fn escrow_request(&self, total: u64, seller: &str, listing_id: Option<[u8; 16]>) -> Result<Value, OrderError> {
+    pub(crate) fn escrow_request(&self, total: u64, seller: &str, listing_id: Option<[u8; 16]>, moderator: Option<[u8; 32]>) -> Result<Value, OrderError> {
         self.escrow_ready(seller)?;
-        let record = moderator_record(self.network).map_err(OrderError::Failed)?;
+        let chosen = self.checkout_moderator(seller, moderator)?;
+        let (record, moderator) = self.order_moderator(chosen.as_ref()).map_err(OrderError::Failed)?;
         let spend_fee = crate::escrow_fee::presigned_fee(self.chain.fee_rate().ok(), &record);
         let funding = total
             .checked_add(spend_fee)
@@ -176,7 +180,8 @@ impl Node {
             "stage": "requested",
             "fundingSats": funding,
             "spendFeeSats": spend_fee,
-            "moderatorFeeSats": MODERATOR_FEE_SATS,
+            "moderatorFeeSats": record.fee.to_sat(),
+            "moderator": moderator,
             "buyerKeyIndex": index,
             "buyerPayout": payout.to_string(),
             "signaturesRequired": 2,
@@ -224,7 +229,14 @@ impl Node {
             number(escrow, "fundingSats")?.to_le_bytes().to_vec(),
             number(escrow, "spendFeeSats")?.to_le_bytes().to_vec(),
         ];
-        if let Some(listing) = listing_bytes(escrow.get("listingId"))? {
+        let listing = listing_bytes(escrow.get("listingId"))?;
+        // The built-in moderator is not named, so the request is the one an
+        // older vendor reads. Any other moderator follows the listing field.
+        let chosen = self.order_moderator_record(escrow)?.id();
+        if self.builtin_moderator() != Some(chosen) {
+            fields.push(listing.map(|id| id.to_vec()).unwrap_or_default());
+            fields.push(chosen.to_vec());
+        } else if let Some(listing) = listing {
             fields.push(listing.to_vec());
         }
         let mail = Mail::new(Kind::Request, id, fields);
@@ -322,7 +334,8 @@ impl Node {
             self.escrow_secret(&wallet, key_index(escrow)?)?
         };
         let payout = address_for(text(escrow, "buyerPayout")?, self.network)?;
-        let ctx = self.escrow_context()?;
+        // The record in the profile this buyer chose and verified at checkout.
+        let ctx = self.escrow_context(self.order_moderator_record(escrow)?)?;
         if terms.buyer != PublicKey::from_secret_key(&secp, &secret).serialize()
             || terms.buyer_payout != payout.script_pubkey()
             || terms.funding_value != Amount::from_sat(number(escrow, "fundingSats")?)
@@ -395,7 +408,10 @@ impl Node {
 
         self.sync_buyer_wallet().map_err(PayError::Chain)?;
         let fee_rate = self.pay_fee_rate()?;
-        let ctx = self.escrow_context().map_err(PayError::Chain)?;
+        let ctx = self
+            .order_moderator_record(&escrow)
+            .map_err(PayError::Invalid)
+            .and_then(|record| self.escrow_context(record).map_err(PayError::Chain))?;
         check_terms(allowed, &address, funding)?;
         let psbt = self.build_payment(&address, funding, fee_rate, true, link_coins)?;
         check_fee(allowed, psbt_fee(&psbt)?)?;
@@ -487,7 +503,7 @@ impl Node {
             let wallet = self.buyer_wallet();
             self.escrow_secret(&wallet, key_index(escrow)?)?.secret_bytes()
         };
-        let ctx = self.escrow_context()?;
+        let ctx = self.escrow_context(self.order_moderator_record(escrow)?)?;
         let (waiting, open) = BuyerSession::start(signed.clone(), &secret, &ctx, FundingPlan::Psbt(psbt)).map_err(failed)?;
         if waiting.funding_outpoint().to_string() != text(escrow, "outpoint")? {
             return Err("the stored funding PSBT no longer matches the escrow".into());
@@ -676,10 +692,14 @@ impl Node {
             )));
         }
         self.lock.spend_key()?;
-        let moderator = self.escrow.config.moderator_url.clone().ok_or_else(|| {
-            PayError::Invalid("This node has no moderator to send a dispute to.".into())
-        })?;
         let (order, escrow_id) = self.funded_escrow(id, &["funded", "disputed"])?;
+        // The moderator this order's terms name, at the address its profile gives.
+        let (moderator, moderator_key) = order
+            .escrow
+            .as_ref()
+            .ok_or_else(|| "This order has no escrow.".to_string())
+            .and_then(|escrow| self.order_moderator_mailbox(escrow))
+            .map_err(PayError::Invalid)?;
         let reply = self.escrow_reply_url(&escrow_id).map_err(PayError::Invalid)?.to_string();
         let lock = self.escrow.locks.get(&escrow_id);
         let _held = lock.lock().unwrap_or_else(|err| err.into_inner());
@@ -705,7 +725,7 @@ impl Node {
             fields.push(store_signature);
         }
         let mail = Mail::new(Kind::Dispute, escrow_id, fields);
-        if let Err(err) = self.send_mail(&moderator, &moderator_mail_key(), &mail) {
+        if let Err(err) = self.send_mail(&moderator, &moderator_key, &mail) {
             if was.as_ref().and_then(Value::as_str) == Some("funded") {
                 let _ = self.update_escrow(&order.id, Some(FUNDED), json!({ "stage": "funded" }));
             }

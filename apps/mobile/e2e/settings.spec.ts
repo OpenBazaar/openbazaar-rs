@@ -20,7 +20,7 @@ test('shopping and settings are separate; browsing preferences persist and apply
   await expect(page.getByRole('navigation', { name: 'Settings', exact: true })).toBeHidden()
   await contentFilters(page)
   await expect(page.getByRole('navigation', { name: 'Settings', exact: true })).toBeHidden()
-  await expect(page.getByLabel('Search listings', { exact: true })).toHaveCount(0)
+  await expect(page.getByLabel('Search stores and listings', { exact: true })).toHaveCount(0)
   await expect(page.getByRole('heading', { name: 'Content rating', exact: true })).toHaveCount(0)
   await page.getByLabel('Sensitive listings', { exact: true }).selectOption('cover')
   await page.getByRole('switch', { name: 'Hide weapons', exact: true }).check()
@@ -36,7 +36,7 @@ test('shopping and settings are separate; browsing preferences persist and apply
   await expect(page.getByRole('switch', { name: 'Hide weapons', exact: true })).toBeChecked()
   await expect(page.getByRole('textbox', { name: 'Blocked words', exact: true })).toHaveValue('notebook')
   await page.getByRole('button', { name: 'Products', exact: true }).click()
-  await page.getByLabel('Search listings', { exact: true }).fill('notebook')
+  await page.getByLabel('Search stores and listings', { exact: true }).fill('notebook')
   await expect(page.getByRole('button', { name: 'View Clothbound notebook', exact: true })).toHaveCount(0)
   await page.getByRole('button', { name: 'Settings', exact: true }).click()
   await page.getByRole('button', { name: 'Store labels', exact: true }).click()
@@ -46,7 +46,7 @@ test('shopping and settings are separate; browsing preferences persist and apply
 
 test('a hidden product can be restored from content filters', async ({ page }) => {
   await page.goto('/')
-  await page.getByLabel('Search listings', { exact: true }).fill('Clothbound notebook')
+  await page.getByLabel('Search stores and listings', { exact: true }).fill('Clothbound notebook')
   await page.getByRole('button', { name: 'View Clothbound notebook', exact: true }).click()
   await page.getByRole('button', { name: 'Hide this listing', exact: true }).click()
   await contentFilters(page)
@@ -57,7 +57,7 @@ test('a hidden product can be restored from content filters', async ({ page }) =
   await expect(page.getByRole('heading', { name: 'Add a label source', exact: true })).toBeVisible()
   await expect(page.getByRole('button', { name: 'Follow source', exact: true })).toBeDisabled()
   await page.getByRole('button', { name: 'Products', exact: true }).click()
-  await page.getByLabel('Search listings', { exact: true }).fill('Clothbound notebook')
+  await page.getByLabel('Search stores and listings', { exact: true }).fill('Clothbound notebook')
   await expect(page.getByRole('button', { name: 'View Clothbound notebook', exact: true })).toBeVisible()
 })
 

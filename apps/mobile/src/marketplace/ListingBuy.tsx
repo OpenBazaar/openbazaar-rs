@@ -1,8 +1,8 @@
 import { useState } from "react";
 import type { CartPackage } from "../cart";
-import { termsOf } from "../cart";
-import type { ListingHeader } from "../catalog";
-import { basePrice, formatMinor, NO_VARIANT } from "../pricing";
+import { satsPerMinor, termsOf } from "../cart";
+import type { ListingHeader, RateTable } from "../catalog";
+import { basePrice, formatMinor, NO_VARIANT, unitToday } from "../pricing";
 import { initialSelection, listingSellable, maxQuantity, selectedVariant, sellable, type Selection } from "../variants";
 import { ListingFacts, PriceTag, QuantityStepper, useListingStyles, VariantPicker } from "./VariantPicker";
 
@@ -29,13 +29,28 @@ export function useBuyChoice(listing: ListingHeader) {
   return { selection, select, quantity: choice.quantity, setQuantity, choice, canBuy: max > 0, max };
 }
 
-/// Price, options and quantity for a version 7 listing, in place of the sats price.
-export function ListingBuyTerms({ listing, buy }: { listing: ListingHeader; buy: ReturnType<typeof useBuyChoice> }) {
+/// What shipping adds to a physical listing's price, for the line under it.
+function shippingNote(listing: ListingHeader): string {
+  if (listing.kind === "digital" || !listing.price) return "";
+  const services = listing.commerce?.shipping.services ?? [];
+  const prices = services.length ? services.map(s => s.price) : [listing.price.shipping];
+  const least = Math.min(...prices);
+  const amount = formatMinor(least, listing.price.currency);
+  if (prices.some(p => p !== least)) return least ? `shipping from ${amount}` : "free shipping available";
+  return least ? `+ ${amount} shipping` : "free shipping";
+}
+
+/// Price, options and quantity for a version 7 listing. The seller's fiat
+/// price leads; the line under it gives the sats it comes to and the shipping.
+export function ListingBuyTerms({ listing, buy, rates }: { listing: ListingHeader; buy: ReturnType<typeof useBuyChoice>; rates: RateTable }) {
   const commerce = listing.commerce;
   if (!commerce || !listing.price) return null;
-  const unit = basePrice(termsOf(listing), buy.choice.variant ?? NO_VARIANT);
+  const variant = buy.choice.variant ?? NO_VARIANT;
+  const unit = basePrice(termsOf(listing), variant);
+  const sats = Math.round(unitToday(termsOf(listing), variant, today()) * satsPerMinor(listing, rates));
   return <>
     <PriceTag commerce={commerce} price={listing.price} unit={unit} today={today()}/>
+    <p className="ob-btc-price">{[sats > 0 && `About ${sats.toLocaleString("en-US")} sats`, shippingNote(listing), "paid in sats at the rate when you order"].filter(Boolean).join(" · ")}</p>
     <VariantPicker commerce={commerce} stock={listing.stock} selection={buy.selection} onSelect={buy.select} quantity={buy.quantity} onQuantity={buy.setQuantity} asOf={0}/>
   </>;
 }

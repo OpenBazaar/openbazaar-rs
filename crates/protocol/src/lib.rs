@@ -22,6 +22,7 @@ mod listing;
 mod listing_details;
 #[cfg(test)]
 mod listing_v6_tests;
+mod moderator_profile;
 pub mod public_text;
 mod offer;
 mod order;
@@ -31,6 +32,7 @@ pub mod pricing;
 mod pricing_tests;
 mod reputation;
 mod review;
+mod admission;
 mod seed;
 mod shipping;
 mod sign;
@@ -54,6 +56,9 @@ pub use labeler::{resolve_labels, LabelEntry, LabelSet, LabelTarget, ResolvedLab
 pub use listing::{Listing, ListingHash, ListingKind};
 pub use listing_details::{FiatPrice, ListingDetails, ListingId, MAX_IMAGES};
 pub use coupon::{Coupon, Discount, SignedCoupon, MAX_COUPON_LISTINGS};
+pub use moderator_profile::{
+    ModeratorProfile, SignedModeratorProfile, MAX_MODERATOR_DESCRIPTION, MAX_MODERATOR_LANGUAGES, MAX_MODERATOR_TERMS,
+};
 pub use offer::{Bid, Offer, SignedOffer};
 pub use order::{OrderEnvelope, OrderPlaintext};
 pub use reputation::{
@@ -65,7 +70,8 @@ pub use shipping::{Service, Shipping, MAX_SERVICES, MAX_SERVICE_REGIONS};
 pub use signed::{Signed, Terms};
 pub use taxonomy::{taxonomy_name, TAXONOMY};
 pub use variants::{Axis, Variant, VariantId, Variants, MAX_AXES, MAX_AXIS_VALUES, MAX_VARIANTS};
+pub use admission::{Admission, ADMISSION_LEN};
 pub use payment::DirectPay;
-pub use seed::SeedDocument;
+pub use seed::{DirectoryTerms, SeedDocument, EPOCH_BLOCKS, FEE_CONFS, FEE_SATS, MAX_INTRODUCTIONS};
 pub use sign::{secret_from_label, xonly};
 pub use store::{CountryCode, Store, StoreDetails, StoreId, StoreProfile, MAX_NAME};

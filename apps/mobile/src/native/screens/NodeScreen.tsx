@@ -6,6 +6,8 @@ import { lockWallet, passphraseError, unlockWallet } from "../../walletLock.ts";
 import { torStatus } from "../channels.ts";
 import { sync, useSession } from "../session.ts";
 import { ago, Button, Card, Notice, Row, ui } from "../ui.tsx";
+import { Disputes } from "./Disputes.tsx";
+import { backupPending, WalletSetup } from "./WalletSetup.tsx";
 
 export function NodeScreen() {
   const session = useSession();
@@ -49,8 +51,9 @@ export function NodeScreen() {
         <Row label="Confirmations" value={String(network?.confirmations ?? "–")} />
         <Row label="Lightning" value={String(network?.lightning ?? "–")} />
       </Card>
+      {lock?.state === "setup" || backupPending() ? <WalletSetup minChars={typeof lock?.minPassphraseChars === "number" ? lock.minPassphraseChars : 8} onChange={() => void sync()} /> : null}
       <Card title="Wallet lock">
-        <Row label="State" value={String(lock?.state ?? "unknown")} />
+        <Row label="State" value={lock?.state === "setup" ? "not set up" : String(lock?.state ?? "unknown")} />
         {message ? <Notice tone="error" text={message} /> : null}
         {lock?.state === "locked" ? (
           <>
@@ -61,6 +64,7 @@ export function NodeScreen() {
         {lock?.state === "unlocked" ? <Button label="Lock the wallet now" kind="plain" busy={busy} onPress={() => void act(lockWallet, "The wallet did not lock.")} /> : null}
         <Text style={ui.muted}>The lock is your node's: unlocking here unlocks it for every device until it locks itself again.</Text>
       </Card>
+      {network?.moderates === true ? <Disputes unlocked={lock?.state === "unlocked"} /> : null}
     </ScrollView>
   );
 }

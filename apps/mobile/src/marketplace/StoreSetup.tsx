@@ -3,6 +3,7 @@ import { displayNameError, setVacation, updateProfile, type ProfileChanges, type
 import { PageHeading } from "./PageHeading";
 import { RailMark } from "./RailMark";
 import { ImageUpload, MediaImage, useLockedAction } from "./SellerKit";
+import { StoreModerators } from "./StoreModerators";
 
 type Fields = Required<Omit<ProfileChanges, "shipsTo">> & { shipsTo: string };
 
@@ -123,6 +124,7 @@ export function StoreSetup({ profile, onSaved, onViewStore }: { profile: SellerP
         <button className="ob-primary" disabled={busy || nameError !== null}>{busy ? "Signing…" : first ? "Open my store" : "Save store"}</button>
       </div>
     </form>
+    {profile.setUp && <StoreModerators escrow={profile.network === "testnet4"} ownListings={profile.escrowAvailable}/>}
     {dialog}
   </section>;
 }

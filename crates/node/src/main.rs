@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use ob_node::{LocalConfig, NetworkMode, NodeConfig, RemoteConfig, ServeOptions, VaultChoice, VaultMode};
 
-const USAGE: &str = "ob-node [print | --version | pair [port] [--network N] [--data-dir DIR] [--lan-page] | devices [port] [--remove ID [--rotate] | --remove-all --rotate] | serve [port] [--remote] [--lan] [--lan-listen ADDR] [--remote-listen 127.0.0.1:PORT] [--web-dir DIR] [--local-shop DIR] [--push-gateway http://ONION] [--network testnet4|mainnet] [--data-dir DIR] [--peer HOST:PORT[,...] | --esplora URL[,URL...]] [--public-fallback | --no-public-fallback] [--confirmations N] [--poll-secs S] [--escrow-vendor SELLER=URL] [--moderator URL] [--moderate] [--vault keystore|passphrase|file] [--shop-origin URL] [--no-pair-codes] [--proxy socks5h://HOST:PORT] [--no-rates] [--xmr-daemon URL[,URL...]] [--onion] [--lightning [--ln-network signet|testnet4|regtest] [--ln-chain esplora:URL|electrum:URL|bitcoind:USER:PASS@HOST:PORT] [--lsp NODE_ID@HOST:PORT [--lsp-token T] | --no-lsp] [--lsp-max-fee-sats N] [--ln-rgs URL | --ln-p2p-gossip] [--ln-listen HOST:PORT]] | send-letter --to ONION|http://127.0.0.1:PORT --file FILE [--data-dir DIR] [--network testnet4|mainnet] [--timeout SECS] | poll-mail [--data-dir DIR] [--network testnet4|mainnet] [--expect SHA256] | sign-seed --key FILE --sequence N [--stores HEX,HEX] --out FILE | fetch-seed --data-dir DIR --from ONION [--from ONION...]]
+const USAGE: &str = "ob-node [print | --version | pair [port] [--network N] [--data-dir DIR] [--lan-page] | devices [port] [--remove ID [--rotate] | --remove-all --rotate] | serve [port] [--remote] [--lan] [--lan-listen ADDR] [--remote-listen 127.0.0.1:PORT] [--web-dir DIR] [--web-listen ADDR --web-origin https://HOST] [--local-shop DIR] [--push-gateway http://ONION] [--network testnet4|mainnet] [--data-dir DIR] [--peer HOST:PORT[,...] | --esplora URL[,URL...]] [--public-fallback | --no-public-fallback] [--confirmations N] [--poll-secs S] [--escrow-vendor SELLER=URL] [--moderator URL] [--moderate] [--vault keystore|passphrase|file] [--shop-origin URL] [--no-pair-codes] [--proxy socks5h://HOST:PORT] [--no-rates] [--xmr-daemon URL[,URL...]] [--onion] [--lightning [--ln-network signet|testnet4|regtest] [--ln-chain esplora:URL|electrum:URL|bitcoind:USER:PASS@HOST:PORT] [--lsp NODE_ID@HOST:PORT [--lsp-token T] | --no-lsp] [--lsp-max-fee-sats N] [--ln-rgs URL | --ln-p2p-gossip] [--ln-listen HOST:PORT]] | send-letter --to ONION|http://127.0.0.1:PORT --file FILE [--data-dir DIR] [--network testnet4|mainnet] [--timeout SECS] | poll-mail [--data-dir DIR] [--network testnet4|mainnet] [--expect SHA256] | sign-seed --key FILE --sequence N [--introductions ONION,ONION] --out FILE | fetch-seed --data-dir DIR --from ONION [--from ONION...]]
 
 Chain data comes from BIP 157/158 compact block filters by default.
 --peer uses only your own node (bitcoind with blockfilterindex=1 and peerblockfilters=1).
@@ -16,20 +16,22 @@ Chain data comes from BIP 157/158 compact block filters by default.
 --public-fallback asks public Esplora servers for the tip, fees, and broadcasts while no filter peer answers (default on testnet4 only), and only through --proxy. Addresses are never sent. Without --proxy those servers are not contacted.
 --proxy carries filter peer connections, broadcasts, Esplora queries, exchange rates, and Lightning peers, chain sync, and gossip, and gives each Esplora query its own Tor circuit. Without it, public peers and rate servers are not contacted, and Lightning stays on this machine or the LAN.
 --xmr-daemon turns on Monero direct pay through monerod RPC: your own node (loopback or LAN, direct), or a remote node through --proxy (required for .onion and for any public daemon). There is no default node. Testnet4 pays on Monero stagenet.
---remote publishes the node's admin API as a Tor onion service that only paired devices can find (docs/home-node.md), and a separate public onion for the store. A buyer follows http://….onion; the catalog, order mail, reviews, and escrow mail go over Tor and a redirect off that onion is not followed. An order or escrow reply address is an onion for that one conversation, not the store onion. A follow of http://127.0.0.1 still works on this machine. --escrow-vendor and --moderator take that onion or a loopback URL. `ob-node pair` prints a one-time pairing code and approves the device; `ob-node devices` lists and removes devices.
+--remote publishes the node's admin API as a Tor onion service that only paired devices can find (docs/home-node.md), and a separate public onion for the store. A buyer follows http://….onion; the catalog, order mail, reviews, and escrow mail go over Tor and a redirect off that onion is not followed. An order or escrow reply address is an onion for that one conversation, not the store onion. A follow of http://127.0.0.1 still works on this machine. --escrow-vendor and --moderator take that onion or a loopback URL. On testnet4, without --moderator, a dispute goes to the test network's moderator. `ob-node pair` prints a one-time pairing code and approves the device; `ob-node devices` lists and removes devices.
 --local-shop serves the web shop export on the loopback listener for a browser on this machine. It does not mark that page as a remote home-node client, and it does not change who can call the onion service.
 --lan adds the encrypted LAN channel on port 8790, mDNS discovery, and the first-run setup page at http://openbazaar.local:8790/.
 --push-gateway sends content-free wake-ups to devices that turned push on, through that gateway over Tor. Off unless set.
 --web-dir serves the web shop export to paired browsers over that onion.
+--web-listen with --web-origin also serves it, and the admin API, to a browser on the open web at that one https address, for a node on a host with no screen. The node speaks plain HTTP on --web-listen, so run it only behind a proxy that ends TLS and sets X-Forwarded-Proto; that proxy sees what the admin onion hides. A browser signs in with a passkey, or with an access key: one a paired device made, or OB_WEB_ACCESS_KEY (obkey- and 52 letters). A new node, with no device, no passkey, and no wallet, belongs to the first browser that opens that address and creates a passkey there; set OB_WEB_ACCESS_KEY before the first start to close that, and to get back in if every passkey is lost. Pairing is not offered on that address.
 --lightning runs an LDK Lightning node for direct pay (see docs/lightning.md). A public peer, Esplora chain source, or gossip server is reached through --proxy, so it does not see this machine's IP. Without --proxy those stay refused. Electrum and bitcoind stay direct. With --remote, inbound Lightning is an onion on that Tor client, forwarded to a loopback socket that is not announced. A public --ln-listen is refused. Mainnet Lightning requires --proxy and an LSP you name (or --no-lsp). There is no mainnet LSP default.
 --vault passphrase reads OB_VAULT_PASSPHRASE, or asks on the terminal.
 --vault file keeps the key in the data dir; use it only on headless machines and in tests.
 --onion listens for one sealed letter on a Tor onion (virtual port 80) and serves the public shop routes on that same onion: GET /public/store, public media, and reviews. It also answers a seed-document query. The clearnet listener stays on 127.0.0.1. Wallet, escrow spend, and mail secrets stay closed. A clearnet sale URL is still refused.
 send-letter dials --to. An onion uses Arti and fails if the dial fails or times out. A loopback http:// URL posts the letter to /escrow/mail. Any other URL is refused.
 poll-mail lists id and sha256 for each letter in the sealed mailbox. With --expect, it exits 1 when that digest is absent.
-sign-seed --key FILE --sequence N [--stores HEX,HEX] --out FILE signs a seed document with the operator key. The key file is 64 hex characters and must match the public key in this binary. Copy the output file onto both introduction hosts; do not copy the key.
+sign-seed --key FILE --sequence N [--introductions ONION,ONION] --out FILE signs a directory head with the operator key. The key file is 64 hex characters and must match the public key in this binary. The head names the introduction list and the 20,000 sat fee. It does not name stores. A store joins by paying that fee. Copy the output file onto an introduction, or submit it to one that is already running; do not copy the key.
 fetch-seed --data-dir DIR --from ONION [--from ONION...] asks those introductions and prints the sequence that verified.";
 const PASSPHRASE_ENV: &str = "OB_VAULT_PASSPHRASE";
+const WEB_KEY_ENV: &str = "OB_WEB_ACCESS_KEY";
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
@@ -189,9 +191,16 @@ fn serve(args: &[String]) -> ExitCode {
             return ExitCode::from(1);
         }
     }
+    let web = remote.web.is_some();
     if let Err(err) = node.set_remote(remote) {
         eprintln!("ob-node: {err}");
         return ExitCode::from(1);
+    }
+    if let Some(key) = env::var(WEB_KEY_ENV).ok().filter(|_| web) {
+        if let Err(err) = node.allow_web_key(&key) {
+            eprintln!("ob-node: {WEB_KEY_ENV}: {err}");
+            return ExitCode::from(1);
+        }
     }
     if let Some(config) = lightning {
         if let Err(err) = node.enable_lightning(config) {
@@ -300,7 +309,7 @@ fn fetch_seed(args: &[String]) -> ExitCode {
 fn sign_seed(args: &[String]) -> ExitCode {
     let mut key_path = None;
     let mut sequence = None;
-    let mut stores = String::new();
+    let mut introductions = Vec::new();
     let mut out = None;
     let mut index = 0;
     while index < args.len() {
@@ -308,7 +317,13 @@ fn sign_seed(args: &[String]) -> ExitCode {
         match args[index].as_str() {
             "--key" => key_path = value.map(str::to_string),
             "--sequence" => sequence = value.and_then(|text| text.parse::<u64>().ok()),
-            "--stores" => stores = value.unwrap_or("").to_string(),
+            "--introductions" => {
+                introductions = value.unwrap_or("").split(',').map(str::trim).filter(|onion| !onion.is_empty()).map(str::to_string).collect();
+            }
+            "--stores" | "--inbox" => {
+                eprintln!("ob-node: sign-seed signs a head. A store joins by paying the fee, not by being named here.");
+                return ExitCode::from(2);
+            }
             "--out" => out = value.map(str::to_string),
             other => {
                 eprintln!("ob-node: unknown sign-seed argument {other}");
@@ -337,17 +352,7 @@ fn sign_seed(args: &[String]) -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    let mut store_ids = Vec::new();
-    if !stores.is_empty() {
-        for piece in stores.split(',') {
-            let Some(id) = unhex32(piece.trim()) else {
-                eprintln!("ob-node: a store id is 64 hex characters");
-                return ExitCode::from(2);
-            };
-            store_ids.push(id);
-        }
-    }
-    match ob_node::sign_document(sequence, store_ids, secret) {
+    match ob_node::sign_document(sequence, introductions, secret) {
         Ok(bytes) => match fs::write(&out, bytes) {
             Ok(()) => {
                 println!("wrote {out}");

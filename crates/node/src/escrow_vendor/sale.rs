@@ -166,13 +166,13 @@ impl Node {
     }
 
     pub(super) fn restore_awaiting(&self, id: &EscrowId) -> Result<VendorAwaitingSignatures, String> {
-        let (seller, index, bytes) = {
+        let (seller, index, moderator, bytes) = {
             let desk = self.vendor_desk();
             let sale = desk.sales.get(id).ok_or("no sale for that escrow")?;
-            (sale.seller.clone(), sale.index, sale.awaiting.clone().ok_or("that sale has no open round")?)
+            (sale.seller.clone(), sale.index, sale.terms.moderator.clone(), sale.awaiting.clone().ok_or("that sale has no open round")?)
         };
         let secret = self.vendor_secret(&seller, index)?;
-        VendorAwaitingSignatures::restore(&bytes, &secret, &self.escrow_context()?).map_err(failed)
+        VendorAwaitingSignatures::restore(&bytes, &secret, &self.escrow_context(moderator)?).map_err(failed)
     }
 
     /// Run `step` on the funded escrow, restoring it from its snapshot if
@@ -185,13 +185,13 @@ impl Node {
         record: impl FnOnce(&mut Sale, &T),
     ) -> Result<T, String> {
         if !self.vendor_desk().live.contains_key(id) {
-            let (seller, index, bytes) = {
+            let (seller, index, moderator, bytes) = {
                 let desk = self.vendor_desk();
                 let sale = desk.sales.get(id).ok_or("no sale for that escrow")?;
-                (sale.seller.clone(), sale.index, sale.escrow.clone().ok_or("that sale is not funded")?)
+                (sale.seller.clone(), sale.index, sale.terms.moderator.clone(), sale.escrow.clone().ok_or("that sale is not funded")?)
             };
             let secret = self.vendor_secret(&seller, index)?;
-            let escrow = VendorEscrow::restore(&bytes, &secret, &self.escrow_context()?).map_err(failed)?;
+            let escrow = VendorEscrow::restore(&bytes, &secret, &self.escrow_context(moderator)?).map_err(failed)?;
             self.vendor_desk().live.entry(*id).or_insert(Live { escrow, nonce: None });
         }
         let mut desk = self.vendor_desk();

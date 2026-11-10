@@ -9,6 +9,7 @@
 //! server on this machine or the LAN is still reached directly. Escrow mail
 //! to loopback peers never uses the proxy.
 
+use std::net::ToSocketAddrs;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
@@ -71,6 +72,32 @@ impl Egress {
             let stream = NEXT.fetch_add(1, Ordering::Relaxed);
             Some(format!("socks5h://ob-{session}-{stream}:x@{authority}"))
         })))
+    }
+
+    /// Whether `proxy` (`socks5h://HOST:PORT`) accepts a SOCKS greeting.
+    /// A greeting is not a circuit and does not send a wallet address.
+    pub(crate) fn proxy_reachable(proxy: &str) -> bool {
+        use std::io::{Read, Write};
+        use std::net::TcpStream;
+        use std::time::Duration;
+        let authority = proxy.trim_start_matches("socks5h://").trim_start_matches("socks5://");
+        let Ok(mut addresses) = authority.to_socket_addrs() else {
+            return false;
+        };
+        let Some(address) = addresses.next() else {
+            return false;
+        };
+        let timeout = Duration::from_millis(400);
+        let Ok(mut stream) = TcpStream::connect_timeout(&address, timeout) else {
+            return false;
+        };
+        let _ = stream.set_read_timeout(Some(timeout));
+        let _ = stream.set_write_timeout(Some(timeout));
+        if stream.write_all(&[5, 1, 0]).is_err() {
+            return false;
+        }
+        let mut reply = [0u8; 2];
+        stream.read_exact(&mut reply).is_ok() && reply[0] == 5
     }
 
     /// The `/network` fields about outside requests.
@@ -177,5 +204,12 @@ mod tests {
         let tor = Egress { proxy: Some("socks5h://127.0.0.1:9050".into()), live_rates: true }.value(true);
         assert_eq!(tor["clearnet"], false);
         assert_eq!(tor["proxy"], "socks5h://127.0.0.1:9050");
+    }
+
+    #[test]
+    fn a_proxy_answers_when_it_accepts_a_socks_greeting() {
+        let (url, _seen) = fake_socks::start();
+        assert!(Egress::proxy_reachable(&url));
+        assert!(!Egress::proxy_reachable("socks5h://127.0.0.1:1"));
     }
 }
