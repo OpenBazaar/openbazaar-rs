@@ -23,7 +23,7 @@ use zcash_note_encryption::Domain;
 use zcash_protocol::consensus::{BlockHeight, NetworkUpgrade, Parameters};
 
 use crate::proto::{ChainMetadata, CompactBlock, CompactOrchardAction, CompactTx};
-use crate::{Pool, ZecChain, ZecNetwork};
+use crate::{BackendStatus, Pool, ZecChain, ZecNetwork};
 
 /// Blocks before the first one a test mines, so the first sync has history to walk back over.
 pub const HISTORY: u64 = 200;
@@ -227,6 +227,10 @@ fn note_action(receiver: Address, zatoshi: u64, pool: Pool, nf_old: [u8; 32]) ->
 }
 
 impl ZecChain for MockChain {
+    fn status(&self) -> BackendStatus {
+        BackendStatus { mock: true, tip: Some(self.height()), ..BackendStatus::off(self.network) }
+    }
+
     fn tip(&self) -> Result<u64, String> {
         let state = self.state();
         self.online(&state)?;

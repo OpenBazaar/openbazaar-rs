@@ -229,7 +229,7 @@ fn network_and_rates_say_what_the_zcash_backend_sees() {
     node.zec_sync_once().unwrap();
     let (_, network) = request(&node, "GET", "/network", "");
     let backend = &network["zecBackend"];
-    assert_eq!((&backend["enabled"], &backend["backend"]), (&json!(true), &json!("set")));
+    assert_eq!((&backend["enabled"], &backend["backend"]), (&json!(true), &json!("mock")));
     assert_eq!((&backend["network"], &backend["pool"]), (&json!("testnet"), &json!("ironwood")));
     assert_eq!(backend["scannedHeight"], zec.height());
     assert_eq!(backend["tip"], zec.height());

@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use ob_node::{LocalConfig, NetworkMode, NodeConfig, RemoteConfig, ServeOptions, VaultChoice, VaultMode};
 
-const USAGE: &str = "ob-node [print | --version | pair [port] [--network N] [--data-dir DIR] [--lan-page] | devices [port] [--remove ID [--rotate] | --remove-all --rotate] | serve [port] [--remote] [--lan] [--lan-listen ADDR] [--remote-listen 127.0.0.1:PORT] [--web-dir DIR] [--local-shop DIR] [--push-gateway http://ONION] [--network testnet4|mainnet] [--data-dir DIR] [--peer HOST:PORT[,...] | --esplora URL[,URL...]] [--public-fallback | --no-public-fallback] [--confirmations N] [--poll-secs S] [--escrow-vendor SELLER=URL] [--moderator URL] [--moderate] [--vault keystore|passphrase|file] [--shop-origin URL] [--no-pair-codes] [--proxy socks5h://HOST:PORT] [--no-rates] [--xmr-daemon URL[,URL...]] [--onion] [--lightning [--ln-network signet|testnet4|regtest] [--ln-chain esplora:URL|electrum:URL|bitcoind:USER:PASS@HOST:PORT] [--lsp NODE_ID@HOST:PORT [--lsp-token T] | --no-lsp] [--lsp-max-fee-sats N] [--ln-rgs URL | --ln-p2p-gossip] [--ln-listen HOST:PORT]] | send-letter --to ONION|http://127.0.0.1:PORT --file FILE [--data-dir DIR] [--network testnet4|mainnet] [--timeout SECS] | poll-mail [--data-dir DIR] [--network testnet4|mainnet] [--expect SHA256] | sign-seed --key FILE --sequence N [--stores HEX,HEX] --out FILE | fetch-seed --data-dir DIR --from ONION [--from ONION...]]
+const USAGE: &str = "ob-node [print | --version | pair [port] [--network N] [--data-dir DIR] [--lan-page] | devices [port] [--remove ID [--rotate] | --remove-all --rotate] | serve [port] [--remote] [--lan] [--lan-listen ADDR] [--remote-listen 127.0.0.1:PORT] [--web-dir DIR] [--local-shop DIR] [--push-gateway http://ONION] [--network testnet4|mainnet] [--data-dir DIR] [--peer HOST:PORT[,...] | --esplora URL[,URL...]] [--public-fallback | --no-public-fallback] [--confirmations N] [--poll-secs S] [--escrow-vendor SELLER=URL] [--moderator URL] [--moderate] [--vault keystore|passphrase|file] [--shop-origin URL] [--no-pair-codes] [--proxy socks5h://HOST:PORT] [--no-rates] [--xmr-daemon URL[,URL...]] [--zec-indexer URL[,URL...]] [--onion] [--lightning [--ln-network signet|testnet4|regtest] [--ln-chain esplora:URL|electrum:URL|bitcoind:USER:PASS@HOST:PORT] [--lsp NODE_ID@HOST:PORT [--lsp-token T] | --no-lsp] [--lsp-max-fee-sats N] [--ln-rgs URL | --ln-p2p-gossip] [--ln-listen HOST:PORT]] | send-letter --to ONION|http://127.0.0.1:PORT --file FILE [--data-dir DIR] [--network testnet4|mainnet] [--timeout SECS] | poll-mail [--data-dir DIR] [--network testnet4|mainnet] [--expect SHA256] | sign-seed --key FILE --sequence N [--stores HEX,HEX] --out FILE | fetch-seed --data-dir DIR --from ONION [--from ONION...]]
 
 Chain data comes from BIP 157/158 compact block filters by default.
 --peer uses only your own node (bitcoind with blockfilterindex=1 and peerblockfilters=1).
@@ -16,6 +16,7 @@ Chain data comes from BIP 157/158 compact block filters by default.
 --public-fallback asks public Esplora servers for the tip, fees, and broadcasts while no filter peer answers (default on testnet4 only), and only through --proxy. Addresses are never sent. Without --proxy those servers are not contacted.
 --proxy carries filter peer connections, broadcasts, Esplora queries, exchange rates, and Lightning peers, chain sync, and gossip, and gives each Esplora query its own Tor circuit. Without it, public peers and rate servers are not contacted, and Lightning stays on this machine or the LAN.
 --xmr-daemon turns on Monero direct pay through monerod RPC: your own node (loopback or LAN, direct), or a remote node through --proxy (required for .onion and for any public daemon). There is no default node. Testnet4 pays on Monero stagenet.
+--zec-indexer turns on Zcash direct pay from compact blocks: your own Zebra and Zaino (loopback or LAN, direct), or a remote Zaino or lightwalletd through --proxy (required for .onion and for any public server). http:// is plaintext gRPC (port 9067 if none is given), https:// is gRPC over TLS. There is no default server. The server must speak lightwallet-protocol 0.5.0 or later, which carries Ironwood; an older one is refused. Testnet4 pays on Zcash testnet.
 --remote publishes the node's admin API as a Tor onion service that only paired devices can find (docs/home-node.md), and a separate public onion for the store. A buyer follows http://….onion; the catalog, order mail, reviews, and escrow mail go over Tor and a redirect off that onion is not followed. An order or escrow reply address is an onion for that one conversation, not the store onion. A follow of http://127.0.0.1 still works on this machine. --escrow-vendor and --moderator take that onion or a loopback URL. `ob-node pair` prints a one-time pairing code and approves the device; `ob-node devices` lists and removes devices.
 --local-shop serves the web shop export on the loopback listener for a browser on this machine. It does not mark that page as a remote home-node client, and it does not change who can call the onion service.
 --lan adds the encrypted LAN channel on port 8790, mDNS discovery, and the first-run setup page at http://openbazaar.local:8790/.
@@ -123,6 +124,17 @@ fn serve(args: &[String]) -> ExitCode {
         ),
         None => eprintln!("ob-node: Monero is off (no --xmr-daemon)"),
     }
+    let zec = options.zec_config();
+    match &zec {
+        Some(config) => eprintln!(
+            "ob-node: Zcash {} direct pay via {} ({}). {}",
+            config.network,
+            config.servers.iter().map(|server| server.url.as_str()).collect::<Vec<_>>().join(", "),
+            config.privacy(),
+            config.reveals()
+        ),
+        None => eprintln!("ob-node: Zcash is off (no --zec-indexer)"),
+    }
     let lightning = options.lightning.plan(network, options.proxy.as_deref()).expect("parse already checked the Lightning flags");
     match &lightning {
         Some(config) => eprintln!(
@@ -185,6 +197,19 @@ fn serve(args: &[String]) -> ExitCode {
             }
         };
         if let Err(err) = node.set_xmr_chain(std::sync::Arc::new(chain)) {
+            eprintln!("ob-node: {err}");
+            return ExitCode::from(1);
+        }
+    }
+    if let Some(config) = zec {
+        let chain = match openbazaar_zec::IndexerChain::new(config) {
+            Ok(chain) => chain,
+            Err(err) => {
+                eprintln!("ob-node: Zcash client: {err}");
+                return ExitCode::from(1);
+            }
+        };
+        if let Err(err) = node.set_zec_chain(std::sync::Arc::new(chain)) {
             eprintln!("ob-node: {err}");
             return ExitCode::from(1);
         }

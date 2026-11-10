@@ -12,13 +12,21 @@ mock = ["dep:rand"]
 
 [dependencies]
 hex = "0.4"
+http = "1"
+hyper-util = { version = "0.1", default-features = false, features = ["tokio"] }
 # No proving in this crate yet, so no circuit.
 orchard = { version = "0.16", default-features = false, features = ["std", "zeroize"] }
 rand = { version = "0.9", optional = true }
 serde_json = "1"
+tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "net", "time", "io-util", "macros"] }
+# TLS for https indexers, with ring like the rest of the node: no aws-lc.
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
+tonic = { version = "0.14", default-features = false, features = ["transport"] }
+tower = { version = "0.5", default-features = false, features = ["util"] }
+webpki-roots = "1"
 # Without `tor` (a second Arti) and without `zcash_client_sqlite` (a second libsqlite3-sys).
 zcash_address = "0.14"
-zcash_client_backend = { version = "0.25", default-features = false, features = ["orchard"] }
+zcash_client_backend = { version = "0.25", default-features = false, features = ["orchard", "lightwalletd-tonic", "lightwalletd-tonic-transport"] }
 zcash_keys = { version = "0.17", default-features = false, features = ["std", "orchard", "zeroize"] }
 zcash_note_encryption = "0.5.1"
 zcash_primitives = { version = "0.31", default-features = false }
@@ -28,4 +36,9 @@ zip321 = "0.10"
 zeroize = "1.8"
 
 [dev-dependencies]
+# A small gRPC server standing in for Zaino in the client's tests.
+bytes = "1"
+http-body-util = "0.1"
+hyper = { version = "1", features = ["server", "http2"] }
+prost = "0.14"
 openbazaar-zec = { path = ".", features = ["mock"] }

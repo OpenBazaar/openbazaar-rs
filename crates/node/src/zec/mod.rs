@@ -14,8 +14,9 @@
 //! paid. A wallet made before Zcash existed gets its viewing key from
 //! `seed.obv` while that exists, or at the first unlock.
 //!
-//! Zcash is off until a chain source is set ([`Node::set_zec_chain`]; the
-//! live client is phase 1c in `docs/zcash.md`). Demo stores opt in one by one
+//! Zcash is off until a chain source is set: `--zec-indexer` names a Zaino or
+//! lightwalletd ([`openbazaar_zec::IndexerChain`], set by `main` through
+//! [`Node::set_zec_chain`]), and tests set the mock. Demo stores opt in one by one
 //! (`PUT /zec/stores`), which signs the store's v3 record again with bit 2
 //! set; checkout and the catalog read the signed flag only. `zec-stores.obv`
 //! keeps the choice for the next boot. The node's own store does not take
@@ -38,7 +39,7 @@ use std::time::{Duration, Instant};
 
 use bitcoin::secp256k1::SecretKey;
 use openbazaar_protocol::{Catalog, Store};
-use openbazaar_zec::{ViewKey, ZecChain, ZecNetwork, ZecWallet};
+use openbazaar_zec::{BackendStatus, ViewKey, ZecChain, ZecNetwork, ZecWallet};
 use serde_json::{json, Value};
 
 use crate::buyer_orders::now_secs;
@@ -172,23 +173,22 @@ impl ZecNode {
         self.vault.write_sealed(&self.accepts_path, &bytes).map_err(|err| err.to_string())
     }
 
-    /// The `zecBackend` field of `GET /network`.
+    /// The `zecBackend` field of `GET /network`: what the indexer is and
+    /// learns, how far the wallets have scanned, and the last sync error.
     pub(crate) fn backend_value(&self) -> Value {
-        let wallets: Vec<(Option<u64>, Option<u64>)> = self
-            .stores
-            .values()
-            .filter_map(|slot| guard(slot).wallet.as_ref().map(|wallet| (wallet.scanned(), wallet.tip())))
-            .collect();
-        let errors: Vec<String> = self.stores.values().filter_map(|slot| guard(slot).error.clone()).collect();
-        json!({
-            "enabled": self.chain().is_some(),
-            "backend": if self.chain().is_some() { "set" } else { "none" },
-            "network": self.zec_network().as_str(),
-            "pool": "ironwood",
-            "scannedHeight": wallets.iter().filter_map(|(scanned, _)| *scanned).min(),
-            "tip": wallets.iter().filter_map(|(_, tip)| *tip).max(),
-            "error": errors.first(),
-        })
+        let mut value = match self.chain() {
+            Some(chain) => chain.status().value(),
+            None => BackendStatus::off(self.zec_network()).value(),
+        };
+        let scanned = self.stores.values().filter_map(|slot| guard(slot).wallet.as_ref().and_then(ZecWallet::scanned)).min();
+        let error = self.stores.values().find_map(|slot| guard(slot).error.clone());
+        value["enabled"] = json!(self.chain().is_some());
+        value["pool"] = json!("ironwood");
+        value["scannedHeight"] = json!(scanned);
+        if value["error"].is_null() {
+            value["error"] = json!(error);
+        }
+        value
     }
 }
 

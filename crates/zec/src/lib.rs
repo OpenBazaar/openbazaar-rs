@@ -24,7 +24,9 @@
 #![forbid(unsafe_code)]
 
 pub mod amount;
+mod backend;
 mod chain;
+mod indexer;
 pub mod keys;
 #[cfg(feature = "mock")]
 pub mod mock;
@@ -32,7 +34,9 @@ mod network;
 mod uri;
 mod wallet;
 
+pub use backend::{BackendStatus, IndexerConfig, Server, ServerKind};
 pub use chain::ZecChain;
+pub use indexer::IndexerChain;
 pub use keys::ViewKey;
 pub use network::ZecNetwork;
 pub use uri::zcash_uri;
