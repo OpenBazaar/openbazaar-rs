@@ -1,29 +1,6 @@
 import { useState, type FormEvent } from "react";
-import { paired } from "../catalog";
+import { fetchDirectory, followStore, unfollowStore, type DirectoryStore } from "../follows";
 import { useNodeResource } from "../useNodeResource";
-
-type DirectoryStore = { storeId: string; name: string | null; listings: number; added: boolean };
-
-function storesOf(value: unknown): DirectoryStore[] {
-  if (!value || typeof value !== "object" || !("stores" in value)) return [];
-  const rows = (value as { stores?: unknown }).stores;
-  if (!Array.isArray(rows)) return [];
-  return rows.flatMap(row => {
-    if (!row || typeof row !== "object" || !("storeId" in row)) return [];
-    const item = row as { storeId?: unknown; name?: unknown; listings?: unknown; added?: unknown };
-    if (typeof item.storeId !== "string") return [];
-    return [{
-      storeId: item.storeId,
-      name: typeof item.name === "string" ? item.name : null,
-      listings: typeof item.listings === "number" ? item.listings : 0,
-      added: item.added === true,
-    }];
-  });
-}
-
-function fetchDirectory(): Promise<DirectoryStore[]> {
-  return paired("/directory").then(storesOf);
-}
 
 /** Stores this node already has, by name. A pasted key is the only way to add one. */
 export function Follows({ onChanged }: { onChanged: (message: string) => void }) {
@@ -51,7 +28,7 @@ export function Follows({ onChanged }: { onChanged: (message: string) => void })
     e.preventDefault();
     if (busy || !ready) return;
     const saved = await change(
-      () => paired("/follow", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ storeId: key }) }).then(storesOf),
+      () => followStore(key),
       "Store key saved. The node will keep its records.",
     );
     if (saved) setStoreId("");
@@ -66,7 +43,7 @@ export function Follows({ onChanged }: { onChanged: (message: string) => void })
     {(error || resource.error) && <p className="ob-form-error" role="alert">{error || resource.error}</p>}
     {resource.loading && !resource.data ? <p role="status">Loading stores…</p> : !stores.length ? <p className="ob-page-intro">No stores yet. A store the directory names shows up here, and in Products, after the next check.</p> : <ul className="ob-follow-list">{stores.map(store => <li key={store.storeId}>
       <span><strong>{store.name ?? "Waiting for the store's record"}</strong><small>{store.listings} listing{store.listings === 1 ? "" : "s"}</small></span>
-      {store.added ? <button className="ob-text-link" disabled={busy} onClick={() => void change(() => paired("/follow", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ storeId: store.storeId }) }).then(storesOf), "Stopped following that store")}>Remove</button> : null}
+      {store.added ? <button className="ob-text-link" disabled={busy} onClick={() => void change(() => unfollowStore(store.storeId), "Stopped following that store")}>Remove</button> : null}
     </li>)}</ul>}
   </div>;
 }

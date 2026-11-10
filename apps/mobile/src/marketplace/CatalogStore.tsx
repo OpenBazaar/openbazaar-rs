@@ -4,9 +4,14 @@ import type { Verdict } from "../safety/filter";
 import { Empty, Icon, ProductCard } from "./Marketplace";
 import { CoveredCard } from "./Safety";
 import { MediaImage } from "./SellerKit";
+import { FollowButton } from "./FollowButton";
 
 /** A store this node already holds: its signed record and the catalog listings for that key. */
-export function CatalogStore({ store, listings, rates, currency, revealed, onReveal, verdictOf, onOpen, onStore, onBack }: {
+export function CatalogStore({ storeId, followable, onFollowChanged, store, listings, rates, currency, revealed, onReveal, verdictOf, onOpen, onStore, onBack }: {
+  storeId: string;
+  /** False for this node's own store. */
+  followable: boolean;
+  onFollowChanged: (message: string) => void;
   store: StoreSummary | null;
   listings: ListingHeader[];
   rates: RateTable;
@@ -36,6 +41,7 @@ export function CatalogStore({ store, listings, rates, currency, revealed, onRev
         {tagline && <p className="ob-storefront-tagline">{tagline}</p>}
         <p className="ob-meta">{meta}</p>
       </div>
+      {followable && <FollowButton storeId={storeId} onChanged={onFollowChanged}/>}
     </header>
     <div className="ob-storefront-body">
       <div>
