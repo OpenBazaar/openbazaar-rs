@@ -157,35 +157,58 @@ impl Tor {
 
 const AUTH_RETRIES: u32 = 4;
 const AUTH_RETRY_DELAY: Duration = Duration::from_secs(8);
+/// A dial that has not connected by now is given up for a fresh one.
+const DIAL_STALL: Duration = Duration::from_secs(60);
 
 /// Connect to `host:port`. Right after pairing, the service may still publish a
 /// descriptor without this device's discovery key; Arti then reports the key
 /// as incorrect, so wait and fetch a fresh descriptor on a new isolation group.
+///
+/// A dial can also hang: the service's introduction point acknowledges the
+/// request and the service never completes the rendezvous. Arti waits on, and
+/// every later dial in the same isolation group joins that wait, so after
+/// [`DIAL_STALL`] dial again on a new group. The caller's timeout ends this.
 async fn connect(
     client: &TorClient<TokioRustlsRuntime>,
     host: &str,
     port: u16,
 ) -> Result<arti_client::DataStream, String> {
+    dial_until_connected(|fresh| async move {
+        let isolated;
+        let dialer = if fresh {
+            isolated = client.isolated_client();
+            &*isolated
+        } else {
+            client
+        };
+        dialer
+            .connect((host, port))
+            .await
+            .map_err(|err| err.to_string())
+    })
+    .await
+}
+
+/// The retries of [`connect`]. `dial(fresh)` is one attempt, on a new
+/// isolation group when `fresh`.
+async fn dial_until_connected<S, F, Fut>(mut dial: F) -> Result<S, String>
+where
+    F: FnMut(bool) -> Fut,
+    Fut: std::future::Future<Output = Result<S, String>>,
+{
     let mut attempt = 0;
     loop {
-        let fresh;
-        let dialer = if attempt == 0 {
-            client
-        } else {
-            fresh = client.isolated_client();
-            &fresh
-        };
-        match dialer.connect((host, port)).await {
-            Ok(stream) => return Ok(stream),
-            Err(err) => {
-                let text = err.to_string();
+        match tokio::time::timeout(DIAL_STALL, dial(attempt > 0)).await {
+            Ok(Ok(stream)) => return Ok(stream),
+            Ok(Err(text)) => {
                 if attempt >= AUTH_RETRIES || !text.contains("authentication was incorrect") {
                     return Err(text);
                 }
+                attempt += 1;
+                tokio::time::sleep(AUTH_RETRY_DELAY).await;
             }
+            Err(_) => attempt += 1,
         }
-        attempt += 1;
-        tokio::time::sleep(AUTH_RETRY_DELAY).await;
     }
 }
 
@@ -332,6 +355,42 @@ mod tests {
             .unwrap_err();
         assert_eq!(err, "not a v3 onion address");
         assert_eq!(tor.status().state, "bootstrapping");
+    }
+
+    #[test]
+    fn a_dial_that_hangs_is_given_up_for_a_fresh_one() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .start_paused(true)
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            // The first dial never returns, as when a service never completes the rendezvous.
+            let mut dials = Vec::new();
+            let hung = dial_until_connected(|fresh| {
+                dials.push(fresh);
+                async move {
+                    if !fresh {
+                        std::future::pending::<()>().await;
+                    }
+                    Ok::<_, String>("connected")
+                }
+            });
+            let result = tokio::time::timeout(Duration::from_secs(120), hung).await;
+            assert_eq!(result, Ok(Ok("connected")));
+            assert_eq!(dials, [false, true]);
+
+            // A refused discovery key is still retried, and any other error is final.
+            let mut answers = vec![Ok("connected"), Err("authentication was incorrect".to_string())];
+            assert_eq!(
+                dial_until_connected(|_| std::future::ready(answers.pop().unwrap())).await,
+                Ok("connected")
+            );
+            assert_eq!(
+                dial_until_connected(|_| std::future::ready(Err::<(), _>("not found".to_string()))).await,
+                Err("not found".to_string())
+            );
+        });
     }
 
     #[test]
