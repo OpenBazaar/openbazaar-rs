@@ -23,7 +23,11 @@ export type RemoteStatus = {
 };
 
 export type PendingDevice = { requestId: string; name: string; platform: string; sas: string[]; sasNames: string[] };
-export type PairingCode = { words: string[]; link: string; expiresInSecs: number };
+/** How the node is doing with a code's own onion address. null: nothing to wait for (the node has no Tor, or is an older one). */
+export type PairingOnion = "publishing" | "ready" | "slow" | null;
+/** `lan`: the link also carries addresses that work on the node's local network, without Tor. */
+export type PairingCode = { words: string[]; link: string; expiresInSecs: number; codeId: string; onion: PairingOnion; lan: boolean };
+export type PairingCodeState = { codeId: string; onion: PairingOnion; expiresInSecs: number };
 export type BrowserCredential = { accessKey: string; discoverySecret: string; onion: string | null };
 export type HomeLink = { paired: false } | { paired: true; onion: string; deviceId: string; name: string; pairedAt: number; via: string | null };
 export type HomePairing = { requestId: string; sas: string[]; sasNames: string[] };
@@ -33,6 +37,7 @@ const record = (value: unknown): Record<string, unknown> => (value && typeof val
 const text = (value: unknown): string | null => (typeof value === "string" ? value : null);
 const count = (value: unknown): number => (typeof value === "number" && Number.isFinite(value) ? value : 0);
 const texts = (value: unknown): string[] => (Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : []);
+const onionState = (value: unknown): PairingOnion => (value === "publishing" || value === "ready" || value === "slow" ? value : null);
 
 function parseDevices(value: unknown): RemoteDevice[] {
   const list = record(value).devices;
@@ -78,18 +83,27 @@ export async function createPairingCode(): Promise<PairingCode> {
   const body = record(await paired("/remote/pairing", { method: "POST", body: "{}", headers: json }));
   const link = text(body.link);
   if (!link) throw new Error("The node sent no pairing code.");
-  return { words: texts(body.words), link, expiresInSecs: count(body.expiresInSecs) };
+  return { words: texts(body.words), link, expiresInSecs: count(body.expiresInSecs), codeId: text(body.codeId) ?? "", onion: onionState(body.onion), lan: body.lan === true };
+}
+
+/** The devices asking to pair, and how each open code's onion is doing. */
+export async function fetchPairing(): Promise<{ pending: PendingDevice[]; codes: PairingCodeState[] }> {
+  const body = record(await paired("/remote/pending"));
+  const list = (value: unknown) => (Array.isArray(value) ? value : []).map(record);
+  return {
+    pending: list(body.pending).map(item => ({
+      requestId: text(item.requestId) ?? "",
+      name: text(item.name) ?? "Unnamed device",
+      platform: text(item.platform) ?? "",
+      sas: texts(item.sas),
+      sasNames: texts(item.sasNames),
+    })),
+    codes: list(body.codes).map(item => ({ codeId: text(item.codeId) ?? "", onion: onionState(item.onion), expiresInSecs: count(item.expiresInSecs) })),
+  };
 }
 
 export async function fetchPending(): Promise<PendingDevice[]> {
-  const list = record(await paired("/remote/pending")).pending;
-  return (Array.isArray(list) ? list : []).map(record).map(item => ({
-    requestId: text(item.requestId) ?? "",
-    name: text(item.name) ?? "Unnamed device",
-    platform: text(item.platform) ?? "",
-    sas: texts(item.sas),
-    sasNames: texts(item.sasNames),
-  }));
+  return (await fetchPairing()).pending;
 }
 
 export async function decidePending(requestId: string, approve: boolean): Promise<void> {

@@ -105,6 +105,9 @@ mod tests {
             ("DELETE", "/moderators/00", ""),
             ("GET", "/stores/00/moderators", ""),
             ("GET", "/homepage", ""),
+            // A device pairs another: the code, then the poll for its onion and for requests.
+            ("POST", "/remote/pairing", "{}"),
+            ("GET", "/remote/pending", ""),
         ] {
             assert!(
                 refusal(method, path, body.as_bytes(), true).is_none(),

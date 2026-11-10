@@ -22,6 +22,8 @@ char *ob_tor_start(const char *data_dir);
 char *ob_tor_status(void);
 char *ob_tor_insert_discovery_key(const char *onion, const char *secret_base32);
 ObTorBytes ob_tor_exchange(const char *onion, uint16_t port, const uint8_t *request, size_t request_len, size_t max_bytes, uint64_t timeout_ms);
+// Lines about bootstrapping and dialing, without secrets. Copy the line: it is freed after `log` returns.
+void ob_tor_set_log(void (*log)(const char *line));
 void ob_tor_string_free(char *value);
 void ob_tor_bytes_free(ObTorBytes value);
 

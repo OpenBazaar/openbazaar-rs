@@ -8,7 +8,7 @@
 //! | `GET /remote/devices` | `{devices, thisDevice}` |
 //! | `DELETE /remote/devices/{id}` | removes it and every device it paired; `{"rotate": true}` also moves the onion |
 //! | `POST /remote/pairing` | a one-time code for one more device: words, link, QR |
-//! | `GET /remote/pending`, `POST /remote/pending/{id}` | pairing requests waiting for the owner |
+//! | `GET /remote/pending`, `POST /remote/pending/{id}` | pairing requests waiting for the owner, and how each live code's onion is doing |
 //! | `POST /remote/browser-credential` | a ready-made device for Tor Browser |
 //! | `GET /remote/passkeys`, `POST /remote/passkeys`, `DELETE /remote/passkeys/{id}` | see [`super::passkeys`] |
 //! | `POST /remote/rotate` | move the admin onion to a fresh address |
@@ -21,6 +21,7 @@ use std::time::Instant;
 use serde_json::{json, Value};
 
 use super::devices::{clean_name, NewDevice, Push};
+use super::pair_ready::Onion;
 use super::protocol::{base32, words, DeviceKey};
 use super::{
     batch, pair_cli, pair_http, passkeys, push, services, sync, REMOTE_DEVICE_HEADER,
@@ -84,6 +85,10 @@ pub(crate) fn response(
                     "link": link,
                     "qrSvg": pair_cli::qr_svg(&link),
                     "expiresInSecs": code.expires_in(Instant::now()).as_secs(),
+                    // The page holds the QR while the onion is "publishing",
+                    // unless the link also works on the local network.
+                    "onion": code.onion(Instant::now()).map(Onion::name),
+                    "lan": !node.remote.lan.addresses().is_empty(),
                 }))
             }
             None => fail(
@@ -172,7 +177,8 @@ fn devices(node: &Node, this: Option<&str>) -> Value {
 }
 
 fn pending(node: &Node) -> Value {
-    let list = node.remote.pairing().pending(Instant::now());
+    let now = Instant::now();
+    let list = node.remote.pairing().pending(now);
     let items: Vec<Value> = list
         .iter()
         .map(|(request, age)| {
@@ -188,7 +194,20 @@ fn pending(node: &Node) -> Value {
             })
         })
         .collect();
-    json!({ "pending": items })
+    let codes: Vec<Value> = node
+        .remote
+        .pairing()
+        .live(now)
+        .iter()
+        .map(|code| {
+            json!({
+                "codeId": code.id,
+                "onion": code.onion(now).map(Onion::name),
+                "expiresInSecs": code.expires_in(now).as_secs(),
+            })
+        })
+        .collect();
+    json!({ "pending": items, "codes": codes })
 }
 
 /// A device for Tor Browser, approved by the device or node that asks: a

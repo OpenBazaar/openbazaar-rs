@@ -8,6 +8,7 @@
 
 use std::net::SocketAddr;
 use std::path::Path;
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -53,10 +54,13 @@ impl Tor {
                 .create_unbootstrapped()
                 .map_err(|err| err.to_string())?
         };
+        super::tor_log::install();
         let background = client.clone();
+        let started = std::time::Instant::now();
         runtime.spawn(async move {
-            if let Err(err) = background.bootstrap().await {
-                eprintln!("ob-node: Tor bootstrap: {err}");
+            match background.bootstrap().await {
+                Ok(()) => eprintln!("ob-node: tor: connected to the Tor network after {}s", started.elapsed().as_secs()),
+                Err(err) => eprintln!("ob-node: Tor bootstrap: {err}"),
             }
         });
         Ok(Self { runtime, client })
@@ -94,7 +98,14 @@ impl Tor {
         )
         .map_err(|err| err.to_string())?;
         let task = self.runtime.spawn(run);
-        Ok(Service { forward, task })
+        Ok(Service { forward, task, watch: None })
+    }
+
+    /// Follow a new pairing onion and set `reached` once this client has
+    /// dialed it and got an answer: see [`super::pair_ready`].
+    pub(crate) fn watch_pairing(&self, service: &mut Service, label: String, reached: Arc<AtomicBool>) {
+        let watch = super::pair_ready::watch(Arc::clone(&self.client), service.forward.clone(), label, reached);
+        service.watch = Some(self.runtime.spawn(watch));
     }
 
     /// Let this client find the restricted service `onion`.
@@ -168,10 +179,14 @@ impl Tor {
 pub(crate) struct Service {
     pub forward: OnionForward,
     task: tokio::task::JoinHandle<()>,
+    watch: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl Drop for Service {
     fn drop(&mut self) {
         self.task.abort();
+        if let Some(watch) = &self.watch {
+            watch.abort();
+        }
     }
 }

@@ -12,12 +12,16 @@
 //! pairing pauses.
 
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use bitcoin::hashes::{sha256, Hash};
 use serde_json::Value;
 
 use super::auth::decode_hex;
+use super::pair_log;
+use super::pair_ready::{self, Onion};
 use super::protocol::{base32, decode_base32, parse_words, PairRequest, SECRET_LEN};
 use crate::vault_key::{encode_hex, random_bytes};
 
@@ -34,14 +38,29 @@ pub(crate) struct Code {
     pub secret: [u8; SECRET_LEN],
     /// Names this code's pairing onion service.
     pub id: String,
+    /// When the code's [`CODE_LIFETIME`] began: when it was made, or when the
+    /// page stopped holding its QR for the onion.
     created: Instant,
+    /// When the code was made.
+    issued: Instant,
     by: Option<String>,
     pub taken: bool,
+    /// Turns true once the node's own Tor client has reached this code's onion.
+    reached: Option<Arc<AtomicBool>>,
+    /// The owner's page is still holding the QR for the onion.
+    held: bool,
 }
 
 impl Code {
     pub(crate) fn expires_in(&self, now: Instant) -> Duration {
         CODE_LIFETIME.saturating_sub(now.duration_since(self.created))
+    }
+
+    /// How this code's onion is doing ([`pair_ready`]), or `None` for a code
+    /// that has no onion because Tor is off.
+    pub(crate) fn onion(&self, now: Instant) -> Option<Onion> {
+        let reached = self.reached.as_ref()?.load(Ordering::Relaxed);
+        Some(pair_ready::state(reached, now.duration_since(self.issued)))
     }
 }
 
@@ -59,7 +78,7 @@ pub(crate) struct Request {
     pub secret: [u8; SECRET_LEN],
     pub by: Option<String>,
     pub state: State,
-    code: String,
+    pub code: String,
     created: Instant,
     decided: Option<Instant>,
 }
@@ -86,9 +105,30 @@ pub(crate) struct Pairing {
 
 impl Pairing {
     fn prune(&mut self, now: Instant) {
+        // The wait for a code's onion does not come out of its lifetime. A
+        // code nobody looked at since was held no longer than the limit.
+        for code in self.codes.iter_mut().filter(|code| code.held) {
+            let onion = code.onion(now);
+            if onion != Some(Onion::Publishing) {
+                code.held = false;
+                code.created = now.min(code.issued + pair_ready::SLOW_AFTER);
+            }
+            if onion == Some(Onion::Slow) {
+                pair_log::line(format!(
+                    "code {}: its onion did not answer in {}s; the page now shows the code with a warning",
+                    code.id,
+                    pair_ready::SLOW_AFTER.as_secs()
+                ));
+            }
+        }
         let requests = &self.requests;
         self.codes.retain(|code| {
-            now.duration_since(code.created) < CODE_LIFETIME
+            let live = now.duration_since(code.created) < CODE_LIFETIME;
+            if !live {
+                let how = if code.taken { "with a request still waiting" } else { "unused" };
+                pair_log::line(format!("code {} expired {how}", code.id));
+            }
+            live
                 && (!code.taken
                     || requests
                         .iter()
@@ -113,6 +153,7 @@ impl Pairing {
         self.prune(now);
         if self.codes.len() >= MAX_LIVE {
             let oldest = self.codes.remove(0);
+            pair_log::line(format!("code {} closed to make room for a new one", oldest.id));
             self.requests.retain(|request| request.code != oldest.id);
         }
         let secret = random_bytes::<SECRET_LEN>();
@@ -121,11 +162,23 @@ impl Pairing {
             secret,
             id,
             created: now,
+            issued: now,
             by,
             taken: false,
+            reached: None,
+            held: false,
         };
         self.codes.push(code.clone());
         code
+    }
+
+    /// Hold `id`'s QR on the owner's page until `reached` turns true or
+    /// [`pair_ready::SLOW_AFTER`] passes. Returns the code as it now is.
+    pub(crate) fn watch_onion(&mut self, id: &str, reached: Arc<AtomicBool>) -> Option<Code> {
+        let code = self.codes.iter_mut().find(|code| code.id == id)?;
+        code.reached = Some(reached);
+        code.held = true;
+        Some(code.clone())
     }
 
     pub(crate) fn live(&mut self, now: Instant) -> Vec<Code> {

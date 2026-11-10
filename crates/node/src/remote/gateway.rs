@@ -120,7 +120,7 @@ pub(crate) fn respond(node: &Node, raw: &[u8], entry: Entry, main_port: u16) -> 
     };
     let (method, path, body) = (request.method, request.path, request.body);
     if entry != Entry::Web {
-        if let Some(answer) = pair_http::response(node, method, path, body) {
+        if let Some(answer) = pair_http::response(node, entry, method, path, body) {
             return answer;
         }
     }

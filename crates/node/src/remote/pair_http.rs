@@ -5,9 +5,10 @@ use std::time::{Duration, Instant};
 use serde_json::{json, Value};
 
 use super::devices::{clean_name, NewDevice, PLATFORMS};
+use super::gateway::Entry;
 use super::pairing::{Refusal, Request, State};
 use super::protocol::{base32, decode_base32, DeviceKey, PairRequest};
-use super::{now_secs, pair_cli};
+use super::{now_secs, pair_cli, pair_log};
 use crate::http::{json_body, json_error};
 use crate::vault_key::{encode_hex, random_bytes};
 use crate::Node;
@@ -15,9 +16,21 @@ use crate::Node;
 const MAX_BODY: usize = 2048;
 const STATUS_WAIT: Duration = Duration::from_secs(25);
 
-pub(crate) fn response(node: &Node, method: &str, path: &str, body: &[u8]) -> Option<Vec<u8>> {
+pub(crate) fn response(node: &Node, entry: Entry, method: &str, path: &str, body: &[u8]) -> Option<Vec<u8>> {
+    // Where the request came in, for the log.
+    let arrived = match entry {
+        Entry::Pairing => "a pairing onion",
+        Entry::Lan => "the local network",
+        Entry::Admin | Entry::Web => "the admin gateway",
+    };
     match (method, path) {
-        ("POST", "/pair/request") => Some(request(node, body)),
+        ("POST", "/pair/request") => {
+            let answer = request(node, arrived, body);
+            if !answer.starts_with(b"HTTP/1.1 202") {
+                pair_log::refused(arrived, &answer);
+            }
+            Some(answer)
+        }
         ("GET", path) => path
             .strip_prefix("/pair/status/")
             .map(|id| status(node, id)),
@@ -31,7 +44,7 @@ fn is_discovery_key(text: &str) -> bool {
         .is_some_and(|bytes| bytes.len() == 32)
 }
 
-fn request(node: &Node, body: &[u8]) -> Vec<u8> {
+fn request(node: &Node, arrived: &str, body: &[u8]) -> Vec<u8> {
     if !node.remote.enabled() {
         return json_error("409 Conflict", "Remote access is off on this node.", None);
     }
@@ -132,6 +145,10 @@ fn request(node: &Node, body: &[u8]) -> Vec<u8> {
         }
     };
     let (sas, names) = sas(node, &request);
+    pair_log::line(format!(
+        "code {}: a request from {:?} ({}) arrived by {arrived}; it waits for the owner",
+        request.code, request.fields.name, request.fields.platform
+    ));
     pair_cli::announce_request(&request.fields.name, &request.fields.platform, &sas, &names);
     json_body(
         "202 Accepted",
@@ -189,8 +206,10 @@ pub(crate) fn decide(node: &Node, id: &str, approve: bool) -> Result<Option<Valu
     else {
         return Err("That pairing request expired or was already decided.".into());
     };
+    let from = format!("code {}: the request from {:?}", request.code, request.fields.name);
     if !approve {
         remote.pairing().decide(id, State::Rejected, Instant::now());
+        pair_log::line(format!("{from} was rejected"));
         return Ok(None);
     }
     if request
@@ -199,6 +218,7 @@ pub(crate) fn decide(node: &Node, id: &str, approve: bool) -> Result<Option<Valu
         .is_some_and(|by| remote.devices().get(by).is_none())
     {
         remote.pairing().decide(id, State::Rejected, Instant::now());
+        pair_log::line(format!("{from} was rejected: the device that made the code was removed"));
         return Err("The device that made this code was removed.".into());
     }
     let issued = request
@@ -224,6 +244,7 @@ pub(crate) fn decide(node: &Node, id: &str, approve: bool) -> Result<Option<Valu
         "ob-node: paired device {:?} ({}, {})",
         device.name, device.platform, device.id
     );
+    pair_log::line(format!("{from} was approved as device {}", device.id));
     let result = json!({
         "state": "approved",
         "deviceId": device.id,

@@ -18,12 +18,14 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::Path;
-use std::sync::{Mutex, MutexGuard};
+use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use tormail::Discovery;
 
 use super::devices::Move;
 use super::now_secs;
+use super::pair_log;
 use super::pairing::Code;
 use super::protocol::pairing_onion_seed;
 use super::tor::{Service, Tor, ADMIN_PORT, LIGHTNING_PORT};
@@ -215,17 +217,25 @@ impl Services {
             .map(|onion| onion.to_string())
     }
 
-    pub(crate) fn open_pairing(&self, tor: &Tor, code: &Code, target: SocketAddr) {
+    /// Publish `code`'s onion. The flag turns true once the node's own Tor
+    /// client has reached it ([`super::pair_ready`]).
+    pub(crate) fn open_pairing(&self, tor: &Tor, code: &Code, target: SocketAddr) -> Option<Arc<AtomicBool>> {
         match tor.serve(
             &pairing_nickname(&code.id),
             Some(pairing_onion_seed(&code.secret)),
             Discovery::Open,
             target,
         ) {
-            Ok(service) => {
+            Ok(mut service) => {
+                let reached = Arc::new(AtomicBool::new(false));
+                tor.watch_pairing(&mut service, pair_log::label(code), Arc::clone(&reached));
                 self.pairing().insert(code.id.clone(), service);
+                Some(reached)
             }
-            Err(err) => eprintln!("ob-node: pairing onion: {err}"),
+            Err(err) => {
+                eprintln!("ob-node: pairing onion: {err}");
+                None
+            }
         }
     }
 
@@ -239,6 +249,7 @@ impl Services {
         for id in gone {
             self.pairing().remove(&id);
             forget_keys(data_dir, &pairing_nickname(&id));
+            pair_log::line(format!("code {id}: its onion is closed"));
         }
     }
 
