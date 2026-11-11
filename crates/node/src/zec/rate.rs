@@ -18,8 +18,8 @@ use crate::Egress;
 
 const SOURCE: &str = "https://api.kraken.com/0/public/Ticker?pair=ZECUSD";
 const FRESH: Duration = Duration::from_secs(5 * 60);
-/// An order is never priced from an answer older than this.
-const USABLE: Duration = Duration::from_secs(30 * 60);
+/// An order is never priced from an answer older than this, for ZEC/USD or for the BTC/USD it is crossed with.
+pub(crate) const USABLE: Duration = Duration::from_secs(30 * 60);
 
 pub(crate) struct ZecRate {
     /// The last ZEC/USD answer.
@@ -86,6 +86,12 @@ impl ZecRate {
     #[cfg(test)]
     pub(crate) fn set_for_tests(&self, sats: Option<u64>) {
         *self.fixed.lock().unwrap() = sats;
+    }
+
+    /// Tests keep a fresh ZEC/USD answer and leave the BTC/USD leg live.
+    #[cfg(test)]
+    pub(crate) fn set_usd_for_tests(&self, usd: f64) {
+        *self.cache.lock().unwrap() = Some((Instant::now(), usd));
     }
 }
 

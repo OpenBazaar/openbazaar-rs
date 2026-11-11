@@ -537,7 +537,7 @@ impl Node {
     pub(crate) fn rates_value(&self) -> Value {
         let mut value = self.rates.value();
         value["xmr"] = self.xmr.rate.value(&value);
-        value["zec"] = self.zec.rate.value(&value);
+        value["zec"] = self.zec.rate.value(if self.rates.answered_within(zec::rate::USABLE) { &value } else { &Value::Null });
         value
     }
 
