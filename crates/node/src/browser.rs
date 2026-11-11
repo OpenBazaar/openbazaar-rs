@@ -247,31 +247,9 @@ fn wants_html(head: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::harness::TempDir;
     use crate::http::respond;
     use crate::{load_catalog, NetworkMode, Node};
-
-    struct TempDir(std::path::PathBuf);
-
-    impl TempDir {
-        fn new() -> Self {
-            let path = std::env::temp_dir().join(format!(
-                "ob-browser-{}-{}",
-                std::process::id(),
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_nanos()
-            ));
-            std::fs::create_dir_all(&path).unwrap();
-            Self(path)
-        }
-    }
-
-    impl Drop for TempDir {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
 
     fn node() -> (TempDir, Node) {
         let dir = TempDir::new();
