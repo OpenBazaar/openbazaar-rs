@@ -232,6 +232,8 @@ pub struct LocalConfig {
     /// `POST /pair` prints one-time codes. The desktop app turns this off.
     pub pair_codes: bool,
     pub egress: Egress,
+    /// Ask the directory's introductions. `--no-introductions` turns this off.
+    pub introductions: bool,
     /// `--local-shop`: the web export a browser on this machine loads.
     /// Remote browsers keep using `--web-dir` on the onion gateway.
     pub local_shop: Option<PathBuf>,
@@ -246,6 +248,7 @@ impl LocalConfig {
             shop_origin: http_guard::DEFAULT_SHOP_ORIGIN.to_string(),
             pair_codes: true,
             egress: Egress::default(),
+            introductions: true,
             local_shop: None,
         }
     }
@@ -572,7 +575,9 @@ impl Node {
             scope.spawn(|| self.run_lightning(&stop));
             scope.spawn(|| self.run_order_mail(&stop));
             scope.spawn(|| self.run_replicas(poll.min(Duration::from_secs(30)), &stop));
-            scope.spawn(|| self.run_introductions(&stop));
+            if self.local.introductions {
+                scope.spawn(|| self.run_introductions(&stop));
+            }
             if self.onion_dir.lock().unwrap_or_else(|err| err.into_inner()).is_some() {
                 match crate::sale_gate::bind() {
                     Ok(listener) => match listener.local_addr() {

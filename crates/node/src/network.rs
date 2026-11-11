@@ -130,6 +130,8 @@ pub struct ServeOptions {
     pub proxy: Option<String>,
     /// False with `--no-rates`.
     pub live_rates: bool,
+    /// False with `--no-introductions`: the directory's introductions are not asked.
+    pub introductions: bool,
     /// `--xmr-daemon URL`: monerod RPC for Monero direct pay. Empty turns Monero off.
     pub xmr_daemons: Vec<String>,
     /// `--lightning` and its flags; see `lightning/options.rs`.
@@ -165,6 +167,7 @@ impl ServeOptions {
         let mut pair_codes = true;
         let mut proxy = None;
         let mut live_rates = true;
+        let mut introductions = true;
         let mut xmr_daemons: Vec<String> = Vec::new();
         let mut lightning = crate::LnFlags::default();
         let mut follows: Vec<String> = Vec::new();
@@ -241,6 +244,7 @@ impl ServeOptions {
                 "--no-pair-codes" => pair_codes = false,
                 "--proxy" => proxy = Some(crate::egress::Egress::parse_proxy(&value("--proxy")?)?),
                 "--no-rates" => live_rates = false,
+                "--no-introductions" => introductions = false,
                 "--xmr-daemon" => {
                     let text = value("--xmr-daemon")?;
                     xmr_daemons.extend(text.split(',').map(str::trim).filter(|url| !url.is_empty()).map(String::from));
@@ -293,6 +297,7 @@ impl ServeOptions {
             pair_codes,
             proxy,
             live_rates,
+            introductions,
             xmr_daemons,
             lightning,
             follows,
@@ -507,7 +512,7 @@ mod tests {
         let options = ServeOptions::parse(&[]).unwrap();
         assert_eq!(options.vault, VaultChoice::Keystore, "the key goes to the OS keystore unless told otherwise");
         assert_eq!(options.shop_origin, "http://127.0.0.1:4173");
-        assert!(options.pair_codes && options.live_rates && options.proxy.is_none());
+        assert!(options.pair_codes && options.live_rates && options.introductions && options.proxy.is_none());
         let options = ServeOptions::parse(&args(&[
             "--vault",
             "passphrase",
@@ -517,11 +522,12 @@ mod tests {
             "--proxy",
             "socks5://127.0.0.1:9050",
             "--no-rates",
+            "--no-introductions",
         ]))
         .unwrap();
         assert_eq!(options.vault, VaultChoice::Passphrase);
         assert_eq!(options.shop_origin, "http://localhost:19006");
-        assert!(!options.pair_codes && !options.live_rates);
+        assert!(!options.pair_codes && !options.live_rates && !options.introductions);
         assert_eq!(options.proxy.as_deref(), Some("socks5h://127.0.0.1:9050"));
         for bad in [&["--vault", "plain"][..], &["--shop-origin", "https://evil.example"], &["--proxy", "http://127.0.0.1:8080"]] {
             assert!(ServeOptions::parse(&args(bad)).is_err(), "{bad:?}");

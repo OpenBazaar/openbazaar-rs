@@ -1,10 +1,10 @@
 //! Real `ob-node serve` processes for tests.
 //!
 //! Each node runs the binary on a free loopback port with its own temporary
-//! data dir, a file vault, no rates, and a chain server that only answers
-//! 503. Nothing here reaches the internet unless a test passes `--remote`.
-//! Dropping a node kills the process and removes its data dir, also while a
-//! test is failing; the node's log is printed then.
+//! data dir, a file vault, no rates, no introductions, and a chain server that
+//! only answers 503. Nothing here reaches the internet unless a test passes
+//! `--remote`. Dropping a node kills the process and removes its data dir, also
+//! while a test is failing; the node's log is printed then.
 
 use std::fs::{self, File};
 use std::io::{Read, Write};
@@ -65,19 +65,15 @@ impl RealNode {
     /// A moderator is `&["--moderate"]`; its seller takes `&["--moderator", url]`.
     pub fn start(name: &'static str, chain: &str, extra: &[&str], patience: Duration) -> Self {
         let dir = tempfile::tempdir().unwrap();
-        // Every node asks the network's introduction onions for the directory
-        // over a Tor client it keeps in `tor-client`, and no flag turns that
-        // off. A file in that place makes the client fail at once, so a
-        // disposable node never dials the introductions.
-        fs::create_dir(dir.path().join("testnet4")).unwrap();
-        fs::write(dir.path().join("testnet4").join("tor-client"), b"").unwrap();
         // The node names this port in its reply address, so it cannot be 0.
         let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
         let log = File::create(dir.path().join("serve.log")).unwrap();
         let child = Command::new(env!("CARGO_BIN_EXE_ob-node"))
             .args(["serve", &port.to_string(), "--network", "testnet4", "--data-dir"])
             .arg(dir.path())
-            .args(["--vault", "file", "--no-rates", "--esplora", chain, "--poll-secs", "1"])
+            // Without `--no-introductions` a node dials the network's
+            // introduction onions over Tor, with or without `--remote`.
+            .args(["--vault", "file", "--no-rates", "--no-introductions", "--esplora", chain, "--poll-secs", "1"])
             .args(extra)
             // The node exits when this pipe closes, so it does not outlive a test process that was killed.
             .env("OB_EXIT_ON_STDIN_EOF", "1")
@@ -98,7 +94,7 @@ impl RealNode {
         node
     }
 
-    fn data_dir(&self) -> PathBuf {
+    pub fn data_dir(&self) -> PathBuf {
         self.dir.path().join("testnet4")
     }
 
