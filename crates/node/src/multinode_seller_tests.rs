@@ -342,3 +342,20 @@ fn a_buyer_cannot_order_from_its_own_store_or_follow_itself() {
     let (status, _) = request(&pair.buyer.node, "POST", "/checkout", &escrow.to_string());
     assert!(status.contains("400"), "own-store listings take direct pay only: {status}");
 }
+
+#[test]
+fn a_store_on_another_node_takes_no_zcash_yet() {
+    let pair = Pair::new();
+    let zec = std::sync::Arc::new(openbazaar_zec::mock::MockChain::new(crate::network::NetworkMode::Testnet4.zcash()));
+    pair.buyer.node.set_zec_chain(zec).unwrap();
+    let body = json!({
+        "shipTo": ship_to(),
+        "packages": [{ "settlement": "direct", "rail": "zec", "lines": [{ "listingHash": pair.hash(), "quantity": 1 }] }],
+    });
+    let (status, refused) = request(&pair.buyer.node, "POST", "/checkout", &body.to_string());
+    assert!(status.contains("400") && refused["error"] == "This store does not accept Zcash.", "{status} {refused}");
+    assert_eq!(pair.buyer.node.orders().on_network().count(), 0, "no letter went to the seller");
+    let (_, catalog) = request(&pair.buyer.node, "GET", "/catalog", "");
+    let copy = catalog["listings"].as_array().unwrap().iter().find(|l| l["hash"] == pair.hash()).cloned().unwrap();
+    assert_eq!(copy["acceptsZec"], false, "the seller's signed record does not set the Zcash bit");
+}

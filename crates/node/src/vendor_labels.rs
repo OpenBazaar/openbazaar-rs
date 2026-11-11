@@ -246,6 +246,7 @@ pub(crate) fn response(node: &Node, client: &Client, head: &str, body: &[u8], or
             }
             crate::xmr::add_xmr_flags(node, &mut catalog);
             crate::lightning::add_ln_flags(node, &mut catalog);
+            crate::zec::add_zec_flags(node, &mut catalog);
             json_body("200 OK", &json!({ "hash": hash, "catalog": catalog }), origin)
         }
         Err(LabelError::Invalid(message)) => json_error("400 Bad Request", message, origin),
@@ -273,6 +274,7 @@ fn own_listing_response(node: &Node, target: &str, request: &Value, origin: Opti
         Ok(hash) => match catalog_value(&node.catalog()) {
             Ok(mut catalog) => {
                 crate::xmr::add_xmr_flags(node, &mut catalog);
+                crate::zec::add_zec_flags(node, &mut catalog);
                 json_body("200 OK", &json!({ "hash": hash, "catalog": catalog }), origin)
             }
             Err(err) => json_error("500 Internal Server Error", &err.to_string(), origin),

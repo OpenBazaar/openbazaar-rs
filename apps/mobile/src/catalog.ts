@@ -56,6 +56,8 @@ export type ListingHeader = {
   acceptsXmr: boolean;
   /** Lightning runs at this node and the store's signed record takes it. */
   acceptsLightning: boolean;
+  /** Zcash is on at this node and the store's signed record takes it. */
+  acceptsZec: boolean;
   description?: string;
   seller: string;
   stock: number;
@@ -220,8 +222,19 @@ export type MoneroPaymentFields = {
   confirmationsNeeded: number;
 };
 
+/** A Zcash order: a shielded address whose payment lands in Ironwood. */
+export type ZcashPaymentFields = {
+  network: "testnet" | "mainnet";
+  address: string;
+  uri: string;
+  amountZatoshi: string;
+  receivedZatoshi: string;
+  overpaidZatoshi: string;
+  confirmationsNeeded: number;
+};
+
 export type DirectPayment = {
-  rail: "btc" | "xmr";
+  rail: "btc" | "xmr" | "zec";
   address: string;
   amountSats: number | null;
   network: NetworkName | null;
@@ -231,6 +244,7 @@ export type DirectPayment = {
   /** The order's BOLT 11 invoice when it is paid over Lightning. */
   ln: LnInvoice | null;
   monero: MoneroPaymentFields | null;
+  zcash: ZcashPaymentFields | null;
 };
 
 export type EscrowReceipt = {
@@ -379,7 +393,7 @@ export async function placeCheckout(order: {
   addressLabel?: string;
   shipTo?: ShipTo & { street2?: string; country?: string };
   deliveryNote?: string;
-  packages: { settlement: "direct" | "escrow"; moderator?: string; rail?: "btc" | "xmr" | "ln"; lines: CheckoutLine[]; service?: number | "pickup"; coupon?: string }[];
+  packages: { settlement: "direct" | "escrow"; moderator?: string; rail?: "btc" | "xmr" | "ln" | "zec"; lines: CheckoutLine[]; service?: number | "pickup"; coupon?: string }[];
 }): Promise<CheckoutReceipt> {
   const token = await pairingToken(true);
   const response = await request("/checkout", {
@@ -794,6 +808,7 @@ export function parseCatalog(value: unknown): ShopCatalog {
     new Set(stores.map((store) => store.key)),
     new Set(stores.filter((store) => store.acceptsXmr).map((store) => store.key)),
     lnStoreKeys(stores, record.lightning),
+    new Set(stores.filter((store) => store.acceptsZec).map((store) => store.key)),
   );
   const first = stores[0];
   const strictest = stores.reduce<ContentRating>(
@@ -999,7 +1014,8 @@ function parseLines(value: unknown, fallback: BuyerLine): BuyerLine[] {
   });
 }
 
-function piconeroText(value: unknown): string | null {
+/** An amount in a coin's smallest unit, sent as decimal digits. */
+function amountDigits(value: unknown): string | null {
   return typeof value === "string" && /^\d{1,20}$/.test(value) ? value : null;
 }
 
@@ -1007,7 +1023,7 @@ function parseMonero(payment: Record<string, unknown>): MoneroPaymentFields | nu
   const network = payment.network === "stagenet" || payment.network === "mainnet" ? payment.network : null;
   const subaddress = typeof payment.subaddress === "string" ? payment.subaddress : "";
   const uri = typeof payment.uri === "string" ? payment.uri : "";
-  const amountPiconero = piconeroText(payment.amountPiconero);
+  const amountPiconero = amountDigits(payment.amountPiconero);
   if (!network || !subaddress || !uri || !amountPiconero) return null;
   const needed = payment.confirmationsNeeded;
   return {
@@ -1015,15 +1031,33 @@ function parseMonero(payment: Record<string, unknown>): MoneroPaymentFields | nu
     subaddress,
     uri,
     amountPiconero,
-    receivedPiconero: piconeroText(payment.receivedPiconero) ?? "0",
-    overpaidPiconero: piconeroText(payment.overpaidPiconero) ?? "0",
+    receivedPiconero: amountDigits(payment.receivedPiconero) ?? "0",
+    overpaidPiconero: amountDigits(payment.overpaidPiconero) ?? "0",
     confirmationsNeeded: typeof needed === "number" && Number.isSafeInteger(needed) && needed > 0 ? needed : 10,
+  };
+}
+
+function parseZcash(payment: Record<string, unknown>): ZcashPaymentFields | null {
+  const network = payment.network === "testnet" || payment.network === "mainnet" ? payment.network : null;
+  const address = typeof payment.zcashAddress === "string" ? payment.zcashAddress : "";
+  const uri = typeof payment.uri === "string" && payment.uri.startsWith("zcash:") ? payment.uri : "";
+  const amountZatoshi = amountDigits(payment.amountZatoshi);
+  if (!network || !address || !uri || !amountZatoshi) return null;
+  const needed = payment.confirmationsNeeded;
+  return {
+    network,
+    address,
+    uri,
+    amountZatoshi,
+    receivedZatoshi: amountDigits(payment.receivedZatoshi) ?? "0",
+    overpaidZatoshi: amountDigits(payment.overpaidZatoshi) ?? "0",
+    confirmationsNeeded: typeof needed === "number" && Number.isSafeInteger(needed) && needed > 0 ? needed : 30,
   };
 }
 
 function parsePayment(value: unknown): DirectPayment {
   const payment = recordOf(value, "The shop accepted the order but the page could not read the receipt.");
-  const rail = payment.rail === "xmr" ? "xmr" : "btc";
+  const rail = payment.rail === "xmr" ? "xmr" : payment.rail === "zec" ? "zec" : "btc";
   return {
     rail,
     address: typeof payment.address === "string" ? payment.address : "",
@@ -1034,6 +1068,7 @@ function parsePayment(value: unknown): DirectPayment {
     onchain: typeof payment.onchain === "string" ? payment.onchain : "",
     ln: parseLnInvoice(payment),
     monero: rail === "xmr" ? parseMonero(payment) : null,
+    zcash: rail === "zec" ? parseZcash(payment) : null,
   };
 }
 

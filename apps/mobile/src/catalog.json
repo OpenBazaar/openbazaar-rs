@@ -812,6 +812,7 @@
   "stores": [
     {
       "acceptsXmr": false,
+      "acceptsZec": false,
       "avatar": "eb5771a68ea808f920e4c7b84a3d7d58e65c7cd1c731aa8c29d59cc46dafe968",
       "contentRating": "general",
       "key": "2b489bf1506ec6e9fc3d968a519fcaf07ffe0394fdc313b513fc7d0ba4229056",
@@ -826,6 +827,7 @@
     },
     {
       "acceptsXmr": false,
+      "acceptsZec": false,
       "avatar": "9560a8bf35a6bed27aa2c1c69fd37750174be31d6b390f1ee351aa1eda0db3e5",
       "contentRating": "general",
       "key": "a2a0eb3bb1161e5d93950cf8fd46c7e1d742416cb746d6fe02944cb3fc208dc6",
@@ -840,6 +842,7 @@
     },
     {
       "acceptsXmr": false,
+      "acceptsZec": false,
       "avatar": "49c29812b1c4e09f887baeaba261a4ccfd12e93941a56bf21919f2ab2ee9705f",
       "contentRating": "general",
       "key": "bd5bae884c86680bf9e54ae83137cc88679688a0d0b8c1c65e07419faa88ab84",

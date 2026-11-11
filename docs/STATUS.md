@@ -21,6 +21,7 @@ Last checked against `main` at `98da40a` plus the `payment-rbf` branch.
 | `lightning` | Lightning for direct pay only, on test networks (mainnet refused until it runs over Tor): embedded LDK node in `crates/lightning`, LSPS2 just-in-time channels from an LSP the operator names, per-order BOLT 11 invoices, keys from the seed, sealed state, wallet-lock gating, store opt-in in the rail-flags byte, seller settings and checkout in the web shop; [lightning.md](lightning.md) |
 | `seller-e2e` | Selling from the node: buyer or seller onboarding, storefront editor, listing v6 (stable id, images, fiat price) with create, edit, and delete, following stores on other nodes with signed copies, order mail between nodes with an outbox, sales with fulfillment and buyer confirmation, a stable desktop node port, and separate desktop profiles |
 | `payment-rbf` | Speed up an unconfirmed direct payment (RBF, passphrase and fee cap), a "sent" letter so the seller sees a payment before a block, and the public fallback when the filter scan stalls |
+| `zcash-direct` (phase 1) | Zcash for direct pay only: `crates/zec` on upstream librustzcash (ZIP 32 viewing key from the phrase, an Orchard-protocol address per order, compact-block scanning with Ironwood as the pool that pays orders and Orchard as outbound only, reorgs, spend detection, a mock chain of real encrypted notes); store record bit 2, read by the node and the web shop; the node's `zec` module (demo store opt-in, checkout, order status, rate, network status, sync thread); `--zec-indexer` with a gRPC client for Zaino or lightwalletd over Tor; the web shop's Zcash checkout, order payment screen, and settings page; [zcash.md](zcash.md) |
 
 ## Mechanisms
 
@@ -119,6 +120,21 @@ Labels: **tested** = code on main with automated tests; **demo** = code runs, bu
 | Spend detection | tested | Only spends made by this node: without the spend key the receive tier cannot compute key images. Restoring a seed elsewhere and spending there leaves this balance too high. |
 | Remote sellers | specified | Order status comes from the seller wallet on this node, as with the fixture sellers. |
 
+### Zcash (direct pay only)
+
+| Mechanism | Status | Notes |
+|---|---|---|
+| Wallet library | tested | `crates/zec` on upstream librustzcash (`zcash_client_backend` 0.25 scanning, `zcash_keys` 0.17, `orchard` 0.16, `zip321` 0.10). No `zcash_client_sqlite` (a second `libsqlite3-sys`, and a plaintext database) and no backend `tor` feature (a second Arti). [zcash.md](zcash.md) |
+| Keys | tested | ZIP 32 account 0 of the phrase's BIP 39 seed, as Zcash wallets derive it, so the phrase restores the funds there. The UFVK in `zec-watch.obv` (receive tier); it also computes nullifiers, so a spend made elsewhere shows. |
+| Pools | tested | Ironwood is the pool that pays an order. Orchard is outbound only: notes from before NU6.3 show as their own balance and can leave; an Orchard note at or after NU6.3 is not believed. |
+| Store opt-in | tested | Bit 2 of the rail-flags byte in store record v3. `PUT /zec/stores` for the demo stores; the own store answers 409 until phase 2, since a release from before bit 2 drops the whole record. |
+| Fresh address per order, status | tested (mocked) | Orchard-protocol receiver only, never reused across restarts; `zcashAddress` (no `address`, so the bitcoin watcher skips it), a ZIP 321 URI with the amount only. Awaiting payment → Payment seen → Paid at 30 confirmations (12.5 minutes at 25-second blocks), with received, remaining, and overpaid zatoshi. Works while locked. No mempool view yet. |
+| Rate | tested | Kraken ZEC/USD crossed with the node's BTC/USD (Kraken lists no ZEC/BTC), over `--proxy`, off with `--no-rates`. |
+| Chain access | tested | `--zec-indexer URL[,URL...]`, no default: a Zaino or lightwalletd over gRPC (lightwallet-protocol 0.5.0 or later, checked on each connection with the chain name), asked only for blocks. Loopback or LAN direct; `.onion` and any public server only through `--proxy`, with a SOCKS username per connection and remote DNS; TLS for `https` with webpki roots. Stand-in server and SOCKS tests; a live testnet test run by hand passed against testnet.zec.rocks. `GET /network` `zecBackend` reports `backend`, `privacy`, `reveals`, `software`, `tip`, `scannedHeight`. |
+| Web shop | tested | Settings → Zcash (indexer, demo store switches), the Zcash choice at checkout, the order screen's QR, address, amount owed, and confirmations; `acceptsZec` stands only with the store's signed bit. Unit tests and an e2e check of the settings page with Zcash off. |
+| Escrow | refused | `"rail": "zec"` with escrow is refused: shielded pools have no scripts or timelocks, and a refund cannot be built before the funding confirms. |
+| Remote sellers, paying from the node | specified | Phases 2 and 3 in [zcash.md](zcash.md). |
+
 ### Lightning (direct pay only)
 
 | Mechanism | Status | Notes |
@@ -169,7 +185,7 @@ Labels: **tested** = code on main with automated tests; **demo** = code runs, bu
 - A buyer's first order letter cannot prove who the buyer is: by design the buyer has no identity to prove. Letters are signed by per-conversation keys instead of HPKE Auth mode, which would need the sender's key in the clear.
 - The crate supports per-order keys tweaked by an order secret; the node derives per-order keys from the seed instead.
 - Exchange rates come from Coinbase over clearnet unless `--proxy` is set. Chain data comes from compact filters; public Esplora is asked only with `--esplora` or `--public-fallback`. The desktop app has no proxy, peer, or fallback setting yet.
-- The paper describes bitcoin payments only. Monero direct pay is an addition of this implementation; escrow stays bitcoin-only.
+- The paper describes bitcoin payments only. Monero and Zcash direct pay are additions of this implementation; escrow stays bitcoin-only.
 
 ## Escrow review
 
@@ -205,5 +221,6 @@ Remaining blockers before any mainnet escrow: an external cryptographic review (
 | `home-node` | 180 (+4) | 44 + 5 doc | 13 | 42 | 16 (+1) | 318 passed (xmr 10 + 8), 5 ignored; web 61 unit |
 | `seller-e2e` | 225 (+4) | 44 + 5 doc | 13 | 48 | 16 (+1) | 376 passed (xmr 10 + 8, lightning 5 + 1, version CLI 1), 5 ignored; desktop 2; web 73 unit, 18 Playwright |
 | `payment-rbf` | 229 (+4) | 44 + 5 doc | 13 | 48 | 16 (+1) | 380 passed (xmr 10 + 8, lightning 5 + 1, version CLI 1), 6 ignored; desktop 2; web 73 unit, 19 Playwright |
+| `zcash-direct` (on `182936a`) | 333 (+6) | 48 + 5 doc | 13 | 83 | 22 (+1) | 566 passed (xmr 19, zec 28 (+1), lightning 10 (+1), mobile-tor 4, version CLI 1), 9 ignored; web 165 unit, 25 Playwright, of which the 7 in `payments.spec.ts` fail as they do on `182936a` |
 
-The ignored tests need the live network: an Arti onion dial, a real testnet4 payment and send, a testnet4 compact filter sync, and a stagenet Monero payment (`live_stagenet`).
+The ignored tests need the live network: an Arti onion dial, a real testnet4 payment and send, a testnet4 compact filter sync, a stagenet Monero payment (`live_stagenet`), and a Zcash testnet indexer (`live_testnet_indexer`).

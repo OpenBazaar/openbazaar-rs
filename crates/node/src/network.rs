@@ -69,6 +69,14 @@ impl NetworkMode {
 
     /// The Monero network paid on this network. Monero has no testnet4, so
     /// testnet4 pays on stagenet; mainnet pays on mainnet.
+    /// Testnet4 mode pays Zcash on Zcash testnet; there is no Zcash testnet4.
+    pub fn zcash(self) -> openbazaar_zec::ZecNetwork {
+        match self {
+            NetworkMode::Testnet4 => openbazaar_zec::ZecNetwork::Testnet,
+            NetworkMode::Mainnet => openbazaar_zec::ZecNetwork::Mainnet,
+        }
+    }
+
     pub fn monero(self) -> openbazaar_xmr::XmrNetwork {
         match self {
             NetworkMode::Testnet4 => openbazaar_xmr::XmrNetwork::Stagenet,
@@ -132,6 +140,8 @@ pub struct ServeOptions {
     pub live_rates: bool,
     /// `--xmr-daemon URL`: monerod RPC for Monero direct pay. Empty turns Monero off.
     pub xmr_daemons: Vec<String>,
+    /// `--zec-indexer URL`: Zaino or lightwalletd for Zcash direct pay. Empty turns Zcash off.
+    pub zec_indexers: Vec<String>,
     /// `--lightning` and its flags; see `lightning/options.rs`.
     pub lightning: crate::LnFlags,
     /// `--follow URL`: copy the store another node sells there. May be repeated.
@@ -166,6 +176,7 @@ impl ServeOptions {
         let mut proxy = None;
         let mut live_rates = true;
         let mut xmr_daemons: Vec<String> = Vec::new();
+        let mut zec_indexers: Vec<String> = Vec::new();
         let mut lightning = crate::LnFlags::default();
         let mut follows: Vec<String> = Vec::new();
         let mut local_shop = None;
@@ -245,6 +256,10 @@ impl ServeOptions {
                     let text = value("--xmr-daemon")?;
                     xmr_daemons.extend(text.split(',').map(str::trim).filter(|url| !url.is_empty()).map(String::from));
                 }
+                "--zec-indexer" => {
+                    let text = value("--zec-indexer")?;
+                    zec_indexers.extend(text.split(',').map(str::trim).filter(|url| !url.is_empty()).map(String::from));
+                }
                 "--follow" => follows.push(crate::replicas::normalize(&value("--follow")?)?),
                 "--onion" => onion = true,
                 "--local-shop" => {
@@ -275,6 +290,9 @@ impl ServeOptions {
         if !xmr_daemons.is_empty() {
             openbazaar_xmr::DaemonConfig::new(network.monero(), &xmr_daemons, proxy.clone())?;
         }
+        if !zec_indexers.is_empty() {
+            openbazaar_zec::IndexerConfig::new(network.zcash(), &zec_indexers, proxy.clone())?;
+        }
         lightning.plan(network, proxy.as_deref())?;
         Ok(Self {
             port,
@@ -294,6 +312,7 @@ impl ServeOptions {
             proxy,
             live_rates,
             xmr_daemons,
+            zec_indexers,
             lightning,
             follows,
             local_shop,
@@ -306,6 +325,14 @@ impl ServeOptions {
         (!self.xmr_daemons.is_empty()).then(|| {
             openbazaar_xmr::DaemonConfig::new(self.network.monero(), &self.xmr_daemons, self.proxy.clone())
                 .expect("parse already checked --xmr-daemon")
+        })
+    }
+
+    /// The Zcash indexers these flags select, or `None` when Zcash is off.
+    pub fn zec_config(&self) -> Option<openbazaar_zec::IndexerConfig> {
+        (!self.zec_indexers.is_empty()).then(|| {
+            openbazaar_zec::IndexerConfig::new(self.network.zcash(), &self.zec_indexers, self.proxy.clone())
+                .expect("parse already checked --zec-indexer")
         })
     }
 
@@ -665,6 +692,26 @@ mod tests {
         assert!(ServeOptions::parse(&args(&stagenet)).unwrap_err().contains("Tor"));
         let tor = ServeOptions::parse(&args(&[&main[..], &["--proxy", "socks5h://127.0.0.1:9050"]].concat())).unwrap();
         assert_eq!(tor.xmr_config().unwrap().privacy(), "remote-tor");
+    }
+
+    #[test]
+    fn zcash_is_off_by_default_and_a_remote_indexer_needs_tor() {
+        use openbazaar_zec::ZecNetwork;
+        assert_eq!(NetworkMode::Testnet4.zcash(), ZecNetwork::Testnet);
+        assert_eq!(NetworkMode::Mainnet.zcash(), ZecNetwork::Mainnet);
+        assert!(ServeOptions::parse(&[]).unwrap().zec_config().is_none(), "no default Zcash indexer");
+        let own = ServeOptions::parse(&args(&["--zec-indexer", "http://127.0.0.1:8137,https://192.168.1.9"])).unwrap();
+        let config = own.zec_config().unwrap();
+        assert_eq!(config.network, ZecNetwork::Testnet);
+        assert_eq!(config.servers.iter().map(|server| server.url.as_str()).collect::<Vec<_>>(), ["http://127.0.0.1:8137", "https://192.168.1.9:443"]);
+        assert_eq!(config.privacy(), "own-node");
+        for network in ["testnet4", "mainnet"] {
+            let remote = ["--network", network, "--zec-indexer", "https://zec.example.org"];
+            assert!(ServeOptions::parse(&args(&remote)).unwrap_err().contains("Tor"), "{network}");
+            let tor = ServeOptions::parse(&args(&[&remote[..], &["--proxy", "socks5h://127.0.0.1:9050"]].concat())).unwrap();
+            assert_eq!(tor.zec_config().unwrap().privacy(), "remote-tor");
+        }
+        assert!(ServeOptions::parse(&args(&["--zec-indexer", "zec.example.org:9067"])).is_err());
     }
 
     #[test]

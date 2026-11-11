@@ -198,6 +198,9 @@ impl Node {
             if package.ln {
                 self.ln_ready(&package.lines[0].0.seller)?;
             }
+            if package.zec {
+                self.zec_ready(&package.lines[0].0.seller)?;
+            }
         }
         let needs_address = packages.iter().any(|package| {
             package.lines.iter().any(|(listing, _)| listing.kind == ListingKind::Physical)
@@ -219,7 +222,7 @@ impl Node {
         let mut remotes = Vec::with_capacity(packages.len());
         let mut plans = Vec::with_capacity(packages.len());
         for (i, package) in packages.iter().enumerate() {
-            let remote = self.remote_package(package.lines[0].0, package.settlement == Settlement::Direct, package.xmr)?;
+            let remote = self.remote_package(package.lines[0].0, package.settlement == Settlement::Direct, package.xmr || package.zec)?;
             let plan = crate::checkout_terms::plan(&body["packages"][i], &package.lines)?;
             if plan.is_some() && remote.is_none() {
                 return Err(OrderError::Invalid("Options, shipping choices and coupons are for stores on other nodes."));
@@ -290,6 +293,8 @@ impl Node {
                 (Some(self.xmr_payment(total, &seller)?), None)
             } else if package.ln {
                 (Some(self.ln_payment(total, &id)?), None)
+            } else if package.zec {
+                (Some(self.zec_payment(total, &seller)?), None)
             } else {
                 self.payment_for(package.settlement, total, &seller, listing.id().map(|id| id.0), package.moderator)?
             };
@@ -501,6 +506,8 @@ struct PackagePlan<'a> {
     xmr: bool,
     /// Paid over Lightning (direct pay only).
     ln: bool,
+    /// Paid in Zcash, into Ironwood (direct pay only).
+    zec: bool,
     items: u64,
     shipping: u64,
 }
@@ -559,6 +566,7 @@ fn checkout_packages<'a>(catalog: &'a Catalog, body: &Value) -> Result<Vec<Packa
         };
         let xmr = crate::xmr::rail_of(package.get("rail"), settlement == Settlement::Escrow)?;
         let ln = crate::lightning::ln_rail_of(package.get("rail"), settlement == Settlement::Escrow)?;
+        let zec = crate::zec::rail_of(package.get("rail"), settlement == Settlement::Escrow)?;
         let (items, shipping) = package_shipping(&lines)?;
         plans.push(PackagePlan {
             lines,
@@ -566,6 +574,7 @@ fn checkout_packages<'a>(catalog: &'a Catalog, body: &Value) -> Result<Vec<Packa
             moderator,
             xmr,
             ln,
+            zec,
             items,
             shipping,
         });

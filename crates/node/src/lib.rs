@@ -105,6 +105,7 @@ mod wallet_lock;
 mod wallet_session;
 mod watch;
 mod xmr;
+mod zec;
 mod lightning;
 
 #[cfg(test)]
@@ -348,6 +349,8 @@ pub struct Node {
     pub(crate) lock: wallet_lock::WalletLock,
     /// Monero direct pay, off until [`Node::set_xmr_chain`].
     pub(crate) xmr: xmr::XmrNode,
+    /// Zcash direct pay, off until [`Node::set_zec_chain`].
+    pub(crate) zec: zec::ZecNode,
     /// Paired devices and the home node this node is a client of.
     pub(crate) remote: remote::Remote,
     pub(crate) ln: lightning::LnNode,
@@ -389,6 +392,7 @@ impl Node {
         let buyer_wallet = NodeWallet::open(&wallets, "node", &vault, network)?;
         let moderators = moderators::accepted_at_boot(&dir, &mut catalog, network)?;
         xmr::apply_signed_accepts(&dir, &vault, &mut catalog, network)?;
+        zec::apply_signed_accepts(&dir, &vault, &mut catalog, network)?;
         lightning::apply_signed_accepts(&dir, &vault, &mut catalog, network)?;
         let own = own_store::open(&dir, &vault, &buyer_wallet, network, &moderators)?;
         let own_store = own.id;
@@ -441,9 +445,10 @@ impl Node {
         let peers = Arc::new(peer_http::PeerLink::default());
         let escrow_peers = Arc::clone(&peers);
         let lock = wallet_lock::WalletLock::open(&dir, vault.clone(), &local.vault)?;
-        let xmr_stores: Vec<(String, String)> =
+        let demo_wallets: Vec<(String, String)> =
             store_wallets.keys().map(|seller| (seller.clone(), format!("store-{}", slug(seller)))).collect();
-        let xmr = xmr::XmrNode::open(&dir, &vault, network, &xmr_stores, local.egress.clone())?;
+        let xmr = xmr::XmrNode::open(&dir, &vault, network, &demo_wallets, local.egress.clone())?;
+        let zec = zec::ZecNode::open(&dir, &vault, network, &demo_wallets, local.egress.clone())?;
         let wallet_tip = buyer_wallet.wallet.latest_checkpoint().block_id();
         config
             .chain
@@ -493,6 +498,7 @@ impl Node {
             pay_jobs: pay_order::PayJobs::new(),
             lock,
             xmr,
+            zec,
             remote: remote::Remote::open(&dir, vault.clone())?,
             ln: lightning::LnNode::open(&dir, &vault)?,
             browser: browser::Browser::new(),
@@ -531,6 +537,7 @@ impl Node {
     pub(crate) fn rates_value(&self) -> Value {
         let mut value = self.rates.value();
         value["xmr"] = self.xmr.rate.value(&value);
+        value["zec"] = self.zec.rate.value(&value);
         value
     }
 
@@ -568,6 +575,7 @@ impl Node {
             scope.spawn(|| self.run_escrow_mail(&stop));
             scope.spawn(|| self.run_auto_lock(&stop));
             scope.spawn(|| self.run_xmr(poll, &stop));
+            scope.spawn(|| self.run_zec(poll, &stop));
             scope.spawn(|| remote::run(self, port, &stop));
             scope.spawn(|| self.run_lightning(&stop));
             scope.spawn(|| self.run_order_mail(&stop));

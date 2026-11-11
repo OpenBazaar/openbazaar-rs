@@ -80,3 +80,13 @@ test('the mobile drawer keeps utilities accessible and preferences fit a narrow 
   await page.getByRole('button', { name: 'Tools', exact: true }).click()
   await expect(page.getByRole('heading', { name: /^Tools/ })).toBeVisible()
 })
+
+test('Zcash settings say how to turn it on when the node has no indexer', async ({ page }) => {
+  await page.goto('/')
+  await page.getByRole('button', { name: 'Settings', exact: true }).click()
+  await page.getByRole('button', { name: 'Zcash', exact: true }).click()
+  await expect(page.getByRole('heading', { name: 'Zcash is off on this node', exact: true })).toBeVisible()
+  await expect(page.getByText('ob-node serve --zec-indexer http://127.0.0.1:8137', { exact: true })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Stores that take Zcash', exact: true })).toHaveCount(0)
+  await expect(page.getByRole('switch', { name: 'Marlow Goods' })).toHaveCount(0)
+})

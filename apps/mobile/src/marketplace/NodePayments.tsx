@@ -35,6 +35,7 @@ import {
   canOfferBitcoinPay,
   confirmationTarget,
   moneroDue,
+  zcashDue,
   ORDER_STATUS,
   orderPollingDone,
   payKind
@@ -403,6 +404,7 @@ export function OrderPayment({
   const due = amountDue(order.totalSats, order.receivedSats)
   const kind = payKind(order)
   const monero = moneroDue(order.payment)
+  const zcash = zcashDue(order.payment)
   const escrow = kind === 'escrow'
   const offerBitcoinPay = canOfferBitcoinPay(order, kind, due)
   const net = network.data?.network
@@ -418,7 +420,7 @@ export function OrderPayment({
     confirmations: order.confirmations,
     requiredConfirmations: confirmationTarget(
       kind,
-      monero?.confirmationsNeeded,
+      (monero ?? zcash)?.confirmationsNeeded,
       network.data?.confirmations
     ),
     dueSats: due,
@@ -500,6 +502,10 @@ export function OrderPayment({
           <span>
             Received {monero.receivedXmr} / {monero.amountXmr} XMR
           </span>
+        ) : zcash ? (
+          <span>
+            Received {zcash.receivedZec} / {zcash.amountZec} ZEC
+          </span>
         ) : (
           <span>
             Received {order.receivedSats.toLocaleString()} /{' '}
@@ -561,6 +567,24 @@ export function OrderPayment({
             </div>
           ) : monero ? null : (
             <p className='ob-page-intro'>This Monero payment could not be read.</p>
+          )}
+        </>
+      ) : kind === 'zec' ? (
+        <>
+          {view.progress && <p role='status'>{view.progress}</p>}
+          {zcash && zcash.awaiting && order.status === ORDER_STATUS.awaitingPayment ? (
+            <div className='ob-payment-options'>
+              <PaymentQr value={zcash.uri} />
+              <CopyPaymentValue label='Zcash address' value={zcash.address} />
+              <CopyPaymentValue label='Amount in ZEC' value={zcash.remainingZec} />
+              <p className='ob-page-intro'>
+                Send only {zcash.network} Zcash to this shielded address, from any Zcash wallet. It has no transparent receiver, so the wallet sends shielded and the payment lands in Ironwood. The QR code requests the remaining amount.
+              </p>
+            </div>
+          ) : zcash ? (
+            zcash.overpaidZec && <p className='ob-page-intro'>{zcash.overpaidZec} ZEC more than the price arrived.</p>
+          ) : (
+            <p className='ob-page-intro'>This Zcash payment could not be read.</p>
           )}
         </>
       ) : (
