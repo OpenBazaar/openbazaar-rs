@@ -193,6 +193,31 @@ fn a_locked_node_takes_zcash_orders_and_marks_them_paid() {
 }
 
 #[test]
+fn an_order_is_refused_until_the_wallet_has_read_the_chain_once() {
+    let dir = TempDir::new();
+    let btc = MockChain::new();
+    let zec = Arc::new(ZecChainMock::new(NetworkMode::Testnet4.zcash()));
+    let node = open(&dir.0, &btc, &zec);
+    request(&node, "PUT", "/zec/stores", &json!({"seller": "Marlow Goods", "accept": true}).to_string());
+    zec.set_offline(true);
+    assert!(node.zec_sync_once().is_err());
+    let (status, refused) = place(&node, "Paperback novel", "Marlow Goods", "direct", "zec");
+    assert!(status.contains("400") && refused["error"] == super::checkout::NOT_SYNCED, "{status} {refused}");
+    assert_eq!(node.orders().on_network().count(), 0, "no address was handed out for the first sync to skip");
+
+    zec.set_offline(false);
+    node.zec_sync_once().unwrap();
+    let (id, payment) = zec_order(&node);
+    // Paid while the indexer is away for longer than the first sync looks back.
+    zec.set_offline(true);
+    zec.pay(address(&payment), zatoshi(&payment["amountZatoshi"]));
+    zec.mine(131);
+    zec.set_offline(false);
+    node.zec_sync_once().unwrap();
+    assert_eq!(order(&node, &id)["status"], "Paid", "a wallet that has synced once goes on from where it stopped");
+}
+
+#[test]
 fn only_demo_stores_opt_in_and_the_choice_is_signed_and_kept() {
     let Setup { node, zec, btc, dir } = setup();
     let store = node.seller_store("Marlow Goods").unwrap();

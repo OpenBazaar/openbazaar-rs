@@ -21,6 +21,7 @@ use crate::watch::{direct_progress, PAID};
 use crate::{Node, OrderError};
 
 pub(crate) const ESCROW_IS_BITCOIN_ONLY: &str = "Escrow is Bitcoin-only. Pay in Zcash with direct pay.";
+pub(crate) const NOT_SYNCED: &str = "This node has not read the Zcash chain yet, so a Zcash payment could be missed. Try again in a few minutes, or pay in bitcoin.";
 
 /// `true` for the Zcash rail. Refuses Zcash with escrow.
 pub(crate) fn rail_of(value: Option<&Value>, escrow: bool) -> Result<bool, OrderError> {
@@ -62,6 +63,10 @@ impl Node {
             return Err(OrderError::Invalid("This store does not accept Zcash."));
         }
         match self.zec.store(seller) {
+            // The first sync starts a little before the tip, so it would skip a payment to an address handed out earlier.
+            Some(slot) if slot.wallet.as_ref().is_some_and(|wallet| wallet.scanned().is_none()) => {
+                return Err(OrderError::Invalid(NOT_SYNCED));
+            }
             Some(slot) if slot.wallet.is_some() => {}
             Some(_) => return Err(OrderError::Locked(crate::wallet_lock::State::Locked.as_str())),
             None => return Err(OrderError::Invalid("That seller has no wallet on this node.")),
