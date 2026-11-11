@@ -37,6 +37,8 @@ mod push;
 mod services;
 mod sync;
 mod tor;
+mod tor_counts;
+mod tor_health;
 mod tor_log;
 pub(crate) use tor::{Tor, LIGHTNING_PORT};
 mod web;
@@ -171,6 +173,7 @@ pub(crate) struct Remote {
     pairing_gateway: OnceLock<SocketAddr>,
     pub(crate) services: services::Services,
     tor: OnceLock<Result<Arc<tor::Tor>, String>>,
+    tor_health: Mutex<tor_health::Tracker>,
     lan: lan::LanState,
     home: home::HomeState,
 }
@@ -189,6 +192,7 @@ impl Remote {
             pairing_gateway: OnceLock::new(),
             services: services::Services::default(),
             tor: OnceLock::new(),
+            tor_health: Mutex::new(tor_health::Tracker::new()),
             lan: lan::LanState::default(),
             home: home::HomeState::open(dir, vault)?,
         })
@@ -260,6 +264,38 @@ impl Remote {
 
     fn running_tor(&self) -> Option<Arc<tor::Tor>> {
         self.tor.get().and_then(|tor| tor.as_ref().ok().map(Arc::clone))
+    }
+
+    /// Look at Tor, and say so on the console when its health has changed.
+    fn check_tor(&self) {
+        let Some(tor) = self.running_tor() else {
+            return;
+        };
+        // This clock stops while the machine sleeps; the time of day does not.
+        static START: OnceLock<Instant> = OnceLock::new();
+        let awake = START.get_or_init(Instant::now).elapsed().as_secs();
+        let now = now_secs();
+        let reading = tor.reading(self.services.long_lived());
+        let tally = tor_counts::COUNTS
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .tally(now);
+        let line = self
+            .tor_health
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .observe(now, awake, &reading, &tally);
+        if let Some(line) = line {
+            tor_log::print(line);
+        }
+    }
+
+    /// `tor` in `GET /remote`: see [`tor_health`]. `None` on a node without Tor.
+    pub(crate) fn tor_health(&self) -> Option<serde_json::Value> {
+        self.tor_health
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .summary()
     }
 
     /// Act as if the gateway were listening on `addr`, without a socket.
@@ -446,7 +482,8 @@ fn bind_gateways(listen: Option<SocketAddr>) -> Option<(TcpListener, TcpListener
     Some((bind(listen.unwrap_or(any))?, bind(any)?))
 }
 
-/// Retire pairing onions, finish address moves, and send push wake-ups.
+/// Retire pairing onions, finish address moves, send push wake-ups, and
+/// look at Tor's health.
 fn upkeep(node: &Node, main_port: u16, stop: &AtomicBool) {
     let mut last = Instant::now();
     while !stop.load(Ordering::Relaxed) {
@@ -461,6 +498,7 @@ fn upkeep(node: &Node, main_port: u16, stop: &AtomicBool) {
             .close_pairing_except(&live, &node.data_dir);
         services::finish_move(node);
         push::check(node, main_port);
+        node.remote.check_tor();
     }
 }
 

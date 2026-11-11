@@ -1,4 +1,5 @@
 import { ownNodeJson, paired } from "../catalog.ts";
+import { parseTorHealth, type TorHealth } from "./torHealth.ts";
 
 export type RemoteDevice = {
   id: string;
@@ -20,6 +21,8 @@ export type RemoteStatus = {
   lan: string[];
   devices: number;
   webShop: boolean;
+  /** How the node's Tor is doing. null from an older node, or one without Tor. */
+  tor: TorHealth | null;
 };
 
 export type PendingDevice = { requestId: string; name: string; platform: string; sas: string[]; sasNames: string[] };
@@ -67,6 +70,7 @@ export async function fetchRemoteStatus(): Promise<RemoteStatus> {
     lan: texts(body.lan),
     devices: count(body.devices),
     webShop: body.webShop === true,
+    tor: parseTorHealth(body.tor),
   };
 }
 
