@@ -21,6 +21,12 @@
 //! * fine: none of the above. An onion service may be unpublished for less
 //!   than that quarter of an hour; the reason then says so.
 //!
+//! Arti can go on saying "not published" long after the uploads worked. So
+//! the store's onion is not called unpublished while it has answered the
+//! node's own Tor client in the last [`UNPUBLISHED_AFTER`]
+//! ([`super::onion_check`]); the reason then says so too. That answer
+//! cancels no other rule.
+//!
 //! The counts of the last hour ([`super::tor_counts`]) are for reading,
 //! not for sorting: a hosted node logs about a hundred rounds of failed
 //! circuits an hour while it works, so no rule rests on them.
@@ -29,6 +35,7 @@
 
 use serde_json::{json, Value};
 
+use super::onion_check::{answered_ago, ROLE};
 use super::pair_log::scrub;
 use super::tor_counts::Tally;
 
@@ -80,6 +87,8 @@ pub(crate) struct Reading {
     /// Why Arti thinks it is stuck, when it does.
     pub blocked: Option<String>,
     pub directory: Option<Directory>,
+    /// When the store's onion last answered the node's own Tor client.
+    pub store_answered: Option<u64>,
     /// Each long-lived onion service: its role, Arti's state for it, and
     /// whether Arti believes it reachable.
     pub onions: Vec<(&'static str, String, bool)>,
@@ -108,9 +117,11 @@ fn classify(now: u64, waited: u64, reading: &Reading, onions: &[Onion]) -> (Stat
     let expired = reading
         .directory
         .map_or(0, |directory| now.saturating_sub(directory.valid_until));
+    let overdue = |onion: &&Onion| !onion.published && now.saturating_sub(onion.changed) >= UNPUBLISHED_AFTER;
+    let answered = |onion: &Onion| answered_ago(now, reading.store_answered).filter(|_| onion.role == ROLE);
     let unpublished = onions
         .iter()
-        .find(|onion| !onion.published && now.saturating_sub(onion.changed) >= UNPUBLISHED_AFTER);
+        .find(|onion| overdue(onion) && answered(onion).is_none());
     let trouble = if !reading.ready {
         let why = reading
             .blocked
@@ -130,9 +141,21 @@ fn classify(now: u64, waited: u64, reading: &Reading, onions: &[Onion]) -> (Stat
     } else {
         unpublished.map(|onion| {
             let unpublished_for = span(now.saturating_sub(onion.changed));
-            (State::Degraded, format!("The {} onion address has not been published on Tor for {unpublished_for}, so it may be unreachable.", onion.role))
+            let unanswered = if onion.role == ROLE {
+                format!(" and has not answered the node's own Tor client in the last {}", span(UNPUBLISHED_AFTER))
+            } else {
+                String::new()
+            };
+            (State::Degraded, format!("The {} onion address has not been published on Tor for {unpublished_for}{unanswered}, so it may be unreachable.", onion.role))
         })
     };
+    let vouched = onions
+        .iter()
+        .filter(overdue)
+        .find_map(|onion| Some((onion, answered(onion)?)));
+    if let (None, Some((onion, ago))) = (&trouble, vouched) {
+        return (State::Fine, format!("Tor is connected and its directory is current. Tor has not reported the {} onion address published for {}, but it answered the node's own Tor client {} ago.", onion.role, span(now.saturating_sub(onion.changed)), span(ago)));
+    }
     match trouble {
         None => match onions.iter().find(|onion| !onion.published) {
             None => (State::Fine, "Tor is connected, its directory is current and the node's onion addresses are published.".into()),
@@ -242,13 +265,17 @@ impl Tracker {
             .onions
             .iter()
             .map(|onion| {
-                json!({
+                let mut entry = json!({
                     "role": onion.role,
                     "published": onion.published,
                     "state": onion.state,
                     "lastPublished": onion.last_published,
                     "uploadsTimedOut": tally.timed_out_for(Some(onion.role)),
-                })
+                });
+                if onion.role == ROLE {
+                    entry["lastAnswered"] = json!(reading.store_answered);
+                }
+                entry
             })
             .collect();
         self.summary = Some(json!({
@@ -283,8 +310,14 @@ impl Tracker {
             format!("{} old", span(now.saturating_sub(directory.valid_after)))
         });
         let published = self.onions.iter().filter(|onion| onion.published).count();
+        let unpublished: String = self
+            .onions
+            .iter()
+            .filter(|onion| !onion.published)
+            .map(|onion| format!(", {} is {}", onion.role, onion.state))
+            .collect();
         Some(format!(
-            "health: {word}: {reason} (directory {age}; onion addresses published {published} of {}; last hour: {} uploads timed out, {} rejected, {} rounds of failed circuits)",
+            "health: {word}: {reason} (directory {age}; onion addresses published {published} of {}{unpublished}; last hour: {} uploads timed out, {} rejected, {} rounds of failed circuits)",
             self.onions.len(),
             tally.timed_out(),
             tally.rejected,
@@ -316,6 +349,7 @@ mod tests {
             ready: true,
             blocked: None,
             directory: directory(valid_after),
+            store_answered: None,
             onions: vec![
                 ("remote access", "Running".into(), true),
                 (
@@ -378,6 +412,24 @@ mod tests {
         assert_eq!(sorted(long_up, T + 57 * HOUR, &good), State::CutOff);
         let (_, reason) = classify(T + 57 * HOUR, long_up, &good, &[]);
         assert_eq!(reason, "The node's copy of the Tor directory expired 54 h 0 min ago and has not been replaced, so its onion addresses are probably unreachable.");
+        // The store answering the node's own Tor client cancels none of this:
+        // that dial uses the same directory.
+        let answering = |now: u64| Reading {
+            store_answered: Some(now),
+            ..reading(T, "Bootstrapping")
+        };
+        let stale = T + 3 * HOUR + STALE_AFTER;
+        assert_eq!(sorted(long_up, stale, &answering(stale)), State::Fine);
+        assert_eq!(sorted(long_up, stale + 1, &answering(stale + 1)), State::Degraded);
+        let gone = T + 3 * HOUR + CUT_OFF_AFTER + 1;
+        assert_eq!(sorted(long_up, gone, &answering(gone)), State::CutOff);
+        let (_, reason) = classify(stale + 1, long_up, &answering(stale + 1), &[]);
+        assert_eq!(reason, "The node's copy of the Tor directory expired 30 min ago and has not been replaced yet.");
+        let offline = Reading {
+            ready: false,
+            ..answering(T)
+        };
+        assert_eq!(sorted(long_up, T, &offline), State::CutOff);
     }
 
     #[test]
@@ -419,7 +471,44 @@ mod tests {
             last_published: None,
         }];
         let (_, reason) = classify(T + 20 * MIN, HOUR, &down, &onions);
-        assert_eq!(reason, "The store onion address has not been published on Tor for 20 min, so it may be unreachable.");
+        assert_eq!(reason, "The store onion address has not been published on Tor for 20 min and has not answered the node's own Tor client in the last 15 min, so it may be unreachable.");
+    }
+
+    #[test]
+    fn the_store_is_degraded_only_when_it_has_not_answered_the_node_either() {
+        let now = T + HOUR;
+        let doubted = |answered: Option<u64>| Reading {
+            store_answered: answered,
+            ..reading(T, "Bootstrapping")
+        };
+        let recent = Some(now - UNPUBLISHED_AFTER + 1);
+        let old = Some(now - UNPUBLISHED_AFTER);
+        assert_eq!(sorted(UNPUBLISHED_AFTER, now, &doubted(recent)), State::Fine);
+        assert_eq!(sorted(3 * HOUR, now, &doubted(recent)), State::Fine);
+        assert_eq!(sorted(UNPUBLISHED_AFTER, now, &doubted(old)), State::Degraded);
+        assert_eq!(sorted(UNPUBLISHED_AFTER, now, &doubted(None)), State::Degraded);
+        assert_eq!(sorted(UNPUBLISHED_AFTER - 1, now, &doubted(None)), State::Fine);
+
+        let onion = |role, changed| Onion {
+            role,
+            state: "Bootstrapping".into(),
+            published: false,
+            changed,
+            last_published: None,
+        };
+        let store = [onion("store", now - 35 * MIN)];
+        let (state, reason) = classify(now, HOUR, &doubted(Some(now - 2 * MIN)), &store);
+        assert_eq!(state, State::Fine);
+        assert_eq!(reason, "Tor is connected and its directory is current. Tor has not reported the store onion address published for 35 min, but it answered the node's own Tor client 2 min ago.");
+        let (state, reason) = classify(now, HOUR, &doubted(Some(now - 16 * MIN)), &store);
+        assert_eq!(state, State::Degraded);
+        assert_eq!(reason, "The store onion address has not been published on Tor for 35 min and has not answered the node's own Tor client in the last 15 min, so it may be unreachable.");
+
+        // Only the store is dialled: its answer says nothing of remote access.
+        let both = [onion("remote access", now - 20 * MIN), onion("store", now - 35 * MIN)];
+        let (state, reason) = classify(now, HOUR, &doubted(Some(now - 2 * MIN)), &both);
+        assert_eq!(state, State::Degraded);
+        assert_eq!(reason, "The remote access onion address has not been published on Tor for 20 min, so it may be unreachable.");
     }
 
     #[test]
@@ -513,7 +602,7 @@ mod tests {
                 format!("health: degraded: The node's copy of the Tor directory expired 30 min ago and has not been replaced yet. (directory 3 h 30 min old; {numbers}"),
                 format!("health: cut off: The node's copy of the Tor directory expired 3 h 0 min ago and has not been replaced, so its onion addresses are probably unreachable. (directory 6 h 0 min old; {numbers}"),
                 format!("health: fine again after 5 h 29 min: Tor is connected, its directory is current and the node's onion addresses are published. (directory 30 min old; {numbers}"),
-                "health: degraded: The store onion address has not been published on Tor for 15 min, so it may be unreachable. (directory 55 min old; onion addresses published 1 of 2; last hour: 16 uploads timed out, 3 rejected, 80 rounds of failed circuits)".to_string(),
+                "health: degraded: The store onion address has not been published on Tor for 15 min and has not answered the node's own Tor client in the last 15 min, so it may be unreachable. (directory 55 min old; onion addresses published 1 of 2, store is Recovering; last hour: 16 uploads timed out, 3 rejected, 80 rounds of failed circuits)".to_string(),
                 format!("health: fine again after 15 min: Tor is connected, its directory is current and the node's onion addresses are published. (directory 1 h 10 min old; {numbers}"),
             ]
         );
@@ -527,6 +616,7 @@ mod tests {
         let now = T + 2 * HOUR;
         let look = Reading {
             blocked: Some(format!("could not reach {onion}.onion")),
+            store_answered: Some(now - 30),
             ..reading(T, "DegradedUnreachable")
         };
         let tally = Tally {
@@ -550,7 +640,7 @@ mod tests {
                 "directory": { "validAfter": T, "freshUntil": T + HOUR, "validUntil": T + 3 * HOUR, "ageSecs": 2 * HOUR, "fresh": false, "valid": true },
                 "onions": [
                     { "role": "remote access", "published": true, "state": "Running", "lastPublished": now, "uploadsTimedOut": 0 },
-                    { "role": "store", "published": false, "state": "DegradedUnreachable", "lastPublished": now - MIN, "uploadsTimedOut": 7 },
+                    { "role": "store", "published": false, "state": "DegradedUnreachable", "lastPublished": now - MIN, "uploadsTimedOut": 7, "lastAnswered": now - 30 },
                 ],
                 "lastHour": { "uploadsTimedOut": 9, "uploadsRejected": 3, "circuitFailures": 26 },
             })

@@ -25,6 +25,7 @@ mod home_link;
 mod home_pair;
 mod lan;
 mod local_http;
+mod onion_check;
 mod pair_cli;
 mod pair_http;
 mod pair_log;
@@ -275,7 +276,7 @@ impl Remote {
         static START: OnceLock<Instant> = OnceLock::new();
         let awake = START.get_or_init(Instant::now).elapsed().as_secs();
         let now = now_secs();
-        let reading = tor.reading(self.services.long_lived());
+        let reading = tor.reading(self.services.long_lived(), self.services.store_answered());
         let tally = tor_counts::COUNTS
             .lock()
             .unwrap_or_else(|err| err.into_inner())

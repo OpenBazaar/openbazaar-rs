@@ -17,6 +17,7 @@ use arti_client::{BootstrapBehavior, TorClient};
 use tor_rtcompat::PreferredRuntime;
 use tormail::{Discovery, OnionAddress, OnionForward};
 
+use super::onion_check::Answered;
 use super::tor_health::{Directory, Reading};
 
 pub(crate) const ADMIN_PORT: u16 = 80;
@@ -100,7 +101,7 @@ impl Tor {
         )
         .map_err(|err| err.to_string())?;
         let task = self.runtime.spawn(run);
-        Ok(Service { forward, task, watch: None })
+        Ok(Service { forward, task, watch: None, answered: Answered::default() })
     }
 
     /// Follow a new pairing onion and set `reached` once this client has
@@ -110,9 +111,17 @@ impl Tor {
         service.watch = Some(self.runtime.spawn(watch));
     }
 
+    /// Dial the store onion from this client while Arti does not say it is
+    /// published: see [`super::onion_check`].
+    pub(crate) fn watch_store(&self, service: &mut Service) {
+        let watch = super::onion_check::watch(Arc::clone(&self.client), service.forward.clone(), service.answered.clone());
+        service.watch = Some(self.runtime.spawn(watch));
+    }
+
     /// What Arti says of its connection and its directory right now, with
-    /// `onions` as the services report themselves: see [`super::tor_health`].
-    pub(crate) fn reading(&self, onions: Vec<(&'static str, String, bool)>) -> Reading {
+    /// `onions` as the services report themselves and `store_answered` as
+    /// the store's [`Service`] has it: see [`super::tor_health`].
+    pub(crate) fn reading(&self, onions: Vec<(&'static str, String, bool)>, store_answered: Option<u64>) -> Reading {
         let status = self.client.bootstrap_status();
         let secs = |time: SystemTime| {
             time.duration_since(UNIX_EPOCH)
@@ -136,6 +145,7 @@ impl Tor {
             ready: status.ready_for_traffic(),
             blocked: status.blocked().map(|blockage| blockage.to_string()),
             directory,
+            store_answered,
             onions,
         }
     }
@@ -212,6 +222,9 @@ pub(crate) struct Service {
     pub forward: OnionForward,
     task: tokio::task::JoinHandle<()>,
     watch: Option<tokio::task::JoinHandle<()>>,
+    /// When this client's own dial of the onion last got an answer. Only
+    /// [`Tor::watch_store`] dials.
+    pub answered: Answered,
 }
 
 impl Drop for Service {
