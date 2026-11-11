@@ -160,6 +160,7 @@ mod tests {
     };
 
     use super::*;
+    use crate::harness::TempDir;
 
     fn secret() -> bitcoin::secp256k1::SecretKey {
         bitcoin::secp256k1::SecretKey::from_slice(&[5; 32]).unwrap()
@@ -198,19 +199,11 @@ mod tests {
         .unwrap()
     }
 
-    struct Dir(PathBuf);
-    impl Drop for Dir {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
-
-    fn ledger() -> (Dir, TermsLedger) {
-        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
-        let dir = std::env::temp_dir().join(format!("ob-terms-{nanos}-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let ledger = TermsLedger::open(&dir, Vault::from_key(&[3; 32])).unwrap();
-        (Dir(dir), ledger)
+    fn ledger() -> (TempDir, TermsLedger) {
+        let dir = TempDir::new();
+        std::fs::create_dir_all(&dir.0).unwrap();
+        let ledger = TermsLedger::open(&dir.0, Vault::from_key(&[3; 32])).unwrap();
+        (dir, ledger)
     }
 
     fn line(listing: &Listing, variant: usize, quantity: u32, offer: Vec<u8>) -> TermsLine {

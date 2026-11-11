@@ -1572,6 +1572,7 @@ mod tests {
                 },
                 accepts_xmr: false,
                 accepts_lightning: false,
+                accepts_zec: false,
             },
             &secret,
         )
@@ -1683,6 +1684,7 @@ mod tests {
                 },
                 accepts_xmr: false,
                 accepts_lightning: false,
+                accepts_zec: false,
             },
             &secret,
         )
@@ -1806,6 +1808,7 @@ mod tests {
                 },
                 accepts_xmr: false,
                 accepts_lightning: false,
+                accepts_zec: false,
             },
             &secret,
         )
@@ -1949,6 +1952,7 @@ mod tests {
                 },
                 accepts_xmr: false,
                 accepts_lightning: false,
+                accepts_zec: false,
             },
             &secret,
         )
@@ -2057,7 +2061,7 @@ mod tests {
             openbazaar_protocol::StoreDetails {
                 mailbox_key: [4u8; 32], onion: onion('e'), moderators: vec![],
                 profile: openbazaar_protocol::StoreProfile { tagline: String::new(), about: String::new(), avatar: None, banner: None, shipping_policy: String::new(), returns_policy: String::new(), processing_time: String::new(), ships_to: vec![], created_on: 20261109 },
-                accepts_xmr: false, accepts_lightning: false,
+                accepts_xmr: false, accepts_lightning: false, accepts_zec: false,
             },
             &secret,
         )

@@ -227,6 +227,7 @@ fn fixture_store(draft: &FixtureStore, moderator: [u8; 32]) -> Store {
         },
         accepts_xmr: false,
         accepts_lightning: false,
+        accepts_zec: false,
     };
     Store::sign(
         draft.name,

@@ -121,6 +121,7 @@ pub(crate) fn store_summary(catalog: &Catalog, store: &Store, own: Option<&Store
         "avatar": profile.and_then(|p| p.avatar).map(|hash| hex(&hash)),
         "contentRating": rating_name(store.rating),
         "acceptsXmr": store.details.as_ref().is_some_and(|details| details.accepts_xmr),
+        "acceptsZec": store.details.as_ref().is_some_and(|details| details.accepts_zec),
         "listingCount": catalog.listings.iter().filter(|listing| listing.store_id == store.id).count(),
         "verified": store.verify().is_ok(),
         "own": own == Some(&store.id),

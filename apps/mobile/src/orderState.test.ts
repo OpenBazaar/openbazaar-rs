@@ -10,7 +10,8 @@ import {
   ORDER_STATUS,
   orderPollingDone,
   ordersSettled,
-  payKind
+  payKind,
+  zcashDue
 } from './orderState.ts'
 
 const bitcoin = {
@@ -97,4 +98,67 @@ test('a bitcoin receipt stays on the bitcoin rail when the node omits rail', () 
   assert.equal(parsed.payment?.rail, 'btc')
   assert.equal(parsed.payment?.monero, null)
   assert.equal(payKind(parsed), 'btc')
+})
+
+test('a Zcash order keeps its shielded address, needs 30 confirmations, and does not offer bitcoin', () => {
+  const parsed = parseBuyerOrder({
+    id: 'order-3',
+    checkoutId: 'check-3',
+    created: 1,
+    seller: 'Marlow Goods',
+    storeId: 'aa',
+    totalSats: 18_000,
+    settlement: 'direct',
+    status: 'Awaiting payment',
+    lines: [{ listingHash: 'bb', title: 'Paperback novel', quantity: 1, priceSats: 18_000 }],
+    payment: {
+      rail: 'zec',
+      network: 'testnet',
+      pool: 'ironwood',
+      zcashAddress: 'utest1example',
+      addressIndex: 4,
+      uri: 'zcash:utest1example?amount=0.01463415',
+      amountZatoshi: '1463415',
+      amountZec: '0.01463415',
+      receivedZatoshi: '463415',
+      remainingZatoshi: '1000000',
+      overpaidZatoshi: '0',
+      satsPerZec: 1_229_360,
+      priceSats: 18_000,
+      confirmationsNeeded: 30
+    }
+  })
+  assert.equal(parsed.payment?.rail, 'zec')
+  assert.equal(parsed.payment?.address, '', 'no bitcoin address, so the bitcoin pay path never sees it')
+  assert.equal(parsed.payment?.monero, null)
+  assert.equal(parsed.payment?.zcash?.address, 'utest1example')
+  const due = zcashDue(parsed.payment)
+  assert.deepEqual(
+    [due?.amountZec, due?.receivedZec, due?.remainingZec, due?.overpaidZec, due?.awaiting],
+    ['0.01463415', '0.00463415', '0.01', null, true]
+  )
+  assert.equal(due?.uri, 'zcash:utest1example?amount=0.01', 'after part arrived, the QR asks for the rest')
+  const fresh = zcashDue({ rail: 'zec', zcash: { ...parsed.payment!.zcash!, receivedZatoshi: '0' } })
+  assert.equal(fresh?.uri, 'zcash:utest1example?amount=0.01463415', "nothing arrived yet: the node's own URI")
+  assert.equal(payKind(parsed), 'zec')
+  assert.equal(canOfferBitcoinPay(parsed, payKind(parsed), parsed.totalSats), false)
+  assert.equal(confirmationTarget('zec', due?.confirmationsNeeded, 1), 30)
+  assert.equal(confirmationTarget('zec', undefined, 1), 30, 'the Zcash default, not the bitcoin one')
+  assert.equal(moneroDue(parsed.payment), null)
+
+  const paid = zcashDue({ rail: 'zec', zcash: { ...parsed.payment!.zcash!, receivedZatoshi: '1463422', overpaidZatoshi: '7' } })
+  assert.deepEqual([paid?.awaiting, paid?.remainingZec, paid?.overpaidZec], [false, '0', '0.00000007'])
+  assert.equal(zcashDue({ rail: 'zec', zcash: null }), null, 'an unreadable Zcash payment is not guessed at')
+  const unreadable = parseBuyerOrder({
+    id: 'order-4',
+    created: 1,
+    seller: 'Marlow Goods',
+    storeId: 'aa',
+    totalSats: 1,
+    settlement: 'direct',
+    status: 'Awaiting payment',
+    payment: { rail: 'zec', network: 'testnet4', zcashAddress: 'utest1', uri: 'zcash:utest1', amountZatoshi: '1' }
+  })
+  assert.equal(unreadable.payment?.zcash, null, 'testnet4 is the bitcoin network, not a Zcash one')
+  assert.equal(payKind(unreadable), 'zec', 'still not offered as bitcoin')
 })

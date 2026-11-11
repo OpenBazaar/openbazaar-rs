@@ -31,6 +31,7 @@ import {
   canOfferBitcoinPay,
   confirmationTarget,
   moneroDue,
+  zcashDue,
   ORDER_STATUS,
   orderPollingDone,
   payKind
@@ -308,6 +309,7 @@ export function NativeOrderPayment({
   const due = amountDue(order.totalSats, order.receivedSats),
     kind = payKind(order),
     monero = moneroDue(order.payment),
+    zcash = zcashDue(order.payment),
     escrow = kind === 'escrow',
     offerBitcoinPay = canOfferBitcoinPay(order, kind, due)
   const [busy, setBusy] = useState(false),
@@ -321,7 +323,7 @@ export function NativeOrderPayment({
     confirmations: order.confirmations,
     requiredConfirmations: confirmationTarget(
       kind,
-      monero?.confirmationsNeeded,
+      (monero ?? zcash)?.confirmationsNeeded,
       network.data?.confirmations
     ),
     dueSats: due,
@@ -407,6 +409,10 @@ export function NativeOrderPayment({
         <Text style={s.body}>
           Received {monero.receivedXmr} / {monero.amountXmr} XMR
         </Text>
+      ) : zcash ? (
+        <Text style={s.body}>
+          Received {zcash.receivedZec} / {zcash.amountZec} ZEC
+        </Text>
       ) : (
         <Text style={s.body}>
           Received {order.receivedSats.toLocaleString()} /{' '}
@@ -451,6 +457,22 @@ export function NativeOrderPayment({
             </>
           ) : monero ? null : (
             <Text style={s.body}>This Monero payment could not be read.</Text>
+          )}
+        </>
+      ) : kind === 'zec' ? (
+        <>
+          {view.progress ? <Text style={s.body}>{view.progress}</Text> : null}
+          {zcash && zcash.awaiting && order.status === ORDER_STATUS.awaitingPayment ? (
+            <>
+              <Qr value={zcash.uri} />
+              <Copy label='Zcash address' value={zcash.address} />
+              <Copy label='Amount in ZEC' value={zcash.remainingZec} />
+              <Text style={s.body}>
+                Send only {zcash.network} Zcash to this shielded address, from any Zcash wallet.
+              </Text>
+            </>
+          ) : zcash ? null : (
+            <Text style={s.body}>This Zcash payment could not be read.</Text>
           )}
         </>
       ) : (
