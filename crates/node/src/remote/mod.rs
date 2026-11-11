@@ -54,6 +54,7 @@ mod tests;
 #[cfg(test)]
 mod vectors;
 
+use std::io::IsTerminal;
 use std::net::{SocketAddr, TcpListener};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -427,12 +428,8 @@ pub(crate) fn run(node: &Node, main_port: u16, stop: &AtomicBool) {
         scope.spawn(move || upkeep(node, main_port, stop));
         if remote.devices().list().is_empty() {
             std::thread::sleep(Duration::from_millis(300));
-            if let Some(code) = remote.issue_code(None) {
-                pair_cli::announce(
-                    &remote.link_for(&code),
-                    &code,
-                    "No device is paired yet. Pair your first device with this code",
-                );
+            if let Some(notice) = pair_cli::first_run_notice(remote, std::io::stderr().is_terminal()) {
+                eprintln!("{notice}");
             }
         }
         gateway::serve(node, admin, gateway::Entry::Admin, main_port, stop);

@@ -214,10 +214,9 @@ fn serve(args: &[String]) -> ExitCode {
             return ExitCode::from(2);
         }
     }
-    // First boot only. The token file in the data dir is kept, and a
-    // later start does not print it again.
-    if let Some(token) = node.fresh_pairing_token() {
-        eprintln!("ob-node pairing token: {token}");
+    // First boot only: where the token file is. The token is not printed.
+    if let Some(notice) = node.fresh_pairing_token_notice() {
+        eprintln!("{notice}");
     }
     if options.onion {
         node.listen_onion(options.data_dir().join("tor"));
