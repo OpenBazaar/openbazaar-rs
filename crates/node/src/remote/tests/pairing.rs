@@ -567,6 +567,38 @@ fn the_page_hears_how_a_codes_onion_is_doing() {
 }
 
 #[test]
+fn a_first_run_code_is_made_and_shown_only_on_a_terminal() {
+    use super::super::pair_cli::first_run_notice;
+    use super::super::pairing::LINK_PREFIX;
+    let (_dir, node) = home();
+    let live = || node.remote.pairing().live(Instant::now());
+
+    // Stderr is a log: a service manager's or a hosting platform's.
+    let logged = first_run_notice(&node.remote, false).unwrap();
+    assert!(live().is_empty(), "no code is made for a log to hold");
+    assert!(!logged.contains(LINK_PREFIX), "{logged}");
+    assert!(logged.contains("`ob-node pair`"), "the log says how to get a code: {logged}");
+
+    // Stderr is a terminal: the person in front of it gets the code.
+    let shown = first_run_notice(&node.remote, true).unwrap();
+    let codes = live();
+    assert_eq!(codes.len(), 1);
+    let link = node.remote.link_for(&codes[0]);
+    assert!(shown.contains(&words(&codes[0].secret).join(" ")), "the words");
+    assert!(shown.contains(&link) && link.starts_with(LINK_PREFIX), "the link");
+    let onion = pairing_onion(&codes[0].secret);
+    for secret in [
+        words(&codes[0].secret).join(" "),
+        base32(&codes[0].secret),
+        encode_hex(&codes[0].secret),
+        link,
+        onion.trim_end_matches(".onion").to_string(),
+    ] {
+        assert!(!logged.contains(&secret), "the log line holds part of a code");
+    }
+}
+
+#[test]
 fn the_pairing_log_tells_what_happened_and_never_holds_the_code() {
     use super::super::pair_log::tests::LINES;
     let (_dir, node) = home();

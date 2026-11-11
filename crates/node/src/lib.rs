@@ -542,12 +542,19 @@ impl Node {
         &self.pairing_token
     }
 
-    /// The token, only when this process just wrote it.
+    /// One line for the console, only when this process just wrote the token:
+    /// where the token is kept, and never the token.
     ///
-    /// `main` prints that value once. A later boot loads the same file and
-    /// returns `None`, so the secret is not written to the log again.
-    pub fn fresh_pairing_token(&self) -> Option<&str> {
-        self.pairing_fresh.then_some(self.pairing_token.as_str())
+    /// The console can be a log that others read and keep (a service
+    /// manager's, a hosting platform's). Whatever needs the token reads the
+    /// file: the desktop app, `ob-node pair`, `ob-node devices`.
+    pub fn fresh_pairing_token_notice(&self) -> Option<String> {
+        self.pairing_fresh.then(|| {
+            format!(
+                "ob-node: pairing token saved in {} (a secret; it is not shown here)",
+                self.data_dir.join("pairing.token").display()
+            )
+        })
     }
 
     /// Serve HTTP on this thread. The chain watcher (every `poll`), the pay
@@ -772,8 +779,8 @@ pub fn catalog_value(catalog: &Catalog) -> Result<Value, ProtocolError> {
 
 /// Shared secret for `POST /orders`, stored as `pairing.token` in the node data dir.
 ///
-/// The first boot creates it. [`Node::fresh_pairing_token`] is how the process
-/// learns that it should print the token once. The desktop app reads the file
+/// The first boot creates it. [`Node::fresh_pairing_token_notice`] is what the
+/// process prints then: the file's path, not the token. The desktop app reads the file
 /// and hands the token to its webview; a browser shop trades a one-time code
 /// from the terminal for it at `POST /pair`.
 fn load_pairing(dir: &Path) -> Result<(String, bool), Error> {

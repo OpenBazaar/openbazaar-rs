@@ -14,8 +14,9 @@ use qrcode::render::unicode::Dense1x2;
 use qrcode::QrCode;
 use serde_json::{json, Value};
 
-use super::pairing::{Code, CODE_LIFETIME};
+use super::pairing::CODE_LIFETIME;
 use super::protocol::words;
+use super::Remote;
 use crate::ServeOptions;
 
 const PAIR_USAGE: &str =
@@ -305,21 +306,41 @@ pub(crate) fn qr_svg(link: &str) -> String {
         .unwrap_or_default()
 }
 
-/// Print a code on stderr (the service log): the words, the link, and its QR.
-pub(crate) fn announce(link: &str, code: &Code, lead: &str) {
-    print_code(link, &words(&code.secret).join(" "), lead);
+const FIRST_RUN_LEAD: &str = "No device is paired yet. Pair your first device with this code";
+const FIRST_RUN_NO_TERMINAL: &str = "ob-node: No device is paired yet. A pairing code is a secret, so it is shown only on a terminal and is not written to this log. Run `ob-node pair` in a terminal on the node's machine, with the same port, --network, and --data-dir as `serve`: it shows a code and asks you to approve the device.";
+
+/// What a node with no paired device says on stderr when it starts.
+///
+/// On a terminal it makes a code and shows the words, the link, and its QR.
+/// Stderr that is not a terminal is a log that others may read and keep (a
+/// service manager's, a hosting platform's): no code is made, and the log
+/// says how to get one. `None` when a code could not be made.
+pub(crate) fn first_run_notice(remote: &Remote, terminal: bool) -> Option<String> {
+    if !terminal {
+        return Some(FIRST_RUN_NO_TERMINAL.to_string());
+    }
+    let code = remote.issue_code(None)?;
+    Some(code_text(
+        &remote.link_for(&code),
+        &words(&code.secret).join(" "),
+        FIRST_RUN_LEAD,
+    ))
 }
 
 fn print_code(link: &str, code_words: &str, lead: &str) {
+    eprintln!("{}", code_text(link, code_words, lead));
+}
+
+fn code_text(link: &str, code_words: &str, lead: &str) -> String {
     let qr = QrCode::new(link.as_bytes())
         .map(|qr| qr.render::<Dense1x2>().quiet_zone(true).build())
         .unwrap_or_default();
-    eprintln!(
+    format!(
         "ob-node: {lead} (one use, valid {} minutes):\n\n    {code_words}\n\n{qr}\n    {link}\n\n\
          ob-node: In the OpenBazaar app choose Connect to my home node, then scan the QR or type the words.\n\
          ob-node: Approve the device here, in the app on a paired device, or on the setup page on your home network.",
         CODE_LIFETIME.as_secs() / 60
-    );
+    )
 }
 
 pub(crate) fn announce_request(name: &str, platform: &str, sas: &[&str], names: &[&str]) {

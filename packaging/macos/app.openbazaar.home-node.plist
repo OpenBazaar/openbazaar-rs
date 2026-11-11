@@ -9,8 +9,8 @@
     mkdir -p ~/OpenBazaarHome && cp -r ob-node web ~/OpenBazaarHome/
     sed "s#/Users/USER#$HOME#g" app.openbazaar.home-node.plist > ~/Library/LaunchAgents/app.openbazaar.home-node.plist
     launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/app.openbazaar.home-node.plist
-    cat ~/Library/Logs/ob-home-node.log     # onion address and first pairing code
-    ~/OpenBazaarHome/ob-node pair --data-dir ~/OpenBazaarHome/data
+    cat ~/Library/Logs/ob-home-node.log     # onion address
+    ~/OpenBazaarHome/ob-node pair --data-dir ~/OpenBazaarHome/data     # first pairing code
 
   Pair from a phone on the same network at http://openbazaar.local:8790/
   (allow incoming connections if the macOS firewall asks). Delete the "lan"

@@ -6,8 +6,8 @@
 #   install -d -m 700 /etc/openbazaar
 #   install -m 600 ob-node.env.example /etc/openbazaar/ob-node.env   # then set the passphrase
 #   cp ob-node.service /etc/systemd/system/ && systemctl enable --now ob-node
-#   journalctl -u ob-node        # shows the onion address and the first pairing code
-#   sudo -u openbazaar /opt/openbazaar/ob-node pair --data-dir /var/lib/openbazaar
+#   journalctl -u ob-node        # shows the onion address
+#   sudo -u openbazaar /opt/openbazaar/ob-node pair --data-dir /var/lib/openbazaar   # first pairing code
 #
 # --lan opens port 8790 on the home network: an encrypted channel for paired
 # devices, mDNS (openbazaar.local), and the setup page at
