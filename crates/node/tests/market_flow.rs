@@ -31,6 +31,10 @@ fn two_real_nodes_trade_on_loopback() {
     let listing = open_store(&seller);
     setup(&buyer);
     order_and_answer(&seller, &buyer, &seller.url, &listing, limit);
+    for node in [&seller, &buyer] {
+        let client = node.data_dir().join("tor-client");
+        assert!(!client.exists(), "the {} node opened the Tor client that dials the introductions", node.name);
+    }
 }
 
 #[test]
