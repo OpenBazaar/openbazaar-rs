@@ -1,0 +1,36 @@
+name: tor flow
+
+# Real node processes over real Tor. This is slow and depends on the Tor
+# network, so it runs nightly and on demand and is never a required check.
+# A pull request runs it only when it changes this file or the market flow test.
+on:
+  schedule:
+    - cron: "23 6 * * *"
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/tor-flow.yml
+      - crates/node/tests/market_flow.rs
+      - crates/node/tests/common/**
+
+permissions:
+  contents: read
+
+jobs:
+  # The id is the one the cargo test job in ci.yml has, so rust-cache restores
+  # that job's cache. This job builds less, so it does not save over it.
+  rust:
+    name: nodes over tor
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: false
+      # The ignored tests that need nothing but Tor, each run whatever the
+      # other does. introductions.rs needs an operator key file and stays out.
+      # No -p: the whole workspace resolves the same features as ci.yml, so
+      # the cached build is the one used.
+      - run: cargo test --locked --no-fail-fast --test onion_letter --test market_flow -- --ignored --nocapture
