@@ -25,14 +25,14 @@ use std::time::{Duration, Instant};
 
 use arti_client::TorClient;
 use tor_rtcompat::Runtime;
-use tormail::OnionForward;
+use tormail::{OnionAddress, OnionForward};
 
 use super::pair_log::{line, scrub};
 use super::tor::ADMIN_PORT;
 
 /// How long the page holds the QR for an onion the node has not reached.
 pub(crate) const SLOW_AFTER: Duration = Duration::from_secs(120);
-const CHECK_TIMEOUT: Duration = Duration::from_secs(45);
+pub(crate) const CHECK_TIMEOUT: Duration = Duration::from_secs(45);
 const CHECK_PAUSE: Duration = Duration::from_secs(3);
 /// Any HTTP answer shows the whole path works. This one makes no request.
 const CHECK: &[u8] = b"GET /pair/status/self-check HTTP/1.1\r\nHost: pairing\r\n\r\n";
@@ -107,6 +107,19 @@ async fn report(forward: &OnionForward, label: &str, started: Instant, reached: 
     }
 }
 
+/// Dial `onion` once with the node's own Tor client, on circuits of its
+/// own, so the descriptor is fetched from the directories again. `Ok` when
+/// an HTTP answer came back within [`CHECK_TIMEOUT`].
+pub(crate) async fn dial<R: Runtime>(client: &TorClient<R>, onion: &OnionAddress) -> Result<(), String> {
+    let dial = tormail::exchange(client, onion, ADMIN_PORT, CHECK, 4096, true);
+    match tokio::time::timeout(CHECK_TIMEOUT, dial).await {
+        Ok(Ok(answer)) if answer.starts_with(b"HTTP/1.1 ") => Ok(()),
+        Ok(Ok(_)) => Err("the answer was not HTTP".to_string()),
+        Ok(Err(err)) => Err(err.to_string()),
+        Err(_) => Err(format!("no answer in {}s", CHECK_TIMEOUT.as_secs())),
+    }
+}
+
 async fn check<R: Runtime>(
     client: &TorClient<R>,
     forward: &OnionForward,
@@ -119,13 +132,7 @@ async fn check<R: Runtime>(
     };
     let mut failed = String::new();
     for tries in 1.. {
-        let dial = tormail::exchange(client, &onion, ADMIN_PORT, CHECK, 4096, true);
-        let failure = match tokio::time::timeout(CHECK_TIMEOUT, dial).await {
-            Ok(Ok(answer)) if answer.starts_with(b"HTTP/1.1 ") => None,
-            Ok(Ok(_)) => Some("the answer was not HTTP".to_string()),
-            Ok(Err(err)) => Some(err.to_string()),
-            Err(_) => Some(format!("no answer in {}s", CHECK_TIMEOUT.as_secs())),
-        };
+        let failure = dial(client, &onion).await.err();
         let after = started.elapsed().as_secs();
         let Some(reason) = failure else {
             reached.store(true, Ordering::Relaxed);

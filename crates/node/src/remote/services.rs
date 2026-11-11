@@ -160,6 +160,12 @@ impl Services {
         admin.into_iter().chain(sale).chain(lightning).collect()
     }
 
+    /// When the node's own Tor client last got an answer from the store
+    /// onion. For [`super::tor_health`].
+    pub(crate) fn store_answered(&self) -> Option<u64> {
+        self.sale().as_ref().and_then(|service| service.answered.at())
+    }
+
     pub(crate) fn set_clients(&self, clients: &[(String, String)]) {
         for (generation, service) in self.admin().iter() {
             if let Err(err) = service.forward.set_clients(clients) {
@@ -172,7 +178,8 @@ impl Services {
     /// under the nickname `ob-sale`, so the address survives a restart.
     pub(crate) fn open_sale(&self, tor: &Tor, target: SocketAddr) {
         match tor.serve("ob-sale", None, Discovery::Open, target) {
-            Ok(service) => {
+            Ok(mut service) => {
+                tor.watch_store(&mut service);
                 *self.sale_target() = Some(target);
                 *self.sale() = Some(service);
             }
