@@ -137,6 +137,40 @@ fn an_order_waits_for_all_of_it_then_is_seen_then_paid_after_thirty_confirmation
 }
 
 #[test]
+fn a_quote_lapses_after_an_hour_and_a_late_payment_is_recorded_but_not_marked_paid() {
+    let Setup { node, zec, btc: _btc, dir: _dir } = setup();
+    let (late_id, late) = zec_order(&node);
+    let (seen_id, seen) = zec_order(&node);
+    let left = late["expiresAt"].as_u64().unwrap() - crate::buyer_orders::now_secs();
+    assert!((3590..=3600).contains(&left), "{left}");
+    zec.pay(address(&seen), zatoshi(&seen["amountZatoshi"]));
+    zec.mine(1);
+    node.zec_sync_once().unwrap();
+    assert_eq!(order(&node, &seen_id)["status"], "Payment seen");
+
+    // The hour passes.
+    for id in [&late_id, &seen_id] {
+        node.orders().update(id, |order| order.payment.as_mut().unwrap()["expiresAt"] = json!(1)).unwrap();
+    }
+    node.zec_sync_once().unwrap();
+    let lapsed = order(&node, &late_id);
+    assert_eq!((&lapsed["status"], &lapsed["payment"]["expired"]), (&json!("Awaiting payment"), &json!(true)));
+    zec.mine(CONFIRMATIONS);
+    node.zec_sync_once().unwrap();
+    let kept = order(&node, &seen_id);
+    assert_eq!((&kept["status"], &kept["payment"]["expired"]), (&json!("Paid"), &Value::Null), "seen in full before the hour was up");
+
+    zec.pay(address(&late), zatoshi(&late["amountZatoshi"]));
+    zec.mine(CONFIRMATIONS);
+    node.zec_sync_once().unwrap();
+    let after = order(&node, &late_id);
+    assert_eq!((&after["status"], &after["payment"]["expired"]), (&json!("Awaiting payment"), &json!(true)), "not marked paid at the old price");
+    assert_eq!(after["payment"]["receivedZatoshi"], late["amountZatoshi"], "the money that arrived is on the order");
+    assert_eq!(after["payment"]["remainingZatoshi"], "0");
+    assert_eq!(after["txids"].as_array().unwrap().len(), 1);
+}
+
+#[test]
 fn only_ironwood_pays_an_order() {
     let Setup { node, zec, btc: _btc, dir: _dir } = setup();
     let (id, payment) = zec_order(&node);

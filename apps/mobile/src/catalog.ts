@@ -231,6 +231,10 @@ export type ZcashPaymentFields = {
   receivedZatoshi: string;
   overpaidZatoshi: string;
   confirmationsNeeded: number;
+  /** Unix seconds when the quote lapses. `null` on an order placed before quotes expired. */
+  expiresAt: number | null;
+  /** The node let the quote lapse. It records what arrives but does not mark the order paid. */
+  expired: boolean;
 };
 
 export type DirectPayment = {
@@ -1052,6 +1056,8 @@ function parseZcash(payment: Record<string, unknown>): ZcashPaymentFields | null
     receivedZatoshi: amountDigits(payment.receivedZatoshi) ?? "0",
     overpaidZatoshi: amountDigits(payment.overpaidZatoshi) ?? "0",
     confirmationsNeeded: typeof needed === "number" && Number.isSafeInteger(needed) && needed > 0 ? needed : 30,
+    expiresAt: typeof payment.expiresAt === "number" && Number.isSafeInteger(payment.expiresAt) ? payment.expiresAt : null,
+    expired: payment.expired === true,
   };
 }
 

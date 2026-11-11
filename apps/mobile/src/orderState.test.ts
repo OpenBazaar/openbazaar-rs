@@ -149,6 +149,23 @@ test('a Zcash order keeps its shielded address, needs 30 confirmations, and does
   const paid = zcashDue({ rail: 'zec', zcash: { ...parsed.payment!.zcash!, receivedZatoshi: '1463422', overpaidZatoshi: '7' } })
   assert.deepEqual([paid?.awaiting, paid?.remainingZec, paid?.overpaidZec], [false, '0', '0.00000007'])
   assert.equal(zcashDue({ rail: 'zec', zcash: null }), null, 'an unreadable Zcash payment is not guessed at')
+  assert.deepEqual([due?.expiresAt, due?.expired], [null, false], 'an order from before quotes expired never lapses')
+  const quoted = { ...parsed.payment!.zcash!, expiresAt: 2000 }
+  assert.equal(zcashDue({ rail: 'zec', zcash: quoted }, 1_999_999)?.expired, false)
+  assert.equal(zcashDue({ rail: 'zec', zcash: quoted }, 2_000_000)?.expired, true, 'the hour is up: stop asking for it')
+  assert.equal(zcashDue({ rail: 'zec', zcash: { ...quoted, receivedZatoshi: '1463415' } }, 2_000_000)?.expired, false, 'seen in full: the node decides')
+  assert.equal(zcashDue({ rail: 'zec', zcash: { ...quoted, receivedZatoshi: '1463415', expired: true } }, 0)?.expired, true, 'the node let it lapse')
+  const lapsed = parseBuyerOrder({
+    id: 'order-5',
+    created: 1,
+    seller: 'Marlow Goods',
+    storeId: 'aa',
+    totalSats: 1,
+    settlement: 'direct',
+    status: 'Awaiting payment',
+    payment: { rail: 'zec', network: 'testnet', zcashAddress: 'utest1', uri: 'zcash:utest1', amountZatoshi: '1', expiresAt: 2000, expired: true }
+  })
+  assert.deepEqual([lapsed.payment?.zcash?.expiresAt, lapsed.payment?.zcash?.expired], [2000, true])
   const unreadable = parseBuyerOrder({
     id: 'order-4',
     created: 1,
