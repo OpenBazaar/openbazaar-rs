@@ -246,21 +246,13 @@ impl StockLedger {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::harness::TempDir;
 
-    struct Dir(PathBuf);
-
-    impl Drop for Dir {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
-
-    fn ledger() -> (Dir, StockLedger) {
-        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
-        let dir = std::env::temp_dir().join(format!("ob-stock-{nanos}-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let ledger = StockLedger::open(&dir, Vault::from_key(&[7; 32])).unwrap();
-        (Dir(dir), ledger)
+    fn ledger() -> (TempDir, StockLedger) {
+        let dir = TempDir::new();
+        std::fs::create_dir_all(&dir.0).unwrap();
+        let ledger = StockLedger::open(&dir.0, Vault::from_key(&[7; 32])).unwrap();
+        (dir, ledger)
     }
 
     const TEE: Key = (ListingId([9; 16]), VariantId([1; 8]));
