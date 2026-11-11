@@ -4,7 +4,7 @@
 //!
 //! | route | answer |
 //! |---|---|
-//! | `GET /remote` | whether remote access is on, the onion, LAN addresses, node id, counts |
+//! | `GET /remote` | whether remote access is on, the onion, LAN addresses, node id, counts, and `tor`: the health of the node's Tor |
 //! | `GET /remote/devices` | `{devices, thisDevice}` |
 //! | `DELETE /remote/devices/{id}` | removes it and every device it paired; `{"rotate": true}` also moves the onion |
 //! | `POST /remote/pairing` | a one-time code for one more device: words, link, QR |
@@ -164,6 +164,10 @@ fn status(node: &Node, this: Option<&str>) -> Value {
     });
     if let Some(onion) = remote.services.sale_onion() {
         body["saleOnion"] = json!(onion);
+    }
+    // How Tor is doing, on a node that runs it: see `tor_health`.
+    if let Some(tor) = remote.tor_health() {
+        body["tor"] = tor;
     }
     body
 }

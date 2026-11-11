@@ -47,6 +47,12 @@ impl OnionForward {
         format!("{:?}", self.service.status().state())
     }
 
+    /// Arti believes clients can reach the service: it has introduction
+    /// points and has uploaded its descriptor.
+    pub fn is_published(&self) -> bool {
+        self.service.status().state().is_fully_reachable()
+    }
+
     /// The latest problem Arti reports with the service, for logs.
     pub fn problem(&self) -> Option<String> {
         let status = self.service.status();

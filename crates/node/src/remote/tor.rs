@@ -10,12 +10,14 @@ use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use arti_client::config::TorClientConfigBuilder;
 use arti_client::{BootstrapBehavior, TorClient};
 use tor_rtcompat::PreferredRuntime;
 use tormail::{Discovery, OnionAddress, OnionForward};
+
+use super::tor_health::{Directory, Reading};
 
 pub(crate) const ADMIN_PORT: u16 = 80;
 /// Virtual port a Lightning peer dials on the `ob-ln` onion. LDK binds a
@@ -106,6 +108,36 @@ impl Tor {
     pub(crate) fn watch_pairing(&self, service: &mut Service, label: String, reached: Arc<AtomicBool>) {
         let watch = super::pair_ready::watch(Arc::clone(&self.client), service.forward.clone(), label, reached);
         service.watch = Some(self.runtime.spawn(watch));
+    }
+
+    /// What Arti says of its connection and its directory right now, with
+    /// `onions` as the services report themselves: see [`super::tor_health`].
+    pub(crate) fn reading(&self, onions: Vec<(&'static str, String, bool)>) -> Reading {
+        let status = self.client.bootstrap_status();
+        let secs = |time: SystemTime| {
+            time.duration_since(UNIX_EPOCH)
+                .map_or(0, |since| since.as_secs())
+        };
+        // Arti hands out its directory until three days after it expired.
+        let netdir = self
+            .client
+            .dirmgr()
+            .ok()
+            .and_then(|dirmgr| dirmgr.timely_netdir().ok());
+        let directory = netdir.map(|netdir| {
+            let lifetime = netdir.lifetime();
+            Directory {
+                valid_after: secs(lifetime.valid_after()),
+                fresh_until: secs(lifetime.fresh_until()),
+                valid_until: secs(lifetime.valid_until()),
+            }
+        });
+        Reading {
+            ready: status.ready_for_traffic(),
+            blocked: status.blocked().map(|blockage| blockage.to_string()),
+            directory,
+            onions,
+        }
     }
 
     /// Let this client find the restricted service `onion`.

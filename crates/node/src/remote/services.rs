@@ -56,6 +56,17 @@ fn pairing_nickname(code_id: &str) -> String {
     format!("ob-pair-{code_id}")
 }
 
+/// What a long-lived service is for, as the node's Tor health names it.
+/// Pairing and reply onions come and go, and have no role.
+pub(crate) fn role(nickname: &str) -> Option<&'static str> {
+    match nickname {
+        "ob-sale" => Some("store"),
+        "ob-ln" => Some("lightning"),
+        name if name == "ob-home" || name.starts_with("ob-home-") => Some("remote access"),
+        _ => None,
+    }
+}
+
 /// Slug for one reply onion. Ten seed bytes keep it unique and a valid slug.
 fn reply_nickname(seed: &[u8; 32]) -> String {
     let hex: String = seed.iter().take(10).map(|byte| format!("{byte:02x}")).collect();
@@ -134,6 +145,19 @@ impl Services {
         self.admin()
             .last()
             .map(|(_, service)| service.forward.state())
+    }
+
+    /// Each long-lived service: its role, Arti's state for it, and whether
+    /// Arti believes it reachable. For [`super::tor_health`].
+    pub(crate) fn long_lived(&self) -> Vec<(&'static str, String, bool)> {
+        let look = |nickname: &str, service: &Service| {
+            let forward = &service.forward;
+            role(nickname).map(|role| (role, forward.state(), forward.is_published()))
+        };
+        let admin = self.admin().last().and_then(|(_, service)| look("ob-home", service));
+        let sale = self.sale().as_ref().and_then(|service| look("ob-sale", service));
+        let lightning = self.lightning().as_ref().and_then(|service| look("ob-ln", service));
+        admin.into_iter().chain(sale).chain(lightning).collect()
     }
 
     pub(crate) fn set_clients(&self, clients: &[(String, String)]) {
