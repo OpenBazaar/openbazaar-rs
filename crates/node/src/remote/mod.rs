@@ -27,6 +27,8 @@ mod lan;
 mod local_http;
 mod pair_cli;
 mod pair_http;
+mod pair_log;
+mod pair_ready;
 mod pairing;
 mod passkeys;
 mod policy;
@@ -35,6 +37,7 @@ mod push;
 mod services;
 mod sync;
 mod tor;
+mod tor_log;
 pub(crate) use tor::{Tor, LIGHTNING_PORT};
 mod web;
 mod web_origin;
@@ -270,10 +273,18 @@ impl Remote {
         if !self.enabled() {
             return None;
         }
-        let code = self.pairing().issue(by, Instant::now());
+        let maker = by.clone().unwrap_or_else(|| "the node itself".into());
+        let mut code = self.pairing().issue(by, Instant::now());
         if let (Some(tor), Some(target)) = (self.running_tor(), self.pairing_gateway.get()) {
-            self.services.open_pairing(&tor, &code, *target);
+            if let Some(reached) = self.services.open_pairing(&tor, &code, *target) {
+                code = self.pairing().watch_onion(&code.id, reached).unwrap_or(code);
+            }
         }
+        let onion = match code.onion(Instant::now()) {
+            Some(_) => "its onion is starting",
+            None => "it has no onion (Tor is off, or the onion could not start)",
+        };
+        pair_log::line(format!("{} made by {maker}; {onion}", pair_log::label(&code)));
         Some(code)
     }
 

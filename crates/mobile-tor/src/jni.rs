@@ -1,6 +1,7 @@
 //! JNI for Kotlin: `expo.modules.obtor.ObTorNative`.
 //! Errors come back as a `java.io.IOException`.
 
+use std::ffi::{c_char, c_int, CString};
 use std::path::Path;
 use std::time::Duration;
 
@@ -18,12 +19,26 @@ fn fail(env: &mut JNIEnv, err: String) {
     let _ = env.throw_new("java/io/IOException", err);
 }
 
+#[link(name = "log")]
+extern "C" {
+    fn __android_log_write(priority: c_int, tag: *const c_char, text: *const c_char) -> c_int;
+}
+
+/// One line of `log.rs` in logcat, at INFO under the tag `ObTor`.
+fn logcat(line: &str) {
+    const INFO: c_int = 4;
+    if let Ok(line) = CString::new(line) {
+        unsafe { __android_log_write(INFO, c"ObTor".as_ptr(), line.as_ptr()) };
+    }
+}
+
 #[no_mangle]
 pub extern "system" fn Java_expo_modules_obtor_ObTorNative_start(
     mut env: JNIEnv,
     _: JClass,
     data_dir: JString,
 ) {
+    crate::log::set_sink(Box::new(logcat));
     if let Err(err) = read(&mut env, &data_dir).and_then(|dir| crate::start(Path::new(&dir))) {
         fail(&mut env, err);
     }

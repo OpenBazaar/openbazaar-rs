@@ -23,6 +23,7 @@ use crate::Error;
 /// The local side does all authentication: this layer only proves to the
 /// caller that it reached the holder of the onion key. Dropping the handle
 /// stops the service once the forwarding future is dropped too.
+#[derive(Clone)]
 pub struct OnionForward {
     service: Arc<RunningOnionService>,
     nickname: HsNickname,
@@ -44,6 +45,12 @@ impl OnionForward {
     /// Arti's view of the service, for logs and the status route.
     pub fn state(&self) -> String {
         format!("{:?}", self.service.status().state())
+    }
+
+    /// The latest problem Arti reports with the service, for logs.
+    pub fn problem(&self) -> Option<String> {
+        let status = self.service.status();
+        status.current_problem().map(|problem| format!("{problem:?}"))
     }
 
     /// Replace the clients of a restricted service. Arti republishes the

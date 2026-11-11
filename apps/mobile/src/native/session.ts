@@ -8,7 +8,7 @@ import { batchBody, emptyQueue, enqueue, nextBatch, settleBatch, type Mutation, 
 import { applySync, emptyReplica, haveOf, type Replica, type SyncChanges } from "../homeNode/replica.ts";
 import { setNativeHomeFetch } from "../homeNode/transport.ts";
 import { bodyBytes, headerOf, responseFromAnswer } from "./bytes.ts";
-import { channels, ensureTor, insertDiscoveryKey, torStatus } from "./channels.ts";
+import { channels, ensureTor, insertDiscoveryKey, log, torStatus } from "./channels.ts";
 import { forgetEverything, loadPairing, readSealed, savePairing, writeSealed, type Pairing } from "./storage.ts";
 
 // The paired node as the app sees it: one client, the replica, the queue of
@@ -93,6 +93,7 @@ async function nativeFetch(path: string, init: RequestInit = {}): Promise<Respon
 /** Load the pairing, the replica, and the queue, and start Tor. Safe to call again. */
 export async function boot(): Promise<void> {
   const pairing = await loadPairing();
+  log(`session: ${pairing ? "paired with a home node" : "not paired"}`);
   if (!pairing) {
     client = null;
     setNativeHomeFetch(null);

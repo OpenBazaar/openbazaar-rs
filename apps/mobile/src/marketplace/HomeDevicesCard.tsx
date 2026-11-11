@@ -4,11 +4,13 @@ import {
   createPairingCode,
   decidePending,
   fetchDevices,
+  fetchPairing,
   fetchPending,
   fetchRemoteStatus,
   revokeDevice,
   type BrowserCredential,
   type PairingCode,
+  type PairingOnion,
   type PendingDevice,
   type RemoteDevice,
   type RemoteStatus,
@@ -30,7 +32,7 @@ export function HomeDevicesCard({ presentation = "default" }: { presentation?: "
   const [status, setStatus] = useState<RemoteStatus | null>(null);
   const [devices, setDevices] = useState<RemoteDevice[] | null>(null);
   const [pending, setPending] = useState<PendingDevice[]>([]);
-  const [offer, setOffer] = useState<{ code: PairingCode; expires: number } | null>(null);
+  const [offer, setOffer] = useState<{ code: PairingCode; expires: number; onion: PairingOnion; since: number } | null>(null);
   const [credential, setCredential] = useState<BrowserCredential | null>(null);
   // The name being typed for a new Tor Browser, or null while that form is closed.
   const [naming, setNaming] = useState<string | null>(null);
@@ -50,7 +52,15 @@ export function HomeDevicesCard({ presentation = "default" }: { presentation?: "
   useEffect(() => { void refresh(); }, [refresh]);
   useEffect(() => {
     if (!offer) return;
-    const timer = setInterval(() => void fetchPending().then(setPending, () => undefined), 4000);
+    const poll = () => void fetchPairing().then(({ pending, codes }) => {
+      setPending(pending);
+      const now = codes.find(code => code.codeId === offer.code.codeId);
+      if (!now || now.onion === offer.onion) return;
+      // The node starts the code's ten minutes when it stops holding the code for its onion.
+      const expires = offer.onion === "publishing" ? Date.now() + now.expiresInSecs * 1000 : offer.expires;
+      setOffer(shown => (shown === offer ? { ...offer, onion: now.onion, expires } : shown));
+    }, () => undefined);
+    const timer = setInterval(poll, offer.onion === "publishing" ? 2000 : 4000);
     return () => clearInterval(timer);
   }, [offer]);
 
@@ -69,7 +79,7 @@ export function HomeDevicesCard({ presentation = "default" }: { presentation?: "
   const pairAnother = () => act(async () => {
     const code = await createPairingCode();
     setCredential(null);
-    setOffer({ code, expires: Date.now() + code.expiresInSecs * 1000 });
+    setOffer({ code, expires: Date.now() + code.expiresInSecs * 1000, onion: code.onion, since: Date.now() });
   }, "A pairing code could not be made.");
 
   const browser = (name: string) => act(async () => {
@@ -111,7 +121,7 @@ export function HomeDevicesCard({ presentation = "default" }: { presentation?: "
         </div>
       </div>
     </form>}
-    {offer && <PairingOffer code={offer.code} expires={offer.expires} onDone={() => { setOffer(null); void refresh(); }}/>}
+    {offer && <PairingOffer code={offer.code} expires={offer.expires} onion={offer.onion} since={offer.since} onDone={() => { setOffer(null); void refresh(); }}/>}
     {credential && <BrowserCredentialOffer credential={credential} onDone={() => setCredential(null)}/>}
   </>;
   // On the desk the pairing code is in a modal dialog, which covers the card: show the requests in it.

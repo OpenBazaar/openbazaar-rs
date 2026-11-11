@@ -4179,6 +4179,7 @@ dependencies = [
  "tokio",
  "tor-rtcompat",
  "tormail",
+ "tracing",
  "ureq",
  "url",
  "x25519-dalek 2.0.1",

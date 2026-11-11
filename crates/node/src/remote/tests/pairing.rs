@@ -1,12 +1,15 @@
 //! Pairing: codes, proofs, emoji, approval, discovery keys.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use serde_json::json;
 
 use super::super::lan;
+use super::super::pair_ready::{Onion, SLOW_AFTER};
 use super::super::pairing::{Pairing, Refusal, CODE_LIFETIME};
-use super::super::protocol::{decode_base32, parse_words, words};
+use super::super::protocol::{base32, decode_base32, pairing_onion, parse_words, words};
 use super::*;
 use crate::harness::request;
 
@@ -476,4 +479,138 @@ fn words_carry_the_secret_with_a_checksum() {
         "a swap fails the checksum"
     );
     assert!(parse_words(&list[..7].join(" ")).is_none());
+}
+
+#[test]
+fn a_code_waits_for_its_onion_without_spending_its_ten_minutes() {
+    let start = Instant::now();
+    let secs = Duration::from_secs;
+    let mut pairing = Pairing::default();
+    let onion_at = |pairing: &mut Pairing, id: &str, at: Instant| {
+        let code = pairing.live(at).into_iter().find(|code| code.id == id)?;
+        Some((code.onion(at), code.expires_in(at)))
+    };
+
+    // Without Tor there is no onion to wait for.
+    let plain = pairing.issue(None, start);
+    assert_eq!(onion_at(&mut pairing, &plain.id, start), Some((None, CODE_LIFETIME)));
+
+    // The node reaches the onion after 40 s: the ten minutes start then.
+    let reached = Arc::new(AtomicBool::new(false));
+    let id = pairing.issue(None, start).id;
+    let code = pairing.watch_onion(&id, Arc::clone(&reached)).unwrap();
+    assert_eq!(code.onion(start), Some(Onion::Publishing));
+    assert_eq!(
+        onion_at(&mut pairing, &id, start + secs(39)).unwrap().0,
+        Some(Onion::Publishing)
+    );
+    reached.store(true, Ordering::Relaxed);
+    let ready = start + secs(40);
+    assert_eq!(onion_at(&mut pairing, &id, ready), Some((Some(Onion::Ready), CODE_LIFETIME)));
+    assert!(onion_at(&mut pairing, &id, ready + CODE_LIFETIME - secs(1)).is_some());
+    assert!(onion_at(&mut pairing, &id, ready + CODE_LIFETIME).is_none(), "and end ten minutes later");
+
+    // The node never reaches it: after the limit the code is shown anyway,
+    // with its full ten minutes, and a late answer does not start them again.
+    let reached = Arc::new(AtomicBool::new(false));
+    let id = pairing.issue(None, start).id;
+    pairing.watch_onion(&id, Arc::clone(&reached)).unwrap();
+    let slow = start + SLOW_AFTER;
+    assert_eq!(
+        onion_at(&mut pairing, &id, slow - secs(1)).unwrap().0,
+        Some(Onion::Publishing)
+    );
+    assert_eq!(onion_at(&mut pairing, &id, slow), Some((Some(Onion::Slow), CODE_LIFETIME)));
+    reached.store(true, Ordering::Relaxed);
+    assert_eq!(
+        onion_at(&mut pairing, &id, slow + secs(60)),
+        Some((Some(Onion::Ready), CODE_LIFETIME - secs(60)))
+    );
+
+    // Nobody asks about a code for five minutes (a code made with `ob-node
+    // pair`): its ten minutes still began no later than the limit.
+    let id = pairing.issue(None, start).id;
+    pairing.watch_onion(&id, Arc::new(AtomicBool::new(true))).unwrap();
+    assert_eq!(
+        onion_at(&mut pairing, &id, start + secs(300)),
+        Some((Some(Onion::Ready), CODE_LIFETIME - (secs(300) - SLOW_AFTER)))
+    );
+
+    // A device that asks while the page still holds the code is not turned away.
+    let reached = Arc::new(AtomicBool::new(false));
+    let code = pairing.issue(None, start);
+    pairing.watch_onion(&code.id, reached).unwrap();
+    let ask = Ask::phone("Early");
+    assert!(pairing
+        .request(ask.fields.clone(), &ask.fields.proof(&code.secret), start + secs(5))
+        .is_ok());
+}
+
+#[test]
+fn the_page_hears_how_a_codes_onion_is_doing() {
+    let (_dir, node) = home();
+    let (status_line, offer) = request(&node, "POST", "/remote/pairing", "{}");
+    assert!(status_line.contains("200"), "{status_line} {offer}");
+    assert!(offer["onion"].is_null(), "no Tor in this test, so nothing to wait for");
+    assert_eq!(offer["lan"], false);
+    let id = offer["codeId"].as_str().unwrap();
+    let codes = || request(&node, "GET", "/remote/pending", "").1["codes"].clone();
+    assert_eq!(codes()[0]["codeId"], id);
+    assert!(codes()[0]["onion"].is_null());
+
+    // As when Tor is up and the code has an onion.
+    let reached = Arc::new(AtomicBool::new(false));
+    node.remote.pairing().watch_onion(id, Arc::clone(&reached)).unwrap();
+    assert_eq!(codes()[0]["onion"], "publishing");
+    reached.store(true, Ordering::Relaxed);
+    assert_eq!(codes(), json!([{ "codeId": id, "onion": "ready", "expiresInSecs": 600 }]));
+}
+
+#[test]
+fn the_pairing_log_tells_what_happened_and_never_holds_the_code() {
+    use super::super::pair_log::tests::LINES;
+    let (_dir, node) = home();
+    LINES.take();
+    let code = node.remote.issue_code(None).unwrap();
+    let link = node.remote.link_for(&code);
+    let (status_line, asked) = Ask::phone("Field phone").send(&node, &code.secret);
+    assert!(status_line.contains("202"), "{status_line}");
+    pair_http::decide(&node, asked["requestId"].as_str().unwrap(), true).unwrap();
+    let rejected = node.remote.issue_code(None).unwrap();
+    let (_, asked) = Ask::phone("Stranger").send(&node, &rejected.secret);
+    pair_http::decide(&node, asked["requestId"].as_str().unwrap(), false).unwrap();
+    let unused = node.remote.issue_code(None).unwrap();
+    node.remote.pairing().live(Instant::now() + CODE_LIFETIME);
+
+    let lines = LINES.take();
+    let onion = pairing_onion(&code.secret);
+    let short = format!("{}…{}.onion", &onion[..6], &onion[52..56]);
+    let device = &node.remote.devices().list()[0].id.clone();
+    assert_eq!(
+        lines,
+        [
+            format!("code {} (onion {short}) made by the node itself; it has no onion (Tor is off, or the onion could not start)", code.id),
+            format!("code {}: a request from \"Field phone\" (ios) arrived by a pairing onion; it waits for the owner", code.id),
+            format!("code {}: the request from \"Field phone\" was approved as device {device}", code.id),
+            lines[3].clone(),
+            format!("code {}: a request from \"Stranger\" (ios) arrived by a pairing onion; it waits for the owner", rejected.id),
+            format!("code {}: the request from \"Stranger\" was rejected", rejected.id),
+            lines[6].clone(),
+            format!("code {} expired unused", unused.id),
+        ]
+    );
+    let story = lines.join("\n");
+    for code in [&code, &rejected, &unused] {
+        let onion = pairing_onion(&code.secret);
+        for secret in [
+            words(&code.secret).join(" "),
+            base32(&code.secret),
+            encode_hex(&code.secret),
+            node.remote.link_for(code),
+            onion.trim_end_matches(".onion").to_string(),
+        ] {
+            assert!(!story.contains(&secret), "a pairing line holds part of a code");
+        }
+    }
+    assert!(link.contains(&base32(&code.secret)), "the link is the secret these lines leave out");
 }

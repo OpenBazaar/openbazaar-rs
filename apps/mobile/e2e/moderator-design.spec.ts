@@ -234,3 +234,52 @@ test('a device that asks to pair is approved in the pairing dialog that covers t
   await expect(dialog).toHaveCount(0)
   expect(decisions).toEqual([{ approve: true }])
 })
+
+// Fixture values, never a real code.
+const pairingCode = { codeId: 'c0de'.repeat(3), words: ['one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight'], link: `openbazaar://pair?v=2&s=${'a'.repeat(16)}&k=${'90'.repeat(32)}&o=${'a'.repeat(56)}`, expiresInSecs: 600 }
+
+test('a new pairing code is held until a phone can reach it, and shown with a warning when that takes too long', async ({ page }) => {
+  await desk(page)
+  let onion = 'publishing'
+  await page.route('**/remote/pairing', route => { onion = 'publishing'; return route.fulfill({ json: { ...pairingCode, onion, lan: false } }) })
+  // The node starts the code's ten minutes when it stops holding it, so the page shows that time and not the one from before the wait.
+  await page.route('**/remote/pending', route => route.fulfill({ json: { pending: [], codes: [{ codeId: pairingCode.codeId, onion, expiresInSecs: 480 }] } }))
+  await page.getByRole('button', { name: 'Access & devices', exact: true }).click()
+  await page.getByRole('button', { name: 'Pair a new device', exact: true }).click()
+  const offer = page.getByRole('dialog', { name: 'Pair a new device', exact: true }).getByRole('group', { name: 'New pairing code', exact: true })
+  const qr = offer.getByRole('img', { name: 'Pairing code as a QR code', exact: true })
+  await expect(offer.getByRole('heading')).toContainText('Publishing a private address for this code')
+  await expect(offer.getByRole('status')).toContainText('The QR code and the eight words will show here as soon as it does')
+  await expect(offer.getByRole('heading')).toContainText(/0:0[1-9]/)
+  await expect(qr).toHaveCount(0)
+  await expect(offer.locator('.ob-pair-words')).toHaveCount(0)
+  await expect(offer.getByText('Pairing link', { exact: true })).toHaveCount(0)
+
+  onion = 'ready'
+  await expect(qr).toBeVisible()
+  await expect(offer.getByRole('heading')).toContainText(/Pair within (8:00|7:5\d)/)
+  await expect(offer.locator('.ob-pair-words li')).toHaveText(pairingCode.words)
+  await expect(offer.getByRole('note')).toHaveCount(0)
+
+  // The node gives up waiting after its limit: the code is shown, with what to expect.
+  await offer.getByRole('button', { name: 'Done', exact: true }).click()
+  await page.getByRole('button', { name: 'Pair a new device', exact: true }).click()
+  await expect(offer.getByRole('heading')).toContainText('Publishing a private address for this code')
+  await expect(qr).toHaveCount(0)
+  onion = 'slow'
+  await expect(qr).toBeVisible()
+  await expect(offer.getByRole('note')).toContainText('taking unusually long to appear')
+  await expect(offer.locator('.ob-pair-words li')).toHaveCount(8)
+})
+
+test('a pairing code that also works on the local network is shown at once', async ({ page }) => {
+  await desk(page)
+  await page.route('**/remote/pairing', route => route.fulfill({ json: { ...pairingCode, link: `${pairingCode.link}&l=192.168.1.20:8790`, onion: 'publishing', lan: true } }))
+  await page.route('**/remote/pending', route => route.fulfill({ json: { pending: [], codes: [{ codeId: pairingCode.codeId, onion: 'publishing', expiresInSecs: 600 }] } }))
+  await page.getByRole('button', { name: 'Access & devices', exact: true }).click()
+  await page.getByRole('button', { name: 'Pair a new device', exact: true }).click()
+  const offer = page.getByRole('dialog', { name: 'Pair a new device', exact: true }).getByRole('group', { name: 'New pairing code', exact: true })
+  await expect(offer.getByRole('img', { name: 'Pairing code as a QR code', exact: true })).toBeVisible()
+  await expect(offer.getByRole('heading')).toContainText(/Pair within (10:00|9:5\d)/)
+  await expect(offer.getByRole('note')).toContainText('On the same network as your node this code works now')
+})
