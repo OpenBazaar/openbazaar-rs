@@ -52,8 +52,10 @@ While no device is paired, the node shows a pairing code in three places:
 - the **setup page**, `http://openbazaar.local:8790/` from any device on the
   home network (with `--lan`): a QR code, the eight words, and Approve/Reject
   buttons for waiting devices;
-- the **console** or service log (`journalctl -u ob-node`, the launchd log,
-  `docker compose logs`): the words, the link, and the QR drawn in text;
+- the **console**, when the node runs in a terminal: the words, the link, and
+  the QR drawn in text. When its output is not a terminal (systemd, launchd,
+  Docker), the node makes no code at startup and the service log says to run
+  `ob-node pair` instead;
 - `ob-node pair --data-dir DIR` in a terminal on the node, which also asks
   you to approve the device there. `--lan-page` puts the setup page up again
   for 10 minutes.
@@ -200,9 +202,12 @@ Does not protect against:
   right after first start, or run without `--lan` and pair from the console.
   After the first pairing the page shows only a code when you ask for one
   (`--lan-page`), and approval needs the node or a paired device.
-- **Pairing codes in logs.** The first-run code goes to the service log. It
-  works once and for 10 minutes, and a request made with it still needs your
-  approval on the node.
+- **Pairing codes on a terminal.** The first-run code and `ob-node pair` show
+  a code to whoever can read that terminal. It works once and for 10 minutes,
+  and a request made with it still needs your approval on the node. A service
+  log gets no code: with no terminal the node makes none at startup, and you
+  run `ob-node pair --data-dir DIR` for one. The node's pairing token is never
+  printed, only the path of its file (`pairing.token` under the data dir).
 - **Pairing denial of service.** Anyone who can reach a pairing service (the
   LAN, or someone who saw the words) can send bad proofs and pause pairing for
   the rest of a 10-minute window. Paired devices are unaffected.
