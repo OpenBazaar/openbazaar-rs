@@ -23,6 +23,7 @@ mod chain;
 mod checkout_terms;
 mod chain_backend;
 mod chain_filters;
+mod admission;
 mod directory;
 mod coin_locks;
 mod coin_provenance;
@@ -36,6 +37,7 @@ mod reviews_http;
 mod egress;
 mod escrow_bump;
 mod escrow_buyer;
+mod escrow_choice;
 mod escrow_fee;
 mod escrow_fixture;
 mod escrow_http;
@@ -59,6 +61,9 @@ mod listing_drafts;
 mod live_stock;
 mod mail_drop;
 mod media;
+mod moderator_http;
+mod moderator_identity;
+mod moderators;
 mod network;
 mod onion_mail;
 mod order_mail;
@@ -111,6 +116,8 @@ mod harness;
 mod lock_tests;
 #[cfg(test)]
 mod lock_receive_tests;
+#[cfg(test)]
+mod multinode_moderator_tests;
 #[cfg(test)]
 mod multinode_tests;
 #[cfg(test)]
@@ -383,8 +390,7 @@ impl Node {
         let vault = Vault::open(&dir, &local.vault)?;
         let wallets = dir.join("wallets");
         let buyer_wallet = NodeWallet::open(&wallets, "node", &vault, network)?;
-        let moderators: Vec<[u8; 32]> =
-            (!catalog.moderator.name.is_empty()).then_some(catalog.moderator.id).into_iter().collect();
+        let moderators = moderators::accepted_at_boot(&dir, &mut catalog, network)?;
         xmr::apply_signed_accepts(&dir, &vault, &mut catalog, network)?;
         zec::apply_signed_accepts(&dir, &vault, &mut catalog, network)?;
         lightning::apply_signed_accepts(&dir, &vault, &mut catalog, network)?;
@@ -392,8 +398,12 @@ impl Node {
         let own_store = own.id;
         catalog.stores.retain(|store| store.id != own_store);
         catalog.stores.extend(own.record);
-        let seed_replica = directory::Replica::open(&dir)?;
-        seed_replica.apply(&mut catalog, own_store);
+        let mut seed_replica = directory::Replica::open(&dir)?;
+        let live = admission::live_admissions(config.chain.as_ref(), network, seed_replica.head().as_ref(), &seed_replica.admissions());
+        seed_replica.set_live(live);
+        // Nothing replicated is in the catalog yet: every store in it is one
+        // this node serves itself, and a pull never removes those.
+        seed_replica.apply(&mut catalog, own_store, |_| true, |admission| seed_replica.is_live(admission));
         let own_secret = wallet_keys::vault_tier_seed(&buyer_wallet.dir, &vault, network)?.map(|seed| seed.store_signing_key());
         let secrets: Vec<_> = catalog
             .stores
@@ -539,12 +549,19 @@ impl Node {
         &self.pairing_token
     }
 
-    /// The token, only when this process just wrote it.
+    /// One line for the console, only when this process just wrote the token:
+    /// where the token is kept, and never the token.
     ///
-    /// `main` prints that value once. A later boot loads the same file and
-    /// returns `None`, so the secret is not written to the log again.
-    pub fn fresh_pairing_token(&self) -> Option<&str> {
-        self.pairing_fresh.then_some(self.pairing_token.as_str())
+    /// The console can be a log that others read and keep (a service
+    /// manager's, a hosting platform's). Whatever needs the token reads the
+    /// file: the desktop app, `ob-node pair`, `ob-node devices`.
+    pub fn fresh_pairing_token_notice(&self) -> Option<String> {
+        self.pairing_fresh.then(|| {
+            format!(
+                "ob-node: pairing token saved in {} (a secret; it is not shown here)",
+                self.data_dir.join("pairing.token").display()
+            )
+        })
     }
 
     /// Serve HTTP on this thread. The chain watcher (every `poll`), the pay
@@ -686,7 +703,7 @@ pub(crate) fn accepts_moderator(catalog: &Catalog, listing: &Listing) -> bool {
         && catalog
             .store_of(listing)
             .and_then(|store| store.details.as_ref())
-            .is_some_and(|details| details.moderators.contains(&catalog.moderator.id))
+            .is_some_and(|details| !details.moderators.is_empty())
 }
 
 pub(crate) fn find_listing<'a>(catalog: &'a Catalog, hash: &str) -> Option<&'a Listing> {
@@ -770,8 +787,8 @@ pub fn catalog_value(catalog: &Catalog) -> Result<Value, ProtocolError> {
 
 /// Shared secret for `POST /orders`, stored as `pairing.token` in the node data dir.
 ///
-/// The first boot creates it. [`Node::fresh_pairing_token`] is how the process
-/// learns that it should print the token once. The desktop app reads the file
+/// The first boot creates it. [`Node::fresh_pairing_token_notice`] is what the
+/// process prints then: the file's path, not the token. The desktop app reads the file
 /// and hands the token to its webview; a browser shop trades a one-time code
 /// from the terminal for it at `POST /pair`.
 fn load_pairing(dir: &Path) -> Result<(String, bool), Error> {

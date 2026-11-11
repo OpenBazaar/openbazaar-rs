@@ -13,7 +13,7 @@ use bitcoin::bip158::FilterHash;
 use bitcoin::block::Header;
 use bitcoin::consensus::encode::{deserialize, serialize};
 use bitcoin::hashes::Hash;
-use bitcoin::{BlockHash, Network, ScriptBuf, Transaction};
+use bitcoin::{BlockHash, Network, ScriptBuf, Transaction, Txid};
 use serde_json::{json, Value};
 
 use super::index::{FilterIndex, MatchedBlock};
@@ -81,6 +81,7 @@ pub(crate) fn encode(index: &FilterIndex) -> (Vec<u8>, Vec<u8>) {
             "txs": block.txs.iter().map(|tx| hex(&serialize(tx))).collect::<Vec<_>>(),
         })).collect::<Vec<_>>(),
         "mempool": index.mempool.values().map(|(tx, seen)| json!([hex(&serialize(tx)), seen])).collect::<Vec<_>>(),
+        "evicted": index.evicted.iter().map(|(txid, at)| json!([txid.to_string(), at])).collect::<Vec<_>>(),
     });
     let mut commitments = Vec::with_capacity(index.commitments.len() * COMMITMENT_LEN);
     for (height, (hash, filter)) in &index.commitments {
@@ -127,6 +128,12 @@ pub(crate) fn decode(network: Network, state: &[u8], commitments: &[u8]) -> Resu
     for entry in value["mempool"].as_array().ok_or_else(|| bad("mempool"))? {
         let tx: Transaction = read_hex(&entry[0]).ok_or_else(|| bad("mempool tx"))?;
         index.mempool.insert(tx.compute_txid(), (tx, entry[1].as_u64().unwrap_or(0)));
+    }
+    if let Some(entries) = value["evicted"].as_array() {
+        for entry in entries {
+            let txid: Txid = entry[0].as_str().and_then(|text| text.parse().ok()).ok_or_else(|| bad("evicted tx"))?;
+            index.evicted.insert(txid, entry[1].as_u64().unwrap_or(0));
+        }
     }
     if commitments.len() % COMMITMENT_LEN != 0 {
         return Err(bad("commitments"));

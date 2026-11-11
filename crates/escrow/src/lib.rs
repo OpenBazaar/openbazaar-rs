@@ -156,6 +156,7 @@ mod letter;
 mod messages;
 mod moderator;
 mod policy;
+mod profile;
 mod proofs;
 mod public_ruling;
 mod state;
@@ -175,10 +176,11 @@ pub use funding::{
 pub use letter::{is_equivocation, DisputeCase, ModeratorRuling};
 pub use messages::{BuyerOpen, BuyerSignatures, FundingNonces, ReleaseSignature, VendorReply};
 pub use moderator::{
-    FundingChain, InMemoryRulingStore, LetterCache, Moderator, ModeratorKeys, ModeratorRecord,
-    RulingKey, RulingStore,
+    review_letter, FundingChain, InMemoryRulingStore, LetterCache, Moderator, ModeratorKeys,
+    ModeratorRecord, RulingKey, RulingStore,
 };
 pub use policy::{payout_dust_limit, Policy, ANCHOR_VALUE};
+pub use profile::{read_profile, VerifiedProfile};
 pub use public_ruling::{read_published_ruling, PublishedSale};
 pub use proofs::Pok;
 pub use terms::{order_public_key, order_secret_key, EscrowTerms, SignedTerms};

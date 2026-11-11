@@ -1,10 +1,9 @@
 import { test, expect, type Page } from '@playwright/test'
 
 // Two real disposable nodes (see server.mjs): a fresh seller node and the
-// shop's buyer node. The buyer follows the seller's node, orders, and the
-// seller's node answers with payment terms over its order mail.
+// shop's buyer node. The seller publishes a listing. Followed stores takes a
+// store key, not a node address.
 const SELLER_UI = `http://127.0.0.1:${process.env.OB_E2E_SELLER_UI_PORT || 48174}`
-const SELLER_NODE = `http://127.0.0.1:${process.env.OB_E2E_SELLER_NODE_PORT || 48188}`
 const PASSPHRASE = 'seller e2e passphrase'
 // A valid 1×1 PNG; the node only keeps real images.
 const PNG = Buffer.from(
@@ -12,6 +11,13 @@ const PNG = Buffer.from(
   'base64'
 )
 const image = (name: string) => ({ name, mimeType: 'image/png', buffer: PNG })
+// Width and height from a JPEG's frame header.
+function jpegSize(jpeg: Buffer): [number, number] | null {
+  for (let at = 2; at + 9 < jpeg.length && jpeg[at] === 0xff; at += 2 + jpeg.readUInt16BE(at + 2)) {
+    if (jpeg[at + 1] >= 0xc0 && jpeg[at + 1] <= 0xc2) return [jpeg.readUInt16BE(at + 7), jpeg.readUInt16BE(at + 5)]
+  }
+  return null
+}
 
 test.describe.configure({ mode: 'serial' })
 
@@ -90,13 +96,13 @@ test('the seller lists, edits, and removes goods', async ({ page }, info) => {
   await expect(page.getByText('Listing published')).toBeVisible()
   const row = page.locator('.ob-own-listing', { hasText: 'Ash glaze mug' })
   await expect(row).toContainText('5 in stock')
-  await page.getByLabel('Search inventory', { exact: true }).fill('does not exist')
-  await expect(page.getByText('No listings match these filters.', { exact: false })).toBeVisible()
+  await page.getByLabel('Search', { exact: true }).fill('does not exist')
+  await expect(page.getByText('No listings match these filters', { exact: false })).toBeVisible()
   await page.getByRole('button', { name: 'Clear filters', exact: true }).click()
   await expect(row).toBeVisible()
-  await page.getByRole('combobox', { name: 'Stock status', exact: true }).selectOption('empty')
+  await page.getByRole('combobox', { name: 'Stock', exact: true }).selectOption('empty')
   await expect(row).toHaveCount(0)
-  await page.getByRole('combobox', { name: 'Stock status', exact: true }).selectOption('all')
+  await page.getByRole('combobox', { name: 'Stock', exact: true }).selectOption('all')
   for (const width of [320, 768, 1366]) {
     await page.setViewportSize({ width, height: 900 })
     await row.scrollIntoViewIfNeeded()
@@ -144,38 +150,132 @@ test('the seller lists, edits, and removes goods', async ({ page }, info) => {
   await expect(page.getByText('This is your listing.')).toBeVisible()
 })
 
-test('a buyer follows the store and sees the new-seller escrow requirement', async ({ page }) => {
+test('followed stores take a store key and no address', async ({ page }) => {
   await page.goto('/')
+  await expect(page.getByLabel('Store node address')).toHaveCount(0)
   await page.getByRole('button', { name: 'Settings' }).click()
   await page.getByRole('button', { name: 'Followed stores' }).click()
-  await page.getByLabel('Store node address').fill(SELLER_NODE)
-  await page.getByRole('button', { name: 'Follow store' }).click()
-  await expect(page.locator('.ob-follow-list')).toContainText('Brook and Pine')
-  await expect(page.locator('.ob-follow-list')).toContainText('1 listing')
+  await expect(page.getByLabel('Store node address')).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Open the test network store' })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Follow store' })).toHaveCount(0)
+  await expect(page.getByLabel('Store key', { exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Add store', exact: true })).toBeVisible()
+})
 
-  await page.getByRole('button', { name: 'Products', exact: true }).click()
-  await page.getByLabel('Search listings', { exact: true }).fill('Ash glaze mug')
-  await page.getByRole('button', { name: 'View Ash glaze mug' }).click()
-  await expect(page.getByText('Sold by')).toContainText('Brook and Pine')
-  await expect(page.getByRole('img', { name: 'Ash glaze mug' }).first()).toBeVisible()
-  const addresses = page.waitForResponse(r => new URL(r.url()).pathname === '/addresses')
-  await page.getByRole('button', { name: 'Buy now', exact: true }).click()
-  await addresses
-  // Other specs save a default address on the shared buyer node.
-  const saved = page.locator('.ob-address-picker select')
-  if (await saved.isVisible()) await saved.selectOption('')
-  await page.getByLabel('Full name', { exact: true }).fill('Ada Buyer')
-  await page.getByLabel('Street address', { exact: true }).fill('1 Test Lane')
-  await page.getByLabel('City', { exact: true }).fill('Portland')
-  await page.getByLabel('State / region', { exact: true }).fill('OR')
-  await page.getByLabel('Postal code', { exact: true }).fill('97201')
-  const country = page.getByLabel('Country', { exact: true })
-  if (await country.isVisible()) await country.fill('US')
-  await page.getByRole('button', { name: 'Place order', exact: true }).click()
-  await expect(page.getByRole('heading', { name: 'Order created', exact: true })).toBeVisible()
-  // The current node deliberately refuses direct pay for a new seller.
-  // Keep that real policy visible; this is not a successful-sale fixture.
-  await expect(page.locator('.ob-payment-progress strong')).toHaveText('Declined by the seller', { timeout: 20000 })
-  await expect(page.getByRole('alert').filter({ hasText: 'A new seller takes moderated escrow, with the moderator named.' })).toBeVisible()
-  await expect(page.getByText('Pay from your node wallet', { exact: true })).toHaveCount(0)
+// A page the node serves to a signed-in browser signs every request, an image
+// upload too (src/homeNode/transport.ts). The node's answers are mocked.
+test('a browser signed in on the node’s web address uploads a store avatar', async ({ page }) => {
+  const hash = 'c414cd0e204de974f73753c7e28d7638e7b3691bb8b1a2bab6b25bb7fed7ce77'
+  const uploads: (string | undefined)[] = []
+  const bodies: (Buffer | null)[] = []
+  await page.addInitScript(() => localStorage.setItem('ob-home-device', '01'.repeat(32)))
+  await page.route('**/', async route => {
+    const response = await route.fetch()
+    await route.fulfill({ response, body: (await response.text()).replace('<head>', '<head><meta name="ob-home-node" content="true">') })
+  })
+  await page.route('**/remote/hello', route => route.fulfill({ json: { nodeId: '90'.repeat(32) } }))
+  await page.route('**/remote/devices', route => route.fulfill({ json: { devices: [] } }))
+  await page.route('**/store/profile', route => route.fulfill({ json: { storeKey: '34'.repeat(32), role: 'seller', name: 'My store', network: 'testnet4' } }))
+  await page.route('**/media', async route => {
+    const headers = await route.request().allHeaders()
+    uploads.push(headers['x-ob-signature'] && headers['content-type'])
+    bodies.push(route.request().postDataBuffer())
+    return route.fulfill({ json: { hash, contentType: 'image/png' } })
+  })
+  await page.route(`**/media/${hash}`, route => route.fulfill({ contentType: 'image/png', body: PNG }))
+  await page.goto('/')
+  await page.getByRole('button', { name: 'Settings' }).click()
+  await page.getByRole('button', { name: 'Store settings' }).click()
+  await page.locator('input[type=file][aria-label="Add avatar"]').setInputFiles(image('avatar.png'))
+  await expect(page.getByRole('img', { name: 'Store avatar' })).toBeVisible()
+  await expect(page.getByRole('alert')).toHaveCount(0)
+  expect(uploads).toEqual(['image/png'])
+  // An image that fits the node's cap is sent as the file is, byte for byte.
+  expect(bodies[0]?.equals(PNG)).toBe(true)
+})
+
+// The node keeps images up to 2 MiB. A larger one is drawn smaller in the
+// browser and that copy is sent, with no extra step for the seller.
+test('an image over the node’s size cap is shrunk in the browser and uploaded', async ({ page }) => {
+  const hash = 'c414cd0e204de974f73753c7e28d7638e7b3691bb8b1a2bab6b25bb7fed7ce77'
+  const uploads: { type: string | undefined; body: Buffer | null }[] = []
+  await page.addInitScript(() => localStorage.setItem('ob-home-device', '01'.repeat(32)))
+  await page.route('**/', async route => {
+    const response = await route.fetch()
+    await route.fulfill({ response, body: (await response.text()).replace('<head>', '<head><meta name="ob-home-node" content="true">') })
+  })
+  await page.route('**/remote/hello', route => route.fulfill({ json: { nodeId: '90'.repeat(32) } }))
+  await page.route('**/remote/devices', route => route.fulfill({ json: { devices: [] } }))
+  await page.route('**/store/profile', route => route.fulfill({ json: { storeKey: '34'.repeat(32), role: 'seller', name: 'My store', network: 'testnet4' } }))
+  await page.route('**/media', async route => {
+    const headers = await route.request().allHeaders()
+    uploads.push({ type: headers['x-ob-signature'] && headers['content-type'], body: route.request().postDataBuffer() })
+    return route.fulfill({ json: { hash, contentType: 'image/jpeg' } })
+  })
+  await page.route(`**/media/${hash}`, route => route.fulfill({ contentType: 'image/png', body: PNG }))
+  await page.goto('/')
+  await page.getByRole('button', { name: 'Settings' }).click()
+  await page.getByRole('button', { name: 'Store settings' }).click()
+  // A 3000 × 2000 photo-like PNG: a gradient with grain, several times the cap.
+  const big = Buffer.from(await page.evaluate(() => {
+    const canvas = document.createElement('canvas')
+    canvas.width = 3000
+    canvas.height = 2000
+    const context = canvas.getContext('2d')!
+    const pixels = context.createImageData(canvas.width, canvas.height)
+    for (let i = 0; i < pixels.data.length; i += 4) {
+      const x = (i / 4) % canvas.width
+      pixels.data[i] = (x / canvas.width) * 200 + Math.random() * 24
+      pixels.data[i + 1] = 90 + Math.random() * 24
+      pixels.data[i + 2] = 160 + Math.random() * 24
+      pixels.data[i + 3] = 255
+    }
+    context.putImageData(pixels, 0, 0)
+    return canvas.toDataURL('image/png').split(',')[1]
+  }), 'base64')
+  expect(big.length).toBeGreaterThan(4 * 1024 * 1024)
+  await page.locator('input[type=file][aria-label="Add avatar"]').setInputFiles({ name: 'photo.png', mimeType: 'image/png', buffer: big })
+  await expect(page.getByRole('img', { name: 'Store avatar' })).toBeVisible()
+  await expect(page.getByRole('alert')).toHaveCount(0)
+  expect(uploads).toHaveLength(1)
+  const { type, body } = uploads[0]
+  expect(type).toBe('image/jpeg')
+  expect(body!.length).toBeLessThan(2 * 1024 * 1024)
+  expect(body!.subarray(0, 3).equals(Buffer.from([0xff, 0xd8, 0xff]))).toBe(true)
+  // The first step: the longest side at 2000 pixels, the same shape.
+  expect(jpegSize(body!)).toEqual([2000, 1333])
+})
+
+// An image over the cap that the browser cannot shrink (it does not decode,
+// or it is a GIF) says so next to the control and is not sent. The node
+// answers a larger upload 413 with a plain-text body, which reads as the
+// image being too large.
+test('an image over the node’s size cap that cannot be shrunk says so next to the control', async ({ page }) => {
+  const tooLarge = 'That image is larger than 2 MB. Choose a smaller one.'
+  const notShrunk = 'That image is larger than 2 MB and could not be shrunk to fit. Choose a smaller one.'
+  let uploads = 0
+  await page.addInitScript(() => localStorage.setItem('ob-home-device', '01'.repeat(32)))
+  await page.route('**/', async route => {
+    const response = await route.fetch()
+    await route.fulfill({ response, body: (await response.text()).replace('<head>', '<head><meta name="ob-home-node" content="true">') })
+  })
+  await page.route('**/remote/hello', route => route.fulfill({ json: { nodeId: '90'.repeat(32) } }))
+  await page.route('**/remote/devices', route => route.fulfill({ json: { devices: [] } }))
+  await page.route('**/store/profile', route => route.fulfill({ json: { storeKey: '34'.repeat(32), role: 'seller', name: 'My store', network: 'testnet4' } }))
+  await page.route('**/media', route => {
+    uploads += 1
+    return route.fulfill({ status: 413, contentType: 'text/plain', body: 'request body too large' })
+  })
+  await page.goto('/')
+  await page.getByRole('button', { name: 'Settings' }).click()
+  await page.getByRole('button', { name: 'Store settings' }).click()
+  const avatar = page.locator('input[type=file][aria-label="Add avatar"]')
+  await avatar.setInputFiles({ name: 'big.png', mimeType: 'image/png', buffer: Buffer.alloc(2 * 1024 * 1024 + 1) })
+  await expect(page.locator('.ob-store-avatar-edit').getByRole('alert')).toHaveText(notShrunk)
+  await page.locator('input[type=file][aria-label="Add banner"]').setInputFiles({ name: 'big.gif', mimeType: 'image/gif', buffer: Buffer.concat([Buffer.from('GIF89a'), Buffer.alloc(2 * 1024 * 1024)]) })
+  await expect(page.locator('.ob-store-banner-edit').getByRole('alert')).toHaveText(notShrunk)
+  expect(uploads).toBe(0)
+  await avatar.setInputFiles(image('avatar.png'))
+  await expect.poll(() => uploads).toBe(1)
+  await expect(page.locator('.ob-store-avatar-edit').getByRole('alert')).toHaveText(tooLarge)
 })

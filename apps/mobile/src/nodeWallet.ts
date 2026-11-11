@@ -1,4 +1,5 @@
 import {
+  openJson,
   paired,
   parseBuyerOrder,
   parseNetworkName,
@@ -29,6 +30,17 @@ export type NetworkInfo = {
   chainBackend: ChainBackend | null
   /** This node's onion, once the listener has published it. */
   onion: string | null
+  /** A SOCKS greeting to the configured proxy succeeded. Null when no proxy is set. */
+  proxyReachable: boolean | null
+}
+export type WalletActivity = {
+  txid: string
+  direction: 'in' | 'out'
+  sats: number
+  confirmed: boolean
+  height: number | null
+  time: number | null
+  label: string
 }
 /** Copying stays on this device. Opening an explorer does not use the node's Tor settings. */
 export const EXTERNAL_TX_NOTE =
@@ -44,6 +56,7 @@ export type NodeWallet = {
   receiveAddress: string
   lastSync: number | null
   syncError: string | null
+  activity: WalletActivity[]
 }
 function record(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value))
@@ -82,21 +95,18 @@ function chainBackend(value: unknown): ChainBackend | null {
     fallbackActive: backend.fallbackActive === true
   }
 }
-/** A configured proxy is not a verified connection. Peers or a chain error are. */
+export { connectionRows, type ConnectionRow } from './walletConnection'
+
+/** Banner warning only. The connection card says what the proxy did and what to do next. */
 export function privacyStatus(info: NetworkInfo): string {
   const backend = info.chainBackend
-  if (backend?.error) return 'Chain transport failed'
   if (backend?.fallbackActive) return 'Public fallback active'
-  if (info.privacyWarning) return 'Private route unavailable'
-  if (info.proxy) {
-    return backend && (backend.peers ?? 0) > 0
-      ? `Proxy reached ${backend.peers} peers`
-      : 'Proxy configured, not verified'
-  }
+  if (backend?.error) return 'Chain transport failed'
+  if (info.privacyWarning && !info.proxy) return 'Private route unavailable'
   return ''
 }
 export async function fetchNetwork(): Promise<NetworkInfo> {
-  const r = record(await paired('/network'))
+  const r = record(await openJson('/network'))
   return {
     network: network(r.network),
     confirmations: number(r.confirmations),
@@ -107,26 +117,59 @@ export async function fetchNetwork(): Promise<NetworkInfo> {
     clearnet: r.clearnet === true,
     privacyWarning: textOrNull(r.privacyWarning),
     chainBackend: chainBackend(r.chainBackend),
-    onion: textOrNull(r.onion) ?? textOrNull(r.letterOnion)
+    onion: textOrNull(r.onion) ?? textOrNull(r.letterOnion),
+    proxyReachable: r.proxyReachable === true ? true : r.proxyReachable === false ? false : null
   }
 }
 export async function fetchWallet(): Promise<NodeWallet> {
-  const r = record(await paired('/wallet')),
-    balance = record(r.balance)
-  if (typeof r.receiveAddress !== 'string' || !r.receiveAddress)
-    throw new Error('The node did not return a receive address.')
-  return {
-    network: network(r.network),
-    balance: {
-      totalSats: number(balance.totalSats),
-      confirmedSats: number(balance.confirmedSats),
-      pendingSats: number(balance.pendingSats),
-      spendableSats: number(balance.spendableSats)
-    },
-    receiveAddress: r.receiveAddress,
-    lastSync: r.lastSync == null ? null : number(r.lastSync),
-    syncError: typeof r.syncError === 'string' ? r.syncError : null
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), 12000)
+  try {
+    const r = record(await paired('/wallet', { signal: controller.signal })),
+      balance = record(r.balance)
+    if (typeof r.receiveAddress !== 'string' || !r.receiveAddress)
+      throw new Error('The node did not return a receive address.')
+    return {
+      network: network(r.network),
+      balance: {
+        totalSats: number(balance.totalSats),
+        confirmedSats: number(balance.confirmedSats),
+        pendingSats: number(balance.pendingSats),
+        spendableSats: number(balance.spendableSats)
+      },
+      receiveAddress: r.receiveAddress,
+      lastSync: r.lastSync == null ? null : number(r.lastSync),
+      syncError: typeof r.syncError === 'string' ? r.syncError : null,
+      activity: activityList(r.activity)
+    }
+  } catch (error) {
+    if (controller.signal.aborted) throw new Error('The wallet request timed out. Check your node and refresh the wallet.')
+    throw error
+  } finally {
+    clearTimeout(timer)
   }
+}
+
+function activityList(value: unknown): WalletActivity[] {
+  if (!Array.isArray(value)) return []
+  return value.map(item => {
+    const row = record(item)
+    if (row.direction !== 'in' && row.direction !== 'out') {
+      throw new Error('The node returned an unreadable wallet activity.')
+    }
+    if (typeof row.txid !== 'string' || !row.txid || typeof row.label !== 'string' || !row.label) {
+      throw new Error('The node returned an unreadable wallet activity.')
+    }
+    return {
+      txid: row.txid,
+      direction: row.direction,
+      sats: number(row.sats),
+      confirmed: row.confirmed === true,
+      height: typeof row.height === 'number' ? row.height : null,
+      time: typeof row.time === 'number' ? row.time : null,
+      label: row.label
+    }
+  })
 }
 export async function newWalletAddress(): Promise<{
   network: NetworkName

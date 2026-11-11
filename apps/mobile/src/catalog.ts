@@ -253,8 +253,10 @@ export type EscrowReceipt = {
   address: string;
   outpoint: string;
   signaturesRequired: number;
-  /** Signed moderator fee, in sats. A number, with no name or address. */
+  /** The fee in the chosen moderator's signed record, in sats. */
   moderatorFeeSats?: number;
+  /** The moderator the buyer chose. The key is who it is; the name is a label. Absent on older orders. */
+  moderator?: { id: string; name: string; builtIn: boolean };
 };
 
 export type SellerOrder = OrderTracking & {
@@ -312,7 +314,7 @@ export async function paired(path: string, init?: RequestInit): Promise<unknown>
 
 /// A request only the paired client may make, as the raw response.
 export async function pairedResponse(path: string, init?: RequestInit): Promise<Response> {
-  const token = await pairingToken();
+  const token = await pairingToken(fromClick(init));
   return request(path, {
     ...init,
     headers: {
@@ -322,9 +324,14 @@ export async function pairedResponse(path: string, init?: RequestInit): Promise<
   });
 }
 
+/// JSON from a route that does not need a pairing cookie, such as `/network`.
+export async function openJson(path: string): Promise<unknown> {
+  return readJson(await request(path));
+}
+
 /// A paired request to this app's own node, even while a home node is the target.
 export async function ownNodeJson(path: string, init?: RequestInit): Promise<unknown> {
-  const token = await pairingToken();
+  const token = await pairingToken(fromClick(init));
   let response: Response;
   try {
     response = await fetch(`${NODE_ORIGIN}${path}`, { cache: "no-store", ...init, headers: { ...(init?.headers ?? {}), [PAIR_HEADER]: token } });
@@ -386,9 +393,9 @@ export async function placeCheckout(order: {
   addressLabel?: string;
   shipTo?: ShipTo & { street2?: string; country?: string };
   deliveryNote?: string;
-  packages: { settlement: "direct" | "escrow"; rail?: "btc" | "xmr" | "ln" | "zec"; lines: CheckoutLine[]; service?: number | "pickup"; coupon?: string }[];
+  packages: { settlement: "direct" | "escrow"; moderator?: string; rail?: "btc" | "xmr" | "ln" | "zec"; lines: CheckoutLine[]; service?: number | "pickup"; coupon?: string }[];
 }): Promise<CheckoutReceipt> {
-  const token = await pairingToken();
+  const token = await pairingToken(true);
   const response = await request("/checkout", {
     method: "POST",
     headers: {
@@ -401,7 +408,7 @@ export async function placeCheckout(order: {
 }
 
 export async function placeOrder(order: CheckoutRequest): Promise<OrderReceipt> {
-  const token = await pairingToken();
+  const token = await pairingToken(true);
   const response = await request("/orders", {
     method: "POST",
     headers: {
@@ -477,7 +484,78 @@ let pairing: Promise<string> | null = null;
 
 let localShopSession: Promise<boolean> | null = null;
 
-/// The localhost cookie is enough. The pairing token stays out of this page.
+/// The shop needs a pairing code and no dialog is open: a page load found no
+/// token, or the user closed the dialog. Loading a page never opens the dialog;
+/// a click that changes something does, and so does `pairShop`.
+let awaitingCode = false;
+
+const awaitingListeners = new Set<() => void>();
+
+export function shopAwaitingCode(): boolean {
+  return awaitingCode;
+}
+
+/// Runs when that changes, so the shop can offer the dialog.
+export function onShopAwaitingCode(listener: () => void): () => void {
+  awaitingListeners.add(listener);
+  return () => awaitingListeners.delete(listener);
+}
+
+function setAwaitingCode(awaiting: boolean): void {
+  if (awaitingCode === awaiting) return;
+  awaitingCode = awaiting;
+  for (const listener of awaitingListeners) listener();
+}
+
+/// A request that changes something comes from a click. A read may be a page loading or a poll.
+function fromClick(init?: RequestInit): boolean {
+  return !!init?.method && init.method.toUpperCase() !== "GET";
+}
+
+const NOT_PAIRED = "The shop is not paired with this node.";
+
+/// The browser still needs a pairing code. This is the ask, not a finished failure.
+export class ShopPairingNeeded extends Error {
+  constructor() {
+    super("Type the pairing code shown in your node's terminal.");
+    this.name = "ShopPairingNeeded";
+  }
+}
+
+const pairedListeners = new Set<() => void>();
+
+/// Runs after a pairing code is accepted, so images can load.
+export function afterShopPair(listener: () => void): () => void {
+  pairedListeners.add(listener);
+  return () => pairedListeners.delete(listener);
+}
+
+function notePaired(): void {
+  for (const listener of pairedListeners) listener();
+}
+
+/// The page's dialog for the pairing code. It calls `trade` with what the user
+/// typed; `trade` rejects with the node's reason so the dialog can ask again.
+/// Resolves true once a code is accepted and false when the user closes it.
+export type PairingAsk = (trade: (code: string) => Promise<void>) => Promise<boolean>;
+
+let pairingAsk: PairingAsk | null = null;
+
+/// The shop registers its dialog here. Without one there is nowhere to type a code.
+export function showPairingWith(ask: PairingAsk): () => void {
+  pairingAsk = ask;
+  return () => {
+    if (pairingAsk === ask) pairingAsk = null;
+  };
+}
+
+/// A missing cookie or a dismissed prompt. The server uses the same sentence.
+export function shopPairingMessage(message: string): boolean {
+  return message === NOT_PAIRED || message === new ShopPairingNeeded().message;
+}
+
+/// The localhost cookie is enough. The pairing token stays out of this page
+/// until that cookie is gone and the user types a new code.
 function localShopSignedIn(): Promise<boolean> {
   if (!localShopSession) {
     const origin = typeof location === "undefined" ? "" : location.origin;
@@ -488,7 +566,13 @@ function localShopSignedIn(): Promise<boolean> {
   return localShopSession;
 }
 
-async function pairingToken(): Promise<string> {
+function resetLocalShopSession(): void {
+  localShopSession = null;
+}
+
+/// `ask` opens the pairing dialog when there is no token. Without it the
+/// request fails with `ShopPairingNeeded` and the shop shows its banner.
+async function pairingToken(ask: boolean): Promise<string> {
   if (servedByHomeNode() || homeFetch()) {
     return "";
   }
@@ -502,10 +586,29 @@ async function pairingToken(): Promise<string> {
   if (stored && TOKEN_PATTERN.test(stored)) {
     return stored;
   }
+  // A dialog that is already open answers for every request. A page with no
+  // dialog (the phone app, a test) keeps the old path and its own message.
+  if (!ask && !pairing && pairingAsk) {
+    setAwaitingCode(true);
+    throw new ShopPairingNeeded();
+  }
+  return pairOnce();
+}
+
+/// The dialog does not block the page the way `prompt()` did, so every request
+/// that needs a code while it is open waits on the same ask.
+function pairOnce(): Promise<string> {
   pairing ??= pairWithCode().finally(() => {
     pairing = null;
   });
   return pairing;
+}
+
+/// Open the pairing dialog. The banner and the pages' own buttons call this.
+export async function pairShop(): Promise<void> {
+  resetLocalShopSession();
+  forgetToken();
+  await pairOnce();
 }
 
 function tokenStore(): Storage | null {
@@ -526,20 +629,27 @@ async function pairWithCode(): Promise<string> {
   if (asked.status === 403) {
     throw new Error(asked.error ?? "This node does not pair browser shops.");
   }
-  const ask = (globalThis as { prompt?: (message: string) => string | null }).prompt;
-  if (typeof ask !== "function") {
+  const ask = pairingAsk;
+  if (!ask) {
     throw new Error("Open the shop in a browser to pair it with your node.");
   }
-  const code = ask("Type the pairing code shown in your node's terminal.")?.trim();
-  if (!code) {
-    throw new Error("The shop is not paired with this node.");
+  let token = "";
+  setAwaitingCode(false);
+  const paired = await ask(async (code) => {
+    const traded = await postPair({ code });
+    if (typeof traded.token !== "string" || !TOKEN_PATTERN.test(traded.token)) {
+      throw new Error(traded.error ?? "That pairing code is wrong or has expired.");
+    }
+    token = traded.token;
+  });
+  if (!paired) {
+    setAwaitingCode(true);
+    throw new ShopPairingNeeded();
   }
-  const traded = await postPair({ code });
-  if (typeof traded.token !== "string" || !TOKEN_PATTERN.test(traded.token)) {
-    throw new Error(traded.error ?? "The shop is not paired with this node.");
-  }
-  tokenStore()?.setItem(TOKEN_KEY, traded.token);
-  return traded.token;
+  tokenStore()?.setItem(TOKEN_KEY, token);
+  resetLocalShopSession();
+  notePaired();
+  return token;
 }
 
 async function postPair(body: { code?: string }): Promise<{ status: number; token?: unknown; error?: string }> {
@@ -622,25 +732,36 @@ async function nodeFetch(path: string, init: RequestInit): Promise<Response> {
   const prefix = targetPrefix();
   if (!prefix) return fetch(`${NODE_ORIGIN}${path}`, init);
   const headers = new Headers(init.headers);
-  headers.set(PAIR_HEADER, await pairingToken());
+  headers.set(PAIR_HEADER, await pairingToken(fromClick(init)));
   return fetch(`${NODE_ORIGIN}${prefix}${path}`, { ...init, headers });
 }
 
-async function request(path: string, init?: RequestInit): Promise<Response> {
+async function request(path: string, init?: RequestInit, allowPair = true): Promise<Response> {
   let response: Response;
   try {
     response = await nodeFetch(path, { cache: "no-store", ...init });
-  } catch {
+  } catch (error) {
+    if (error instanceof ShopPairingNeeded) throw error;
     throw new NodeOfflineError();
   }
-  if (!response.ok) {
-    if (response.status === 401 || response.status === 403) {
-      forgetToken();
+  if (response.ok) return response;
+  const { message, code, retryAfterSecs } = await errorDetail(response);
+  if (response.status === 401 || response.status === 403) {
+    forgetToken();
+    resetLocalShopSession();
+    // A restarted node drops the localhost cookie. A click asks for a code and
+    // tries once more; a page that was only loading shows the banner.
+    if (allowPair && servedByLocalShop() && message === NOT_PAIRED) {
+      if (fromClick(init)) {
+        const token = await pairOnce();
+        const headers = new Headers(init?.headers);
+        headers.set(PAIR_HEADER, token);
+        return request(path, { ...init, headers }, false);
+      }
+      setAwaitingCode(!pairing);
     }
-    const { message, code, retryAfterSecs } = await errorDetail(response);
-    throw new NodeApiError(response.status, message, code, retryAfterSecs);
   }
-  return response;
+  throw new NodeApiError(response.status, message, code, retryAfterSecs);
 }
 
 async function readJson(response: Response): Promise<unknown> {
@@ -954,8 +1075,10 @@ function parsePayment(value: unknown): DirectPayment {
 function parseEscrow(value: unknown): EscrowReceipt | null {
   if (value == null) return null;
   const escrow = recordOf(value, "The shop sent unreadable escrow terms.");
+  const moderator = escrow.moderator && typeof escrow.moderator === "object" ? (escrow.moderator as Record<string, unknown>) : null;
   // Awaiting vendor terms has no funding address yet. It stays read-only.
   return {
+    ...(moderator && typeof moderator.id === "string" ? { moderator: { id: moderator.id, name: typeof moderator.name === "string" ? moderator.name : "", builtIn: moderator.builtIn === true } } : {}),
     fundingSats: typeof escrow.fundingSats === "number" ? requiredNumber(escrow.fundingSats) : 0,
     timeoutHeight: typeof escrow.timeoutHeight === "number" ? requiredNumber(escrow.timeoutHeight) : 0,
     address: typeof escrow.address === "string" ? escrow.address : "",

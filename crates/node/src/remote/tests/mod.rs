@@ -2,9 +2,12 @@
 //! gate, sync and batches, the LAN channel, and two nodes talking over it.
 
 mod client;
+mod moderators;
 mod pairing;
+mod passkey;
 mod requests;
 mod sync;
+mod web;
 
 use p256::ecdsa::signature::Signer as _;
 use serde_json::{json, Value};

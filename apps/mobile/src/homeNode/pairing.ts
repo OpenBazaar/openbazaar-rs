@@ -29,6 +29,10 @@ export type PairingResult =
 const POLL_TIMEOUT_MS = 40_000;
 const REQUEST_TIMEOUT_MS = 120_000;
 
+/** How long to keep asking a pairing onion that Tor cannot reach yet, the pause between tries, and who hears why a try ended. */
+export type Patience = { forMs: number; pauseMs: number; retrying?: (reason: string) => void };
+const PATIENCE: Patience = { forMs: 5 * 60_000, pauseMs: 3000 };
+
 export class PairingError extends Error {
   readonly code?: string;
   constructor(message: string, code?: string) {
@@ -51,7 +55,28 @@ const REFUSALS: Record<string, string> = {
   paused: "Too many wrong codes. Pairing is paused for a few minutes.",
 };
 
-export async function requestPairing(channels: Channels, code: PairingCode, request: PairingRequest): Promise<PendingPairing> {
+// A code's pairing onion is new: for its first minute or two some Tor
+// directories do not know it yet, and a Tor client that has just started can
+// spend a whole attempt on circuits that stall. One failed attempt says
+// little, so ask again until the node answers or the patience runs out.
+async function ask(channels: Channels, route: PairRoute, body: Uint8Array, patience: Patience): Promise<RawResponse> {
+  const until = Date.now() + patience.forMs;
+  for (;;) {
+    try {
+      return await call(channels, route, "POST", "/pair/request", body, REQUEST_TIMEOUT_MS);
+    } catch (err) {
+      if (route.via !== "tor") throw err;
+      const reason = err instanceof Error && err.message ? err.message : "no answer";
+      if (Date.now() >= until) {
+        throw new PairingError(`Your node did not answer over Tor (${reason}). Check that the code is still showing on your node and that this phone is online, then try again.`);
+      }
+      patience.retrying?.(reason);
+      await new Promise(resolve => setTimeout(resolve, patience.pauseMs));
+    }
+  }
+}
+
+export async function requestPairing(channels: Channels, code: PairingCode, request: PairingRequest, patience: Partial<Patience> = {}): Promise<PendingPairing> {
   const text = transcript(request);
   const body = jsonBody({
     v: 2,
@@ -68,7 +93,7 @@ export async function requestPairing(channels: Channels, code: PairingCode, requ
     const address = await probeLan(channels, code.lan, code.nodePublic);
     if (address) route = { via: "lan", address, nodePublic: code.nodePublic, host: LAN_HOST };
   }
-  const answer = await call(channels, route, "POST", "/pair/request", body, REQUEST_TIMEOUT_MS);
+  const answer = await ask(channels, route, body, { ...PATIENCE, ...patience });
   const value = jsonOf(answer.body);
   if (answer.status !== 202) {
     const known = typeof value.code === "string" ? REFUSALS[value.code] : undefined;

@@ -51,7 +51,8 @@ impl Node {
         if listing.store_id == self.own_store {
             return Err(OrderError::Invalid("That is your own store."));
         }
-        let Some(url) = self.replicas().url_of(&listing.store_id).map(str::to_string) else {
+        let followed = self.replicas().url_of(&listing.store_id).map(str::to_string);
+        let Some(url) = followed.or_else(|| self.directory_sale_url(&listing.store_id)) else {
             return Ok(None);
         };
         if !direct || local_rail {

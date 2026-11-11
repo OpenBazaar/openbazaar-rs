@@ -3,7 +3,7 @@ import { Alert, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 
 import { File } from "expo-file-system";
 
 import type { ListingHeader } from "../../catalog.ts";
-import { TAXONOMY, compareAtText, listingFacts, packageFieldsOf, priceTerms, purchaseFields, purchaseTerms, returnsDraft, saleFieldsOf, scheduledSale, shippingTerms, signedTaxonomy, specificRows, tierRows, volumeTiers, withFacts, withPackage, withPrice, withPurchase, withSale, withTaxonomy, withTiers, withVariantWeights, type AvailabilityDraft, type PackageInput, type ReturnsDraft, type SpecificRow, type TierRow } from "../../commerceDraft.ts";
+import { compareAtText, listingFacts, packageFieldsOf, priceTerms, purchaseFields, purchaseTerms, returnsDraft, saleFieldsOf, scheduledSale, shippingTerms, signedTaxonomy, specificRows, tierRows, volumeTiers, withFacts, withPackage, withPrice, withPurchase, withSale, withTaxonomy, withTiers, withVariantWeights, type AvailabilityDraft, type PackageInput, type ReturnsDraft, type SpecificRow, type TierRow } from "../../commerceDraft.ts";
 import { CONTENT_TAGS, MAX_LISTING_IMAGES, PRICE_CURRENCIES, deleteDraft, deleteListing, draftOf, fromMinorUnits, saveDraft, saveListing, toMinorUnits, uploadImage, type ListingDraft, type PriceCurrency, type SavedDraft } from "../../seller.ts";
 import { isLocked, passphraseError, unlockWallet } from "../../walletLock.ts";
 import { sync } from "../session.ts";
@@ -59,7 +59,7 @@ function draftFrom(form: Fields): ListingDraft | string {
   const shipping = form.kind === "digital" || !form.shipping.trim() ? 0 : toMinorUnits(form.shipping, form.currency);
   const stock = Number(form.stock);
   if (!form.title.trim()) return "Give the listing a title.";
-  if (!form.category.trim()) return "Choose a category.";
+  if (!form.category.trim()) return "Give the listing a category.";
   if (!price) return form.currency === "SAT" ? "Enter a price in whole sats." : `Enter a price in ${form.currency}, like 12.50.`;
   if (shipping === null) return "Enter shipping as a plain amount, or leave it empty for free shipping.";
   if (!Number.isInteger(stock) || stock < 0 || stock > 1_000_000) return "Enter how many you have, from 0 to 1,000,000.";
@@ -114,7 +114,7 @@ function draftFrom(form: Fields): ListingDraft | string {
   };
 }
 
-export function ListingEdit({ listing, unpublished, categories, onClose }: { listing: ListingHeader | null; unpublished?: SavedDraft | null; categories: string[]; onClose: () => void }) {
+export function ListingEdit({ listing, unpublished, onClose }: { listing: ListingHeader | null; unpublished?: SavedDraft | null; onClose: () => void }) {
   const [form, setForm] = useState<Fields>(() => fieldsOf(listing, unpublished?.listing));
   const [draftId, setDraftId] = useState(unpublished?.draftId ?? null);
   const [error, setError] = useState<string | null>(null);
@@ -230,26 +230,7 @@ export function ListingEdit({ listing, unpublished, categories, onClose }: { lis
       <Card title="Details">
         <Field label="Title" value={form.title} onChangeText={(title) => set("title", title)} />
         <Field label="Description" value={form.description} onChangeText={(description) => set("description", description)} multiline />
-        <Field label="Category" value={form.category} onChangeText={(category) => set("category", category)} />
-        {form.currency !== "SAT" ? (
-          <>
-            <Text style={ui.muted}>Top-level category</Text>
-            <View style={styles.choices}>
-              <Chip label="Uncategorised" selected={form.taxonomy === "0"} onPress={() => set("taxonomy", "0")} />
-              {TAXONOMY.map((item) => (
-                <Chip key={item.id} label={item.name} selected={form.taxonomy === String(item.id)} onPress={() => set("taxonomy", String(item.id))} />
-              ))}
-            </View>
-            <Text style={ui.muted}>Stored on the listing. The category above stays as the subcategory.</Text>
-          </>
-        ) : null}
-        {categories.length ? (
-          <View style={styles.choices}>
-            {categories.map((category) => (
-              <Chip key={category} label={category} selected={form.category === category} onPress={() => set("category", category)} />
-            ))}
-          </View>
-        ) : null}
+        <Field label="Category" value={form.category} placeholder="Wool blankets" capitalize="none" onChangeText={(category) => set("category", category)} />
         <Text style={ui.muted}>Type of good</Text>
         <View style={styles.choices}>
           <Chip label="Physical item" selected={form.kind === "physical"} onPress={() => set("kind", "physical")} />
@@ -321,7 +302,7 @@ export function ListingEdit({ listing, unpublished, categories, onClose }: { lis
             <Text style={ui.muted}>Country codes, like US, CA. Leave ships-to empty for worldwide. Handling time is at most 30 days.</Text>
           </>
         ) : null}
-        {form.kind === "physical" ? <Field label="Ships from" value={form.shipFrom} onChangeText={(shipFrom) => set("shipFrom", shipFrom)} /> : null}
+        {form.kind === "physical" ? <Field label="Ships from" value={form.shipFrom} placeholder="Portland" capitalize="none" onChangeText={(shipFrom) => set("shipFrom", shipFrom)} /> : null}
         {variants ? <Text style={ui.muted}>Stock follows the options already on this listing. This screen does not change those options.</Text> : <Field label="In stock" value={form.stock} onChangeText={(stock) => set("stock", stock)} keyboard="number-pad" />}
       </Card>
       {form.currency !== "SAT" ? (
@@ -379,7 +360,7 @@ export function ListingEdit({ listing, unpublished, categories, onClose }: { lis
   );
 }
 
-function Field({ label, value, onChangeText, keyboard, multiline, secure }: { label: string; value: string; onChangeText: (value: string) => void; keyboard?: "decimal-pad" | "number-pad"; multiline?: boolean; secure?: boolean }) {
+function Field({ label, value, onChangeText, keyboard, multiline, secure, placeholder, capitalize }: { label: string; value: string; onChangeText: (value: string) => void; keyboard?: "decimal-pad" | "number-pad"; multiline?: boolean; secure?: boolean; placeholder?: string; capitalize?: "none" }) {
   return (
     <View style={styles.field}>
       <Text style={ui.muted}>{label}</Text>
@@ -390,7 +371,8 @@ function Field({ label, value, onChangeText, keyboard, multiline, secure }: { la
         keyboardType={keyboard}
         multiline={multiline}
         secureTextEntry={secure}
-        autoCapitalize={secure ? "none" : "sentences"}
+        placeholder={placeholder}
+        autoCapitalize={secure || capitalize === "none" ? "none" : "sentences"}
         autoCorrect={!secure}
         style={[ui.input, multiline && styles.multiline]}
       />

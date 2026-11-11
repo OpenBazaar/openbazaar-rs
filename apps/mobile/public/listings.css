@@ -125,3 +125,4 @@
 
 .ob-offer-form { margin-top: 16px; padding: 20px; border: 1px solid var(--ob-line); border-radius: 8px; background: var(--ob-surface); }
 .ob-offer-form > :is(.ob-shipping-note,.ob-form-error,.ob-form-actions) { grid-column: 1 / -1; }
+.ob-detail-actions > .ob-offer-form { grid-column: 1 / -1; }

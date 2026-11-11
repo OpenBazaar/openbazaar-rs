@@ -7,10 +7,11 @@
 //! locked. [`NodeWallet::sign`] takes a [`Seed`] from the spend tier for one
 //! signature and builds its signers then; no private key stays in the wallet.
 
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use bdk_wallet::chain::Merge;
+use bdk_wallet::chain::{ChainPosition, Merge};
 use bdk_wallet::descriptor::IntoWalletDescriptor;
 use bdk_wallet::signer::SignersContainer;
 use bdk_wallet::{Balance, ChangeSet, KeychainKind, SignOptions, Update, Wallet};
@@ -155,8 +156,8 @@ impl NodeWallet {
     }
 
     /// Unconfirmed coins someone else sent. They can still be replaced or
-    /// double-spent, so payments do not spend them. Unconfirmed change from
-    /// this wallet's own transactions stays spendable.
+    /// double-spent, so payments and the directory join fee do not spend them.
+    /// Unconfirmed change from this wallet's own transactions stays spendable.
     pub(crate) fn untrusted_pending(&self) -> Vec<OutPoint> {
         self.wallet
             .list_unspent()
@@ -169,12 +170,77 @@ impl NodeWallet {
         let balance = self.balance();
         json!({
             "confirmedSats": balance.confirmed.to_sat(),
+            // Spendable is confirmed mature coins plus this wallet's own
+            // unconfirmed change. Pending adds unconfirmed coins from other
+            // people; those are not spendable.
             "spendableSats": (balance.confirmed + balance.trusted_pending).to_sat(),
             "pendingSats": (balance.trusted_pending + balance.untrusted_pending).to_sat(),
             "immatureSats": balance.immature.to_sat(),
             "totalSats": balance.total().to_sat(),
         })
     }
+
+    /// Deposits and payments this wallet already knows. Built from the local
+    /// chain state, so no address is sent to a public server.
+    pub(crate) fn activity_value(&self, labels: &HashMap<String, String>) -> Value {
+        let mut rows = Vec::new();
+        for tx in self.wallet.transactions() {
+            let (sent, received) = self.wallet.sent_and_received(&tx.tx_node.tx);
+            let (sent, received) = (sent.to_sat(), received.to_sat());
+            let (direction, sats) = if received > sent {
+                ("in", received - sent)
+            } else if sent > received {
+                ("out", sent - received)
+            } else {
+                continue;
+            };
+            let txid = tx.tx_node.txid.to_string();
+            let (confirmed, height, time) = match tx.chain_position {
+                ChainPosition::Confirmed { anchor, .. } => {
+                    (true, anchor.block_id.height, anchor.confirmation_time)
+                }
+                ChainPosition::Unconfirmed { last_seen, first_seen } => {
+                    (false, 0, last_seen.or(first_seen).unwrap_or(0))
+                }
+            };
+            let label = if direction == "in" {
+                "Deposit".to_string()
+            } else {
+                labels.get(&txid).cloned().unwrap_or_else(|| "Payment".to_string())
+            };
+            rows.push(ActivityRow {
+                confirmed,
+                height,
+                time,
+                txid: txid.clone(),
+                value: json!({
+                    "txid": txid,
+                    "direction": direction,
+                    "sats": sats,
+                    "confirmed": confirmed,
+                    "height": confirmed.then_some(height),
+                    "time": (time > 0).then_some(time),
+                    "label": label,
+                }),
+            });
+        }
+        rows.sort_by(|left, right| {
+            left.confirmed
+                .cmp(&right.confirmed)
+                .then(right.height.cmp(&left.height))
+                .then(right.time.cmp(&left.time))
+                .then(left.txid.cmp(&right.txid))
+        });
+        Value::Array(rows.into_iter().map(|row| row.value).collect())
+    }
+}
+
+struct ActivityRow {
+    confirmed: bool,
+    height: u32,
+    time: u64,
+    txid: String,
+    value: Value,
 }
 
 fn signers_for(

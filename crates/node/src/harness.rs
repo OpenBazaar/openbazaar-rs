@@ -246,6 +246,21 @@ impl ChainSource for MockChain {
             .and_then(|seen| seen.height);
         Ok(Some((out, height)))
     }
+
+    fn transaction(&self, txid: &Txid) -> Result<Option<(Transaction, Option<u32>)>, String> {
+        let tx = self
+            .broadcasts()
+            .into_iter()
+            .chain(self.0.wallet_txs.lock().unwrap().iter().map(|(tx, _)| tx.clone()))
+            .find(|tx| tx.compute_txid() == *txid);
+        let Some(tx) = tx else { return Ok(None) };
+        let height = tx.output.iter().find_map(|out| {
+            self.0.by_script.lock().unwrap().get(&out.script_pubkey).and_then(|txs| {
+                txs.iter().find(|seen| seen.txid == *txid).and_then(|seen| seen.height)
+            })
+        });
+        Ok(Some((tx, height)))
+    }
 }
 
 pub(crate) struct TempDir(pub PathBuf);

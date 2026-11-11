@@ -25,6 +25,17 @@ public final class ObTorModule: Module {
   public func definition() -> ModuleDefinition {
     Name("ObTor")
 
+    // The Tor client's lines (crates/mobile-tor/src/log.rs) and the app's own go to the device log, in Release builds too.
+    OnCreate {
+      ob_tor_set_log { line in
+        if let line { NSLog("%@", String(cString: line)) }
+      }
+    }
+
+    Function("log") { (line: String) in
+      NSLog("%@", line)
+    }
+
     AsyncFunction("start") { () throws in
       let dir = try Self.dataDir()
       try Self.check(dir.withCString { ob_tor_start($0) })

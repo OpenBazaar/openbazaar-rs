@@ -107,6 +107,17 @@ pub unsafe extern "C" fn ob_tor_exchange(
     }
 }
 
+/// Send this library's log lines (see `log.rs`) to `log`, which must copy
+/// what it keeps: the line is freed when it returns.
+#[no_mangle]
+pub extern "C" fn ob_tor_set_log(log: extern "C" fn(*const c_char)) {
+    crate::log::set_sink(Box::new(move |line| {
+        if let Ok(line) = CString::new(line) {
+            log(line.as_ptr());
+        }
+    }));
+}
+
 /// Free a string this library returned.
 /// # Safety
 /// `value` is NULL or came from this library and is freed once.

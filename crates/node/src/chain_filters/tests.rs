@@ -7,9 +7,10 @@ use bdk_wallet::{KeychainKind, Wallet};
 use bitcoin::hashes::Hash;
 use bitcoin::{Network, OutPoint, ScriptBuf};
 
-use super::index::{FilterCheck, FilterIndex, NEW_SCRIPT_LOOKBACK};
+use super::index::{FilterCheck, FilterIndex, NEW_SCRIPT_LOOKBACK, RECENT_HEADERS};
 use super::mock_peer::{pay, spend, MockPeer, SocksRecorder, TestChain};
 use super::store::{decode, encode, ChainStore};
+use super::driver::{dial_plan, stuck_on_stale_tip};
 use super::{stale_tip, FilterChain, FilterConfig, STALE_TIP};
 use crate::chain::{ChainSource, WalletRequest};
 use crate::harness::TempDir;
@@ -139,6 +140,66 @@ fn wallet_updates_follow_payments_spends_and_a_reorg() {
     wallet.apply_update(index.wallet_update(&spks)).unwrap();
     assert_eq!(wallet.balance().total().to_sat(), 0, "the confirmed coin is still spent by the pending spend");
     assert_eq!(index.mempool.len(), 1);
+}
+
+#[test]
+fn the_wallet_follows_a_chain_after_the_header_window_moves() {
+    let mut wallet = wallet();
+    let spks = wallet_spks(&wallet, 2);
+    let receive = spks[1].1.clone();
+    let mut chain = TestChain::new();
+    for _ in 0..RECENT_HEADERS + 40 {
+        chain.mine(vec![]);
+    }
+    let mut index = FilterIndex::new(Network::Regtest, BlockId { height: 1, hash: chain.hash(1) });
+    index.watch(spks.iter().map(|(_, script)| script.clone()));
+    scan(&mut index, &chain, 1);
+    wallet.apply_update(index.wallet_update(&spks)).unwrap();
+    let first_tip = wallet.latest_checkpoint().height();
+
+    for _ in 0..RECENT_HEADERS {
+        chain.mine(vec![]);
+    }
+    chain.mine(vec![pay(&receive, 391_054, 3)]);
+    scan(&mut index, &chain, first_tip);
+    wallet
+        .apply_update(index.wallet_update(&spks))
+        .expect("checked blocks connect the new header window to the one the wallet already has");
+    let balance = wallet.balance();
+    assert_eq!(balance.confirmed.to_sat(), 391_054);
+    assert_eq!((balance.trusted_pending + balance.untrusted_pending).to_sat(), 0);
+}
+
+#[test]
+fn an_unconfirmed_incoming_output_is_pending_and_not_spendable() {
+    let mut wallet = wallet();
+    let receive = wallet.reveal_next_address(KeychainKind::External).address.script_pubkey();
+    let mut chain = TestChain::new();
+    chain.mine(vec![]);
+    chain.mine(vec![]);
+    let mut index = FilterIndex::new(Network::Regtest, genesis(&chain));
+    index.watch([receive.clone()]);
+    scan(&mut index, &chain, 0);
+    // An incremental sync names the script without its keychain index.
+    let spks = vec![(None, receive.clone())];
+    wallet.apply_update(index.wallet_update(&spks)).unwrap();
+    assert_eq!(wallet.balance().total().to_sat(), 0);
+
+    let incoming = pay(&receive, 50_000, 9);
+    assert!(index.note_unconfirmed(incoming, 1_700_000_000));
+    wallet.apply_update(index.wallet_update(&spks)).unwrap();
+    let balance = wallet.balance();
+    let spendable = (balance.confirmed + balance.trusted_pending).to_sat();
+    let pending = (balance.trusted_pending + balance.untrusted_pending).to_sat();
+    assert_eq!(balance.confirmed.to_sat(), 0);
+    assert_eq!(balance.immature.to_sat(), 0);
+    assert_eq!((spendable, pending), (0, 50_000), "an unconfirmed receive is pending, not spendable");
+
+    // Same input, different recipient: the first payment was replaced.
+    let conflict = pay(&script(4), 49_000, 9);
+    assert!(index.note_unconfirmed(conflict, 1_700_000_001));
+    wallet.apply_update(index.wallet_update(&spks)).unwrap();
+    assert_eq!(wallet.balance().total().to_sat(), 0, "a conflicting spend drops the pending receive");
 }
 
 #[test]
@@ -387,6 +448,30 @@ fn a_public_filter_peer_is_not_dialed_without_a_proxy() {
     let status = filters.status();
     assert!(status.reveals.contains("not contacted"), "{}", status.reveals);
     assert!(status.peers.is_none(), "the filter client started");
+}
+
+#[test]
+fn a_tor_proxy_waits_for_a_circuit_and_dials_a_filter_seed_first() {
+    let mut config = FilterConfig::public(Network::Testnet4);
+    config.proxy = Some("127.0.0.1:9050".parse().unwrap());
+    let plan = dial_plan(&config);
+    assert!(plan.handshake_timeout.unwrap() >= Duration::from_secs(30));
+    assert!(plan.response_timeout.unwrap() >= Duration::from_secs(20));
+    assert_eq!(
+        plan.peers.last().map(|(host, port)| (host.as_str(), *port)),
+        Some(("x49.seed.testnet4.bitcoin.sprovoost.nl", 48333))
+    );
+    let clear = dial_plan(&FilterConfig::public(Network::Testnet4));
+    assert!(clear.handshake_timeout.is_none() && clear.response_timeout.is_none());
+    let own = dial_plan(&FilterConfig::own_node(Network::Testnet4, vec![("127.0.0.1".into(), 48333)]));
+    assert_eq!(own.peers, vec![("127.0.0.1".into(), 48333)]);
+
+    let now = 1_700_000_000u64;
+    let old = u32::try_from(now - STALE_TIP.as_secs() - 1).unwrap();
+    assert!(stuck_on_stale_tip(true, 160_147, 160_147, Some(old), now));
+    assert!(!stuck_on_stale_tip(true, 160_200, 160_147, Some(old), now));
+    assert!(!stuck_on_stale_tip(false, 160_147, 160_147, Some(old), now));
+    assert!(!stuck_on_stale_tip(true, 160_147, 160_147, Some(u32::try_from(now - 60).unwrap()), now));
 }
 
 /// Sync testnet4 compact filters from public P2P peers and print how long it

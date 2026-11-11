@@ -122,6 +122,7 @@ impl Node {
         if let Err(err) = self.refresh_own_store() {
             eprintln!("ob-node: own store: {err}");
         }
+        self.refresh_moderator_identity();
     }
 
     fn retire_seeds(&self, dirs: &[PathBuf], key: &Zeroizing<[u8; 32]>) {

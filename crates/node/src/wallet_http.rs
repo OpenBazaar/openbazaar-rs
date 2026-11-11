@@ -1,6 +1,8 @@
 //! Network, wallet, and pay routes. Everything except `GET /network` needs a
 //! loopback caller with the pairing token.
 
+use std::collections::HashMap;
+
 use serde_json::{json, Value};
 
 use crate::http::{json_body, json_error, local_guard, Client};
@@ -21,8 +23,14 @@ pub(crate) fn network_response(node: &Node, origin: Option<&str>) -> Vec<u8> {
         "silentPayments": "code-only",
         "letterOnion": node.advertised_onion(),
         "onion": node.advertised_onion(),
+        "moderates": node.escrow.config.moderates,
     });
-    if let (Some(map), Value::Object(egress)) = (value.as_object_mut(), node.local.egress.value(chain.public_server())) {
+    if let (Some(map), Value::Object(mut egress)) =
+        (value.as_object_mut(), node.local.egress.value(chain.public_server()))
+    {
+        if let Some(proxy) = node.local.egress.proxy.as_deref() {
+            egress.insert("proxyReachable".into(), json!(crate::egress::Egress::proxy_reachable(proxy)));
+        }
         map.extend(egress);
     }
     json_body("200 OK", &value, origin)
@@ -32,6 +40,7 @@ pub(crate) fn wallet_response(node: &Node, client: &Client, head: &str, origin: 
     if let Err(response) = local_guard(node, client, head, origin) {
         return response;
     }
+    let labels = payment_labels(node);
     let mut wallet = node.buyer_wallet();
     let address = match wallet.receive_address() {
         Ok(address) => address,
@@ -48,9 +57,27 @@ pub(crate) fn wallet_response(node: &Node, client: &Client, head: &str, origin: 
             "receiveAddress": address.to_string(),
             "lastSync": wallet.last_sync,
             "syncError": wallet.sync_error,
+            "activity": wallet.activity_value(&labels),
         }),
         origin,
     )
+}
+
+/// Seller names for payments this node sent, and the directory fee when it has one.
+fn payment_labels(node: &Node) -> HashMap<String, String> {
+    let mut labels = HashMap::new();
+    {
+        let orders = node.orders();
+        for order in orders.on_network() {
+            if let Some(txid) = &order.pay_txid {
+                labels.insert(txid.clone(), format!("Payment to {}", order.seller));
+            }
+        }
+    }
+    if let Some(txid) = node.directory_fee_txid() {
+        labels.entry(txid).or_insert_with(|| "Directory fee".to_string());
+    }
+    labels
 }
 
 pub(crate) fn wallet_address_response(node: &Node, client: &Client, head: &str, origin: Option<&str>) -> Vec<u8> {

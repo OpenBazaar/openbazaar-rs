@@ -1,6 +1,7 @@
 package expo.modules.obtor
 
 import android.util.Base64
+import android.util.Log
 import expo.modules.kotlin.exception.CodedException
 import expo.modules.kotlin.functions.Coroutine
 import expo.modules.kotlin.modules.Module
@@ -33,6 +34,11 @@ class ObTorModule : Module() {
     AsyncFunction("start") { tor { ObTorNative.start(dataDir()) } }
 
     Function("status") { ObTorNative.status() }
+
+    Function("log") { line: String ->
+      Log.i("ObTor", line)
+      Unit
+    }
 
     AsyncFunction("insertDiscoveryKey") { onion: String, secret: String ->
       tor { ObTorNative.insertDiscoveryKey(onion, secret) }

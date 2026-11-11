@@ -264,11 +264,10 @@ export function StoreScreen({ onRefresh }: { onRefresh: () => void }) {
     if (!own || editing !== null) return;
     void fetchDrafts().then(setDrafts).catch(() => setDrafts([]));
   }, [own, editing]);
-  const categories = [...new Set(catalog?.listings.map((listing) => listing.category) ?? [])];
   if (editing !== null) {
     const unpublished = editing !== "new" && "draftId" in editing ? editing : null;
     const published = editing !== "new" && !("draftId" in editing) ? editing : null;
-    return <ListingEdit listing={published} unpublished={unpublished} categories={categories} onClose={() => setEditing(null)} />;
+    return <ListingEdit listing={published} unpublished={unpublished} onClose={() => setEditing(null)} />;
   }
   return (
     <ScrollView contentContainerStyle={ui.screen}>

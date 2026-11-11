@@ -10,11 +10,12 @@ mod base32;
 pub mod ffi;
 #[cfg(target_os = "android")]
 mod jni;
+pub mod log;
 
 use std::path::Path;
 use std::str::FromStr;
 use std::sync::{Mutex, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use arti_client::config::TorClientConfigBuilder;
 use arti_client::{BootstrapBehavior, KeystoreSelector, TorClient};
@@ -28,6 +29,9 @@ struct Tor {
     runtime: tokio::runtime::Runtime,
     client: Client,
     failure: Mutex<Option<String>>,
+    /// The onion that answered the last request. Later requests to it are
+    /// routine and logged only when they fail.
+    answered: Mutex<Option<String>>,
 }
 
 static TOR: OnceLock<Tor> = OnceLock::new();
@@ -82,13 +86,38 @@ impl Tor {
             runtime,
             client,
             failure: Mutex::new(None),
+            answered: Mutex::new(None),
         })
     }
 
     fn bootstrap_in_background(&'static self) {
         self.runtime.spawn(async move {
-            if let Err(err) = self.client.bootstrap().await {
-                *self.failure.lock().unwrap() = Some(err.to_string());
+            let started = Instant::now();
+            log::line("bootstrap: started");
+            let result = self.client.bootstrap().await;
+            let secs = started.elapsed().as_secs();
+            match result {
+                Ok(()) => log::line(&format!("bootstrap: connected to Tor after {secs}s")),
+                Err(err) => {
+                    log::line(&format!("bootstrap: failed after {secs}s: {err}"));
+                    *self.failure.lock().unwrap() = Some(err.to_string());
+                }
+            }
+        });
+    }
+
+    /// Log each quarter of the way to a usable Tor client.
+    fn log_progress(&self) {
+        use futures::StreamExt;
+        let mut events = self.client.bootstrap_events();
+        self.runtime.spawn(async move {
+            let mut next = 25;
+            while let Some(status) = events.next().await {
+                let percent = (status.as_frac() * 100.0) as u32;
+                if percent >= next {
+                    log::line(&format!("bootstrap: {percent}% ({status})"));
+                    next = percent / 25 * 25 + 25;
+                }
             }
         });
     }
@@ -141,51 +170,101 @@ impl Tor {
     ) -> Result<Vec<u8>, String> {
         let host = format!("{}.onion", onion.trim_end_matches(".onion"));
         parse_onion(&host)?;
-        self.runtime.block_on(async {
+        let routine = self.answered.lock().unwrap().as_deref() == Some(host.as_str());
+        let started = Instant::now();
+        let say = |text: &str| {
+            let secs = started.elapsed().as_secs();
+            log::line(&format!("dial {host}: {text} ({secs}s)"));
+        };
+        if !routine {
+            let (bytes, limit) = (request.len(), timeout.as_secs());
+            say(&format!("started, {bytes} byte request, up to {limit}s"));
+        }
+        let step = |text: &str| {
+            if !routine {
+                say(text);
+            }
+        };
+        let result = self.runtime.block_on(async {
             match tokio::time::timeout(
                 timeout,
-                exchange_inner(&self.client, &host, port, request, max),
+                exchange_inner(&self.client, &host, port, request, max, &step),
             )
             .await
             {
                 Ok(result) => result,
                 Err(_) => Err("the home node did not answer over Tor in time".to_string()),
             }
-        })
+        });
+        match &result {
+            Ok(answer) => step(&format!("answer of {} bytes", answer.len())),
+            Err(err) => say(&format!("failed: {err}")),
+        }
+        *self.answered.lock().unwrap() = result.is_ok().then_some(host);
+        result
     }
 }
 
 const AUTH_RETRIES: u32 = 4;
 const AUTH_RETRY_DELAY: Duration = Duration::from_secs(8);
+/// A dial that has not connected by now is given up for a fresh one.
+const DIAL_STALL: Duration = Duration::from_secs(60);
 
 /// Connect to `host:port`. Right after pairing, the service may still publish a
 /// descriptor without this device's discovery key; Arti then reports the key
 /// as incorrect, so wait and fetch a fresh descriptor on a new isolation group.
+///
+/// A dial can also hang: the service's introduction point acknowledges the
+/// request and the service never completes the rendezvous. Arti waits on, and
+/// every later dial in the same isolation group joins that wait, so after
+/// [`DIAL_STALL`] dial again on a new group. The caller's timeout ends this.
 async fn connect(
     client: &TorClient<TokioRustlsRuntime>,
     host: &str,
     port: u16,
 ) -> Result<arti_client::DataStream, String> {
+    dial_until_connected(host, |fresh| async move {
+        let isolated;
+        let dialer = if fresh {
+            isolated = client.isolated_client();
+            &*isolated
+        } else {
+            client
+        };
+        dialer
+            .connect((host, port))
+            .await
+            .map_err(|err| err.to_string())
+    })
+    .await
+}
+
+/// The retries of [`connect`]. `dial(fresh)` is one attempt, on a new
+/// isolation group when `fresh`. `host` is for the log.
+async fn dial_until_connected<S, F, Fut>(host: &str, mut dial: F) -> Result<S, String>
+where
+    F: FnMut(bool) -> Fut,
+    Fut: std::future::Future<Output = Result<S, String>>,
+{
     let mut attempt = 0;
     loop {
-        let fresh;
-        let dialer = if attempt == 0 {
-            client
-        } else {
-            fresh = client.isolated_client();
-            &fresh
-        };
-        match dialer.connect((host, port)).await {
-            Ok(stream) => return Ok(stream),
-            Err(err) => {
-                let text = err.to_string();
+        match tokio::time::timeout(DIAL_STALL, dial(attempt > 0)).await {
+            Ok(Ok(stream)) => return Ok(stream),
+            Ok(Err(text)) => {
                 if attempt >= AUTH_RETRIES || !text.contains("authentication was incorrect") {
                     return Err(text);
                 }
+                attempt += 1;
+                let (wait, next) = (AUTH_RETRY_DELAY.as_secs(), attempt + 1);
+                log::line(&format!("dial {host}: the node does not serve this phone's key yet; dial {next} in {wait}s"));
+                tokio::time::sleep(AUTH_RETRY_DELAY).await;
+            }
+            Err(_) => {
+                attempt += 1;
+                let (stall, next) = (DIAL_STALL.as_secs(), attempt + 1);
+                log::line(&format!("dial {host}: no connection in {stall}s; dial {next} on fresh circuits"));
             }
         }
-        attempt += 1;
-        tokio::time::sleep(AUTH_RETRY_DELAY).await;
     }
 }
 
@@ -195,15 +274,18 @@ async fn exchange_inner(
     port: u16,
     request: &[u8],
     max: usize,
+    step: &dyn Fn(&str),
 ) -> Result<Vec<u8>, String> {
     use futures::{AsyncReadExt, AsyncWriteExt};
     client.bootstrap().await.map_err(|err| err.to_string())?;
     let mut stream = connect(client, host, port).await?;
+    step("connected");
     stream
         .write_all(request)
         .await
         .map_err(|err| err.to_string())?;
     stream.flush().await.map_err(|err| err.to_string())?;
+    step("request sent");
     let mut answer = Vec::new();
     let mut chunk = [0u8; 16 * 1024];
     loop {
@@ -255,6 +337,7 @@ pub fn start(data_dir: &Path) -> Result<(), String> {
         return Ok(());
     }
     let _ = TOR.set(Tor::create(data_dir)?);
+    TOR.get().expect("set above").log_progress();
     TOR.get().expect("set above").bootstrap_in_background();
     Ok(())
 }
@@ -332,6 +415,47 @@ mod tests {
             .unwrap_err();
         assert_eq!(err, "not a v3 onion address");
         assert_eq!(tor.status().state, "bootstrapping");
+    }
+
+    #[test]
+    fn a_dial_that_hangs_is_given_up_for_a_fresh_one() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .start_paused(true)
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            // The first dial never returns, as when a service never completes the rendezvous.
+            log::tests::captured();
+            let mut dials = Vec::new();
+            let host = format!("{ONION}.onion");
+            let hung = dial_until_connected(&host, |fresh| {
+                dials.push(fresh);
+                async move {
+                    if !fresh {
+                        std::future::pending::<()>().await;
+                    }
+                    Ok::<_, String>("connected")
+                }
+            });
+            let result = tokio::time::timeout(Duration::from_secs(120), hung).await;
+            assert_eq!(result, Ok(Ok("connected")));
+            assert_eq!(dials, [false, true]);
+            let lines = log::tests::captured();
+            assert!(lines.contains(&"ob-tor: dial 2gzyxa…3wid.onion: no connection in 60s; dial 2 on fresh circuits".to_string()));
+            assert!(lines.iter().all(|line| !line.contains(ONION)));
+
+            // A refused discovery key is still retried, and any other error is final.
+            let mut answers = vec![Ok("connected"), Err("authentication was incorrect".to_string())];
+            assert_eq!(
+                dial_until_connected("test", |_| std::future::ready(answers.pop().unwrap())).await,
+                Ok("connected")
+            );
+            assert_eq!(
+                dial_until_connected("test", |_| std::future::ready(Err::<(), _>("not found".to_string()))).await,
+                Err("not found".to_string())
+            );
+        });
     }
 
     #[test]

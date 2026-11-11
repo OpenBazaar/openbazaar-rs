@@ -18,12 +18,14 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::Path;
-use std::sync::{Mutex, MutexGuard};
+use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use tormail::Discovery;
 
 use super::devices::Move;
 use super::now_secs;
+use super::pair_log;
 use super::pairing::Code;
 use super::protocol::pairing_onion_seed;
 use super::tor::{Service, Tor, ADMIN_PORT, LIGHTNING_PORT};
@@ -52,6 +54,17 @@ fn admin_nickname(generation: u32) -> String {
 
 fn pairing_nickname(code_id: &str) -> String {
     format!("ob-pair-{code_id}")
+}
+
+/// What a long-lived service is for, as the node's Tor health names it.
+/// Pairing and reply onions come and go, and have no role.
+pub(crate) fn role(nickname: &str) -> Option<&'static str> {
+    match nickname {
+        "ob-sale" => Some("store"),
+        "ob-ln" => Some("lightning"),
+        name if name == "ob-home" || name.starts_with("ob-home-") => Some("remote access"),
+        _ => None,
+    }
 }
 
 /// Slug for one reply onion. Ten seed bytes keep it unique and a valid slug.
@@ -134,6 +147,25 @@ impl Services {
             .map(|(_, service)| service.forward.state())
     }
 
+    /// Each long-lived service: its role, Arti's state for it, and whether
+    /// Arti believes it reachable. For [`super::tor_health`].
+    pub(crate) fn long_lived(&self) -> Vec<(&'static str, String, bool)> {
+        let look = |nickname: &str, service: &Service| {
+            let forward = &service.forward;
+            role(nickname).map(|role| (role, forward.state(), forward.is_published()))
+        };
+        let admin = self.admin().last().and_then(|(_, service)| look("ob-home", service));
+        let sale = self.sale().as_ref().and_then(|service| look("ob-sale", service));
+        let lightning = self.lightning().as_ref().and_then(|service| look("ob-ln", service));
+        admin.into_iter().chain(sale).chain(lightning).collect()
+    }
+
+    /// When the node's own Tor client last got an answer from the store
+    /// onion. For [`super::tor_health`].
+    pub(crate) fn store_answered(&self) -> Option<u64> {
+        self.sale().as_ref().and_then(|service| service.answered.at())
+    }
+
     pub(crate) fn set_clients(&self, clients: &[(String, String)]) {
         for (generation, service) in self.admin().iter() {
             if let Err(err) = service.forward.set_clients(clients) {
@@ -146,7 +178,8 @@ impl Services {
     /// under the nickname `ob-sale`, so the address survives a restart.
     pub(crate) fn open_sale(&self, tor: &Tor, target: SocketAddr) {
         match tor.serve("ob-sale", None, Discovery::Open, target) {
-            Ok(service) => {
+            Ok(mut service) => {
+                tor.watch_store(&mut service);
                 *self.sale_target() = Some(target);
                 *self.sale() = Some(service);
             }
@@ -215,17 +248,25 @@ impl Services {
             .map(|onion| onion.to_string())
     }
 
-    pub(crate) fn open_pairing(&self, tor: &Tor, code: &Code, target: SocketAddr) {
+    /// Publish `code`'s onion. The flag turns true once the node's own Tor
+    /// client has reached it ([`super::pair_ready`]).
+    pub(crate) fn open_pairing(&self, tor: &Tor, code: &Code, target: SocketAddr) -> Option<Arc<AtomicBool>> {
         match tor.serve(
             &pairing_nickname(&code.id),
             Some(pairing_onion_seed(&code.secret)),
             Discovery::Open,
             target,
         ) {
-            Ok(service) => {
+            Ok(mut service) => {
+                let reached = Arc::new(AtomicBool::new(false));
+                tor.watch_pairing(&mut service, pair_log::label(code), Arc::clone(&reached));
                 self.pairing().insert(code.id.clone(), service);
+                Some(reached)
             }
-            Err(err) => eprintln!("ob-node: pairing onion: {err}"),
+            Err(err) => {
+                eprintln!("ob-node: pairing onion: {err}");
+                None
+            }
         }
     }
 
@@ -239,6 +280,7 @@ impl Services {
         for id in gone {
             self.pairing().remove(&id);
             forget_keys(data_dir, &pairing_nickname(&id));
+            pair_log::line(format!("code {id}: its onion is closed"));
         }
     }
 

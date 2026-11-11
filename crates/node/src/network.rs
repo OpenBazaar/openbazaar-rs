@@ -58,7 +58,8 @@ impl NetworkMode {
 
     /// Public Esplora servers for this network, used only with
     /// `--public-fallback`. Every one serves only this network; the chain
-    /// client also checks its genesis block.
+    /// client also checks its genesis block. These are the clearnet URLs.
+    /// [`esplora_base`] swaps mempool.space for its onion when a proxy is set.
     pub fn default_esplora(self) -> &'static [&'static str] {
         match self {
             NetworkMode::Testnet4 => &["https://mempool.space/testnet4/api", "https://blockstream.info/testnet4/api"],
@@ -339,12 +340,16 @@ impl ServeOptions {
         self.network.data_dir(&self.data_root)
     }
 
-    /// Escrow peers for this node. It advertises its own loopback port.
+    /// Escrow peers for this node. It advertises its own loopback port. On
+    /// testnet4 a dispute goes to the test network's moderator unless
+    /// `--moderator` names another, or this node is the moderator.
     pub fn escrow_config(&self) -> crate::EscrowConfig {
+        let default_moderator = (self.network == NetworkMode::Testnet4 && !self.moderate)
+            .then(crate::test_network::test_network_moderator);
         crate::EscrowConfig {
             mailbox_url: Some(format!("http://127.0.0.1:{}", self.port)),
             vendors: self.escrow_vendors.iter().cloned().collect(),
-            moderator_url: self.moderator_url.clone(),
+            moderator_url: self.moderator_url.clone().or(default_moderator),
             moderates: self.moderate,
         }
     }
@@ -357,15 +362,50 @@ impl ServeOptions {
     }
 
     /// The chain backend these flags select.
+    ///
+    /// With `--proxy`, mempool.space's clearnet host is its onion. Blockstream
+    /// stays on clearnet: that host already answers through Tor.
     pub fn chain_plan(&self) -> crate::ChainPlan {
-        crate::ChainPlan::choose(self.network, &self.peers, &self.esplora_urls, self.public_fallback)
-            .expect("parse already checked the chain flags")
+        let plan = crate::ChainPlan::choose(self.network, &self.peers, &self.esplora_urls, self.public_fallback)
+            .expect("parse already checked the chain flags");
+        if self.proxy.is_some() {
+            plan.through_proxy()
+        } else {
+            plan
+        }
     }
 
     /// True when chain queries may go to a server that is not on this machine or LAN.
     pub fn uses_public_server(&self) -> bool {
         self.chain_plan().esplora_servers().iter().any(|url| !is_private_url(url))
     }
+}
+
+/// mempool.space's official onion, from the `Onion-Location` header on
+/// `https://mempool.space`. One host serves every network. The path selects
+/// it: `/api` (mainnet), `/testnet4/api`, `/testnet/api`, `/signet/api`.
+/// Onion services are not the clearnet TLS name, so the scheme is `http`.
+pub(crate) const MEMPOOL_ONION_HOST: &str = "mempoolhqx4isw62xs7abwphsq7ldayuidyx2v2oethdhhj6mlo2r6ad.onion";
+
+/// The Esplora base to dial for the tip, fees, and broadcasts.
+///
+/// With a proxy, a `mempool.space` host becomes [`MEMPOOL_ONION_HOST`] and the
+/// path stays (`/api`, `/testnet4/api`, `/signet/api`, and the same for any
+/// other prefix mempool publishes). Blockstream and every other host are
+/// unchanged. Without a proxy, `url` is returned as given.
+pub(crate) fn esplora_base(url: &str, proxied: bool) -> String {
+    let url = url.trim();
+    if !proxied {
+        return url.to_string();
+    }
+    let Ok(parsed) = url::Url::parse(url) else {
+        return url.to_string();
+    };
+    if !parsed.host_str().is_some_and(|host| host.eq_ignore_ascii_case("mempool.space")) {
+        return url.to_string();
+    }
+    let path = parsed.path().trim_end_matches('/');
+    format!("http://{MEMPOOL_ONION_HOST}{path}")
 }
 
 pub(crate) fn is_private_url(url: &str) -> bool {
@@ -379,6 +419,11 @@ pub(crate) fn is_private_url(url: &str) -> bool {
         return false;
     }
     let Some(host) = parsed.host_str() else { return false };
+    // mempool's onion is still a public server. Treating it as this node's
+    // own onion would send it the wallet's addresses.
+    if host.eq_ignore_ascii_case(MEMPOOL_ONION_HOST) {
+        return false;
+    }
     if host == "localhost" || host.ends_with(".local") || host.ends_with(".onion") {
         return true;
     }
@@ -473,6 +518,12 @@ mod tests {
         assert!(options.onion);
         assert_eq!(options.escrow_config().mailbox_url.as_deref(), Some("http://127.0.0.1:9000"));
         assert!(!ServeOptions::parse(&[]).unwrap().onion);
+        let moderator = |flags: &[&str]| ServeOptions::parse(&args(flags)).unwrap().escrow_config().moderator_url;
+        let railway = format!("http://{}", crate::test_network::TEST_NETWORK_MODERATOR_ONION);
+        assert_eq!(moderator(&[]), Some(railway), "testnet4 disputes go to the test network's moderator");
+        assert_eq!(moderator(&["--moderator", "http://127.0.0.1:9100"]).as_deref(), Some("http://127.0.0.1:9100"));
+        assert_eq!(moderator(&["--moderate"]), None, "the moderator does not write to itself");
+        assert_eq!(moderator(&["--network", "mainnet"]), None, "the fixture moderator is testnet4 only");
         let clearnet = "http://203.0.113.5:8787";
         assert!(ServeOptions::parse(&args(&["--moderator", clearnet])).is_err());
         assert!(ServeOptions::parse(&args(&["--escrow-vendor", &format!("Shop={clearnet}")])).is_err());
@@ -580,6 +631,50 @@ mod tests {
         ] {
             assert!(ServeOptions::parse(&args(bad)).is_err(), "{bad:?}");
         }
+    }
+
+    #[test]
+    fn a_proxied_mempool_base_is_its_onion() {
+        let onion = format!("http://{MEMPOOL_ONION_HOST}");
+        let clear = ServeOptions::parse(&[]).unwrap();
+        assert_eq!(
+            clear.chain_plan().esplora_servers(),
+            ["https://mempool.space/testnet4/api", "https://blockstream.info/testnet4/api"],
+            "no proxy keeps the clearnet mempool host"
+        );
+
+        let tor = ServeOptions::parse(&args(&["--proxy", "socks5h://127.0.0.1:9050"])).unwrap();
+        assert_eq!(
+            tor.chain_plan().esplora_servers(),
+            [format!("{onion}/testnet4/api"), "https://blockstream.info/testnet4/api".to_string()]
+        );
+        assert!(tor.uses_public_server(), "mempool's onion is still a public server");
+        assert!(is_private_url("http://abcdefghijklmnopqrstuvwxyz234567abcdefghijklmnopqrst.onion/api"));
+
+        let main = ServeOptions::parse(&args(&["--network", "mainnet", "--public-fallback"])).unwrap();
+        assert_eq!(main.chain_plan().esplora_servers(), ["https://mempool.space/api"]);
+        let main_tor = ServeOptions::parse(&args(&[
+            "--network",
+            "mainnet",
+            "--public-fallback",
+            "--proxy",
+            "socks5h://127.0.0.1:9050",
+        ]))
+        .unwrap();
+        assert_eq!(main_tor.chain_plan().esplora_servers(), [format!("{onion}/api")]);
+        assert!(main_tor.uses_public_server());
+
+        let signet = ServeOptions::parse(&args(&["--esplora", "https://mempool.space/signet/api"])).unwrap();
+        assert_eq!(signet.chain_plan().esplora_servers(), ["https://mempool.space/signet/api"]);
+        let signet_tor = ServeOptions::parse(&args(&[
+            "--esplora",
+            "https://mempool.space/signet/api",
+            "--proxy",
+            "socks5h://127.0.0.1:9050",
+        ]))
+        .unwrap();
+        assert_eq!(signet_tor.chain_plan().esplora_servers(), [format!("{onion}/signet/api")]);
+        assert!(signet_tor.uses_public_server(), "the onion is not treated as this node's server");
     }
 
     #[test]

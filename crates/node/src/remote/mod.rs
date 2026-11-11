@@ -25,17 +25,26 @@ mod home_link;
 mod home_pair;
 mod lan;
 mod local_http;
+mod onion_check;
 mod pair_cli;
 mod pair_http;
+mod pair_log;
+mod pair_ready;
 mod pairing;
+mod passkeys;
 mod policy;
 mod protocol;
 mod push;
 mod services;
 mod sync;
 mod tor;
+mod tor_counts;
+mod tor_health;
+mod tor_log;
 pub(crate) use tor::{Tor, LIGHTNING_PORT};
 mod web;
+mod web_origin;
+pub use web_origin::WebOrigin;
 
 /// The web export for a browser on this machine. Unlike [`web::response`],
 /// the page is not marked as a remote home-node client.
@@ -48,6 +57,7 @@ mod tests;
 #[cfg(test)]
 mod vectors;
 
+use std::io::IsTerminal;
 use std::net::{SocketAddr, TcpListener};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -88,6 +98,9 @@ pub struct RemoteConfig {
     /// `--allow-loopback-home`: as a client, accept a home node reached on a
     /// loopback LAN address. Tests only.
     pub loopback_homes: bool,
+    /// `--web-listen ADDR` with `--web-origin https://HOST`: the admin
+    /// gateway for a browser on the open web, behind a proxy that ends TLS.
+    pub web: Option<(SocketAddr, WebOrigin)>,
 }
 
 impl RemoteConfig {
@@ -95,6 +108,7 @@ impl RemoteConfig {
     pub fn extract(args: &[String]) -> Result<(Self, Vec<String>), String> {
         let mut config = Self::default();
         let mut rest = Vec::new();
+        let (mut web_listen, mut web_origin) = (None, None);
         let mut iter = args.iter();
         while let Some(arg) = iter.next() {
             let mut value =
@@ -120,6 +134,13 @@ impl RemoteConfig {
                     config.listen = Some(addr);
                 }
                 "--web-dir" => config.web_dir = Some(PathBuf::from(value("--web-dir")?)),
+                "--web-listen" => {
+                    let text = value("--web-listen")?;
+                    web_listen = Some(text.parse::<SocketAddr>().map_err(|_| {
+                        format!("--web-listen must look like 0.0.0.0:8080, not {text:?}")
+                    })?);
+                }
+                "--web-origin" => web_origin = Some(WebOrigin::parse(&value("--web-origin")?)?),
                 "--push-gateway" => {
                     let url = value("--push-gateway")?;
                     push::gateway_target(&url)?;
@@ -128,11 +149,16 @@ impl RemoteConfig {
                 _ => rest.push(arg.clone()),
             }
         }
+        config.web = match (web_listen, web_origin) {
+            (Some(listen), Some(origin)) => Some((listen, origin)),
+            (None, None) => None,
+            _ => return Err("--web-listen and --web-origin go together: the address to listen on, and the https address browsers use.".into()),
+        };
         Ok((config, rest))
     }
 
     fn serves(&self) -> bool {
-        self.onion || self.listen.is_some() || self.lan.is_some()
+        self.onion || self.listen.is_some() || self.lan.is_some() || self.web.is_some()
     }
 }
 
@@ -142,11 +168,13 @@ pub(crate) struct Remote {
     pub(crate) replay: auth::ReplayGuard,
     pub(crate) batches: batch::Batches,
     pub(crate) push: push::PushState,
+    pub(crate) passkey_challenges: passkeys::Challenges,
     config: OnceLock<RemoteConfig>,
     gateway: OnceLock<SocketAddr>,
     pairing_gateway: OnceLock<SocketAddr>,
     pub(crate) services: services::Services,
     tor: OnceLock<Result<Arc<tor::Tor>, String>>,
+    tor_health: Mutex<tor_health::Tracker>,
     lan: lan::LanState,
     home: home::HomeState,
 }
@@ -159,11 +187,13 @@ impl Remote {
             replay: auth::ReplayGuard::new(now_secs()),
             batches: batch::Batches::default(),
             push: push::PushState::default(),
+            passkey_challenges: passkeys::Challenges::default(),
             config: OnceLock::new(),
             gateway: OnceLock::new(),
             pairing_gateway: OnceLock::new(),
             services: services::Services::default(),
             tor: OnceLock::new(),
+            tor_health: Mutex::new(tor_health::Tracker::new()),
             lan: lan::LanState::default(),
             home: home::HomeState::open(dir, vault)?,
         })
@@ -189,6 +219,13 @@ impl Remote {
         self.config
             .get()
             .and_then(|config| config.web_dir.as_deref())
+    }
+
+    pub(crate) fn web_origin(&self) -> Option<&WebOrigin> {
+        self.config
+            .get()
+            .and_then(|config| config.web.as_ref())
+            .map(|(_, origin)| origin)
     }
 
     pub(crate) fn enabled(&self) -> bool {
@@ -230,6 +267,38 @@ impl Remote {
         self.tor.get().and_then(|tor| tor.as_ref().ok().map(Arc::clone))
     }
 
+    /// Look at Tor, and say so on the console when its health has changed.
+    fn check_tor(&self) {
+        let Some(tor) = self.running_tor() else {
+            return;
+        };
+        // This clock stops while the machine sleeps; the time of day does not.
+        static START: OnceLock<Instant> = OnceLock::new();
+        let awake = START.get_or_init(Instant::now).elapsed().as_secs();
+        let now = now_secs();
+        let reading = tor.reading(self.services.long_lived(), self.services.store_answered());
+        let tally = tor_counts::COUNTS
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .tally(now);
+        let line = self
+            .tor_health
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .observe(now, awake, &reading, &tally);
+        if let Some(line) = line {
+            tor_log::print(line);
+        }
+    }
+
+    /// `tor` in `GET /remote`: see [`tor_health`]. `None` on a node without Tor.
+    pub(crate) fn tor_health(&self) -> Option<serde_json::Value> {
+        self.tor_health
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .summary()
+    }
+
     /// Act as if the gateway were listening on `addr`, without a socket.
     #[cfg(test)]
     pub(crate) fn pretend_gateway(&self, addr: SocketAddr) {
@@ -242,10 +311,18 @@ impl Remote {
         if !self.enabled() {
             return None;
         }
-        let code = self.pairing().issue(by, Instant::now());
+        let maker = by.clone().unwrap_or_else(|| "the node itself".into());
+        let mut code = self.pairing().issue(by, Instant::now());
         if let (Some(tor), Some(target)) = (self.running_tor(), self.pairing_gateway.get()) {
-            self.services.open_pairing(&tor, &code, *target);
+            if let Some(reached) = self.services.open_pairing(&tor, &code, *target) {
+                code = self.pairing().watch_onion(&code.id, reached).unwrap_or(code);
+            }
         }
+        let onion = match code.onion(Instant::now()) {
+            Some(_) => "its onion is starting",
+            None => "it has no onion (Tor is off, or the onion could not start)",
+        };
+        pair_log::line(format!("{} made by {maker}; {onion}", pair_log::label(&code)));
         Some(code)
     }
 
@@ -371,17 +448,25 @@ pub(crate) fn run(node: &Node, main_port: u16, stop: &AtomicBool) {
         if let Some(addr) = config.lan {
             scope.spawn(move || lan::serve(node, addr, main_port, stop));
         }
+        if let Some((addr, origin)) = &config.web {
+            match TcpListener::bind(addr) {
+                Ok(listener) => {
+                    eprintln!("ob-node: web sign-in at {}/ (passkeys and access keys)", origin.as_str());
+                    if passkeys::claimable(node) {
+                        eprintln!("ob-node: nobody owns this node yet: the first browser to open that address creates its passkey and owns it");
+                    }
+                    scope.spawn(move || gateway::serve(node, listener, gateway::Entry::Web, main_port, stop));
+                }
+                Err(err) => eprintln!("ob-node: the web gateway could not listen on {addr}: {err}"),
+            }
+        }
         scope
             .spawn(move || gateway::serve(node, pairing, gateway::Entry::Pairing, main_port, stop));
         scope.spawn(move || upkeep(node, main_port, stop));
         if remote.devices().list().is_empty() {
             std::thread::sleep(Duration::from_millis(300));
-            if let Some(code) = remote.issue_code(None) {
-                pair_cli::announce(
-                    &remote.link_for(&code),
-                    &code,
-                    "No device is paired yet. Pair your first device with this code",
-                );
+            if let Some(notice) = pair_cli::first_run_notice(remote, std::io::stderr().is_terminal()) {
+                eprintln!("{notice}");
             }
         }
         gateway::serve(node, admin, gateway::Entry::Admin, main_port, stop);
@@ -398,7 +483,8 @@ fn bind_gateways(listen: Option<SocketAddr>) -> Option<(TcpListener, TcpListener
     Some((bind(listen.unwrap_or(any))?, bind(any)?))
 }
 
-/// Retire pairing onions, finish address moves, and send push wake-ups.
+/// Retire pairing onions, finish address moves, send push wake-ups, and
+/// look at Tor's health.
 fn upkeep(node: &Node, main_port: u16, stop: &AtomicBool) {
     let mut last = Instant::now();
     while !stop.load(Ordering::Relaxed) {
@@ -413,6 +499,7 @@ fn upkeep(node: &Node, main_port: u16, stop: &AtomicBool) {
             .close_pairing_except(&live, &node.data_dir);
         services::finish_move(node);
         push::check(node, main_port);
+        node.remote.check_tor();
     }
 }
 

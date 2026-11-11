@@ -245,6 +245,8 @@ fn escrow_dispute_ruled_for_the_buyer() {
     assert_eq!(market.deliver(), 1, "the moderator reviews the letter");
 
     let moderator = &market.moderator.node;
+    assert_eq!(request(moderator, "GET", "/network", "").1["moderates"], true, "a paired device shows the desk on this node");
+    assert_eq!(request(&market.buyer.node, "GET", "/network", "").1["moderates"], false);
     let (_, cases) = request(moderator, "GET", "/moderator/disputes", "");
     let case = &cases["disputes"][0];
     assert_eq!(case["favors"], "buyer");

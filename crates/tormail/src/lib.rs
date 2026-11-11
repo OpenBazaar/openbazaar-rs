@@ -57,6 +57,9 @@ pub use seal::{
     LETTER_BUCKETS, MAX_MESSAGE_LEN, MAX_REPLY_LEN, REPLY_BUCKETS,
 };
 pub use client::open_client;
-pub use transport::{ask_directory, ArtiOrderTransport, MemoryTransport, OrderTransport, QUERY_LISTINGS, QUERY_SEED, QUERY_STORE};
+pub use transport::{
+    ask_directory, submit_directory, ArtiOrderTransport, MemoryTransport, OrderTransport, MAX_QUERY_LEN, QUERY_ADMISSIONS,
+    QUERY_INBOX, QUERY_LISTINGS, QUERY_SEED, QUERY_STORE, SUBMIT_ADMISSION, SUBMIT_DOCUMENT, SUBMIT_LISTING, SUBMIT_STORE,
+};
 
 pub use tor_hscrypto::pk::HsId;

@@ -253,9 +253,12 @@ impl Node {
 
     /// Fetch the store at `url`, keep it, and serve it. `true` when the copy changed.
     fn replicate(&self, url: &str) -> bool {
-        let fetched = fetch_store(&self.peers, url).and_then(|replica| match self.refuse_replica(&replica.store) {
+        let fetched = fetch_store(&self.peers, url).and_then(|(replica, moderators)| match self.refuse_replica(&replica.store) {
             Some(reason) => Err(reason),
-            None => Ok(replica),
+            None => {
+                self.learn_moderators(&moderators);
+                Ok(replica)
+            }
         });
         if let Ok(replica) = &fetched {
             self.fetch_images(url, replica);
@@ -337,7 +340,10 @@ impl Node {
     }
 }
 
-fn fetch_store(peers: &crate::peer_http::PeerLink, url: &str) -> Result<Replica, String> {
+/// The store at `url`, and the signed profiles of the moderators it accepts
+/// as its node relays them. The profiles are checked where they are kept
+/// ([`Node::learn_moderators`]).
+fn fetch_store(peers: &crate::peer_http::PeerLink, url: &str) -> Result<(Replica, Vec<Value>), String> {
     let answer = crate::peer_http::call(peers, "GET", &format!("{url}/public/store"), None, None, FETCH_TIMEOUT, MAX_STORE_BODY as usize)?;
     if answer.status == 404 {
         return Err("that node is not selling".into());
@@ -350,7 +356,8 @@ fn fetch_store(peers: &crate::peer_http::PeerLink, url: &str) -> Result<Replica,
     }
     let value: Value = serde_json::from_slice(&answer.body).map_err(|_| "the store's answer could not be read".to_string())?;
     let store = value["store"].as_str().ok_or("the store's answer has no store record")?;
-    decode_records(store, value["listings"].as_array().map_or(&[][..], Vec::as_slice))
+    let moderators = value["moderators"].as_array().cloned().unwrap_or_default();
+    decode_records(store, value["listings"].as_array().map_or(&[][..], Vec::as_slice)).map(|replica| (replica, moderators))
 }
 
 fn fetch_image(peers: &crate::peer_http::PeerLink, url: &str, hash: &[u8; 32]) -> Result<Vec<u8>, String> {

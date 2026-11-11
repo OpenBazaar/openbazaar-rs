@@ -112,7 +112,7 @@ export function HomeNodeApp({ Market }: { Market: ComponentType }) {
 
   return (
     <SafeAreaProvider>
-      <SafeAreaView style={styles.page} edges={["top", "bottom"]}>
+      <SafeAreaView style={styles.page} edges={["top", "right", "bottom", "left"]}>
         {body}
       </SafeAreaView>
     </SafeAreaProvider>

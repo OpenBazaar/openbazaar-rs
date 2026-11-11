@@ -8,7 +8,6 @@ use openbazaar_escrow::ModeratorRuling;
 use serde_json::Value;
 
 use super::failed;
-use crate::escrow_fixture::moderator_mail_key;
 use crate::escrow_mail::{parse_id, EscrowId, Kind, Mail};
 use crate::instructions::ESCROW_MAINNET_REFUSAL;
 use crate::network::NetworkMode;
@@ -42,20 +41,21 @@ impl Node {
         let memo = memo_of(body)?;
         self.lock.spend_key()?;
         let escrow_id: EscrowId = parse_id(id).ok_or(PayError::NotFound)?;
-        let moderator = self.escrow.config.moderator_url.clone().ok_or_else(|| {
-            PayError::Invalid("This node has no moderator to send a dispute to.".into())
-        })?;
         let reply = self.escrow_reply_url(&escrow_id).map_err(PayError::Invalid)?.to_string();
         let lock = self.escrow.locks.get(&escrow_id);
         let _held = lock.lock().unwrap_or_else(|err| err.into_inner());
-        let (seller, stage) = {
+        let (seller, stage, record, citation) = {
             let desk = self.vendor_desk();
             let sale = desk.sales.get(&escrow_id).ok_or(PayError::NotFound)?;
-            (sale.seller.clone(), sale.stage.clone())
+            // The listing and the store signature over it, as the offer carried them.
+            let citation = sale.listing_id.zip(sale.offer.get(2).cloned());
+            (sale.seller.clone(), sale.stage.clone(), sale.terms.moderator.clone(), citation)
         };
         if stage != "funded" && stage != "disputed" {
             return Err(PayError::Conflict(format!("This sale is {stage}.")));
         }
+        // The moderator in the terms both parties signed, at the address its profile gives.
+        let (moderator, moderator_key) = self.moderator_mailbox(&record, None).map_err(PayError::Invalid)?;
         let mail_key = self
             .seller_mail_secret(&seller)
             .map(|secret| secret.public_key())
@@ -67,12 +67,14 @@ impl Node {
                 |sale, _| sale.stage = "disputed".into(),
             )
             .map_err(PayError::Failed)?;
-        let mail = Mail::new(
-            Kind::VendorDispute,
-            escrow_id,
-            vec![letter, mail_key.as_bytes().to_vec(), reply.into_bytes()],
-        );
-        if let Err(err) = self.send_mail(&moderator, &moderator_mail_key(), &mail) {
+        let mut fields = vec![letter, mail_key.as_bytes().to_vec(), reply.into_bytes()];
+        if let (Some((listing, store_signature)), Ok(store_key)) = (citation, self.seller_store_key(&seller)) {
+            fields.push(listing.to_vec());
+            fields.push(store_key.serialize().to_vec());
+            fields.push(store_signature);
+        }
+        let mail = Mail::new(Kind::VendorDispute, escrow_id, fields);
+        if let Err(err) = self.send_mail(&moderator, &moderator_key, &mail) {
             if stage == "funded" {
                 let _ = self.update_sale(&escrow_id, |sale| sale.stage = "funded".into());
             }

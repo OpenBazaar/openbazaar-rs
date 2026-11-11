@@ -71,20 +71,20 @@ function onionAddress(value: unknown): string | null {
   return value
 }
 
-/** One line for the status banner: network, chain height, and this node's onion. */
+/** Chain-height phrase for the status banner. */
+export function chainHeightLabel(info: NetworkInfo): string {
+  if (info.syncing) {
+    return info.scannedHeight == null ? 'Chain syncing' : `Chain syncing · height ${info.scannedHeight}`
+  }
+  if (info.chainFailed) return 'Chain sync failed'
+  if (info.scannedHeight == null) return 'Chain height unavailable'
+  return `Chain height ${info.scannedHeight}`
+}
+
+/** Network and chain height for the status banner. The onion stays off this line. */
 export function networkStatus(info: NetworkInfo): string {
   const network = info.network === 'testnet4' ? 'Testnet4 · test coins, no value' : 'Mainnet'
-  const height = info.syncing
-    ? info.scannedHeight == null
-      ? 'Chain syncing'
-      : `Chain syncing · height ${info.scannedHeight}`
-    : info.chainFailed
-      ? 'Chain sync failed'
-      : info.scannedHeight == null
-        ? 'Chain height unavailable'
-        : `Chain height ${info.scannedHeight}`
-  const onion = info.onion ? `Onion ${info.onion}` : 'Onion not published'
-  return `${network} · ${height} · ${onion}`
+  return `${network} · ${chainHeightLabel(info)}`
 }
 
 /** The node's own account of its transport and chain backend. */

@@ -190,7 +190,7 @@ fn route(node: &Node, request: &Request<'_>, client: Client, origin: Option<&str
     if let Some(response) = crate::browser::route(node, client, method, path, head, origin) {
         return response;
     }
-    let modules = [crate::store_http::response, crate::sales_http::response, crate::commerce_http::response, crate::reviews_http::response, crate::public_http::response];
+    let modules = [crate::store_http::response, crate::sales_http::response, crate::commerce_http::response, crate::reviews_http::response, crate::public_http::response, crate::moderator_http::response];
     for module in modules {
         if let Some(response) = module(node, client, head, method, path, body, origin) {
             return response;
@@ -273,7 +273,9 @@ fn route(node: &Node, request: &Request<'_>, client: Client, origin: Option<&str
         }
         ("POST", "/orders") => order_response(node, client, head, body, origin),
         ("POST", "/listings") => crate::directory::listing_publish_response(node, client, head, body, origin),
+        ("GET", "/directory") => crate::directory::directory_response(node, client, head, origin),
         ("POST", "/follow") => crate::directory::follow_response(node, client, head, body, origin),
+        ("DELETE", "/follow") => crate::directory::unfollow_response(node, client, head, body, origin),
         ("POST", "/checkout") => checkout_response(node, client, head, body, origin),
         ("GET", "/labelers") | ("PUT", "/labelers") => labelers::response(node, client, head, method, body, origin),
         ("GET", "/stores") => stores::list_response(node, client, head, origin),

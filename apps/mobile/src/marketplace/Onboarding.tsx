@@ -1,6 +1,8 @@
-import { useState } from "react";
+import { useContext, useState } from "react";
 import { setRole, type Role, type SellerProfile } from "../seller";
+import { ModeratorDeskLink } from "./HomeNodeGate";
 import { usePairedNode } from "./NodePayments";
+import { PairingDialog } from "./PairingDialog";
 import { WalletLockPanel } from "./WalletLock";
 
 /**
@@ -9,6 +11,7 @@ import { WalletLockPanel } from "./WalletLock";
  */
 export function Onboarding({ onChosen }: { onChosen: (profile: SellerProfile) => void }) {
   const { lock } = usePairedNode();
+  const openDesk = useContext(ModeratorDeskLink);
   const [busy, setBusy] = useState<Role | null>(null);
   const [error, setError] = useState("");
   const setup = lock.data?.state === "setup";
@@ -25,7 +28,7 @@ export function Onboarding({ onChosen }: { onChosen: (profile: SellerProfile) =>
   }
   return <main className="ob-onboarding" id="ob-content">
     <div className="ob-onboarding-inner">
-      <header className="ob-onboarding-brand"><img src="brand/ob-market-logo-256.png" alt="" width={48} height={48}/><span>OpenBazaar</span></header>
+      <header className="ob-onboarding-brand"><img src="brand/ob-market-logo-256.png" alt="" width={48} height={48}/><span>OpenBazaar</span>{openDesk && <button className="ob-text-link" onClick={openDesk}>Moderator desk</button>}</header>
       <p className="ob-onboarding-step">Step {setup || !lock.data ? 1 : 2} of 2</p>
       {setup || !lock.data ? <WalletLockPanel lock={lock}/> : <section className="ob-role-choice" aria-labelledby="ob-role-title">
         <h1 id="ob-role-title">How will you use OpenBazaar?</h1>
@@ -47,5 +50,6 @@ export function Onboarding({ onChosen }: { onChosen: (profile: SellerProfile) =>
         {error && <p className="ob-form-error" role="alert">{error}</p>}
       </section>}
     </div>
+    <PairingDialog/>
   </main>;
 }

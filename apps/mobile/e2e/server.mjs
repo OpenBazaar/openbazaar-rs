@@ -89,7 +89,7 @@ const mime = {
   '.json': 'application/json'
 }
 const NODE_ROUTES =
-  /^\/(catalog|rates|network|wallet|pair|orders|checkout|addresses|labelers|content-labels|vendor-labels|listings|follow|lock|unlock|setup|spend-tickets|stores|media|store|sales|follows|home|remote|ln|offers|coupons|xmr|zec)(\/|$)/
+  /^\/(catalog|rates|network|wallet|pair|orders|checkout|addresses|labelers|content-labels|vendor-labels|listings|directory|follow|lock|unlock|setup|spend-tickets|stores|media|store|sales|follows|home|remote|ln|offers|coupons|xmr|zec)(\/|$)/
 
 function startUi(uiPort, nodePort, data) {
   const server = createServer(async (req, res) => {

@@ -1,13 +1,14 @@
 // The seller side of the paired node: the storefront, its listings, its
 // sales, and the stores this node follows. Own listings come back as the
 // signed records the node serves and are checked here like any other.
-import { paired, pairedResponse, type BuyerOrder, type ContentRating, type ListingHeader, type ListingKind, parseBuyerOrder } from "./catalog.ts";
+import { NodeApiError, paired, pairedResponse, type BuyerOrder, type ContentRating, type ListingHeader, type ListingKind, parseBuyerOrder } from "./catalog.ts";
 import { verifiedListings } from "./records.ts";
 import type { Commerce } from "./commerce.ts";
 import { forKind } from "./commerceDraft.ts";
 import type { CouponBody } from "./couponDraft.ts";
 import { BULK_PATH, bulkEditBody, type BulkChange } from "./bulkEdit.ts";
 import { draftPath } from "./listingDraft.ts";
+import { canShrink, shrinkImage } from "./imageShrink.ts";
 
 export type Role = "buyer" | "seller";
 
@@ -285,9 +286,29 @@ export async function setVacation(away: boolean): Promise<SellerProfile> {
   return parseProfile(await paired("/store/vacation", json("PUT", { away })));
 }
 
+/** Bytes in one uploaded image: the node's cap, `MAX_MEDIA` in crates/node/src/media.rs. */
+const MAX_IMAGE_BYTES = 2 * 1024 * 1024;
+const IMAGE_TOO_LARGE = `That image is larger than ${MAX_IMAGE_BYTES / (1024 * 1024)} MB. Choose a smaller one.`;
+const IMAGE_NOT_SHRUNK = `That image is larger than ${MAX_IMAGE_BYTES / (1024 * 1024)} MB and could not be shrunk to fit. Choose a smaller one.`;
+
+/// The image to send: `file` as it is when it fits the cap, a shrunk copy
+/// when it does not. The native app cannot shrink and refuses it.
+async function imageThatFits(file: Blob): Promise<Blob> {
+  if (file.size <= MAX_IMAGE_BYTES) return file;
+  if (!canShrink()) throw new Error(IMAGE_TOO_LARGE);
+  const shrunk = await shrinkImage(file, MAX_IMAGE_BYTES);
+  if (!shrunk) throw new Error(IMAGE_NOT_SHRUNK);
+  return shrunk;
+}
+
 /// Upload one image; the node answers its SHA-256, which records name.
-export async function uploadImage(file: Blob): Promise<string> {
-  const response = await pairedResponse("/media", { method: "POST", headers: { "Content-Type": file.type || "application/octet-stream" }, body: file });
+/// An image over the cap is shrunk in the browser first.
+export async function uploadImage(picked: Blob): Promise<string> {
+  const file = await imageThatFits(picked);
+  const response = await pairedResponse("/media", { method: "POST", headers: { "Content-Type": file.type || "application/octet-stream" }, body: file }).catch((error: unknown) => {
+    // The node answers an oversized upload 413 with a plain-text body.
+    throw error instanceof NodeApiError && error.status === 413 ? new Error(IMAGE_TOO_LARGE) : error;
+  });
   const id = hash(record(await response.json()).hash);
   if (!id) throw new Error("The node did not keep the image.");
   return id;
@@ -385,20 +406,4 @@ export async function fulfillSale(id: string, fulfill: Fulfill): Promise<Sale> {
 /// The buyer confirms an order to another node's store arrived.
 export async function completeOrder(id: string): Promise<BuyerOrder> {
   return parseBuyerOrder(await paired(`/orders/${id}/complete`, { method: "POST" }));
-}
-
-export async function fetchFollows(): Promise<Follow[]> {
-  return parseFollows(await paired("/follows"));
-}
-
-export async function fetchTestNetworkSeeds(): Promise<string[]> {
-  return testNetworkSeeds(await paired("/follows"));
-}
-
-export async function followStore(url: string): Promise<Follow[]> {
-  return parseFollows(await paired("/follows", json("POST", { url })));
-}
-
-export async function unfollowStore(url: string): Promise<Follow[]> {
-  return parseFollows(await paired("/follows", json("DELETE", { url })));
 }

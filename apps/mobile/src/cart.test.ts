@@ -41,6 +41,14 @@ test("two variants of one listing are two bag lines priced in sats at the signed
   assert.equal(pkg.problem, "");
 });
 
+test("with a rate from the node, sats are the fiat price at that rate, not the signed one", () => {
+  const [pkg] = cartPackages(shop(mug()), [sea, sand], {}, { USD: 100_000 });
+  assert.deepEqual(pkg.items.map(i => i.unitSats), [25_000, 30_000]);
+  assert.equal(pkg.itemsSats, 80_000);
+  assert.equal(pkg.shippingSats, 7_000);
+  assert.equal(Math.round(pkg.totalSats / 1e8 * 100_000 * 100), pkg.quote!.total, "the estimate beside the total is the seller's price");
+});
+
 test("local pickup drops shipping", () => {
   const [pkg] = cartPackages(shop(mug()), [sea, sand], { Clay: -1 });
   assert.equal(pkg.shippingSats, 0);

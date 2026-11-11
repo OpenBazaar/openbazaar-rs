@@ -1,6 +1,7 @@
-//! TESTNET4 ONLY. The published moderator record and the moderator mailbox
-//! key the escrow demo uses. Vendor mailbox keys come from signed store
-//! records ([`crate::stores`]).
+//! TESTNET4 ONLY. The built-in test moderator: its published record and its
+//! mailbox key. A new testnet4 node accepts it, so escrow works with no
+//! setup; other moderators have their own keys ([`crate::moderator_identity`]).
+//! Vendor mailbox keys come from signed store records ([`crate::stores`]).
 //!
 //! Every secret here is derived from a public fixture label, so anyone can
 //! rebuild the moderator keys from this source.
@@ -61,10 +62,11 @@ pub(crate) fn moderator_mail_key() -> StoreKey {
 }
 
 impl Node {
-    /// The context every escrow check on this node runs against: the chain
-    /// tip from this node's chain source and the fixture moderator record.
-    pub(crate) fn escrow_context(&self) -> Result<Context, String> {
-        let moderator = moderator_record(self.network)?;
+    /// The context one escrow's checks run against: the chain tip from this
+    /// node's chain source and the record of the moderator that escrow uses
+    /// ([`crate::escrow_choice`]). Refused off testnet4, whatever the record.
+    pub(crate) fn escrow_context(&self, moderator: ModeratorRecord) -> Result<Context, String> {
+        testnet_only(self.network)?;
         let tip = self.chain.tip_height()?;
         Ok(Context {
             tip,

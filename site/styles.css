@@ -125,7 +125,12 @@ a:hover { color: var(--ink); }
   line-height: 1;
 }
 
-.brand svg { display: block; }
+.brand img {
+  display: block;
+  width: 40px;
+  height: 40px;
+  border-radius: 8px;
+}
 
 .nav-links {
   display: flex;

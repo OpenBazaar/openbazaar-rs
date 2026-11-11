@@ -286,9 +286,11 @@ fn pairing_token_is_stable_and_orders_require_it() {
     let catalog = load_catalog(NetworkMode::Testnet4).unwrap();
     let first = Node::open(&dir.0, catalog.clone()).unwrap();
     let token = first.pairing_token().to_string();
-    assert!(first.fresh_pairing_token().is_some());
+    let notice = first.fresh_pairing_token_notice().expect("the first boot says where the token is");
+    assert!(notice.contains(&dir.0.join("pairing.token").display().to_string()), "the console names the file");
+    assert!(!notice.contains(&token), "the console does not get the token");
     let second = Node::open(&dir.0, catalog).unwrap();
-    assert!(second.fresh_pairing_token().is_none());
+    assert!(second.fresh_pairing_token_notice().is_none());
     assert_eq!(second.pairing_token(), token);
 
     let mut code = String::new();

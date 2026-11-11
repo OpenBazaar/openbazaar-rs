@@ -10,8 +10,10 @@ async function checkout(page: Page) {
   await expect(
     page.getByText('Testnet4 · test coins, no value', { exact: true })
   ).toBeVisible()
+  // A reload reopens the page that was showing, which may be the wallet.
+  await page.getByRole('button', { name: 'Products', exact: true }).click()
   await page
-    .getByLabel('Search listings', { exact: true })
+    .getByLabel('Search stores and listings', { exact: true })
     .fill('Field recordings')
   await page
     .getByRole('button', { name: 'View Field recordings', exact: true })
@@ -75,9 +77,10 @@ const UNLOCKED = {
 /** Set the passphrase on the real node (first run), or unlock it. */
 async function protect(page: Page) {
   await page.getByRole('button', { name: 'Wallet', exact: true }).click()
+  await page.getByRole('button', { name: 'Wallet settings', exact: true }).click()
   const setup = page.getByRole('heading', { name: 'Protect this wallet' })
   const locked = page.getByRole('heading', { name: 'Wallet locked' })
-  const unlocked = page.getByRole('heading', { name: 'Wallet unlocked' })
+  const unlocked = page.getByRole('heading', { name: 'Viewing unlocked · payments require passphrase' })
   await expect(setup.or(locked).or(unlocked)).toBeVisible()
   if (await setup.isVisible()) {
     await page.getByLabel('Wallet passphrase', { exact: true }).fill(PASSPHRASE)
@@ -96,6 +99,7 @@ async function protect(page: Page) {
     await page.getByRole('button', { name: 'Unlock wallet', exact: true }).click()
   }
   await expect(unlocked).toBeVisible()
+  await page.getByRole('dialog', { name: 'Wallet settings', exact: true }).getByRole('button', { name: 'Done', exact: true }).click()
 }
 /**
  * An unlocked wallet and a node that quotes and issues tickets. The node's
@@ -140,22 +144,25 @@ test('testnet4 wallet, setup, real checkout, and a real quote request', async ({
     page.getByText('Testnet4 · test coins, no value', { exact: true })
   ).toBeVisible()
   await protect(page)
-  await expect(page.locator('.ob-wallet-note').first()).toContainText('--proxy')
-  await expect(page.locator('.ob-wallet-note').first()).toContainText(
-    'Only your own Esplora server sees the addresses'
-  )
-  await page.locator('.ob-wallet-fund').filter({ has: page.getByRole('heading', { name: 'Wallet unlocked', exact: true }) }).screenshot({ path: testInfo.outputPath('wallet-unlocked.png') })
+  await page.locator('.ob-wallet-connection > summary').click()
+  await expect(page.getByText('Only your own chain server sees the addresses this wallet follows.')).toBeVisible()
+  await expect(page.locator('.ob-wallet-page')).not.toContainText('--proxy')
+  await page.locator('.ob-wallet-overview').screenshot({ path: testInfo.outputPath('wallet-unlocked.png') })
   const receive = page.locator('.ob-wallet-receive code')
   await expect(receive).toHaveText(/^tb1/)
   const original = await receive.innerText()
+  await page.getByRole('button', { name: 'Show QR code', exact: true }).click()
   await expect(
     page.getByRole('img', { name: 'Bitcoin payment QR code' })
   ).toHaveAttribute('data-payment-uri', `bitcoin:${original}`)
+  await page.getByRole('dialog', { name: 'Receive bitcoin', exact: true }).getByRole('button', { name: 'Done', exact: true }).click()
   await page.getByRole('button', { name: 'New address', exact: true }).click()
   await expect(receive).not.toHaveText(original)
+  await page.getByRole('button', { name: 'Show QR code', exact: true }).click()
   await expect(
     page.getByRole('img', { name: 'Bitcoin payment QR code' })
   ).toHaveAttribute('data-payment-uri', `bitcoin:${await receive.innerText()}`)
+  await page.getByRole('dialog', { name: 'Receive bitcoin', exact: true }).getByRole('button', { name: 'Done', exact: true }).click()
   const { id } = await checkout(page)
   const pay = page.getByRole('button', {
     name: 'Pay from your node wallet',
@@ -427,7 +434,7 @@ test('a multi-seller checkout submits one separate pay request per seller', asyn
   })
   await page.goto('/')
   for (const title of ['Field recordings', 'Weeknight recipes']) {
-    await page.getByLabel('Search listings', { exact: true }).fill(title)
+    await page.getByLabel('Search stores and listings', { exact: true }).fill(title)
     await page
       .getByRole('button', { name: `View ${title}`, exact: true })
       .click()
@@ -505,9 +512,10 @@ test('pending payments disable spending and node failures remain visible', async
     payError: 'Insufficient funds including the network fee.'
   }
   await page.clock.fastForward(13000)
-  await expect(page.getByRole('alert')).toContainText(
-    'Insufficient funds including the network fee.'
-  )
+  // The wallet card may show its own alert; this one belongs to the payment.
+  await expect(
+    page.getByRole('alert').filter({ hasText: 'Insufficient funds including the network fee.' })
+  ).toBeVisible()
   await expect(pay).toBeEnabled()
   let status = 409
   await page.route(`**/orders/${id}/pay`, route =>

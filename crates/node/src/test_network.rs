@@ -10,6 +10,16 @@ pub(crate) fn test_network_seed() -> String {
     format!("http://{TEST_NETWORK_ONION}")
 }
 
+/// The Railway moderator's sale onion (`packaging/railway/moderator.Dockerfile`).
+/// It holds the fixture moderator keys, which are public, so it is a testnet4
+/// moderator only.
+pub const TEST_NETWORK_MODERATOR_ONION: &str = "yc546t4ecasnoollz3voqrrqsevup3wk25g4d7mxaryfomtu7xh37ead.onion";
+
+/// Where a testnet4 node sends a dispute letter unless `--moderator` names another node.
+pub(crate) fn test_network_moderator() -> String {
+    format!("http://{TEST_NETWORK_MODERATOR_ONION}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -195,7 +195,7 @@ fn create_private_dir(dir: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// The first boot prints the pairing token, so the log is user-only.
+/// The node's log is user-only.
 fn open_private_log(path: &Path) -> io::Result<File> {
     let mut options = OpenOptions::new();
     options.create(true).append(true);

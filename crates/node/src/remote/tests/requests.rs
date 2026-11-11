@@ -256,6 +256,12 @@ fn a_device_session_never_spends_without_the_passphrase_and_a_ticket() {
         status_line.contains("400"),
         "a ticket needs the passphrase: {status_line} {value}"
     );
+    // Until the backup is confirmed, a device can read the phrase again:
+    // it may be the only screen the node has. After that, never.
+    let phrase = json!({ "passphrase": PASSPHRASE }).to_string();
+    let (status_line, value) = device.call(&node, "POST", "/wallet/phrase", &phrase);
+    assert!(status_line.contains("200") && value["phrase"].is_string(), "{status_line}");
+    node.lock.mark_backup_confirmed().unwrap();
     for (method, path, body) in [
         (
             "POST",
@@ -423,4 +429,92 @@ fn push_is_off_until_a_device_turns_it_on_for_itself() {
     assert!(
         super::super::push::gateway_target(&format!("https://{}.onion", "a".repeat(56))).is_err()
     );
+}
+
+#[test]
+fn the_status_carries_tor_health_for_paired_devices_and_no_address() {
+    use super::super::tor_counts::Tally;
+    use super::super::tor_health::{Directory, Reading};
+    let (_dir, node) = home();
+    let phone = first_device(&node);
+    let (_, value) = phone.call(&node, "GET", "/remote", "");
+    assert!(
+        value.get("tor").is_none(),
+        "a node without Tor says nothing of it: {value}"
+    );
+
+    let onion = "25njqamcweflpvkl73j4szahhihoc4xt3ktcgjnpaingr5yhkenl5sid";
+    let now = now_secs();
+    let reading = Reading {
+        ready: true,
+        store_answered: None,
+        blocked: Some(format!("could not reach {onion}.onion")),
+        // A consensus that ran out a day ago.
+        directory: Some(Directory {
+            valid_after: now - 27 * 3600,
+            fresh_until: now - 26 * 3600,
+            valid_until: now - 24 * 3600,
+        }),
+        onions: vec![("remote access", "Running".into(), true)],
+    };
+    let mut lines = Vec::new();
+    for (now, awake) in [(now - 3600, 0), (now, 3600)] {
+        let mut tracker = node.remote.tor_health.lock().unwrap();
+        lines.extend(tracker.observe(now, awake, &reading, &Tally::default()));
+    }
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert!(
+        lines[0].starts_with("health: cut off: The node's copy of the Tor directory expired 24 h"),
+        "{lines:?}"
+    );
+
+    let (status_line, value) = phone.call(&node, "GET", "/remote", "");
+    assert!(status_line.contains("200"), "{status_line}");
+    assert_eq!(value["tor"]["state"], "cut off");
+    assert_eq!(value["tor"]["since"], now);
+    assert_eq!(value["tor"]["onions"][0]["role"], "remote access");
+    assert_eq!(request(&node, "GET", "/remote", "").1["tor"], value["tor"]);
+    assert_eq!(value["tor"]["blocked"], "could not reach 25njqa…5sid.onion");
+    assert!(!value["tor"].to_string().contains(onion), "{value}");
+
+    let (status_line, value) = send(&node, Entry::Admin, &unsigned("GET", "/remote", "", ""));
+    assert!(status_line.contains("401"), "{status_line}");
+    assert!(value.get("tor").is_none(), "{value}");
+}
+
+#[test]
+fn the_status_says_when_the_store_last_answered_the_node() {
+    use super::super::tor_counts::Tally;
+    use super::super::tor_health::{Directory, Reading};
+    let (_dir, node) = home();
+    let phone = first_device(&node);
+    let now = now_secs();
+    let reading = Reading {
+        ready: true,
+        directory: Some(Directory {
+            valid_after: now - 3600,
+            fresh_until: now,
+            valid_until: now + 2 * 3600,
+        }),
+        store_answered: Some(now - 120),
+        onions: vec![
+            ("remote access", "Running".into(), true),
+            ("store", "Bootstrapping".into(), false),
+        ],
+        ..Reading::default()
+    };
+    let mut lines = Vec::new();
+    for (now, awake) in [(now - 3600, 0), (now, 3600)] {
+        let mut tracker = node.remote.tor_health.lock().unwrap();
+        lines.extend(tracker.observe(now, awake, &reading, &Tally::default()));
+    }
+    assert_eq!(lines, Vec::<String>::new());
+
+    let (_, value) = phone.call(&node, "GET", "/remote", "");
+    let tor = &value["tor"];
+    assert_eq!(tor["state"], "fine");
+    assert_eq!(tor["reason"], "Tor is connected and its directory is current. Tor has not reported the store onion address published for 1 h 0 min, but it answered the node's own Tor client 2 min ago.");
+    assert_eq!(tor["onions"][1]["role"], "store");
+    assert_eq!(tor["onions"][1]["lastAnswered"], now - 120);
+    assert!(tor["onions"][0].get("lastAnswered").is_none(), "{value}");
 }

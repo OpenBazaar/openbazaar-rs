@@ -196,8 +196,14 @@ pub(crate) fn detail_response(node: &Node, client: &Client, head: &str, key: &st
     if let Err(response) = local_guard(node, client, head, origin) {
         return response;
     }
+    let Some(id) = unhex32(key.trim_end_matches('/')) else {
+        return json_error("404 Not Found", "That store is not in this shop.", origin);
+    };
+    if let Err(err) = node.open_store_listings(id) {
+        eprintln!("ob-node: open store: {err}");
+    }
     let catalog = node.catalog();
-    let Some(store) = unhex32(key.trim_end_matches('/')).and_then(|id| catalog.store(&StoreId::from_bytes(id))) else {
+    let Some(store) = catalog.store(&StoreId::from_bytes(id)) else {
         return json_error("404 Not Found", "That store is not in this shop.", origin);
     };
     match store_detail(&catalog, store, Some(&node.own_store)) {

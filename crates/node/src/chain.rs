@@ -8,10 +8,12 @@
 //! asked for the tip, a fee estimate, and a broadcast. It is not asked which
 //! addresses this wallet follows, or one server could link every sale.
 //! A server on this machine, the LAN, or an onion is the user's own and may
-//! be asked. Tests use their own implementation.
+//! be asked. mempool.space's own onion is still that public server: it is
+//! asked for the tip, fees, and a broadcast, and not for addresses.
+//! Tests use their own implementation.
 
 use std::future::Future;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use bdk_esplora::esplora_client::{self, AsyncClient};
@@ -31,6 +33,18 @@ const USER_AGENT: &str = concat!("ob-node/", env!("CARGO_PKG_VERSION"));
 /// slice of it before the next one is tried.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+/// A new Tor circuit often needs longer than a direct TCP connect. The whole
+/// request budget has to cover that circuit plus the response.
+const PROXY_CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
+const PROXY_REQUEST_TIMEOUT: Duration = Duration::from_secs(45);
+/// `/block-height/0` only checks that the server is this network. It is not
+/// the tip. A probe that does not answer must not use up the tip budget.
+const GENESIS_PROBE: Duration = Duration::from_secs(5);
+/// `network` on a server: not probed, genesis matches, wrong network, probe failed.
+const NET_UNKNOWN: u8 = 0;
+const NET_MATCH: u8 = 1;
+const NET_REJECTED: u8 = 2;
+const NET_UNPROBED: u8 = 3;
 /// Returned before any request when a public server would otherwise be told an address.
 const PUBLIC_ADDRESSES: &str =
     "a public Esplora server is not asked which addresses this wallet follows";
@@ -140,20 +154,27 @@ pub trait ChainSource: Send + Sync {
     /// The output created at `outpoint` and the block height of its
     /// transaction (`None` in the mempool), or `None` if no such output is known.
     fn output(&self, outpoint: &OutPoint) -> Result<Option<(TxOut, Option<u32>)>, String>;
+    /// The full transaction and its confirmation height (`None` in the mempool).
+    /// `Ok(None)` means this source does not have that transaction.
+    fn transaction(&self, txid: &Txid) -> Result<Option<(Transaction, Option<u32>)>, String>;
 }
 
 /// Esplora over HTTPS, trying each configured server in order.
 ///
 /// The HTTP client tries every address a host resolves to (IPv6 and IPv4,
-/// raced), so one unreachable address does not stall a query. A server is
-/// used only after its genesis block matches the node's network. The last
-/// server that answered is tried first next time. With a proxy in
+/// raced), so one unreachable address does not stall a query. A server whose
+/// genesis block is some other network is not used. A genesis probe that
+/// times out is not the tip, and it does not block `/blocks/tip/height`.
+/// The last server that answered is tried first next time. With a proxy in
 /// [`Egress`], every query goes through it.
 pub struct EsploraChain {
     runtime: tokio::runtime::Runtime,
     servers: Vec<Server>,
     genesis: BlockHash,
     preferred: AtomicUsize,
+    /// Last tip read from `/blocks/tip/height`. `GET /network` shows it.
+    tip_height_seen: AtomicU32,
+    tip_height_known: AtomicBool,
     /// A server someone else runs. It is not asked for addresses.
     public: bool,
     /// The HTTP client uses the configured proxy, so a public server sees an exit, not this machine.
@@ -163,7 +184,8 @@ pub struct EsploraChain {
 struct Server {
     url: String,
     client: AsyncClient,
-    checked: AtomicBool,
+    /// [`NET_UNKNOWN`], [`NET_MATCH`], [`NET_REJECTED`], or [`NET_UNPROBED`].
+    network: AtomicU8,
 }
 
 /// The URL the client will dial, with the host the parser actually uses.
@@ -188,13 +210,18 @@ impl EsploraChain {
         let mut http = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .no_proxy();
+        let (connect, request) = if egress.proxy.is_some() {
+            (PROXY_CONNECT_TIMEOUT, PROXY_REQUEST_TIMEOUT)
+        } else {
+            (CONNECT_TIMEOUT, REQUEST_TIMEOUT)
+        };
         if let Some(proxy) = egress.reqwest_proxy()? {
             http = http.proxy(proxy);
         }
         let http = http
             .user_agent(USER_AGENT)
-            .connect_timeout(CONNECT_TIMEOUT)
-            .timeout(REQUEST_TIMEOUT)
+            .connect_timeout(connect)
+            .timeout(request)
             // A kept-alive connection to one of mempool.space's addresses can
             // go silent; a fresh connection races every address again.
             .pool_max_idle_per_host(0)
@@ -207,7 +234,7 @@ impl EsploraChain {
                 Ok(Server {
                     client: AsyncClient::from_client(url.clone(), http.clone()),
                     url,
-                    checked: AtomicBool::new(false),
+                    network: AtomicU8::new(NET_UNKNOWN),
                 })
             })
             .collect::<Result<Vec<_>, String>>()?;
@@ -222,6 +249,8 @@ impl EsploraChain {
             servers,
             genesis: genesis_block(network).block_hash(),
             preferred: AtomicUsize::new(0),
+            tip_height_seen: AtomicU32::new(0),
+            tip_height_known: AtomicBool::new(false),
             public: urls.iter().any(|url| !crate::network::is_private_url(url)),
             proxied: egress.proxy.is_some(),
         })
@@ -243,19 +272,33 @@ impl EsploraChain {
     }
 
     /// Refuse a server whose chain is not this node's network.
+    ///
+    /// The probe is `GET /block-height/0`, the genesis hash. That is not the
+    /// chain tip. One failed probe (mempool.space often times out here over
+    /// Tor) must not be asked again, and it must not replace `/blocks/tip/height`.
     fn check(&self, server: &Server) -> Result<(), String> {
-        if server.checked.load(Ordering::Relaxed) {
-            return Ok(());
+        match server.network.load(Ordering::Relaxed) {
+            NET_MATCH | NET_UNPROBED => return Ok(()),
+            NET_REJECTED => return Err("it serves a different bitcoin network".into()),
+            _ => {}
         }
-        let genesis = self
-            .runtime
-            .block_on(server.client.get_block_hash(0))
-            .map_err(|err| err.to_string())?;
-        if genesis != self.genesis {
-            return Err("it serves a different bitcoin network".into());
+        let probed = self.runtime.block_on(async {
+            tokio::time::timeout(GENESIS_PROBE, server.client.get_block_hash(0)).await
+        });
+        match probed {
+            Ok(Ok(hash)) if hash == self.genesis => {
+                server.network.store(NET_MATCH, Ordering::Relaxed);
+                Ok(())
+            }
+            Ok(Ok(_)) => {
+                server.network.store(NET_REJECTED, Ordering::Relaxed);
+                Err("it serves a different bitcoin network".into())
+            }
+            Ok(Err(_)) | Err(_) => {
+                server.network.store(NET_UNPROBED, Ordering::Relaxed);
+                Ok(())
+            }
         }
-        server.checked.store(true, Ordering::Relaxed);
-        Ok(())
     }
 
     /// Run one query against each server in turn until one answers.
@@ -297,7 +340,7 @@ impl EsploraChain {
 
 impl ChainSource for EsploraChain {
     fn status(&self) -> ChainStatus {
-        if self.public {
+        let mut status = if self.public {
             ChainStatus::simple(
                 "esplora",
                 "public",
@@ -309,12 +352,29 @@ impl ChainSource for EsploraChain {
                 "own-server",
                 "Only your own Esplora server sees the addresses this node follows.",
             )
+        };
+        if self.tip_height_known.load(Ordering::Relaxed) {
+            status.scanned_height = Some(self.tip_height_seen.load(Ordering::Relaxed));
         }
+        status
     }
 
     fn tip_height(&self) -> Result<u32, String> {
         self.refuse_public_clearnet()?;
-        self.each(|client| async move { client.get_height().await.map_err(|err| err.to_string()) })
+        let height = match self.read_tip() {
+            Ok(height) => height,
+            // A fresh Tor circuit often fails once. One more pass uses another circuit.
+            Err(err) if self.proxied => {
+                self.read_tip().map_err(|again| format!("{err}; {again}"))?
+            }
+            Err(err) => return Err(err),
+        };
+        self.tip_height_seen.store(height, Ordering::Relaxed);
+        if !self.tip_height_known.swap(true, Ordering::Relaxed) {
+            let index = self.preferred.load(Ordering::Relaxed);
+            eprintln!("ob-node: chain tip {height} from {}", self.servers[index].url);
+        }
+        Ok(height)
     }
 
     fn address_txs(&self, address: &Address) -> Result<Vec<AddressTx>, String> {
@@ -417,6 +477,30 @@ impl ChainSource for EsploraChain {
             )))
         })
     }
+
+    fn transaction(&self, txid: &Txid) -> Result<Option<(Transaction, Option<u32>)>, String> {
+        if self.public {
+            return Err(PUBLIC_ADDRESSES.into());
+        }
+        let txid = *txid;
+        self.each(|client| async move {
+            let Some(tx) = client.get_tx(&txid).await.map_err(|err| err.to_string())? else {
+                return Ok(None);
+            };
+            let status = client
+                .get_tx_status(&txid)
+                .await
+                .map_err(|err| err.to_string())?;
+            Ok(Some((
+                tx,
+                if status.confirmed {
+                    status.block_height
+                } else {
+                    None
+                },
+            )))
+        })
+    }
 }
 
 /// No chain at all. Every query fails, so status stays where it is.
@@ -452,15 +536,132 @@ impl ChainSource for OfflineChain {
     fn output(&self, _: &OutPoint) -> Result<Option<(TxOut, Option<u32>)>, String> {
         Err(offline())
     }
+    fn transaction(&self, _: &Txid) -> Result<Option<(Transaction, Option<u32>)>, String> {
+        Err(offline())
+    }
 }
 
 fn offline() -> String {
     "this node has no chain source".to_string()
 }
 
+impl EsploraChain {
+    fn read_tip(&self) -> Result<u32, String> {
+        self.each(|client| async move { fetch_tip_height(&client).await })
+    }
+}
+
+/// `GET {server}/blocks/tip/height`. The body is the height in decimal.
+async fn fetch_tip_height(client: &AsyncClient) -> Result<u32, String> {
+    let url = format!("{}/blocks/tip/height", client.url().trim_end_matches('/'));
+    let response = client
+        .client()
+        .get(&url)
+        .send()
+        .await
+        .map_err(|err| err.to_string())?;
+    if !response.status().is_success() {
+        return Err(format!("tip height HTTP {}", response.status()));
+    }
+    let text = response.text().await.map_err(|err| err.to_string())?;
+    parse_tip_height(&text)
+}
+
+/// Esplora returns the tip as decimal text. Surrounding whitespace is not part of the number.
+fn parse_tip_height(body: &str) -> Result<u32, String> {
+    let text = body.trim();
+    if text.is_empty() || !text.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(format!("the tip height was not a number ({body:?})"));
+    }
+    text.parse::<u32>().map_err(|err| err.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_tip_height_ignores_surrounding_whitespace() {
+        assert_eq!(parse_tip_height("160218").unwrap(), 160218);
+        assert_eq!(parse_tip_height("160218\n").unwrap(), 160218);
+        assert_eq!(parse_tip_height(" 160219 ").unwrap(), 160219);
+        assert!(parse_tip_height("").is_err());
+        assert!(parse_tip_height("160218\n0").is_err());
+        assert!(parse_tip_height("nope").is_err());
+    }
+
+    /// Records each request path and answers from `respond(path) -> (status, body)`.
+    fn local_esplora(
+        respond: impl Fn(&str) -> (u16, &'static str) + Send + Sync + 'static,
+    ) -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+        use std::io::{Read, Write};
+        use std::sync::{Arc, Mutex};
+        let paths = Arc::new(Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&paths);
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            for mut stream in listener.incoming().flatten() {
+                let mut buf = [0u8; 2048];
+                let n = stream.read(&mut buf).unwrap_or(0);
+                let head = String::from_utf8_lossy(&buf[..n]);
+                let path = head.split_whitespace().nth(1).unwrap_or("/").to_string();
+                recorded.lock().unwrap().push(path.clone());
+                let (status, body) = respond(&path);
+                let reason = if status == 200 { "OK" } else { "No" };
+                let message = format!(
+                    "HTTP/1.1 {status} {reason}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = stream.write_all(message.as_bytes());
+            }
+        });
+        (url, paths)
+    }
+
+    #[test]
+    fn tip_height_is_read_from_blocks_tip_height_when_the_genesis_probe_fails() {
+        let (url, paths) = local_esplora(|path| match path {
+            "/blocks/tip/height" => (200, "160218\n"),
+            _ => (404, "no genesis"),
+        });
+        let chain = EsploraChain::new(&[url], Network::Testnet4).unwrap();
+        assert_eq!(chain.tip_height().unwrap(), 160218);
+        assert_eq!(chain.status().scanned_height, Some(160218));
+        let seen = paths.lock().unwrap().clone();
+        assert!(
+            seen.iter().any(|path| path == "/blocks/tip/height"),
+            "the tip was not read after the genesis probe failed: {seen:?}"
+        );
+        assert!(
+            seen.iter()
+                .filter(|path| path.as_str() == "/block-height/0")
+                .count()
+                <= 1,
+            "a failed genesis probe was repeated instead of reading the tip: {seen:?}"
+        );
+    }
+
+    #[test]
+    fn a_server_on_another_network_is_not_used_for_the_tip() {
+        let (url, paths) = local_esplora(|path| match path {
+            "/block-height/0" => (
+                200,
+                "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f",
+            ),
+            "/blocks/tip/height" => (200, "99"),
+            _ => (404, ""),
+        });
+        let chain = EsploraChain::new(&[url], Network::Testnet4).unwrap();
+        let err = chain.tip_height().unwrap_err();
+        assert!(err.contains("different bitcoin network"), "{err}");
+        assert_eq!(chain.status().scanned_height, None);
+        let seen = paths.lock().unwrap().clone();
+        assert!(
+            seen.iter().all(|path| path == "/block-height/0"),
+            "{seen:?}"
+        );
+    }
 
     #[test]
     fn chain_queries_go_through_the_proxy_with_the_name_unresolved() {

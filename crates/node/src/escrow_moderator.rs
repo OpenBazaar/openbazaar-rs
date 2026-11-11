@@ -1,4 +1,14 @@
-//! The fixture moderator's desk (testnet4 only, `EscrowConfig::moderates`).
+//! The moderator's desk (testnet4 only, `EscrowConfig::moderates`).
+//!
+//! The node answers for two identities: the built-in test moderator, whose
+//! keys are public, and its own ([`crate::moderator_identity`]). A letter is
+//! reviewed under the record its terms name, and the case remembers which
+//! record that was. A case with none is the built-in moderator's, which is
+//! what every case opened before a node had its own identity is.
+//!
+//! Reviewing needs no moderator secret, so letters are checked while the
+//! wallet is locked. Ruling signs with the identity's keys, so a ruling
+//! under the node's own identity needs the wallet unlocked.
 //!
 //! A dispute letter, from the buyer or the vendor, is reviewed when it
 //! arrives: the escrow crate checks the terms, the claimant's signature, the
@@ -26,7 +36,9 @@ use std::sync::MutexGuard;
 use bitcoin::hashes::{sha256, Hash};
 use bitcoin::secp256k1::{schnorr, Secp256k1, XOnlyPublicKey};
 use bitcoin::{OutPoint, Script, TxOut};
-use openbazaar_escrow::{Error as EscrowError, FundingChain, Moderator, ModeratorRuling, Party};
+use openbazaar_escrow::{
+    review_letter, DisputeCase, Error as EscrowError, FundingChain, Moderator, ModeratorKeys, ModeratorRecord, ModeratorRuling, Party,
+};
 use serde_json::{json, Value};
 use tormail::StoreKey;
 
@@ -58,6 +70,9 @@ struct Case {
     ruling: Option<Vec<u8>>,
     citation: Option<Citation>,
     public_ruling: Option<Vec<u8>>,
+    /// The record of this node's own identity the letter was reviewed
+    /// under. `None`: the built-in test moderator's.
+    record: Option<Vec<u8>>,
 }
 
 impl Case {
@@ -74,6 +89,7 @@ impl Case {
             "storeKey": self.citation.map(|citation| hex(&citation.store_key)),
             "storeSignature": self.citation.map(|citation| hex(&citation.store_signature)),
             "publicRuling": self.public_ruling.as_deref().map(hex),
+            "record": self.record.as_deref().map(hex),
         })
     }
 
@@ -91,6 +107,10 @@ impl Case {
             },
             citation: citation_from(value),
             public_ruling: match value["publicRuling"].as_str() {
+                Some(text) => Some(unhex(text).ok()?),
+                None => None,
+            },
+            record: match value["record"].as_str() {
                 Some(text) => Some(unhex(text).ok()?),
                 None => None,
             },
@@ -180,15 +200,41 @@ impl Node {
             .unwrap_or_else(|err| err.into_inner())
     }
 
-    fn moderator(&self) -> Result<Moderator<ChainView<'_>, &FileRulingStore>, String> {
-        Moderator::new(
-            moderator_keys(self.network)?,
-            moderator_record(self.network)?,
-            ChainView(&*self.chain),
-            &self.escrow.rulings,
-        )
-        .map(|moderator| moderator.with_cache(self.escrow.letters.clone()))
-        .map_err(|err| err.to_string())
+    /// The keys and record a case is ruled under: this node's own identity
+    /// for a case that names one of its records, else the built-in one.
+    fn case_identity(&self, record: Option<&[u8]>) -> Result<(ModeratorKeys, ModeratorRecord), String> {
+        match record {
+            Some(bytes) => Ok((self.own_moderator_keys()?, ModeratorRecord::from_bytes(bytes).map_err(|err| err.to_string())?)),
+            None => Ok((moderator_keys(self.network)?, moderator_record(self.network)?)),
+        }
+    }
+
+    fn moderator(&self, record: Option<&[u8]>) -> Result<Moderator<ChainView<'_>, &FileRulingStore>, String> {
+        let (keys, record) = self.case_identity(record)?;
+        Moderator::new(keys, record, ChainView(&*self.chain), &self.escrow.rulings)
+            .map(|moderator| moderator.with_cache(self.escrow.letters.clone()))
+            .map_err(|err| err.to_string())
+    }
+
+    /// Review `letter` under the record its terms name: the built-in
+    /// moderator's, or one this node's own identity has published. Returns
+    /// the case and that record's bytes (`None` for the built-in one).
+    fn review_any(&self, letter: &[u8], received: u32) -> Result<(DisputeCase, Option<Vec<u8>>), EscrowError> {
+        let digest = letter_digest(letter);
+        let limits: &DisputeLimits = &self.escrow.limits;
+        let mut gate = |key: &openbazaar_escrow::RulingKey, _: Party| limits.admit(digest, key, now_secs());
+        let builtin = moderator_record(self.network).ok().map(|record| (record, None));
+        let own = self.own_moderator_records().into_iter().map(|record| {
+            let bytes = record.to_bytes();
+            (record, Some(bytes))
+        });
+        for (record, bytes) in builtin.into_iter().chain(own) {
+            match review_letter(&record, &ChainView(&*self.chain), &self.escrow.letters, letter, received, &mut gate) {
+                Err(EscrowError::ModeratorMismatch) => continue,
+                result => return result.map(|case| (case, bytes)),
+            }
+        }
+        Err(EscrowError::ModeratorMismatch)
     }
 
     pub(crate) fn moderator_mail(&self, mail: Mail) -> Result<(), String> {
@@ -211,11 +257,8 @@ impl Node {
         let reply_mail = key_bytes(&fields[1])?;
         let reply_url = crate::peer_http::sale_base(&String::from_utf8(fields[2].clone()).map_err(|err| err.to_string())?)?;
         let received = self.chain.tip_height()?;
-        let digest = letter_digest(&fields[0]);
-        let limits: &DisputeLimits = &self.escrow.limits;
-        let mut gate = |key: &openbazaar_escrow::RulingKey, _: Party| limits.admit(digest, key, now_secs());
-        let case = match self.moderator()?.review_gated(&fields[0], received, &mut gate) {
-            Ok(case) => case,
+        let (case, record) = match self.review_any(&fields[0], received) {
+            Ok(reviewed) => reviewed,
             Err(EscrowError::ChainNotReady) => return Err(format!("{RETRY_LATER}the funding is not checked yet")),
             Err(err) => return Err(err.to_string()),
         };
@@ -240,6 +283,7 @@ impl Node {
             ruling: None,
             citation,
             public_ruling: None,
+            record,
         };
         self.escrow
             .store
@@ -262,10 +306,25 @@ impl Node {
                     "outpoint": case.outpoint.to_string(),
                     "receivedHeight": case.received,
                     "ruled": case.ruling.is_some(),
+                    "builtIn": case.record.is_none(),
                 })
             })
             .collect();
         json!({ "disputes": cases })
+    }
+
+    /// The public rulings this node's own identity signed, as hex. The
+    /// built-in moderator's are left out: its keys are public, so its
+    /// rulings prove nothing about this node.
+    pub(crate) fn public_rulings_value(&self) -> Vec<Value> {
+        let desk = self.moderator_desk();
+        desk.cases
+            .values()
+            .filter(|case| case.record.is_some())
+            .filter_map(|case| case.public_ruling.as_deref())
+            .take(crate::moderators::MAX_RULINGS)
+            .map(|ruling| json!(hex(ruling)))
+            .collect()
     }
 
     /// Rule on a reviewed letter and send the ruling to the party that wrote it.
@@ -287,7 +346,7 @@ impl Node {
         let escrow_id = parse_id(id).ok_or(PayError::NotFound)?;
         let lock = self.escrow.locks.get(&escrow_id);
         let _held = lock.lock().unwrap_or_else(|err| err.into_inner());
-        let (letter, received) = {
+        let (letter, received, record) = {
             let desk = self.moderator_desk();
             let Some(case) = desk.cases.get(&(escrow_id, favor as u8)) else {
                 let other = match favor {
@@ -305,10 +364,10 @@ impl Node {
             if case.ruling.is_some() {
                 return Err(PayError::Conflict("This dispute has a ruling.".into()));
             }
-            (case.letter.clone(), case.received)
+            (case.letter.clone(), case.received, case.record.clone())
         };
         let ruling = self
-            .moderator()
+            .moderator(record.as_deref())
             .map_err(PayError::Failed)?
             .open(&letter, received)
             .map_err(|err| PayError::Conflict(err.to_string()))?;
@@ -323,7 +382,7 @@ impl Node {
         let case = desk.cases.get_mut(&(*id, favor as u8)).ok_or("the case is gone")?;
         case.ruling = Some(ruling.to_bytes());
         if let Some(citation) = case.citation {
-            let keys = moderator_keys(self.network)?;
+            let (keys, _) = self.case_identity(case.record.as_deref())?;
             case.public_ruling = Some(
                 keys.sign_public_ruling(&ruling.to_bytes(), citation.store_key, citation.listing_id)
                     .map_err(|err| err.to_string())?,
@@ -366,6 +425,29 @@ fn check_citation(id: &EscrowId, terms: &openbazaar_escrow::EscrowTerms, citatio
 mod tests {
     use super::*;
     use crate::harness::MockChain;
+
+    #[test]
+    fn a_case_stored_before_moderators_had_their_own_keys_is_the_built_in_moderators() {
+        let mut case = Case {
+            letter: vec![1, 2, 3],
+            memo: "Never arrived.".into(),
+            outpoint: OutPoint::null(),
+            received: 120,
+            reply_mail: key_bytes(&[7; 32]).unwrap(),
+            reply_url: "http://127.0.0.1:9000".into(),
+            ruling: None,
+            citation: None,
+            public_ruling: None,
+            record: Some(vec![9; 40]),
+        };
+        let own = Case::from_record(&case.to_record()).unwrap();
+        assert_eq!(own.record, Some(vec![9; 40]), "a case remembers the record it was reviewed under");
+        case.record = None;
+        let mut old = case.to_record();
+        old.as_object_mut().unwrap().remove("record");
+        let old = Case::from_record(&old).unwrap();
+        assert_eq!((old.record, old.memo.as_str(), old.received), (None, "Never arrived.", 120));
+    }
 
     #[test]
     fn the_chain_view_finds_funding_by_script_and_waits_while_filters_scan() {

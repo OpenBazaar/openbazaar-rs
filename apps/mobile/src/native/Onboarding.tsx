@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { CameraView, useCameraPermissions } from "expo-camera";
 import * as Device from "expo-device";
+import { activateKeepAwakeAsync, deactivateKeepAwake } from "expo-keep-awake";
 
 import { PairingError, type PairingCode } from "../homeNode/pairing.ts";
 import { parsePairingLink } from "../homeNode/protocol.ts";
@@ -20,7 +21,7 @@ type Phase =
 const STEPS: Record<PairStep, string> = {
   keys: "Making this phone's key…",
   tor: "Connecting privately to your node over Tor…",
-  request: "Asking your node to pair…",
+  request: "Asking your node to pair. Over Tor a new code can take a few minutes to reach, so this phone keeps trying…",
 };
 
 function defaultName(): string {
@@ -37,6 +38,15 @@ export function Onboarding({ initialLink }: { initialLink: string | null }) {
   const usedLink = useRef<string | null>(null);
 
   useEffect(() => () => void (cancelled.current = true), []);
+
+  // The request and the wait for approval take minutes over Tor. A phone that
+  // locks its screen meanwhile suspends the app and drops them.
+  const waiting = phase.name === "working" || phase.name === "sas";
+  useEffect(() => {
+    if (!waiting) return;
+    void activateKeepAwakeAsync("pairing").catch(() => null);
+    return () => void deactivateKeepAwake("pairing").catch(() => null);
+  }, [waiting]);
 
   const pair = async (code: PairingCode) => {
     setError(null);
