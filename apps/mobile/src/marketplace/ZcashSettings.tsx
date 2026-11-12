@@ -34,8 +34,9 @@ export function ZcashSettings() {
         <section className='ob-settings-card'>
           <h2>Zcash is off on this node</h2>
           <p>
-            Start the node with an indexer to read Zcash blocks from: your own Zebra and Zaino, <code>ob-node serve --zec-indexer http://127.0.0.1:8137</code>, or a public
+            Start the node with an indexer to read Zcash blocks from: your own Zebra and Zaino, <code>ob-node serve --proxy socks5h://127.0.0.1:9050 --zec-indexer http://127.0.0.1:8137</code>, or a public
             one over Tor, <code>ob-node serve --proxy socks5h://127.0.0.1:9050 --zec-indexer https://…</code>. There is no default server.
+            Your own indexer is read directly. With it the proxy is only for the ZEC price, which the node asks for over Tor, and without a price no Zcash order can be placed.
             {zec.network === 'testnet' ? ' On testnet4 the node pays on Zcash testnet.' : ''}
           </p>
         </section>
