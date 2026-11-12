@@ -173,6 +173,8 @@ test('a Zcash order keeps its shielded address, needs 30 confirmations, and does
   assert.equal(zcashDue({ rail: 'zec', zcash: quoted }, 2_000_000)?.expired, true, 'the hour is up: stop asking for it')
   assert.equal(zcashDue({ rail: 'zec', zcash: { ...quoted, receivedZatoshi: '1463415' } }, 2_000_000)?.expired, false, 'seen in full: the node decides')
   assert.equal(zcashDue({ rail: 'zec', zcash: { ...quoted, receivedZatoshi: '1463415', expired: true } }, 0)?.expired, true, 'the node let it lapse')
+  const dropped = zcashDue({ rail: 'zec', zcash: { ...quoted, seenInTime: true } }, 2_000_000)
+  assert.deepEqual([dropped?.expired, dropped?.expiresAt, dropped?.awaiting], [false, null, true], 'seen in full in time, then dropped by a reorg: still asked for, with no deadline')
   const lapsed = parseBuyerOrder({
     id: 'order-5',
     created: 1,
