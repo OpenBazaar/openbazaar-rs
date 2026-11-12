@@ -58,15 +58,17 @@ pub(crate) fn store_id(wallet: &NodeWallet) -> StoreId {
 pub(crate) struct Rails {
     pub xmr: bool,
     pub lightning: bool,
+    pub zec: bool,
 }
 
 impl Rails {
-    /// What `store` signed, or neither.
+    /// What `store` signed, or none.
     pub(crate) fn of(store: Option<&Store>) -> Self {
         let details = store.and_then(|store| store.details.as_ref());
         Self {
             xmr: details.is_some_and(|d| d.accepts_xmr),
             lightning: details.is_some_and(|d| d.accepts_lightning),
+            zec: details.is_some_and(|d| d.accepts_zec),
         }
     }
 }
@@ -130,8 +132,7 @@ pub(crate) fn unsigned(
             },
             accepts_xmr: rails.xmr,
             accepts_lightning: rails.lightning && network != NetworkMode::Mainnet,
-            // Not set until releases that read it are out (docs/zcash.md).
-            accepts_zec: false,
+            accepts_zec: rails.zec && crate::zec::own_store_allowed(network),
         }),
         signature: [0u8; 64],
     }))

@@ -19,15 +19,17 @@
 //! [`Node::set_zec_chain`]), and tests set the mock. Demo stores opt in one by one
 //! (`PUT /zec/stores`), which signs the store's v3 record again with bit 2
 //! set; checkout and the catalog read the signed flag only. `zec-stores.obv`
-//! keeps the choice for the next boot. The node's own store does not take
-//! Zcash yet: its record goes to other nodes, a release from before bit 2
-//! refuses the whole record, and a sale from another node carries bitcoin
-//! terms only (phase 2). Ironwood is the pool that pays; escrow is
-//! Bitcoin-only.
+//! keeps the choice for the next boot. The node's own store opts in the same
+//! way on testnet4 (see `own.rs`), but cannot be paid in Zcash yet: a sale
+//! from another node carries bitcoin terms only (phase 2). Ironwood is the
+//! pool that pays; escrow is Bitcoin-only.
 
 mod checkout;
 mod http;
+mod own;
 pub(crate) mod rate;
+#[cfg(test)]
+mod own_tests;
 #[cfg(test)]
 mod tests;
 
@@ -51,6 +53,7 @@ use crate::{Egress, Error, Node};
 
 pub(crate) use checkout::{add_zec_flags, rail_of};
 pub(crate) use http::response;
+pub(crate) use own::own_store_allowed;
 
 const WATCH_FILE: &str = "zec-watch.obv";
 const STATE_FILE: &str = "zec-state.obv";
@@ -61,9 +64,6 @@ const SYNC_BLOCKS: u64 = 100;
 const SYNC_STEPS: usize = 20;
 /// How often the sync thread looks at its stop flag.
 const TICK: Duration = Duration::from_millis(250);
-
-/// Why the own store cannot take Zcash yet.
-pub(crate) const OWN_STORE_LATER: &str = "Your own store takes Zcash once sales from other nodes carry Zcash terms. Demo stores on this node take it now.";
 
 /// One Zcash wallet. `wallet` is `None` until its viewing key is known.
 pub(crate) struct Slot {
@@ -117,6 +117,8 @@ pub(crate) struct ZecNode {
     network: NetworkMode,
     vault: Vault,
     chain: OnceLock<Arc<dyn ZecChain>>,
+    /// The own store's wallet: the node wallet's phrase (`wallets/node`).
+    own: Mutex<Slot>,
     stores: BTreeMap<String, Mutex<Slot>>,
     accepts: Mutex<BTreeSet<String>>,
     accepts_path: PathBuf,
@@ -141,6 +143,7 @@ impl ZecNode {
             network,
             vault: vault.clone(),
             chain: OnceLock::new(),
+            own: Mutex::new(Slot::open(&wallets.join("node"), vault, network)?),
             stores,
             accepts: Mutex::new(accepts),
             accepts_path,
@@ -158,6 +161,10 @@ impl ZecNode {
 
     pub(crate) fn store(&self, seller: &str) -> Option<MutexGuard<'_, Slot>> {
         self.stores.get(seller).map(guard)
+    }
+
+    fn slots(&self) -> impl Iterator<Item = &Mutex<Slot>> {
+        std::iter::once(&self.own).chain(self.stores.values())
     }
 
     /// Remember a demo store's choice for the next boot.
@@ -180,8 +187,8 @@ impl ZecNode {
             Some(chain) => chain.status().value(),
             None => BackendStatus::off(self.zec_network()).value(),
         };
-        let scanned = self.stores.values().filter_map(|slot| guard(slot).wallet.as_ref().and_then(ZecWallet::scanned)).min();
-        let error = self.stores.values().find_map(|slot| guard(slot).error.clone());
+        let scanned = self.slots().filter_map(|slot| guard(slot).wallet.as_ref().and_then(ZecWallet::scanned)).min();
+        let error = self.slots().find_map(|slot| guard(slot).error.clone());
         value["enabled"] = json!(self.chain().is_some());
         value["pool"] = json!("ironwood");
         value["scannedHeight"] = json!(scanned);
@@ -227,7 +234,10 @@ fn with_zec(store: &Store, accept: bool, secret: &SecretKey) -> Result<Store, op
 /// Why a store's Zcash choice could not change.
 pub(crate) enum AcceptError {
     Unknown(String),
-    OwnStore,
+    /// The own store on a network where it may not take Zcash yet.
+    Mainnet,
+    Off,
+    Locked,
     Failed(String),
 }
 
@@ -242,11 +252,11 @@ impl Node {
             .is_some_and(|details| details.accepts_zec)
     }
 
-    /// Opt a demo store in or out by signing its record again.
+    /// Opt a store in or out by signing its record again.
     pub(crate) fn set_accepts_zec(&self, seller: &str, accept: bool) -> Result<(), AcceptError> {
         let store = self.seller_store(seller).map_err(AcceptError::Unknown)?;
         if store.id == self.own_store {
-            return Err(AcceptError::OwnStore);
+            return self.set_own_accepts_zec(&store, accept);
         }
         if !self.zec.stores.contains_key(seller) {
             return Err(AcceptError::Unknown("That seller has no wallet on this node.".into()));
@@ -268,7 +278,7 @@ impl Node {
         json!({
             "network": self.zec.zec_network().as_str(),
             "enabled": self.zec.chain().is_some(),
-            "stores": self.zec.stores.keys().map(|seller| json!({ "seller": seller, "acceptsZec": self.accepts_zec(seller) })).collect::<Vec<_>>(),
+            "stores": self.own_zec_value().into_iter().chain(self.zec.stores.keys().map(|seller| json!({ "seller": seller, "acceptsZec": self.accepts_zec(seller) }))).collect::<Vec<_>>(),
         })
     }
 
@@ -280,7 +290,7 @@ impl Node {
     /// Derive viewing keys for wallets that had only a spend tier, while unlocked.
     fn zec_fill_keys(&self) {
         let Ok(key) = self.lock.spend_key() else { return };
-        for slot in self.zec.stores.values() {
+        for slot in self.zec.slots() {
             let mut slot = guard(slot);
             if slot.wallet.is_some() {
                 continue;
@@ -299,7 +309,7 @@ impl Node {
         let chain = self.zec.chain().ok_or("Zcash is off")?.clone();
         self.zec_fill_keys();
         let mut failed = None;
-        for slot in self.zec.stores.values() {
+        for slot in self.zec.slots() {
             if let Err(err) = self.sync_zec_slot(slot, chain.as_ref()) {
                 failed = Some(err);
             }

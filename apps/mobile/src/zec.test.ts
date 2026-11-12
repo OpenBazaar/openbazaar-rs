@@ -13,17 +13,18 @@ test("zatoshi stay exact and format without float math", () => {
   assert.equal(ZEC_CONFIRMATIONS, 30);
 });
 
-test("the stores list says which demo stores take Zcash", () => {
+test("the stores list says which stores take Zcash, and which is the node's own", () => {
   const stores = parseZecStores({
     network: "testnet",
     enabled: true,
     stores: [
+      { seller: "Brook and Pine", own: true, acceptsZec: false },
       { seller: "Marlow Goods", acceptsZec: true },
       { seller: "Hale Paper", acceptsZec: false },
     ],
   });
   assert.equal(stores.enabled, true);
-  assert.deepEqual(stores.stores.map((store) => [store.seller, store.acceptsZec]), [["Marlow Goods", true], ["Hale Paper", false]]);
+  assert.deepEqual(stores.stores.map((store) => [store.seller, store.own, store.acceptsZec]), [["Brook and Pine", true, false], ["Marlow Goods", false, true], ["Hale Paper", false, false]]);
   assert.throws(() => parseZecStores({ network: "testnet4", stores: [] }), "testnet4 is not a Zcash network");
 });
 

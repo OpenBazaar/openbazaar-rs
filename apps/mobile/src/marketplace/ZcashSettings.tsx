@@ -54,7 +54,7 @@ export function ZcashSettings() {
                 <div className='ob-setting-row' key={store.seller}>
                   <label htmlFor={`ob-zec-${store.seller}`}>
                     <strong>{store.seller}</strong>
-                    <span>Demo store on this node</span>
+                    <span>{store.own ? 'Your store. People still on the first release, v0.1.0-alpha.1, will not see it while Zcash is on, until they update.' : 'Demo store on this node'}</span>
                   </label>
                   <span className='ob-setting-switch'>
                     <input
@@ -71,7 +71,7 @@ export function ZcashSettings() {
               ))}
               <FormError message={toggle.error} />
               <p className='ob-settings-footnote'>
-                Your own store takes Zcash once sales from other nodes carry Zcash terms, and the nodes that follow it read the Zcash flag.
+                Buyers on other nodes cannot pay your store in Zcash yet. For now the switch only adds Zcash to your store's signed record.
               </p>
             </section>
           )}
