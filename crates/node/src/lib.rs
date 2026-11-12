@@ -537,6 +537,13 @@ impl Node {
         self.buyer_orders.lock().unwrap_or_else(|err| err.into_inner())
     }
 
+    /// `--fixed-rates`: price orders from these dollar figures for 1 BTC and
+    /// 1 ZEC instead of a rate server's. `ServeOptions` takes it on testnet4 only.
+    pub fn set_fixed_rates(&self, btc_usd: u32, zec_usd: u32) {
+        *self.rates.fixed.lock().unwrap() = Some([("USD".to_string(), f64::from(btc_usd))].into());
+        *self.zec.rate.fixed.lock().unwrap() = openbazaar_zec::amount::sats_per_zec(f64::from(zec_usd), f64::from(btc_usd));
+    }
+
     pub(crate) fn rates_value(&self) -> Value {
         let mut value = self.rates.value();
         value["xmr"] = self.xmr.rate.value(&value);

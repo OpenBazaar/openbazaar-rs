@@ -26,9 +26,8 @@ pub(crate) struct ZecRate {
     cache: Mutex<Option<(Instant, f64)>>,
     egress: Egress,
     source: String,
-    /// Tests pin sats per ZEC instead of asking Kraken and Coinbase.
-    #[cfg(test)]
-    fixed: Mutex<Option<u64>>,
+    /// Tests and `--fixed-rates` pin sats per ZEC instead of asking Kraken and Coinbase.
+    pub(crate) fixed: Mutex<Option<u64>>,
 }
 
 impl ZecRate {
@@ -37,7 +36,6 @@ impl ZecRate {
             cache: Mutex::new(None),
             egress,
             source: SOURCE.to_string(),
-            #[cfg(test)]
             fixed: Mutex::new(None),
         }
     }
@@ -62,7 +60,6 @@ impl ZecRate {
 
     /// Sats per ZEC given the node's BTC/USD price, or `None` without either price.
     pub(crate) fn sats_per_zec(&self, btc_usd: Option<f64>) -> Option<u64> {
-        #[cfg(test)]
         if let Some(sats) = *self.fixed.lock().unwrap_or_else(|err| err.into_inner()) {
             return Some(sats);
         }
@@ -80,7 +77,8 @@ impl ZecRate {
                 }
             }
         }
-        json!({ "base": "ZEC", "satsPerZec": sats, "decimals": 8, "source": "kraken", "currencies": currencies })
+        let source = if self.fixed.lock().unwrap_or_else(|err| err.into_inner()).is_some() { "fixed" } else { "kraken" };
+        json!({ "base": "ZEC", "satsPerZec": sats, "decimals": 8, "source": source, "currencies": currencies })
     }
 
     #[cfg(test)]
