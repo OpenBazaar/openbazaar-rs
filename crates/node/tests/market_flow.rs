@@ -16,6 +16,7 @@
 //! cargo test --locked -p ob-node --test market_flow -- --ignored --nocapture
 //! ```
 
+#[allow(dead_code)]
 mod common;
 
 use std::time::Duration;
