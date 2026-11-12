@@ -14,7 +14,10 @@
 
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, AtomicUsize, Ordering};
-use std::time::Duration;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
+
+use crate::backoff::{for_prices, wait_from_message, Backoff};
 
 use bdk_esplora::esplora_client::{self, AsyncClient};
 use bdk_esplora::EsploraAsyncExt;
@@ -179,6 +182,7 @@ pub struct EsploraChain {
     public: bool,
     /// The HTTP client uses the configured proxy, so a public server sees an exit, not this machine.
     proxied: bool,
+    retry: Mutex<Backoff>,
 }
 
 struct Server {
@@ -253,6 +257,7 @@ impl EsploraChain {
             tip_height_known: AtomicBool::new(false),
             public: urls.iter().any(|url| !crate::network::is_private_url(url)),
             proxied: egress.proxy.is_some(),
+            retry: Mutex::new(for_prices()),
         })
     }
 
@@ -361,18 +366,42 @@ impl ChainSource for EsploraChain {
 
     fn tip_height(&self) -> Result<u32, String> {
         self.refuse_public_clearnet()?;
+        let cached = self
+            .tip_height_known
+            .load(Ordering::Relaxed)
+            .then(|| self.tip_height_seen.load(Ordering::Relaxed));
+        let mut retry = self.retry.lock().unwrap_or_else(|err| err.into_inner());
+        if !retry.ready(Instant::now()) {
+            return cached
+                .ok_or_else(|| "the chain server is being left alone after it failed".into());
+        }
         let height = match self.read_tip() {
             Ok(height) => height,
             // A fresh Tor circuit often fails once. One more pass uses another circuit.
-            Err(err) if self.proxied => {
-                self.read_tip().map_err(|again| format!("{err}; {again}"))?
+            Err(err) if self.proxied => match self.read_tip() {
+                Ok(height) => height,
+                Err(again) => {
+                    retry.fail(
+                        Instant::now(),
+                        wait_from_message(&again).or_else(|| wait_from_message(&err)),
+                    );
+                    return cached.ok_or_else(|| format!("{err}; {again}"));
+                }
+            },
+            Err(err) => {
+                retry.fail(Instant::now(), wait_from_message(&err));
+                return cached.ok_or(err);
             }
-            Err(err) => return Err(err),
         };
+        retry.ok();
+        drop(retry);
         self.tip_height_seen.store(height, Ordering::Relaxed);
         if !self.tip_height_known.swap(true, Ordering::Relaxed) {
             let index = self.preferred.load(Ordering::Relaxed);
-            eprintln!("ob-node: chain tip {height} from {}", self.servers[index].url);
+            eprintln!(
+                "ob-node: chain tip {height} from {}",
+                self.servers[index].url
+            );
         }
         Ok(height)
     }
@@ -416,7 +445,11 @@ impl ChainSource for EsploraChain {
 
     fn fee_rate(&self) -> Result<f64, String> {
         self.refuse_public_clearnet()?;
-        self.each(|client| async move {
+        let mut retry = self.retry.lock().unwrap_or_else(|err| err.into_inner());
+        if !retry.ready(Instant::now()) {
+            return Err("the chain server is being left alone after it failed".into());
+        }
+        match self.each(|client| async move {
             let estimates = client
                 .get_fee_estimates()
                 .await
@@ -424,7 +457,16 @@ impl ChainSource for EsploraChain {
             esplora_client::convert_fee_rate(FEE_TARGET_BLOCKS as usize, estimates)
                 .map(f64::from)
                 .ok_or_else(|| "the server returned no fee estimate".to_string())
-        })
+        }) {
+            Ok(rate) => {
+                retry.ok();
+                Ok(rate)
+            }
+            Err(err) => {
+                retry.fail(Instant::now(), wait_from_message(&err));
+                Err(err)
+            }
+        }
     }
 
     fn broadcast(&self, tx: &Transaction) -> Result<(), String> {
@@ -561,7 +603,17 @@ async fn fetch_tip_height(client: &AsyncClient) -> Result<u32, String> {
         .await
         .map_err(|err| err.to_string())?;
     if !response.status().is_success() {
-        return Err(format!("tip height HTTP {}", response.status()));
+        let code = response.status().as_u16();
+        let retry_after = response
+            .headers()
+            .get("retry-after")
+            .and_then(|value| value.to_str().ok());
+        let mut err = format!("tip height HTTP {code}");
+        if let Some(retry_after) = retry_after {
+            err.push_str(" Retry-After: ");
+            err.push_str(retry_after);
+        }
+        return Err(err);
     }
     let text = response.text().await.map_err(|err| err.to_string())?;
     parse_tip_height(&text)
@@ -640,6 +692,25 @@ mod tests {
                 <= 1,
             "a failed genesis probe was repeated instead of reading the tip: {seen:?}"
         );
+    }
+
+    #[test]
+    fn a_server_that_refuses_the_tip_is_asked_once() {
+        let (url, paths) = local_esplora(|path| match path {
+            "/blocks/tip/height" => (403, ""),
+            _ => (404, "no genesis"),
+        });
+        let chain = EsploraChain::new(&[url], Network::Regtest).unwrap();
+        for _ in 0..14 {
+            assert!(chain.tip_height().is_err());
+        }
+        let tips = paths
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|path| path.as_str() == "/blocks/tip/height")
+            .count();
+        assert_eq!(tips, 1, "14 tip reads while the server refuses");
     }
 
     #[test]

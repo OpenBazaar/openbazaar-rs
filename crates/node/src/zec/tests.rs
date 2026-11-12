@@ -367,3 +367,33 @@ fn network_and_rates_say_what_the_zcash_backend_sees() {
     let (_, rates) = request(&node, "GET", "/rates", "");
     assert_eq!((&rates["zec"]["base"], &rates["zec"]["satsPerZec"], &rates["zec"]["decimals"]), (&json!("ZEC"), &json!(SATS_PER_ZEC), &json!(8)));
 }
+
+#[test]
+fn one_sync_round_asks_the_tip_once_for_every_wallet() {
+    use std::sync::atomic::Ordering;
+
+    let Setup { node, zec, btc: _btc, dir: _dir } = setup();
+    let wallets = node.zec.slots().count();
+    assert!(wallets >= 2, "{wallets} wallets");
+    zec.tip_reads.store(0, Ordering::SeqCst);
+    zec.hash_reads.store(0, Ordering::SeqCst);
+    node.zec_sync_once().unwrap();
+    assert_eq!(zec.tip_reads.load(Ordering::SeqCst), 1, "{wallets} wallets, one tip read");
+    assert_eq!(zec.hash_reads.load(Ordering::SeqCst), 1, "the same tip hash is reused");
+}
+
+#[test]
+fn zec_keeps_the_fast_pace_only_while_something_waits() {
+    let Setup { node, zec, btc: _btc, dir: _dir } = setup();
+    assert!(!node.zec_needs_sync(), "caught up, no order");
+    assert_eq!(Node::zec_sync_wait(Duration::from_secs(30), false), Duration::from_secs(15 * 60));
+    assert_eq!(Node::zec_sync_wait(Duration::from_secs(30), true), Duration::from_secs(30));
+
+    let (id, payment) = zec_order(&node);
+    assert!(node.zec_needs_sync(), "an order is awaiting payment");
+    zec.pay(address(&payment), zatoshi(&payment["amountZatoshi"]));
+    zec.mine(CONFIRMATIONS);
+    node.zec_sync_once().unwrap();
+    assert_eq!(order(&node, &id)["status"], "Paid");
+    assert!(!node.zec_needs_sync(), "paid, caught up");
+}

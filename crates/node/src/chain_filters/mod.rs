@@ -11,9 +11,9 @@
 
 mod driver;
 pub(crate) mod index;
-pub(crate) mod store;
 #[cfg(test)]
-mod mock_peer;
+pub(crate) mod mock_peer;
+pub(crate) mod store;
 #[cfg(test)]
 mod tests;
 
@@ -86,11 +86,25 @@ impl FilterConfig {
 /// A recent block on each network. A wallet that has never synced starts its scan after it.
 pub(crate) fn default_start(network: Network) -> BlockId {
     let (height, hash) = match network {
-        Network::Testnet4 => (159_000, "00000000055dc440aea31554f958ec7dea1ed7c466272b063c51ddd029eea8a0"),
-        Network::Bitcoin => (974_000, "00000000000000000000d7d13f5ac024052cad9613d9a6608f76df081d74e865"),
-        _ => return BlockId { height: 0, hash: genesis_block(network).block_hash() },
+        Network::Testnet4 => (
+            159_000,
+            "00000000055dc440aea31554f958ec7dea1ed7c466272b063c51ddd029eea8a0",
+        ),
+        Network::Bitcoin => (
+            974_000,
+            "00000000000000000000d7d13f5ac024052cad9613d9a6608f76df081d74e865",
+        ),
+        _ => {
+            return BlockId {
+                height: 0,
+                hash: genesis_block(network).block_hash(),
+            }
+        }
     };
-    BlockId { height, hash: hash.parse().expect("checkpoint hashes are valid") }
+    BlockId {
+        height,
+        hash: hash.parse().expect("checkpoint hashes are valid"),
+    }
 }
 
 pub(crate) struct Shared {
@@ -98,6 +112,8 @@ pub(crate) struct Shared {
     store: Mutex<Option<ChainStore>>,
     requester: Mutex<Option<bip157::Requester>>,
     last_contact: Mutex<Option<Instant>>,
+    /// A peer finished its handshake, and the client has not said since that it has no connection.
+    peer_up: AtomicBool,
     last_error: Mutex<Option<String>>,
     fee: Mutex<Option<(f64, Instant)>>,
     wake: Notify,
@@ -110,11 +126,17 @@ impl Shared {
     }
 
     fn contact(&self) {
-        *self.last_contact.lock().unwrap_or_else(|err| err.into_inner()) = Some(Instant::now());
+        *self
+            .last_contact
+            .lock()
+            .unwrap_or_else(|err| err.into_inner()) = Some(Instant::now());
     }
 
     fn set_error(&self, message: String) {
-        *self.last_error.lock().unwrap_or_else(|err| err.into_inner()) = Some(message);
+        *self
+            .last_error
+            .lock()
+            .unwrap_or_else(|err| err.into_inner()) = Some(message);
     }
 
     fn stopping(&self) -> bool {
@@ -175,7 +197,13 @@ fn fee_rate_from_blocks(rates_newest_first: &[f64], sample: usize) -> Option<f64
 }
 
 /// Whether a scan that is behind has stayed at `height` for longer than `after`.
-fn stalled(progress: &mut Option<(u32, Instant)>, height: u32, caught_up: bool, now: Instant, after: Duration) -> bool {
+fn stalled(
+    progress: &mut Option<(u32, Instant)>,
+    height: u32,
+    caught_up: bool,
+    now: Instant,
+    after: Duration,
+) -> bool {
     match *progress {
         Some((seen, since)) if seen == height => !caught_up && now.duration_since(since) > after,
         _ => {
@@ -222,6 +250,7 @@ impl FilterChain {
                 store: Mutex::new(None),
                 requester: Mutex::new(None),
                 last_contact: Mutex::new(None),
+                peer_up: AtomicBool::new(false),
                 last_error: Mutex::new(None),
                 fee: Mutex::new(None),
                 wake: Notify::new(),
@@ -243,22 +272,44 @@ impl FilterChain {
     /// handshake, or stop sending headers after the scan looked finished,
     /// and still never serve the blocks a payment confirmed in. An old header
     /// while the scan is still moving is historical, not a stall.
+    ///
+    /// A caught-up peer has nothing to say until the next block. While its
+    /// connection is up that silence is not a failure: the client pings a
+    /// quiet peer every two minutes and drops one that does not answer.
     pub(crate) fn unreachable_for(&self, after: Duration) -> bool {
         let Some(started) = *self.started.lock().unwrap_or_else(|err| err.into_inner()) else {
             return false;
         };
-        let last = self.shared.last_contact.lock().unwrap_or_else(|err| err.into_inner()).unwrap_or(started);
+        let last = self
+            .shared
+            .last_contact
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .unwrap_or(started);
         let (height, caught_up, header_time) = {
             let index = self.shared.index();
-            let header_time = index.headers.get(&index.processed.height).map(|header| header.time);
+            let header_time = index
+                .headers
+                .get(&index.processed.height)
+                .map(|header| header.time);
             (index.processed.height, index.caught_up, header_time)
         };
         let mut progress = self.progress.lock().unwrap_or_else(|err| err.into_inner());
-        let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|elapsed| elapsed.as_secs()).unwrap_or(0);
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_secs())
+            .unwrap_or(0);
         // Only a finished scan can be frozen. During sync the processed header
         // is an old historical block, and that must not turn the fallback on.
-        let frozen = caught_up && header_time.is_some_and(|time| stale_tip(time, now, STALE_TIP));
-        last.elapsed() > after || stalled(&mut progress, height, caught_up, Instant::now(), after) || frozen
+        let waiting_for_a_block = caught_up && self.shared.peer_up.load(Ordering::Relaxed);
+        let silent = last.elapsed() > after && !waiting_for_a_block;
+        // A connected peer can sit on an old header (regtest, or a quiet hour
+        // on mainnet). The client drops one that stays two hours behind; until
+        // then that silence is not a reason to ask a public server.
+        let frozen = !waiting_for_a_block
+            && caught_up
+            && header_time.is_some_and(|time| stale_tip(time, now, STALE_TIP));
+        silent || stalled(&mut progress, height, caught_up, Instant::now(), after) || frozen
     }
 
     /// Pretend no peer has answered since `ago`. Tests use this to turn the
@@ -267,7 +318,11 @@ impl FilterChain {
     pub(crate) fn test_peer_silent_for(&self, ago: Duration) {
         let when = Instant::now() - ago;
         *self.started.lock().unwrap_or_else(|err| err.into_inner()) = Some(when);
-        *self.shared.last_contact.lock().unwrap_or_else(|err| err.into_inner()) = Some(when);
+        *self
+            .shared
+            .last_contact
+            .lock()
+            .unwrap_or_else(|err| err.into_inner()) = Some(when);
     }
 
     fn ready(&self, scripts: &[ScriptBuf]) -> Result<(), String> {
@@ -294,7 +349,8 @@ impl FilterChain {
 
     /// Run `future` on the client's runtime for at most `limit`.
     fn wait<F: std::future::Future>(&self, limit: Duration, future: F) -> Option<F::Output> {
-        self.runtime.block_on(async { tokio::time::timeout(limit, future).await.ok() })
+        self.runtime
+            .block_on(async { tokio::time::timeout(limit, future).await.ok() })
     }
 
     fn recent_fee_rate(&self) -> Result<f64, String> {
@@ -302,19 +358,30 @@ impl FilterChain {
         let hashes: Vec<BlockHash> = {
             let index = self.shared.index();
             index.tip()?;
-            index.snapshot().iter().rev().take(FEE_LOOKBACK as usize).map(|(_, header)| header.block_hash()).collect()
+            index
+                .snapshot()
+                .iter()
+                .rev()
+                .take(FEE_LOOKBACK as usize)
+                .map(|(_, header)| header.block_hash())
+                .collect()
         };
         let mut rates = Vec::new();
         for hash in hashes {
             if let Some(Ok(rate)) = self.wait(BROADCAST_TIMEOUT, requester.average_fee_rate(hash)) {
                 rates.push(rate.to_sat_per_kwu() as f64 / 250.0);
             }
-            let paid = rates.iter().copied().filter(|rate| is_paid_block(*rate)).count();
+            let paid = rates
+                .iter()
+                .copied()
+                .filter(|rate| is_paid_block(*rate))
+                .count();
             if paid >= FEE_BLOCKS as usize {
                 break;
             }
         }
-        fee_rate_from_blocks(&rates, FEE_BLOCKS as usize).ok_or_else(|| "no recent block gave a fee estimate".to_string())
+        fee_rate_from_blocks(&rates, FEE_BLOCKS as usize)
+            .ok_or_else(|| "no recent block gave a fee estimate".to_string())
     }
 }
 
@@ -337,12 +404,19 @@ impl ChainSource for FilterChain {
         let index = match store.load(self.config.network)? {
             Some(index) => index,
             None => {
-                let start = store.wallet_tip.filter(|tip| tip.height > 0).unwrap_or_else(|| default_start(self.config.network));
+                let start = store
+                    .wallet_tip
+                    .filter(|tip| tip.height > 0)
+                    .unwrap_or_else(|| default_start(self.config.network));
                 FilterIndex::new(self.config.network, start)
             }
         };
         *self.shared.index() = index;
-        *self.shared.store.lock().unwrap_or_else(|err| err.into_inner()) = Some(store);
+        *self
+            .shared
+            .store
+            .lock()
+            .unwrap_or_else(|err| err.into_inner()) = Some(store);
         self.shared.save();
         if !self.config.only_these_peers && self.config.proxy.is_none() {
             self.shared.set_error(
@@ -351,14 +425,17 @@ impl ChainSource for FilterChain {
             *started = Some(Instant::now());
             return Ok(());
         }
-        self.runtime.spawn(driver::run(self.shared.clone(), self.config.clone()));
+        self.runtime
+            .spawn(driver::run(self.shared.clone(), self.config.clone()));
         *started = Some(Instant::now());
         Ok(())
     }
 
     fn status(&self) -> ChainStatus {
         let peers = self.shared.requester().ok().and_then(|requester| {
-            self.wait(PEER_INFO_TIMEOUT, requester.peer_info()).and_then(Result::ok).map(|peers| peers.len())
+            self.wait(PEER_INFO_TIMEOUT, requester.peer_info())
+                .and_then(Result::ok)
+                .map(|peers| peers.len())
         });
         let index = self.shared.index();
         let own = self.config.only_these_peers;
@@ -375,7 +452,12 @@ impl ChainSource for FilterChain {
             peers,
             scanned_height: Some(index.processed.height),
             syncing: !index.caught_up,
-            error: self.shared.last_error.lock().unwrap_or_else(|err| err.into_inner()).clone(),
+            error: self
+                .shared
+                .last_error
+                .lock()
+                .unwrap_or_else(|err| err.into_inner())
+                .clone(),
             fallback: None,
             fallback_active: false,
         }
@@ -402,13 +484,22 @@ impl ChainSource for FilterChain {
     }
 
     fn fee_rate(&self) -> Result<f64, String> {
-        if let Some((rate, at)) = *self.shared.fee.lock().unwrap_or_else(|err| err.into_inner()) {
+        if let Some((rate, at)) = *self
+            .shared
+            .fee
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+        {
             if at.elapsed() < FEE_CACHE {
                 return Ok(rate);
             }
         }
         let rate = self.recent_fee_rate()?;
-        *self.shared.fee.lock().unwrap_or_else(|err| err.into_inner()) = Some((rate, Instant::now()));
+        *self
+            .shared
+            .fee
+            .lock()
+            .unwrap_or_else(|err| err.into_inner()) = Some((rate, Instant::now()));
         Ok(rate)
     }
 
@@ -439,9 +530,10 @@ impl ChainSource for FilterChain {
                 }
                 spks
             }
-            WalletRequest::Sync(mut request) => {
-                request.iter_spks_with_expected_txids().map(|item| (None, item.spk)).collect()
-            }
+            WalletRequest::Sync(mut request) => request
+                .iter_spks_with_expected_txids()
+                .map(|item| (None, item.spk))
+                .collect(),
         };
         let scripts: Vec<ScriptBuf> = spks.iter().map(|(_, script)| script.clone()).collect();
         self.watch(scripts.clone());

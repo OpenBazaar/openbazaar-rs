@@ -14,6 +14,7 @@
 
 pub mod indexer;
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 use orchard::note::{ExtractedNoteCommitment, NoteVersion, RandomSeed, Rho};
@@ -44,6 +45,10 @@ pub struct MockChain {
     /// The height of `blocks[0]`.
     start: u64,
     state: Mutex<State>,
+    /// How often [`ZecChain::tip`] was asked. Tests count indexer load.
+    pub tip_reads: AtomicUsize,
+    /// How often [`ZecChain::block_hash`] was asked.
+    pub hash_reads: AtomicUsize,
 }
 
 fn random32() -> [u8; 32] {
@@ -79,7 +84,13 @@ impl MockChain {
     }
 
     fn starting_at(network: ZecNetwork, start: u64) -> Self {
-        let chain = Self { network, start, state: Mutex::new(State { blocks: Vec::new(), pool: Vec::new(), offline: false }) };
+        let chain = Self {
+            network,
+            start,
+            state: Mutex::new(State { blocks: Vec::new(), pool: Vec::new(), offline: false }),
+            tip_reads: AtomicUsize::new(0),
+            hash_reads: AtomicUsize::new(0),
+        };
         chain.mine(HISTORY);
         chain
     }
@@ -234,12 +245,14 @@ impl ZecChain for MockChain {
     }
 
     fn tip(&self) -> Result<u64, String> {
+        self.tip_reads.fetch_add(1, Ordering::SeqCst);
         let state = self.state();
         self.online(&state)?;
         Ok(self.start + state.blocks.len() as u64 - 1)
     }
 
     fn block_hash(&self, height: u64) -> Result<[u8; 32], String> {
+        self.hash_reads.fetch_add(1, Ordering::SeqCst);
         let state = self.state();
         self.online(&state)?;
         let block = height.checked_sub(self.start).and_then(|i| state.blocks.get(i as usize)).ok_or("no such block")?;

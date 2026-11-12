@@ -10,6 +10,7 @@
 //! saved chain state.
 
 use std::collections::HashSet;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -62,7 +63,11 @@ pub(super) fn dial_plan(config: &FilterConfig) -> DialPlan {
     } else {
         (None, None)
     };
-    DialPlan { peers, handshake_timeout, response_timeout }
+    DialPlan {
+        peers,
+        handshake_timeout,
+        response_timeout,
+    }
 }
 
 /// A caught-up scan whose newest header is still the one it already checked, and
@@ -75,7 +80,9 @@ pub(super) fn stuck_on_stale_tip(
     header_time: Option<u32>,
     now: u64,
 ) -> bool {
-    caught_up && header_tip <= processed && header_time.is_some_and(|time| stale_tip(time, now, STALE_TIP))
+    caught_up
+        && header_tip <= processed
+        && header_time.is_some_and(|time| stale_tip(time, now, STALE_TIP))
 }
 
 pub(super) async fn run(shared: Arc<Shared>, config: FilterConfig) {
@@ -84,13 +91,25 @@ pub(super) async fn run(shared: Arc<Shared>, config: FilterConfig) {
         let started = Instant::now();
         let state = chain_state(&shared);
         let (node, client) = builder(&config, state).build();
-        let Client { requester, info_rx, warn_rx, event_rx } = client;
-        *shared.requester.lock().unwrap_or_else(|err| err.into_inner()) = Some(requester.clone());
+        let Client {
+            requester,
+            info_rx,
+            warn_rx,
+            event_rx,
+        } = client;
+        *shared
+            .requester
+            .lock()
+            .unwrap_or_else(|err| err.into_inner()) = Some(requester.clone());
         let node = tokio::spawn(node.run());
         let logs = tokio::spawn(log(shared.clone(), info_rx, warn_rx));
         events(&shared, &requester, event_rx).await;
         let _ = requester.shutdown();
-        *shared.requester.lock().unwrap_or_else(|err| err.into_inner()) = None;
+        *shared
+            .requester
+            .lock()
+            .unwrap_or_else(|err| err.into_inner()) = None;
+        shared.peer_up.store(false, Ordering::Relaxed);
         let outcome = match node.await {
             Ok(Ok(())) => "the filter client stopped".to_string(),
             Ok(Err(err)) => format!("the filter client stopped: {err}"),
@@ -112,10 +131,13 @@ pub(super) async fn run(shared: Arc<Shared>, config: FilterConfig) {
 
 fn builder(config: &FilterConfig, state: ChainState) -> Builder {
     let plan = dial_plan(config);
-    let peers = plan.peers.iter().map(|(host, port)| match host.parse::<std::net::IpAddr>() {
-        Ok(ip) => TrustedPeer::from_socket_addr((ip, *port)),
-        Err(_) => TrustedPeer::from_hostname(host.clone(), *port),
-    });
+    let peers = plan
+        .peers
+        .iter()
+        .map(|(host, port)| match host.parse::<std::net::IpAddr>() {
+            Ok(ip) => TrustedPeer::from_socket_addr((ip, *port)),
+            Err(_) => TrustedPeer::from_hostname(host.clone(), *port),
+        });
     let mut builder = Builder::new(config.network)
         .chain_state(state)
         .required_peers(config.required_peers)
@@ -140,7 +162,10 @@ fn chain_state(shared: &Shared) -> ChainState {
     let index = shared.index();
     let snapshot = index.snapshot();
     if snapshot.is_empty() {
-        return ChainState::Checkpoint(HashCheckpoint::new(index.processed.height, index.processed.hash));
+        return ChainState::Checkpoint(HashCheckpoint::new(
+            index.processed.height,
+            index.processed.hash,
+        ));
     }
     ChainState::Snapshot(
         snapshot
@@ -162,7 +187,15 @@ async fn events(shared: &Shared, requester: &Requester, mut events: UnboundedRec
     loop {
         if refresh_gossip {
             refresh_gossip = false;
-            if let Err(err) = subscribe_gossip(shared, requester, &mut gossip, &mut followed_scripts, &mut followed_inputs).await {
+            if let Err(err) = subscribe_gossip(
+                shared,
+                requester,
+                &mut gossip,
+                &mut followed_scripts,
+                &mut followed_inputs,
+            )
+            .await
+            {
                 eprintln!("ob-node: mempool watch: {err}");
             }
         }
@@ -170,6 +203,7 @@ async fn events(shared: &Shared, requester: &Requester, mut events: UnboundedRec
             event = events.recv() => {
                 let Some(event) = event else { return };
                 shared.contact();
+                shared.peer_up.store(true, Ordering::Relaxed);
                 let save_now = match event {
                     Event::ChainUpdate(change) => header_change(shared, change),
                     Event::IndexedFilter(filter) => {
@@ -250,7 +284,12 @@ async fn subscribe_gossip(
 ) -> Result<(), String> {
     let (scripts, inputs) = {
         let index = shared.index();
-        let scripts: Vec<ScriptBuf> = index.scripts.keys().filter(|script| !followed_scripts.contains(*script)).cloned().collect();
+        let scripts: Vec<ScriptBuf> = index
+            .scripts
+            .keys()
+            .filter(|script| !followed_scripts.contains(*script))
+            .cloned()
+            .collect();
         let inputs: Vec<OutPoint> = index
             .mempool
             .values()
@@ -262,10 +301,14 @@ async fn subscribe_gossip(
     if scripts.is_empty() && inputs.is_empty() {
         return Ok(());
     }
-    let request = bip157::GossipMonitorRequestBuilder::from_expected_output_scripts(scripts.iter().cloned())
-        .add_outpoints(inputs.iter().copied())
-        .build();
-    let incoming = requester.subscribe_to_gossip(request).await.map_err(|err| err.to_string())?;
+    let request =
+        bip157::GossipMonitorRequestBuilder::from_expected_output_scripts(scripts.iter().cloned())
+            .add_outpoints(inputs.iter().copied())
+            .build();
+    let incoming = requester
+        .subscribe_to_gossip(request)
+        .await
+        .map_err(|err| err.to_string())?;
     if incoming.is_none() && gossip.is_none() {
         return Err("the mempool watch did not start".into());
     }
@@ -291,9 +334,18 @@ fn header_change(shared: &Shared, change: BlockHeaderChanges) -> bool {
             shared.index().connect(header.height, header.header);
             false
         }
-        BlockHeaderChanges::Reorganized { accepted, reorganized } => {
-            let pairs = |list: Vec<IndexedHeader>| list.into_iter().map(|h| (h.height, h.header)).collect::<Vec<_>>();
-            shared.index().reorganize(&pairs(accepted), &pairs(reorganized), now_secs());
+        BlockHeaderChanges::Reorganized {
+            accepted,
+            reorganized,
+        } => {
+            let pairs = |list: Vec<IndexedHeader>| {
+                list.into_iter()
+                    .map(|h| (h.height, h.header))
+                    .collect::<Vec<_>>()
+            };
+            shared
+                .index()
+                .reorganize(&pairs(accepted), &pairs(reorganized), now_secs());
             true
         }
         BlockHeaderChanges::ForkAdded(_) => false,
@@ -301,7 +353,12 @@ fn header_change(shared: &Shared, change: BlockHeaderChanges) -> bool {
 }
 
 /// Fetch a matched block until it arrives. Returns `false` when the client stopped.
-async fn fetch_block(shared: &Shared, requester: &Requester, height: u32, hash: bip157::BlockHash) -> bool {
+async fn fetch_block(
+    shared: &Shared,
+    requester: &Requester,
+    height: u32,
+    hash: bip157::BlockHash,
+) -> bool {
     loop {
         match tokio::time::timeout(BLOCK_TIMEOUT, requester.get_block(hash)).await {
             Ok(Ok(block)) => {
@@ -319,21 +376,40 @@ async fn fetch_block(shared: &Shared, requester: &Requester, height: u32, hash: 
 
 fn peer_stopped(shared: &Shared) -> bool {
     let index = shared.index();
-    let header_tip = index.headers.keys().next_back().copied().unwrap_or(index.processed.height);
-    let header_time = index.headers.get(&index.processed.height).map(|header| header.time);
-    stuck_on_stale_tip(index.caught_up, header_tip, index.processed.height, header_time, now_secs())
+    let header_tip = index
+        .headers
+        .keys()
+        .next_back()
+        .copied()
+        .unwrap_or(index.processed.height);
+    let header_time = index
+        .headers
+        .get(&index.processed.height)
+        .map(|header| header.time);
+    stuck_on_stale_tip(
+        index.caught_up,
+        header_tip,
+        index.processed.height,
+        header_time,
+        now_secs(),
+    )
 }
 
 async fn log(shared: Arc<Shared>, mut info: Receiver<Info>, mut warnings: Receiver<Warning>) {
     loop {
         tokio::select! {
             message = info.recv() => match message {
-                Some(Info::SuccessfulHandshake) => shared.contact(),
+                Some(Info::SuccessfulHandshake) => {
+                    shared.contact();
+                    shared.peer_up.store(true, Ordering::Relaxed);
+                }
                 Some(_) => {}
                 None => return,
             },
             warning = warnings.recv() => match warning {
                 Some(warning @ Warning::TransactionRejected { .. }) => shared.set_error(warning.to_string()),
+                // NeedConnections { connected: 0 } is sent every 10ms while a peer is still
+                // dialing, so leftover warnings after the handshake would clear peer_up.
                 Some(Warning::NeedConnections { .. }) => {}
                 Some(warning) => eprintln!("ob-node: filter peer: {warning}"),
                 None => return,

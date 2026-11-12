@@ -550,6 +550,22 @@ fn empty_blocks_do_not_drag_a_live_feerate_down_to_the_floor() {
 }
 
 #[test]
+fn a_caught_up_peer_that_is_quiet_between_blocks_is_not_unreachable() {
+    let mut chain = TestChain::new();
+    chain.mine(vec![]);
+    let peer = MockPeer::start(chain);
+    let dir = TempDir::new();
+    let filters = open_chain(own_node(&peer), &dir);
+    wait_for("the scan to catch up", || (!filters.status().syncing).then_some(()));
+    filters.test_peer_silent_for(Duration::from_secs(180));
+    assert!(!filters.unreachable_for(Duration::from_secs(120)), "the peer is connected and has no new block to send");
+
+    // The client says it has no connection left: the same silence now counts.
+    filters.shared.peer_up.store(false, std::sync::atomic::Ordering::Relaxed);
+    assert!(filters.unreachable_for(Duration::from_secs(120)));
+}
+
+#[test]
 fn a_scan_that_stops_moving_while_behind_counts_as_unreachable() {
     let after = Duration::from_secs(120);
     let start = Instant::now();
