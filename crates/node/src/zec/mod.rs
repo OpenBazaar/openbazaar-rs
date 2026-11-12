@@ -68,7 +68,7 @@ const SYNC_BLOCKS: u64 = 100;
 const SYNC_STEPS: usize = 20;
 /// How often the sync thread looks at its stop flag.
 const TICK: Duration = Duration::from_millis(250);
-/// How often to ask the indexer when no wallet is catching up and no Zcash order waits.
+/// How often to ask the indexer when no wallet is catching up and no Zcash order or sale waits.
 const IDLE: Duration = Duration::from_secs(15 * 60);
 
 /// One Zcash wallet. `wallet` is `None` until its viewing key is known.
@@ -412,7 +412,7 @@ impl Node {
         result
     }
 
-    /// First sync, a wallet still behind the last tip, or a Zcash order not yet Paid.
+    /// First sync, a wallet still behind the last tip, or a Zcash order or sale not yet Paid.
     pub(crate) fn zec_needs_sync(&self) -> bool {
         let catching_up = self.zec.slots().any(|slot| {
             guard(slot).wallet.as_ref().is_some_and(|wallet| {
@@ -432,6 +432,11 @@ impl Node {
                         .as_ref()
                         .is_some_and(|payment| payment["rail"] == "zec")
             })
+            || self.sales().list().any(|sale| {
+                sale["payment"]["rail"] == "zec"
+                    && (sale["status"] == crate::watch::AWAITING_PAYMENT
+                        || sale["status"] == crate::watch::PAYMENT_SEEN)
+            })
     }
 
     pub(crate) fn zec_sync_wait(every: Duration, needs: bool) -> Duration {
@@ -443,7 +448,7 @@ impl Node {
     }
 
     /// Sync every `every` on this thread until `stop`. Idle nodes wait [`IDLE`],
-    /// and catch up on the next tick once an order is placed or a wallet is still behind.
+    /// and catch up on the next tick once an order or sale is placed or a wallet is still behind.
     pub(crate) fn run_zec(&self, every: Duration, stop: &AtomicBool) {
         if self.zec.chain().is_none() {
             return;

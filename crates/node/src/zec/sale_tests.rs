@@ -91,6 +91,7 @@ fn a_zcash_sale_is_priced_by_the_seller_and_paid_on_both_nodes() {
     let sale = shop.pair.sales().remove(0);
     let sale_id = sale["id"].as_str().unwrap().to_string();
     assert_eq!((&sale["status"], &sale["totalSats"], &sale["address"]), (&json!(AWAITING_PAYMENT), &json!(PRICE), &Value::Null));
+    assert!(shop.pair.seller.node.zec_needs_sync(), "an unpaid Zcash sale keeps the seller's sync on the fast pace");
     let address = payment["zcashAddress"].as_str().unwrap();
     {
         let slot = shop.pair.seller.node.zec.own();
@@ -119,6 +120,7 @@ fn a_zcash_sale_is_priced_by_the_seller_and_paid_on_both_nodes() {
     assert_eq!(progress(&sale), (PAID, due, CONFIRMATIONS));
     assert_eq!(progress(&bought), progress(&sale), "{bought}");
     assert_eq!((&bought["remote"]["sellerSawPayment"], bought["txids"].as_array().unwrap().len()), (&json!(true), 2));
+    assert!(!shop.pair.seller.node.zec_needs_sync(), "paid, caught up");
 
     // From here it is any sale.
     let (status, shipped) = request(&shop.pair.seller.node, "POST", &format!("/sales/{sale_id}/fulfill"), &json!({ "carrier": "USPS" }).to_string());
