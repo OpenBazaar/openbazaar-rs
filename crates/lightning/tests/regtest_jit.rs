@@ -67,8 +67,9 @@ fn seller_is_paid_through_a_just_in_time_channel_and_keeps_it_across_a_restart()
     assert_eq!(channels.len(), 1, "{channels:?}");
     assert_eq!(channels[0].peer, lsp.peer.node_id.to_string());
     assert!(channels[0].ready);
-    let lightning = seller.balances().lightning_sats;
-    assert!(lightning >= (received_msat / 1_000).saturating_sub(1_000), "{lightning}");
+    // The payment is Paid once claimed; the balance follows when the LSP revokes the old commitment.
+    let spendable = (received_msat / 1_000).saturating_sub(1_000);
+    wait("the seller's balance", LONG, || seller.balances().lightning_sats >= spendable);
     println!("payment hash {} paid {received_msat} msat to the seller, LSP kept {lsp_fee_msat} msat", invoice.payment_hash);
 
     // The sealed store brings the channel and the payment back; another key does not open it.
