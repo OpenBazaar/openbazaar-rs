@@ -7,15 +7,20 @@ license.workspace = true
 publish.workspace = true
 
 [features]
-# An in-memory chain of compact blocks for offline tests of the node.
-mock = ["dep:rand"]
+# An in-memory chain of compact blocks for offline tests of the node, and a
+# small gRPC server standing in for Zaino that serves it.
+mock = ["dep:rand", "dep:bytes", "dep:http-body-util", "dep:hyper", "dep:prost"]
 
 [dependencies]
+bytes = { version = "1", optional = true }
 hex = "0.4"
 http = "1"
+http-body-util = { version = "0.1", optional = true }
+hyper = { version = "1", features = ["server", "http2"], optional = true }
 hyper-util = { version = "0.1", default-features = false, features = ["tokio"] }
 # No proving in this crate yet, so no circuit.
 orchard = { version = "0.16", default-features = false, features = ["std", "zeroize"] }
+prost = { version = "0.14", optional = true }
 rand = { version = "0.9", optional = true }
 serde_json = "1"
 tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "net", "time", "io-util", "macros"] }
@@ -36,9 +41,4 @@ zip321 = "0.10"
 zeroize = "1.8"
 
 [dev-dependencies]
-# A small gRPC server standing in for Zaino in the client's tests.
-bytes = "1"
-http-body-util = "0.1"
-hyper = { version = "1", features = ["server", "http2"] }
-prost = "0.14"
 openbazaar-zec = { path = ".", features = ["mock"] }
