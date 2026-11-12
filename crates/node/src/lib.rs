@@ -16,6 +16,7 @@
 #![forbid(unsafe_code)]
 
 mod addresses;
+mod backoff;
 mod browser;
 mod build_info;
 mod buyer_orders;
@@ -552,8 +553,10 @@ impl Node {
 
     pub(crate) fn rates_value(&self) -> Value {
         let mut value = self.rates.value();
-        value["xmr"] = self.xmr.rate.value(&value);
-        value["zec"] = self.zec.rate.value(if self.rates.answered_within(zec::rate::USABLE) { &value } else { &Value::Null });
+        // A coin this node cannot take is not priced, so its price server is not asked.
+        value["xmr"] = if self.xmr.chain().is_some() { self.xmr.rate.value(&value) } else { Value::Null };
+        let btc = if self.rates.answered_within(zec::rate::USABLE) { &value } else { &Value::Null };
+        value["zec"] = if self.zec.chain().is_some() { self.zec.rate.value(btc) } else { Value::Null };
         value
     }
 

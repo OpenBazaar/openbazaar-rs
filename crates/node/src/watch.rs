@@ -2,7 +2,9 @@
 //!
 //! The watcher runs on its own thread, never on the HTTP accept loop. Each
 //! round it reads the tip, asks the chain source about every open order's
-//! address, and writes any status change into the sealed order record.
+//! address, and writes any status change into the sealed order record. With
+//! no open order and no open sale the tip is not read: nothing would count
+//! confirmations with it, and the chain source may be a public server.
 //!
 //! Direct: Awaiting payment -> Payment seen (in the mempool, or fewer than N
 //! confirmations) -> Paid (N confirmations). Less than the amount due stays
@@ -146,8 +148,11 @@ impl Node {
             eprintln!("ob-node: wallet sync: {err}");
         }
         let mut changed = self.expire_escrow_opens(crate::escrow_outbox::now_secs());
-        let tip = self.chain.tip_height()?;
         let targets = self.watch_targets();
+        if targets.is_empty() && !self.sale_awaits_payment() {
+            return Ok(changed + self.watch_stock() + self.publish_reviews(crate::escrow_outbox::now_secs()));
+        }
+        let tip = self.chain.tip_height()?;
         for target in targets {
             let Ok(address) = address_for(&target.address, self.network) else {
                 continue;
@@ -187,6 +192,11 @@ impl Node {
         changed += self.watch_stock();
         changed += self.publish_reviews(crate::escrow_outbox::now_secs());
         Ok(changed)
+    }
+
+    /// A sale [`Node::watch_sales`] would look up on the chain.
+    fn sale_awaits_payment(&self) -> bool {
+        self.sales().list().any(|sale| sale["status"] == AWAITING_PAYMENT || sale["status"] == PAYMENT_SEEN)
     }
 
     fn watch_targets(&self) -> Vec<Target> {

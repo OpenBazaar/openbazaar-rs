@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 
 use openbazaar_zec::mock::indexer::{indexer, serve, testnet_info, Indexer};
 use openbazaar_zec::mock::MockChain;
-use openbazaar_zec::{IndexerChain, IndexerConfig, ViewKey, ZecChain, ZecNetwork, ZecWallet, CONFIRMATIONS};
+use openbazaar_zec::{IndexerChain, IndexerConfig, SharedTip, ViewKey, ZecChain, ZecNetwork, ZecWallet, CONFIRMATIONS};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use zcash_client_backend::proto::service::LightdInfo;
@@ -153,4 +153,23 @@ fn a_remote_server_is_reached_only_through_socks_with_a_username_per_connection(
     assert_ne!(seen[0].0, seen[1].0, "each connection has its own username, so Tor gives it its own circuit");
     let value = first.status().value();
     assert_eq!((&value["backend"], &value["privacy"], &value["proxied"]), (&serde_json::json!("remote-indexer"), &serde_json::json!("remote-tor"), &serde_json::json!(true)));
+}
+
+#[test]
+fn two_tip_reads_share_one_get_latest_block() {
+    let server = runtime();
+    let chain = Arc::new(MockChain::new(NET));
+    let stand_in = indexer(&chain, "v0.6.0");
+    let address = serve(&server, Arc::clone(&stand_in));
+    let client = IndexerChain::new(config(&[format!("http://{address}")], None)).unwrap();
+
+    assert_eq!(client.tip().unwrap(), chain.height());
+    assert_eq!(client.tip().unwrap(), chain.height());
+    let latest = |calls: &[String]| calls.iter().filter(|call| *call == "GetLatestBlock").count();
+    assert_eq!(latest(&stand_in.calls.lock().unwrap()), 2, "without sharing, each tip() is a request");
+
+    let shared = SharedTip::new(&client);
+    assert_eq!(shared.tip().unwrap(), chain.height());
+    assert_eq!(shared.tip().unwrap(), chain.height());
+    assert_eq!(latest(&stand_in.calls.lock().unwrap()), 3, "a shared round adds one GetLatestBlock for two tip() calls");
 }

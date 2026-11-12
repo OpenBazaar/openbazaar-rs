@@ -306,4 +306,47 @@ mod tests {
         }
         assert!(hits.load(Ordering::SeqCst) >= 1, "the tip query should still use the fallback");
     }
+
+    #[test]
+    fn a_healthy_peer_that_is_quiet_between_blocks_does_not_turn_the_fallback_on() {
+        use crate::chain_filters::mock_peer::{MockPeer, TestChain};
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let hits = Arc::new(AtomicUsize::new(0));
+        let counted = hits.clone();
+        thread::spawn(move || {
+            for mut stream in listener.incoming().flatten() {
+                counted.fetch_add(1, Ordering::SeqCst);
+                let _ = stream.read(&mut [0u8; 1024]);
+                let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 1\r\nConnection: close\r\n\r\n9");
+            }
+        });
+        let mut blocks = TestChain::new();
+        blocks.mine(vec![]);
+        let peer = MockPeer::start(blocks);
+        let dir = TempDir::new();
+        std::fs::create_dir_all(dir.0.join("filters")).unwrap();
+        let primary =
+            FilterChain::new(FilterConfig::own_node(Network::Regtest, vec![(peer.addr.ip().to_string(), peer.addr.port())])).unwrap();
+        primary
+            .open(ChainStore { dir: dir.0.join("filters"), vault: Vault::open(&dir.0, &crate::VaultMode::File).unwrap(), wallet_tip: None })
+            .unwrap();
+        let fallback =
+            crate::chain::EsploraChain::with_egress(&[format!("http://127.0.0.1:{port}")], Network::Regtest, &Egress::default()).unwrap();
+        let chain = FallbackChain { primary, fallback, active: AtomicBool::new(false) };
+        let started = std::time::Instant::now();
+        while chain.status().syncing {
+            assert!(started.elapsed() < Duration::from_secs(60), "the scan did not catch up");
+            thread::sleep(Duration::from_millis(50));
+        }
+        let before = hits.load(Ordering::SeqCst);
+
+        // 22 minutes without a block, asked for the tip twice a minute.
+        chain.primary.test_peer_silent_for(Duration::from_secs(180));
+        let tips: Vec<Result<u32, String>> = (0..44).map(|_| chain.tip_height()).collect();
+        assert_eq!(hits.load(Ordering::SeqCst) - before, 0, "44 tip reads went to the public server");
+        assert!(tips.iter().all(|tip| *tip == Ok(1)), "{tips:?}");
+        assert!(!chain.status().fallback_active);
+    }
 }

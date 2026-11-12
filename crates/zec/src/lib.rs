@@ -35,7 +35,7 @@ mod uri;
 mod wallet;
 
 pub use backend::{BackendStatus, IndexerConfig, Server, ServerKind};
-pub use chain::ZecChain;
+pub use chain::{SharedTip, ZecChain};
 pub use indexer::IndexerChain;
 pub use keys::{is_order_address, ViewKey};
 pub use network::ZecNetwork;

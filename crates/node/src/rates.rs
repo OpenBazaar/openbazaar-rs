@@ -4,7 +4,8 @@
 //! rates once for USD, EUR, GBP, and JPY, and keeps the answer for several
 //! minutes. The shop never dials an exchange. If Coinbase is down and there
 //! is no cached answer, the response still succeeds with no currencies, and
-//! the page shows the bitcoin amount alone.
+//! the page shows the bitcoin amount alone. A Coinbase that fails or refuses
+//! is not asked again at once (see [`crate::backoff`]).
 //!
 //! The request goes through the configured proxy (see [`crate::egress`]).
 //! With `--no-rates`, or with no proxy, it is never made: a direct connection
@@ -16,6 +17,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
+use crate::backoff::{asked_wait, for_prices, Backoff};
 use crate::egress::Egress;
 
 const SOURCE: &str = "https://api.coinbase.com/v2/exchange-rates?currency=BTC";
@@ -29,6 +31,7 @@ struct Cached {
 
 pub(crate) struct Rates {
     cache: Mutex<Option<Cached>>,
+    retry: Mutex<Backoff>,
     egress: Egress,
     source: String,
     /// Tests and `--fixed-rates` pin the rates instead of asking Coinbase.
@@ -39,6 +42,7 @@ impl Rates {
     pub(crate) fn new(egress: Egress) -> Self {
         Self {
             cache: Mutex::new(None),
+            retry: Mutex::new(for_prices()),
             egress,
             source: SOURCE.to_string(),
             fixed: Mutex::new(None),
@@ -47,17 +51,26 @@ impl Rates {
 
     /// BTC priced in `currency`, if the node has a rate for it.
     pub(crate) fn btc_price(&self, currency: &str) -> Option<f64> {
-        self.value()["currencies"][currency].as_f64().filter(|price| price.is_finite() && *price > 0.0)
+        self.value()["currencies"][currency]
+            .as_f64()
+            .filter(|price| price.is_finite() && *price > 0.0)
     }
 
     /// `true` while the last Coinbase answer is younger than `limit`. When
     /// Coinbase fails, `value` goes on serving the old answer at any age.
     pub(crate) fn answered_within(&self, limit: Duration) -> bool {
-        if self.fixed.lock().unwrap_or_else(|err| err.into_inner()).is_some() {
+        if self
+            .fixed
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .is_some()
+        {
             return true;
         }
         let guard = self.cache.lock().unwrap_or_else(|err| err.into_inner());
-        guard.as_ref().is_some_and(|cached| cached.at.elapsed() < limit)
+        guard
+            .as_ref()
+            .is_some_and(|cached| cached.at.elapsed() < limit)
     }
 
     /// Tests keep a BTC/USD answer of this age, as if Coinbase had failed since.
@@ -70,7 +83,12 @@ impl Rates {
     }
 
     pub(crate) fn value(&self) -> Value {
-        if let Some(fixed) = self.fixed.lock().unwrap_or_else(|err| err.into_inner()).as_ref() {
+        if let Some(fixed) = self
+            .fixed
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .as_ref()
+        {
             let mut value = rates_json(fixed);
             value["source"] = json!("fixed");
             return value;
@@ -84,15 +102,16 @@ impl Rates {
                 return rates_json(&cached.currencies);
             }
         }
-        match fetch_coinbase(&self.egress, &self.source) {
-            Ok(currencies) => {
+        let mut retry = self.retry.lock().unwrap_or_else(|err| err.into_inner());
+        match retry.ask(|| fetch_coinbase(&self.egress, &self.source)) {
+            Some(currencies) => {
                 *guard = Some(Cached {
                     at: Instant::now(),
                     currencies: currencies.clone(),
                 });
                 rates_json(&currencies)
             }
-            Err(_) => match guard.as_ref() {
+            None => match guard.as_ref() {
                 Some(cached) => rates_json(&cached.currencies),
                 None => json!({ "base": "BTC", "currencies": {} }),
             },
@@ -110,20 +129,24 @@ fn rates_json(currencies: &BTreeMap<String, f64>) -> Value {
     json!({ "base": "BTC", "currencies": map })
 }
 
-fn fetch_coinbase(egress: &Egress, source: &str) -> Result<BTreeMap<String, f64>, ()> {
+/// The error is the wait Coinbase asked for, if it named or earned one.
+fn fetch_coinbase(
+    egress: &Egress,
+    source: &str,
+) -> Result<BTreeMap<String, f64>, Option<Duration>> {
     if egress.proxy.is_none() {
-        return Err(());
+        return Err(None);
     }
     let agent = egress
         .ureq_agent(Duration::from_secs(3), Duration::from_secs(4))
-        .map_err(|_| ())?;
+        .map_err(|_| None)?;
     let body = agent
         .get(source)
         .call()
-        .map_err(|_| ())?
+        .map_err(|err| asked_wait(&err))?
         .into_string()
-        .map_err(|_| ())?;
-    parse_coinbase(&body)
+        .map_err(|_| None)?;
+    parse_coinbase(&body).map_err(|_| None)
 }
 
 pub(crate) fn parse_coinbase(body: &str) -> Result<BTreeMap<String, f64>, ()> {
@@ -178,32 +201,102 @@ mod tests {
     #[test]
     fn rates_go_through_the_proxy_with_the_name_unresolved() {
         let (proxy, seen) = crate::egress::fake_socks::start();
-        let rates = Rates::new(Egress { proxy: Some(proxy), live_rates: true });
+        let rates = Rates::new(Egress {
+            proxy: Some(proxy),
+            live_rates: true,
+        });
         assert_eq!(rates.value()["currencies"], json!({}));
-        let (kind, host) = seen.recv_timeout(Duration::from_secs(5)).expect("no request reached the proxy");
+        let (kind, host) = seen
+            .recv_timeout(Duration::from_secs(5))
+            .expect("no request reached the proxy");
         assert_eq!((kind, host.as_str()), (3, "api.coinbase.com"));
+    }
+
+    /// A node asked for prices `calls` times in a row, behind a proxy whose
+    /// rate server answers `answer`: how often it was asked, and the node.
+    fn asked_in_a_burst(answer: &'static str, calls: usize) -> (usize, Rates) {
+        let (proxy, asked) = crate::egress::fake_socks::start_http(answer);
+        let mut rates = Rates::new(Egress {
+            proxy: Some(proxy),
+            live_rates: true,
+        });
+        rates.source = "http://rates.test/".into();
+        for _ in 0..calls {
+            assert_eq!(rates.value()["currencies"], json!({}));
+        }
+        (asked.load(std::sync::atomic::Ordering::SeqCst), rates)
+    }
+
+    /// `true` when the rate server is left alone for `minutes` and asked again a minute later.
+    fn left_alone_for(rates: &Rates, minutes: u64) -> bool {
+        let retry = rates.retry.lock().unwrap();
+        let later = |minutes| Instant::now() + Duration::from_secs(minutes * 60);
+        !retry.ready(later(minutes - 1)) && retry.ready(later(minutes))
+    }
+
+    #[test]
+    fn a_rate_server_that_refuses_is_asked_once_and_left_alone() {
+        let (asked, rates) = asked_in_a_burst(
+            "HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            14,
+        );
+        assert_eq!(asked, 1, "14 requests for a price while Coinbase refuses");
+        assert!(left_alone_for(&rates, 15));
+    }
+
+    #[test]
+    fn a_rate_server_that_says_when_to_come_back_is_obeyed() {
+        let (asked, rates) =
+            asked_in_a_burst("HTTP/1.1 429 Too Many Requests\r\nRetry-After: 1800\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", 14);
+        assert_eq!(
+            asked, 1,
+            "14 requests for a price while Coinbase says to slow down"
+        );
+        assert!(left_alone_for(&rates, 30));
+    }
+
+    #[test]
+    fn a_rate_server_that_fails_is_tried_again_soon_but_not_at_once() {
+        let (asked, rates) = asked_in_a_burst(
+            "HTTP/1.1 500 No\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            14,
+        );
+        assert_eq!(asked, 1, "14 requests for a price while Coinbase fails");
+        assert!(left_alone_for(&rates, 1));
     }
 
     #[test]
     fn rates_are_not_fetched_in_the_clear() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
-        let mut rates = Rates::new(Egress { proxy: None, live_rates: true });
+        let mut rates = Rates::new(Egress {
+            proxy: None,
+            live_rates: true,
+        });
         rates.source = format!("http://{}/", listener.local_addr().unwrap());
         let started = Instant::now();
         assert!(rates.value()["currencies"].as_object().unwrap().is_empty());
         assert!(started.elapsed() < Duration::from_millis(500));
-        assert!(listener.accept().is_err(), "Coinbase was dialed without a proxy");
+        assert!(
+            listener.accept().is_err(),
+            "Coinbase was dialed without a proxy"
+        );
     }
 
     #[test]
     fn no_rates_means_no_request() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
-        let mut rates = Rates::new(Egress { proxy: None, live_rates: false });
+        let mut rates = Rates::new(Egress {
+            proxy: None,
+            live_rates: false,
+        });
         rates.source = format!("http://{}/", listener.local_addr().unwrap());
         assert_eq!(rates.value()["live"], false);
-        assert!(listener.accept().is_err(), "the node dialed the rates server");
+        assert!(
+            listener.accept().is_err(),
+            "the node dialed the rates server"
+        );
     }
 
     #[test]
