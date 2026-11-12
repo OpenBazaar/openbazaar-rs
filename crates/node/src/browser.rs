@@ -21,6 +21,8 @@ use crate::remote::REMOTE_VIA_HEADER;
 use crate::Node;
 
 const PAIR_HEADER: &str = "X-Ob-Pair";
+/// The cookie's name ends in the listener's port: a browser keeps cookies by
+/// host name, not by port, so two shops on `127.0.0.1` would share one name.
 const COOKIE: &str = "ob_local";
 const TICKET_TTL: Duration = Duration::from_secs(60);
 const SESSION_TTL: Duration = Duration::from_secs(8 * 60 * 60);
@@ -81,7 +83,7 @@ fn cookie_ok(node: &Node, head: &str, port: u16) -> bool {
     if header(head, REMOTE_VIA_HEADER).is_some() {
         return false;
     }
-    let Some(value) = cookie_value(head) else {
+    let Some(value) = cookie_value(head, port) else {
         return false;
     };
     if !origin_ok(head, port) {
@@ -184,7 +186,8 @@ fn redeem(node: &Node, client: &Client, head: &str, ticket: &str, origin: Option
         return json_error("404 Not Found", "That link has expired.", origin);
     };
     let extra = format!(
-        "Set-Cookie: {COOKIE}={id}; HttpOnly; SameSite=Strict; Path=/; Max-Age={}\r\nLocation: /\r\n",
+        "Set-Cookie: {}={id}; HttpOnly; SameSite=Strict; Path=/; Max-Age={}\r\nLocation: /\r\n",
+        cookie_name(client.port),
         SESSION_TTL.as_secs()
     );
     http::http_response_headers(
@@ -196,11 +199,16 @@ fn redeem(node: &Node, client: &Client, head: &str, ticket: &str, origin: Option
     )
 }
 
-fn cookie_value(head: &str) -> Option<&str> {
+fn cookie_name(port: u16) -> String {
+    format!("{COOKIE}_{port}")
+}
+
+fn cookie_value(head: &str, port: u16) -> Option<&str> {
     let header = header(head, "Cookie")?;
+    let own = cookie_name(port);
     for part in header.split(';') {
         let (name, value) = part.trim().split_once('=')?;
-        if name.trim() == COOKIE && is_id(value.trim()) {
+        if name.trim() == own && is_id(value.trim()) {
             return Some(value.trim());
         }
     }
@@ -259,15 +267,86 @@ mod tests {
     }
 
     fn call(node: &Node, raw: &str, loopback: bool) -> String {
-        let response = respond(
-            node,
-            raw.as_bytes(),
-            Client {
-                loopback,
-                port: 8787,
-            },
-        );
+        call_on(node, 8787, raw, loopback)
+    }
+
+    fn call_on(node: &Node, port: u16, raw: &str, loopback: bool) -> String {
+        let response = respond(node, raw.as_bytes(), Client { loopback, port });
         String::from_utf8(response).unwrap()
+    }
+
+    /// Signs a browser in to the node on `port` and keeps the cookie the way
+    /// a browser does for `127.0.0.1`: by name. The port is not part of it.
+    fn sign_in(node: &Node, port: u16, jar: &mut HashMap<String, String>) {
+        let token = node.pairing_token();
+        let minted = call_on(
+            node,
+            port,
+            &format!("POST /browser-session HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nX-Ob-Pair: {token}\r\nContent-Length: 0\r\n\r\n"),
+            true,
+        );
+        let url = minted.split("\r\n\r\n").nth(1).unwrap().trim();
+        let path = url
+            .strip_prefix(&format!("http://127.0.0.1:{port}"))
+            .expect("one-time path");
+        let opened = call_on(
+            node,
+            port,
+            &format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n"),
+            true,
+        );
+        let cookie = opened
+            .split("\r\n")
+            .find_map(|line| line.strip_prefix("Set-Cookie: "))
+            .unwrap();
+        let (name, id) = cookie.split(';').next().unwrap().split_once('=').unwrap();
+        jar.insert(name.to_string(), id.to_string());
+    }
+
+    fn signed_in(node: &Node, port: u16, cookies: &str) -> bool {
+        let probe = format!(
+            "GET /browser-session HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nCookie: {cookies}\r\n\r\n"
+        );
+        call_on(node, port, &probe, true).starts_with("HTTP/1.1 204")
+    }
+
+    #[test]
+    fn two_local_shops_on_different_ports_do_not_sign_each_other_out() {
+        let (_first_dir, first) = node();
+        let (_second_dir, second) = node();
+        let mut jar = HashMap::new();
+        sign_in(&first, 8787, &mut jar);
+        sign_in(&second, 8788, &mut jar);
+        let mut names: Vec<&String> = jar.keys().collect();
+        names.sort();
+        assert_eq!(
+            names,
+            ["ob_local_8787", "ob_local_8788"],
+            "the second shop's cookie replaced the first"
+        );
+        let both = format!(
+            "ob_local_8787={}; ob_local_8788={}",
+            jar["ob_local_8787"], jar["ob_local_8788"]
+        );
+        assert!(signed_in(&first, 8787, &both), "the first shop stays signed in");
+        assert!(signed_in(&second, 8788, &both));
+
+        let first_only = format!("ob_local_8787={}", jar["ob_local_8787"]);
+        assert!(signed_in(&first, 8787, &first_only));
+        assert!(
+            !signed_in(&second, 8788, &first_only),
+            "the other shop's cookie is not a session here"
+        );
+        let renamed = format!("ob_local_8788={}", jar["ob_local_8787"]);
+        assert!(
+            !signed_in(&second, 8788, &renamed),
+            "a session belongs to the node that made it"
+        );
+        let bare = format!("ob_local={}", jar["ob_local_8787"]);
+        assert!(
+            !signed_in(&first, 8787, &bare),
+            "the name without a port is no longer read"
+        );
     }
 
     fn ticket_from(response: &str, token: &str) -> String {
@@ -322,7 +401,7 @@ mod tests {
         assert!(!opened.contains(&token), "{opened}");
         let cookie = opened
             .split("\r\n")
-            .find_map(|line| line.strip_prefix("Set-Cookie: ob_local="))
+            .find_map(|line| line.strip_prefix("Set-Cookie: ob_local_8787="))
             .unwrap();
         let id = cookie.split(';').next().unwrap();
         assert_eq!(id.len(), 64);
@@ -341,21 +420,21 @@ mod tests {
         assert!(again.contains("404"), "the path works once");
 
         let orders = format!(
-            "GET /orders HTTP/1.1\r\nHost: 127.0.0.1:8787\r\nOrigin: http://127.0.0.1:8787\r\nCookie: ob_local={id}\r\n\r\n"
+            "GET /orders HTTP/1.1\r\nHost: 127.0.0.1:8787\r\nOrigin: http://127.0.0.1:8787\r\nCookie: ob_local_8787={id}\r\n\r\n"
         );
         let ok = call(&node, &orders, true);
         assert!(ok.contains("200") && ok.contains("orders"), "{ok}");
         assert!(!ok.contains(&token));
 
         let foreign = format!(
-            "GET /orders HTTP/1.1\r\nHost: 127.0.0.1:8787\r\nOrigin: http://evil.example\r\nCookie: ob_local={id}\r\n\r\n"
+            "GET /orders HTTP/1.1\r\nHost: 127.0.0.1:8787\r\nOrigin: http://evil.example\r\nCookie: ob_local_8787={id}\r\n\r\n"
         );
         assert!(
             call(&node, &foreign, true).contains("403"),
             "another page cannot use the cookie"
         );
         let other_port = format!(
-            "GET /orders HTTP/1.1\r\nHost: 127.0.0.1:8787\r\nOrigin: http://127.0.0.1:4173\r\nCookie: ob_local={id}\r\n\r\n"
+            "GET /orders HTTP/1.1\r\nHost: 127.0.0.1:8787\r\nOrigin: http://127.0.0.1:4173\r\nCookie: ob_local_8787={id}\r\n\r\n"
         );
         assert!(
             call(&node, &other_port, true).contains("403"),
@@ -366,7 +445,7 @@ mod tests {
             "a forwarded connection is not this machine"
         );
         let via = format!(
-            "GET /orders HTTP/1.1\r\nHost: 127.0.0.1:8787\r\nOrigin: http://127.0.0.1:8787\r\nCookie: ob_local={id}\r\n{REMOTE_VIA_HEADER}: tor:1\r\n\r\n"
+            "GET /orders HTTP/1.1\r\nHost: 127.0.0.1:8787\r\nOrigin: http://127.0.0.1:8787\r\nCookie: ob_local_8787={id}\r\n{REMOTE_VIA_HEADER}: tor:1\r\n\r\n"
         );
         assert!(
             call(&node, &via, true).contains("403"),
@@ -374,7 +453,7 @@ mod tests {
         );
 
         let probe = format!(
-            "GET /browser-session HTTP/1.1\r\nHost: 127.0.0.1:8787\r\nOrigin: http://127.0.0.1:8787\r\nCookie: ob_local={id}\r\n\r\n"
+            "GET /browser-session HTTP/1.1\r\nHost: 127.0.0.1:8787\r\nOrigin: http://127.0.0.1:8787\r\nCookie: ob_local_8787={id}\r\n\r\n"
         );
         assert!(
             call(&node, &probe, true).starts_with("HTTP/1.1 204"),
