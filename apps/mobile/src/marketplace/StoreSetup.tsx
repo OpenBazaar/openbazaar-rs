@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from "react";
-import { displayNameError, setVacation, updateProfile, type ProfileChanges, type SellerProfile } from "../seller";
+import { displayNameError, setVacation, storeImageChange, updateProfile, type ProfileChanges, type SellerProfile, type StoreImageField } from "../seller";
 import { PageHeading } from "./PageHeading";
 import { RailMark } from "./RailMark";
 import { ImageUpload, MediaImage, useLockedAction } from "./SellerKit";
@@ -30,7 +30,7 @@ function TextField({ label, value, onChange, max, wide = false, multiline = fals
 }
 
 /** The storefront editor: what buyers see, signed by the node when saved. */
-export function StoreSetup({ profile, onSaved, onViewStore }: { profile: SellerProfile; onSaved: (profile: SellerProfile, message: string) => void; onViewStore: () => void }) {
+export function StoreSetup({ profile, onSaved, onViewStore }: { profile: SellerProfile; onSaved: (profile: SellerProfile, message: string, viewStore?: boolean) => void; onViewStore: () => void }) {
   const [fields, setFields] = useState(() => fieldsOf(profile));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -38,6 +38,14 @@ export function StoreSetup({ profile, onSaved, onViewStore }: { profile: SellerP
   const set = <K extends keyof Fields>(key: K) => (value: Fields[K]) => setFields(f => ({ ...f, [key]: value }));
   const first = !profile.setUp;
   const nameError = displayNameError(fields.name);
+  async function keepImage(field: StoreImageField, hash: string | null) {
+    set(field)(hash);
+    if (!profile.setUp) return;
+    await run(async () => {
+      const next = await updateProfile(storeImageChange(field, hash));
+      onSaved(next, "Store saved and signed", false);
+    });
+  }
   async function pause(away: boolean) {
     if (busy) return;
     setBusy(true);
@@ -47,6 +55,20 @@ export function StoreSetup({ profile, onSaved, onViewStore }: { profile: SellerP
       onSaved(next, next.away ? "Your store is paused" : "Your store is taking orders again");
     });
     setBusy(false);
+  }
+  async function view() {
+    if (profile.setUp && (fields.avatar !== profile.avatar || fields.banner !== profile.banner)) {
+      setBusy(true);
+      setError("");
+      await run(async () => {
+        const next = await updateProfile({ avatar: fields.avatar, banner: fields.banner });
+        setFields(fieldsOf(next));
+        onSaved(next, "Store saved and signed");
+      });
+      setBusy(false);
+      return;
+    }
+    onViewStore();
   }
   async function save(e: FormEvent) {
     e.preventDefault();
@@ -63,20 +85,20 @@ export function StoreSetup({ profile, onSaved, onViewStore }: { profile: SellerP
     setBusy(false);
   }
   return <section className="ob-store-setup">
-    <PageHeading title={first ? "Set up your store" : "Store settings"} description="Manage store identity, customer policies, shipping coverage, and payment methods." action={profile.setUp ? <button className="ob-secondary" onClick={onViewStore}>View your store</button> : undefined}/>
+    <PageHeading title={first ? "Set up your store" : "Store settings"} description="Manage store identity, customer policies, shipping coverage, and payment methods." action={profile.setUp ? <button className="ob-secondary" onClick={() => void view()}>View your store</button> : undefined}/>
     <form className="ob-store-form" onSubmit={e => void save(e)}>
       <div className="ob-store-images">
         <div className="ob-store-banner-edit">
           {fields.banner ? <MediaImage hash={fields.banner} alt="Store banner" className="ob-store-banner-img"/> : <span className="ob-store-banner-empty">No banner</span>}
           <div className="ob-store-image-actions">
-            <ImageUpload label={fields.banner ? "Change banner" : "Add banner"} onUploaded={set("banner")}/>
-            {fields.banner && <button type="button" className="ob-text-link" onClick={() => set("banner")(null)}>Remove</button>}
+            <ImageUpload label={fields.banner ? "Change banner" : "Add banner"} onUploaded={hash => keepImage("banner", hash)}/>
+            {fields.banner && <button type="button" className="ob-text-link" onClick={() => void keepImage("banner", null)}>Remove</button>}
           </div>
         </div>
         <div className="ob-store-avatar-edit">
           <span className="ob-store-avatar">{fields.avatar ? <MediaImage hash={fields.avatar} alt="Store avatar"/> : (fields.name.charAt(0) || "?")}</span>
-          <ImageUpload label={fields.avatar ? "Change avatar" : "Add avatar"} onUploaded={set("avatar")}/>
-          {fields.avatar && <button type="button" className="ob-text-link" onClick={() => set("avatar")(null)}>Remove</button>}
+          <ImageUpload label={fields.avatar ? "Change avatar" : "Add avatar"} onUploaded={hash => keepImage("avatar", hash)}/>
+          {fields.avatar && <button type="button" className="ob-text-link" onClick={() => void keepImage("avatar", null)}>Remove</button>}
         </div>
       </div>
       <fieldset className="ob-store-section">

@@ -272,7 +272,7 @@ export default function Marketplace() {
     if (section === "listings") return <StoreListings key={newListing} profile={own} {...money} startNew={newListing > 0} onChanged={storeChanged} onOpenSettings={() => navigate("store")}/>;
     if (section === "coupons") return <Coupons onChanged={storeChanged}/>;
     if (section === "storefront" && own.setUp) return <OwnStore profile={own} listings={catalog?.listings ?? []} {...money} onOpen={open} onEdit={() => navigate("store")} onAddListing={() => { navigate("listings"); setNewListing(n => n + 1); }}/>;
-    return <StoreSetup key={own.storeKey} profile={own} onSaved={(next, message) => { profile.update(next); storeChanged(message); navigate("storefront"); }} onViewStore={() => navigate("storefront")}/>;
+    return <StoreSetup key={own.storeKey} profile={own} onSaved={(next, message, viewStore = true) => { profile.update(next); storeChanged(message); if (viewStore) navigate("storefront"); }} onViewStore={() => navigate("storefront")}/>;
   }
   const needsRole = !!profile.data && profile.data.role === null;
   return <NodePaymentsProvider activeWallet={section === "wallet" || section === "orders" || page.name === "receipt"} onWallet={() => navigate("wallet")}>{needsRole ? <Onboarding onChosen={next => { profile.update(next); if (next.role === "seller") navigate("store"); }}/> : <div className={`ob-app ${resizing ? "is-resizing" : ""} ${merchantWorkspace ? "is-merchant" : ""}`} style={{ "--ob-sidebar": `${!mobile && collapsed ? 72 : sidebarWidth}px` } as CSSProperties}>
