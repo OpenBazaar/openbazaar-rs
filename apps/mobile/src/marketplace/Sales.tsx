@@ -82,16 +82,16 @@ function SaleDetail({ sale, rates, currency, onChange }: { sale: Sale; rates: Ra
       <div><dt>Items</dt><dd>{sale.lines.map(line => <span key={line.listingHash}>{line.quantity} × {line.title}</span>)}</dd></div>
       <div><dt>Items total</dt><dd><Money sats={sale.itemsSats} rates={rates} currency={currency}/></dd></div>
       <div><dt>Shipping</dt><dd><Money sats={sale.shippingSats} rates={rates} currency={currency}/></dd></div>
-      <div><dt>Received</dt><dd>{sale.receivedSats.toLocaleString("en-US")} of {sale.totalSats.toLocaleString("en-US")} sats{sale.confirmations ? ` · ${sale.confirmations} confirmation${sale.confirmations === 1 ? "" : "s"}` : ""}</dd></div>
+      <div><dt>Received</dt><dd>{sale.zcash ? `${sale.zcash.receivedZec} of ${sale.zcash.amountZec} ZEC` : `${sale.receivedSats.toLocaleString("en-US")} of ${sale.totalSats.toLocaleString("en-US")} sats`}{sale.confirmations ? ` · ${sale.confirmations} confirmation${sale.confirmations === 1 ? "" : "s"}` : ""}</dd></div>
       {sale.shipTo && <div><dt>Ship to</dt><dd className="ob-sale-address">{sale.shipTo}</dd></div>}
       {sale.deliveryNote && <div><dt>Buyer's note</dt><dd>{sale.deliveryNote}</dd></div>}
-      <div><dt>Payment address</dt><dd><code>{sale.address}</code></dd></div>
+      <div><dt>{sale.zcash ? "Zcash address" : "Payment address"}</dt><dd><code>{sale.zcash?.address ?? sale.address}</code></dd></div>
       {sale.sentTxid && !sale.txids.includes(sale.sentTxid) && <div><dt>Buyer sent</dt><dd><TxId txid={sale.sentTxid}/></dd></div>}
       {sale.txids.map(txid => <div key={txid}><dt>Transaction</dt><dd><TxId txid={txid}/></dd></div>)}
       {(sale.sentTxid || sale.txids.length > 0) && <div><dt>Viewing it</dt><dd>{EXTERNAL_TX_NOTE}</dd></div>}
       {sale.fulfillment && <div><dt>Sent</dt><dd>{[sale.fulfillment.carrier, sale.fulfillment.tracking].filter(Boolean).join(" · ") || "Delivered"}{sale.fulfillment.note && <p>{sale.fulfillment.note}</p>}{sale.fulfillment.content && <p className="ob-sale-content">{sale.fulfillment.content}</p>}</dd></div>}
     </dl>
-    {sale.status === "Paid" ? <FulfillForm sale={sale} onDone={onChange}/> : sale.status === "Awaiting payment" || sale.status === "Payment seen" ? <p className="ob-page-intro">{paymentSent(sale) && "Payment sent, waiting for confirmation. "}Ship once the payment confirms. Your node watches the address and tells the buyer.</p> : sale.status === "Shipped" ? <p className="ob-page-intro">Waiting for the buyer to confirm it arrived.</p> : <p className="ob-page-intro">The buyer confirmed this order. It is complete.</p>}
+    {sale.status === "Paid" ? <FulfillForm sale={sale} onDone={onChange}/> : sale.zcash?.expired ? <p className="ob-form-error" role="alert">The Zcash quote for this sale ran out before it was paid in full, so the sale stays unpaid. Do not ship it. What arrives at the address is still counted above.</p> : sale.status === "Awaiting payment" || sale.status === "Payment seen" ? <p className="ob-page-intro">{paymentSent(sale) && "Payment sent, waiting for confirmation. "}Ship once the payment confirms. Your node watches the address and tells the buyer.</p> : sale.status === "Shipped" ? <p className="ob-page-intro">Waiting for the buyer to confirm it arrived.</p> : <p className="ob-page-intro">The buyer confirmed this order. It is complete.</p>}
   </div>;
 }
 

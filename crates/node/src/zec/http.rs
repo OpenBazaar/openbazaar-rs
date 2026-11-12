@@ -5,15 +5,16 @@
 //! | `GET /zec/stores` | any | | which stores accept Zcash |
 //! | `PUT /zec/stores` | any; unlocked for the own store | `{seller, accept}` | the same, after the store's record is signed again |
 //!
-//! Turning the own store on answers 403 on mainnet, 409 without
-//! `--zec-indexer`, and 423 while locked (see `own.rs`). Order amounts
+//! Turning the own store on answers 403 on mainnet, 409 while it could not
+//! take a Zcash order (no `--zec-indexer`, the chain not read yet, no ZEC
+//! price), and 423 while locked (see `own.rs`). Order amounts
 //! are zatoshi as decimal strings (`"amountZatoshi"`), with the same amount
 //! in ZEC alongside (`"amountZec"`). Paying from the node comes in phase 3.
 
 use serde_json::{json, Map, Value};
 
 use crate::http::{json_body, json_error, local_guard, Client};
-use crate::zec::own::{NEEDS_INDEXER, TESTNET4_ONLY};
+use crate::zec::own::NotReady;
 use crate::zec::AcceptError;
 use crate::Node;
 
@@ -48,8 +49,8 @@ pub(crate) fn response(node: &Node, client: &Client, head: &str, method: &str, p
                 match node.set_accepts_zec(seller, accept) {
                     Ok(()) => json_body("200 OK", &node.zec_stores_value(), origin),
                     Err(AcceptError::Unknown(message)) => json_error("404 Not Found", &message, origin),
-                    Err(AcceptError::Mainnet) => json_error("403 Forbidden", TESTNET4_ONLY, origin),
-                    Err(AcceptError::Off) => json_error("409 Conflict", NEEDS_INDEXER, origin),
+                    Err(AcceptError::NotReady(NotReady::Network)) => json_error("403 Forbidden", NotReady::Network.vendor(), origin),
+                    Err(AcceptError::NotReady(why)) => json_error("409 Conflict", why.vendor(), origin),
                     Err(AcceptError::Locked) => crate::lock_http::locked_response(node.lock.state().as_str(), origin),
                     Err(AcceptError::Failed(detail)) => {
                         eprintln!("ob-node: {detail}");

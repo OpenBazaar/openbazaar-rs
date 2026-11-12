@@ -20,16 +20,19 @@
 //! (`PUT /zec/stores`), which signs the store's v3 record again with bit 2
 //! set; checkout and the catalog read the signed flag only. `zec-stores.obv`
 //! keeps the choice for the next boot. The node's own store opts in the same
-//! way on testnet4 (see `own.rs`), but cannot be paid in Zcash yet: a sale
-//! from another node carries bitcoin terms only (phase 2). Ironwood is the
-//! pool that pays; escrow is Bitcoin-only.
+//! way on testnet4 (see `own.rs`) and is paid by buyers on other nodes
+//! through a sale (see `sale.rs`). Ironwood is the pool that pays; escrow is
+//! Bitcoin-only.
 
 mod checkout;
 mod http;
 mod own;
 pub(crate) mod rate;
+mod sale;
 #[cfg(test)]
 mod own_tests;
+#[cfg(test)]
+mod sale_tests;
 #[cfg(test)]
 mod tests;
 
@@ -54,6 +57,7 @@ use crate::{Egress, Error, Node};
 pub(crate) use checkout::{add_zec_flags, rail_of};
 pub(crate) use http::response;
 pub(crate) use own::own_store_allowed;
+pub(crate) use sale::{add_terms, follow_seller, payment_from_terms};
 
 const WATCH_FILE: &str = "zec-watch.obv";
 const STATE_FILE: &str = "zec-state.obv";
@@ -163,6 +167,11 @@ impl ZecNode {
         self.stores.get(seller).map(guard)
     }
 
+    /// The own store's wallet.
+    pub(crate) fn own(&self) -> MutexGuard<'_, Slot> {
+        guard(&self.own)
+    }
+
     fn slots(&self) -> impl Iterator<Item = &Mutex<Slot>> {
         std::iter::once(&self.own).chain(self.stores.values())
     }
@@ -234,9 +243,8 @@ fn with_zec(store: &Store, accept: bool, secret: &SecretKey) -> Result<Store, op
 /// Why a store's Zcash choice could not change.
 pub(crate) enum AcceptError {
     Unknown(String),
-    /// The own store on a network where it may not take Zcash yet.
-    Mainnet,
-    Off,
+    /// The own store could not take a Zcash order now.
+    NotReady(own::NotReady),
     Locked,
     Failed(String),
 }
@@ -304,7 +312,7 @@ impl Node {
         }
     }
 
-    /// One Zcash round: sync every wallet, then update Zcash orders. Returns how many orders changed.
+    /// One Zcash round: sync every wallet, then update Zcash orders and sales. Returns how many changed.
     pub fn zec_sync_once(&self) -> Result<usize, String> {
         let chain = self.zec.chain().ok_or("Zcash is off")?.clone();
         self.zec_fill_keys();
@@ -314,7 +322,7 @@ impl Node {
                 failed = Some(err);
             }
         }
-        let changed = self.zec_update_orders();
+        let changed = self.zec_update_orders() + self.zec_update_sales();
         match failed {
             Some(err) if changed == 0 => Err(err),
             _ => Ok(changed),

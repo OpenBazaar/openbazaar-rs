@@ -222,7 +222,7 @@ impl Node {
         let mut remotes = Vec::with_capacity(packages.len());
         let mut plans = Vec::with_capacity(packages.len());
         for (i, package) in packages.iter().enumerate() {
-            let remote = self.remote_package(package.lines[0].0, package.settlement == Settlement::Direct, package.xmr || package.zec)?;
+            let remote = self.remote_package(package.lines[0].0, package.settlement == Settlement::Direct, package.xmr)?;
             let plan = crate::checkout_terms::plan(&body["packages"][i], &package.lines)?;
             if plan.is_some() && remote.is_none() {
                 return Err(OrderError::Invalid("Options, shipping choices and coupons are for stores on other nodes."));
@@ -252,6 +252,7 @@ impl Node {
                 &note,
                 reply_url.as_deref(),
                 plan.as_ref(),
+                remote.is_some() && package.zec,
             )?;
             sealed.push(letter);
         }
@@ -302,6 +303,9 @@ impl Node {
                 Some(url) => Some(self.remote_record(url, &checkout_id, listing, &package.lines, total)?).map(|mut record| {
                     if let Some(quote) = quote.take() {
                         record["quote"] = quote;
+                    }
+                    if package.zec {
+                        record["rail"] = json!("zec");
                     }
                     record
                 }),
@@ -380,7 +384,7 @@ impl Node {
         shipping: u64,
     ) -> Result<String, OrderError> {
         let ship_to = letter_ship(lines, ship_text, note);
-        let letter = self.seal_letter(catalog, checkout_id, lines, settlement, ship_to, shipping, note, None, None)?;
+        let letter = self.seal_letter(catalog, checkout_id, lines, settlement, ship_to, shipping, note, None, None, false)?;
         let id = self
             .mailbox
             .accept(&letter)
@@ -659,6 +663,7 @@ fn seal_letter(
     note: &str,
     reply_url: Option<&str>,
     plan: Option<&crate::checkout_terms::TermsPlan>,
+    zec: bool,
 ) -> Result<SealedLetter, OrderError> {
     let store = catalog
         .store_of(lines[0].0)
@@ -675,6 +680,10 @@ fn seal_letter(
     }
     if let Some(url) = reply_url {
         options.insert("replyUrl".to_string(), url.to_string());
+    }
+    // Asks a store on another node for Zcash terms. A node from before Zcash sales ignores it and answers in bitcoin.
+    if zec {
+        options.insert("rail".to_string(), "zec".to_string());
     }
     let (first, first_qty) = lines[0];
     let first_hash = first

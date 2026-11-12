@@ -31,6 +31,7 @@ import {
   canOfferBitcoinPay,
   confirmationTarget,
   directPayWarning,
+  sellerZcashNote,
   moneroDue,
   zcashDue,
   ORDER_STATUS,
@@ -479,6 +480,7 @@ export function NativeOrderPayment({
                 Send only {zcash.network} Zcash to this shielded address, from any Zcash wallet.
                 {zcash.expiresAt != null ? ` The quote expires ${new Date(zcash.expiresAt * 1000).toLocaleTimeString(undefined, { timeStyle: 'short' })}.` : ''}
               </Text>
+              {sellerZcashNote(order) ? <Text style={s.body}>{sellerZcashNote(order)}</Text> : null}
             </>
           ) : zcash ? null : (
             <Text style={s.body}>This Zcash payment could not be read.</Text>

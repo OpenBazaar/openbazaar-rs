@@ -92,13 +92,13 @@ test('Zcash settings say how to turn it on when the node has no indexer', async 
   await expect(page.getByRole('switch', { name: 'Marlow Goods' })).toHaveCount(0)
 })
 
-test('Zcash settings switch your own store on, and say who stops seeing it and that it cannot be paid yet', async ({ page }) => {
+test('Zcash settings switch your own store on, and say who stops seeing it, how it is paid, and why orders are declined', async ({ page }) => {
   const network = await (await page.request.get('/network')).json()
   await page.route('**/network', route => route.fulfill({ json: { ...network, zecBackend: { ...network.zecBackend, enabled: true, backend: 'mock' } } }))
   let on = false
   await page.route('**/zec/stores', route => {
     if (route.request().method() === 'PUT') on = route.request().postDataJSON().accept
-    return route.fulfill({ json: { network: 'testnet', enabled: true, stores: [{ seller: 'Brook and Pine', own: true, acceptsZec: on }] } })
+    return route.fulfill({ json: { network: 'testnet', enabled: true, stores: [{ seller: 'Brook and Pine', own: true, acceptsZec: on, problem: on ? 'This node has no ZEC price right now, so it cannot price a Zcash order. Try again in a few minutes.' : null }] } })
   })
   await page.goto('/')
   await page.getByRole('button', { name: 'Settings', exact: true }).click()
@@ -106,10 +106,12 @@ test('Zcash settings switch your own store on, and say who stops seeing it and t
   const own = page.getByRole('switch', { name: /^Brook and Pine/ })
   await expect(own).not.toBeChecked()
   await expect(page.getByText('Your store. People still on the first release, v0.1.0-alpha.1, will not see it while Zcash is on, until they update.', { exact: true })).toBeVisible()
-  await expect(page.getByText('Buyers on other nodes cannot pay your store in Zcash yet.')).toBeVisible()
+  await expect(page.getByText("A buyer on another node who chooses Zcash gets a shielded address and a ZEC amount from this node, at this node's rate, good for one hour.")).toBeVisible()
+  await expect(page.getByText(/Zcash orders are declined for now/)).toHaveCount(0)
   await own.click()
   await expect(own).toBeChecked()
   expect(on).toBe(true)
+  await expect(page.getByRole('alert').filter({ hasText: 'Zcash orders are declined for now. This node has no ZEC price right now' })).toBeVisible()
 })
 
 test('Settings has no Zcash page on a mainnet node', async ({ page }) => {

@@ -37,7 +37,7 @@ mod wallet;
 pub use backend::{BackendStatus, IndexerConfig, Server, ServerKind};
 pub use chain::ZecChain;
 pub use indexer::IndexerChain;
-pub use keys::ViewKey;
+pub use keys::{is_order_address, ViewKey};
 pub use network::ZecNetwork;
 pub use uri::zcash_uri;
 pub use wallet::{Balance, Pool, Received, SyncStep, Unspent, ZecWallet, CONFIRMATIONS};

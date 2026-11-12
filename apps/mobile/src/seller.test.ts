@@ -134,6 +134,9 @@ test("a sale parses with its fulfillment, and paid sales are the ones to ship", 
   assert.equal(shipped.fulfillment?.carrier, "USPS");
   assert.equal(salesToShip([sale, shipped]), 1);
   assert.throws(() => parseSale({ id: "../x" }));
+  assert.equal(sale.zcash, null);
+  const zec = parseSale({ id: "ef56", status: "Awaiting payment", totalSats: 28000, address: null, payment: { rail: "zec", zcashAddress: "utest1example", amountZatoshi: "2277608", receivedZatoshi: "1000000", expired: true } });
+  assert.deepEqual([zec.address, zec.zcash], ["", { address: "utest1example", amountZec: "0.02277608", receivedZec: "0.01", expired: true }], "a Zcash sale has no bitcoin address and counts in ZEC");
 });
 
 test("the test network seed is the vendor onion and a clearnet sale url is not", () => {
