@@ -5,19 +5,18 @@ use std::sync::Arc;
 use openbazaar_zec::mock::MockChain as ZecChainMock;
 use serde_json::{json, Value};
 
-use super::own::{NEEDS_INDEXER, TESTNET4_ONLY};
+use super::own::{NotReady, NEEDS_INDEXER, TESTNET4_ONLY};
 use super::tests::open;
-use crate::harness::{open_node, request, ship_to, unreachable_escrow, MockChain, TempDir};
-use crate::multinode_seller_tests::Pair;
+use crate::harness::{open_node, request, unreachable_escrow, MockChain, TempDir};
 use crate::network::NetworkMode;
 use crate::seller_store_tests::open_store;
 use crate::Node;
 
-fn mock(network: NetworkMode) -> Arc<ZecChainMock> {
+pub(super) fn mock(network: NetworkMode) -> Arc<ZecChainMock> {
     Arc::new(ZecChainMock::new(network.zcash()))
 }
 
-fn switch(node: &Node, accept: bool) -> (String, Value) {
+pub(super) fn switch(node: &Node, accept: bool) -> (String, Value) {
     let own = node.own_record().expect("the own store is published").name;
     request(node, "PUT", "/zec/stores", &json!({"seller": own, "accept": accept}).to_string())
 }
@@ -36,9 +35,10 @@ fn the_own_store_opts_in_and_the_choice_is_signed_and_survives_a_restart() {
     let node = open(&dir.0, &btc, &zec);
     open_store(&node);
     assert!(!signs_zec(&node));
+    node.zec_sync_once().unwrap();
     let (status, stores) = switch(&node, true);
     assert!(status.contains("200"), "{status} {stores}");
-    assert_eq!(stores["stores"][0], json!({"seller": "Brook and Pine", "own": true, "acceptsZec": true}));
+    assert_eq!(stores["stores"][0], json!({"seller": "Brook and Pine", "own": true, "acceptsZec": true, "problem": null}));
     assert!(signs_zec(&node));
 
     drop(node);
@@ -54,6 +54,7 @@ fn a_locked_node_does_not_change_the_own_stores_choice() {
     let (dir, btc, zec) = (TempDir::new(), MockChain::new(), mock(NetworkMode::Testnet4));
     let node = open(&dir.0, &btc, &zec);
     open_store(&node);
+    node.zec_sync_once().unwrap();
     node.lock.lock();
     let (status, value) = switch(&node, true);
     assert!(status.contains("423") && value["code"] == "locked", "{status} {value}");
@@ -84,6 +85,29 @@ fn the_own_store_is_refused_on_mainnet_and_without_an_indexer() {
 }
 
 #[test]
+fn the_own_store_is_not_switched_on_before_it_could_take_an_order() {
+    let (dir, btc, zec) = (TempDir::new(), MockChain::new(), mock(NetworkMode::Testnet4));
+    let node = open(&dir.0, &btc, &zec);
+    open_store(&node);
+    let (status, value) = switch(&node, true);
+    assert!(status.contains("409") && value["error"] == NotReady::NotSynced.vendor(), "the chain is not read yet: {status} {value}");
+    node.zec_sync_once().unwrap();
+    node.zec.rate.set_for_tests(None);
+    let (status, value) = switch(&node, true);
+    assert!(status.contains("409") && value["error"] == NotReady::NoPrice.vendor(), "{status} {value}");
+    assert!(!signs_zec(&node));
+    node.zec.rate.set_for_tests(Some(1_000_000));
+    assert!(switch(&node, true).0.contains("200") && signs_zec(&node));
+
+    // Started again without --zec-indexer: the signed flag stays, and Zcash settings says why orders are declined.
+    drop(node);
+    let node = open_node(&dir.0, NetworkMode::Testnet4, &btc, 1, unreachable_escrow());
+    let (_, stores) = request(&node, "GET", "/zec/stores", "");
+    assert_eq!(stores["stores"][0], json!({"seller": "Brook and Pine", "own": true, "acceptsZec": true, "problem": NEEDS_INDEXER}));
+    assert_eq!(node.zec_sale_refusal(), Some(NotReady::Off.buyer()));
+}
+
+#[test]
 fn the_own_stores_wallet_is_the_node_phrases_and_sees_a_payment_while_locked() {
     let (dir, btc, zec) = (TempDir::new(), MockChain::new(), mock(NetworkMode::Testnet4));
     let node = open(&dir.0, &btc, &zec);
@@ -111,23 +135,4 @@ fn the_own_stores_wallet_is_the_node_phrases_and_sees_a_payment_while_locked() {
     let received = wallet.received(index);
     assert_eq!((received.total, received.txids.len()), (250_000, 1));
     assert!(wallet.issue_address().0 > index, "an address is not handed out twice");
-}
-
-#[test]
-fn a_buyer_on_another_node_sees_the_flag_and_is_refused_before_any_letter() {
-    let pair = Pair::new();
-    let zec = mock(NetworkMode::Testnet4);
-    pair.seller.node.set_zec_chain(zec.clone()).unwrap();
-    pair.buyer.node.set_zec_chain(zec).unwrap();
-    let (status, stores) = switch(&pair.seller.node, true);
-    assert!(status.contains("200"), "{status} {stores}");
-    pair.buyer.node.replicate_once();
-    let (_, catalog) = request(&pair.buyer.node, "GET", "/catalog", "");
-    let listing = catalog["listings"].as_array().unwrap().iter().find(|listing| listing["seller"] == "Brook and Pine").cloned().unwrap();
-    assert_eq!(listing["acceptsZec"], true, "the record the buyer follows sets the Zcash bit");
-
-    let package = json!({ "settlement": "direct", "rail": "zec", "lines": [{ "listingHash": listing["hash"], "quantity": 1 }] });
-    let (status, refused) = request(&pair.buyer.node, "POST", "/checkout", &json!({ "shipTo": ship_to(), "packages": [package] }).to_string());
-    assert!(status.contains("400") && refused["error"] == super::checkout::OTHER_NODE, "{status} {refused}");
-    assert_eq!(pair.buyer.node.orders().on_network().count(), 0, "no letter went to the seller");
 }

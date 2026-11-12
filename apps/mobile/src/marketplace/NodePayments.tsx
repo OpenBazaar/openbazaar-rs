@@ -35,6 +35,7 @@ import {
   canOfferBitcoinPay,
   confirmationTarget,
   directPayWarning,
+  sellerZcashNote,
   moneroDue,
   zcashDue,
   ORDER_STATUS,
@@ -593,6 +594,7 @@ export function OrderPayment({
                 Send only {zcash.network} Zcash to this shielded address, from any Zcash wallet. It has no transparent receiver, so the wallet sends shielded and the payment lands in Ironwood. The QR code requests the remaining amount.
                 {zcash.expiresAt != null ? ` The quote expires ${new Date(zcash.expiresAt * 1000).toLocaleTimeString(undefined, { timeStyle: 'short' })}.` : ''}
               </p>
+              {sellerZcashNote(order) && <p className='ob-page-intro'>{sellerZcashNote(order)}</p>}
             </div>
           ) : zcash ? (
             zcash.overpaidZec && <p className='ob-page-intro'>{zcash.overpaidZec} ZEC more than the price arrived.</p>

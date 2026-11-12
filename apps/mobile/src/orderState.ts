@@ -159,6 +159,7 @@ export type ZcashFields = {
   expiresAt: number | null
   expired: boolean
   seenInTime: boolean
+  satsPerZec?: number | null
 }
 
 export type ZcashDue = {
@@ -174,6 +175,13 @@ export type ZcashDue = {
   expiresAt: number | null
   /** The quote lapsed unpaid: by the node's word, or by this clock before the node's next look. */
   expired: boolean
+}
+
+/** For a Zcash order to a store on another node: whose rate fixed the amount, and who watches the address. */
+export function sellerZcashNote(order: { remote?: unknown; totalSats: number; payment?: { rail?: string; zcash?: ZcashFields | null } | null }): string | null {
+  const rate = order.payment?.rail === 'zec' ? order.payment.zcash?.satsPerZec : null
+  if (!order.remote || !rate) return null
+  return `The seller's node set the amount: ${order.totalSats.toLocaleString('en-US')} sats at its rate of ${rate.toLocaleString('en-US')} sats for 1 ZEC. It watches this address and tells your node when the payment arrives.`
 }
 
 /** What a Zcash order still asks for. Received counts Ironwood notes only, as the node does. */

@@ -3,6 +3,7 @@
 // signed records the node serves and are checked here like any other.
 import { NodeApiError, paired, pairedResponse, type BuyerOrder, type ContentRating, type ListingHeader, type ListingKind, parseBuyerOrder } from "./catalog.ts";
 import { verifiedListings } from "./records.ts";
+import { formatZec } from "./zec.ts";
 import type { Commerce } from "./commerce.ts";
 import { forKind } from "./commerceDraft.ts";
 import type { CouponBody } from "./couponDraft.ts";
@@ -100,6 +101,8 @@ export type Sale = {
   /** The transaction the buyer's node says it sent, before the chain shows it. */
   sentTxid: string | null;
   network: string;
+  /** A sale paid in Zcash: `address` is empty and the amounts are in ZEC. `expired`: the quote lapsed unpaid, so the sale stays unpaid whatever arrives. */
+  zcash: { address: string; amountZec: string; receivedZec: string; expired: boolean } | null;
   fulfillment: { carrier: string; tracking: string; note: string; content: string; at: number } | null;
 };
 
@@ -157,6 +160,8 @@ export function parseSale(value: unknown): Sale {
   const s = record(value, "The node sent a sale the page could not read.");
   if (typeof s.id !== "string" || !/^[0-9a-f]+$/.test(s.id)) throw new Error("The node sent a sale the page could not read.");
   const f = s.fulfillment && typeof s.fulfillment === "object" ? (s.fulfillment as Record<string, unknown>) : null;
+  const pay = s.payment && typeof s.payment === "object" ? (s.payment as Record<string, unknown>) : {};
+  const zec = (value: unknown) => formatZec(BigInt(typeof value === "string" && /^\d{1,20}$/.test(value) ? value : "0"));
   return {
     id: s.id,
     created: count(s.created),
@@ -183,6 +188,7 @@ export function parseSale(value: unknown): Sale {
     txids: Array.isArray(s.txids) ? s.txids.filter((t): t is string => typeof t === "string" && /^[0-9a-f]{64}$/i.test(t)) : [],
     sentTxid: typeof s.sentTxid === "string" && /^[0-9a-f]{64}$/i.test(s.sentTxid) ? s.sentTxid : null,
     network: text(s.network),
+    zcash: pay.rail === "zec" ? { address: text(pay.zcashAddress), amountZec: zec(pay.amountZatoshi), receivedZec: zec(pay.receivedZatoshi), expired: pay.expired === true } : null,
     fulfillment: f ? { carrier: text(f.carrier), tracking: text(f.tracking), note: text(f.note), content: text(f.content), at: count(f.at) } : null,
   };
 }

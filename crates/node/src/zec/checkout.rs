@@ -5,7 +5,8 @@
 //! is Orchard-protocol, so the payment lands in Ironwood. The price in sats
 //! becomes zatoshi at the current rate, rounded up. The order's `payment`
 //! names that address `zcashAddress` and has no `address` field, so the
-//! bitcoin watcher and pay worker never touch it.
+//! bitcoin watcher and pay worker never touch it. A store on another node
+//! prices and watches its own Zcash orders (see `sale.rs`).
 //!
 //! Status, from the seller wallet's view of that address, Ironwood notes
 //! only: Awaiting payment (nothing, or less than due: `receivedZatoshi`
@@ -14,10 +15,11 @@
 //! The node has no view of the mempool, so a payment is seen from its block.
 
 use openbazaar_zec::amount::{format_zec, zatoshi_for_sats};
-use openbazaar_zec::{zcash_uri, CONFIRMATIONS};
+use openbazaar_zec::{zcash_uri, Received, CONFIRMATIONS};
 use serde_json::{json, Value};
 
 use crate::buyer_orders::now_secs;
+use super::Slot;
 use crate::watch::{direct_progress, AWAITING_PAYMENT, PAID};
 use crate::{Node, OrderError};
 
@@ -25,8 +27,8 @@ pub(crate) const ESCROW_IS_BITCOIN_ONLY: &str = "Escrow is Bitcoin-only. Pay in 
 /// A quote fixes the ZEC amount at the price at checkout, so it lasts an hour, as a Lightning invoice does.
 const QUOTE_SECS: u64 = 60 * 60;
 pub(crate) const NOT_SYNCED: &str = "This node has not read the Zcash chain yet, so a Zcash payment could be missed. Try again in a few minutes, or pay in bitcoin.";
-/// For a store whose record takes Zcash but whose wallet is not on this node: a sale between nodes carries bitcoin terms only.
-pub(crate) const OTHER_NODE: &str = "This node cannot place a Zcash order with this store yet. Pay in bitcoin.";
+/// For a store on another node, on a network where no store may take Zcash yet.
+pub(crate) const OTHER_NODE: &str = "Zcash orders to stores on other nodes work on testnet4 only for now. Pay in bitcoin.";
 
 /// `true` for the Zcash rail. Refuses Zcash with escrow.
 pub(crate) fn rail_of(value: Option<&Value>, escrow: bool) -> Result<bool, OrderError> {
@@ -43,14 +45,36 @@ pub(crate) fn add_zec_flags(node: &Node, value: &mut Value) {
     if let Some(listings) = value["listings"].as_array_mut() {
         for listing in listings {
             let seller = listing["seller"].as_str().unwrap_or_default();
-            listing["acceptsZec"] = json!(enabled && node.accepts_zec(seller));
+            // A store with its wallet here needs this node's indexer. A store on another node watches its own payments.
+            let can = if node.zec.stores.contains_key(seller) { enabled } else { super::own_store_allowed(node.network) };
+            listing["acceptsZec"] = json!(can && node.accepts_zec(seller));
         }
     }
     value["zec"] = json!({ "enabled": enabled, "network": node.zec.zec_network().as_str(), "pool": "ironwood" });
 }
 
-fn amount_of(payment: &Value, key: &str) -> u64 {
+pub(super) fn amount_of(payment: &Value, key: &str) -> u64 {
     payment[key].as_str().and_then(|text| text.parse().ok()).unwrap_or(0)
+}
+
+/// Write what the wallet sees of one Zcash payment into `payment`. Returns the status now; `was` is the status before.
+pub(super) fn record_received(payment: &mut Value, was: &str, received: &Received, now: u64) -> &'static str {
+    let due = amount_of(payment, "amountZatoshi");
+    // A quote the node had not seen paid in full by its expiry stays unpaid. What arrives later is still recorded.
+    // One it did see in time never lapses: if a reorg drops that payment, the order is paid when it is mined again.
+    let seen_in_time = payment["seenInTime"] == true;
+    let expired = payment["expired"] == true || (!seen_in_time && was == AWAITING_PAYMENT && payment["expiresAt"].as_u64().is_some_and(|at| at <= now));
+    let status = if expired { AWAITING_PAYMENT } else { direct_progress(due, received.total, received.confirmed) };
+    payment["receivedZatoshi"] = json!(received.total.to_string());
+    payment["remainingZatoshi"] = json!(due.saturating_sub(received.total).to_string());
+    payment["overpaidZatoshi"] = json!(received.total.saturating_sub(due).to_string());
+    if expired {
+        payment["expired"] = json!(true);
+    }
+    if seen_in_time || status != AWAITING_PAYMENT {
+        payment["seenInTime"] = json!(true);
+    }
+    status
 }
 
 impl Node {
@@ -62,6 +86,14 @@ impl Node {
 
     /// Everything a Zcash package needs, checked before any letter is sealed.
     pub(crate) fn zec_ready(&self, seller: &str) -> Result<(), OrderError> {
+        // A store on another node prices the order and watches the payment, so this node needs no indexer for it.
+        if !self.zec.stores.contains_key(seller) {
+            return match (self.accepts_zec(seller), super::own_store_allowed(self.network)) {
+                (false, _) => Err(OrderError::Invalid("This store does not accept Zcash.")),
+                (true, false) => Err(OrderError::Invalid(OTHER_NODE)),
+                (true, true) => Ok(()),
+            };
+        }
         if self.zec.chain().is_none() {
             return Err(OrderError::Invalid("Zcash is off on this node, so a Zcash order cannot be watched."));
         }
@@ -74,8 +106,7 @@ impl Node {
                 return Err(OrderError::Invalid(NOT_SYNCED));
             }
             Some(slot) if slot.wallet.is_some() => {}
-            Some(_) => return Err(OrderError::Locked(crate::wallet_lock::State::Locked.as_str())),
-            None => return Err(OrderError::Invalid(OTHER_NODE)),
+            _ => return Err(OrderError::Locked(crate::wallet_lock::State::Locked.as_str())),
         }
         if self.sats_per_zec().is_none() {
             return Err(OrderError::Invalid("There is no ZEC price right now, so a Zcash order cannot be priced. Try again, or pay in bitcoin."));
@@ -86,8 +117,13 @@ impl Node {
     /// The `payment` of a Zcash order: a fresh address of the seller and the amount in zatoshi.
     pub(crate) fn zec_payment(&self, total_sats: u64, seller: &str) -> Result<Value, OrderError> {
         let sats_per_zec = self.sats_per_zec().ok_or(OrderError::Invalid("There is no ZEC price right now."))?;
-        let zatoshi = zatoshi_for_sats(total_sats, sats_per_zec).ok_or(OrderError::Invalid("That order is too large to price in Zcash."))?;
         let mut slot = self.zec.store(seller).ok_or(OrderError::Invalid("That seller has no wallet on this node."))?;
+        self.zec_quote(total_sats, sats_per_zec, &mut slot)
+    }
+
+    /// A fresh address of the wallet in `slot`, and `total_sats` in zatoshi at `sats_per_zec`.
+    pub(super) fn zec_quote(&self, total_sats: u64, sats_per_zec: u64, slot: &mut Slot) -> Result<Value, OrderError> {
+        let zatoshi = zatoshi_for_sats(total_sats, sats_per_zec).ok_or(OrderError::Invalid("That order is too large to price in Zcash."))?;
         let wallet = slot.wallet.as_mut().ok_or(OrderError::Locked(crate::wallet_lock::State::Locked.as_str()))?;
         let (index, address) = wallet.issue_address();
         slot.save(&self.zec.vault).map_err(|err| OrderError::Failed(err.to_string()))?;
@@ -132,39 +168,22 @@ impl Node {
                 },
                 None => continue,
             };
-            let due = amount_of(&payment, "amountZatoshi");
-            let status = direct_progress(due, received.total, received.confirmed);
             let confirmations = received.confirmations.unwrap_or(0).min(u64::from(u32::MAX)) as u32;
             let result = self.orders().update(&id, |order| {
                 let Some(payment) = order.payment.as_mut() else { return };
-                // A quote the node had not seen paid in full by its expiry stays unpaid. What arrives later is still recorded.
-                // One it did see in time never lapses: if a reorg drops that payment, the order is paid when it is mined again.
-                let seen_in_time = payment["seenInTime"] == true;
-                let expired = payment["expired"] == true
-                    || (!seen_in_time && order.status == AWAITING_PAYMENT && payment["expiresAt"].as_u64().is_some_and(|at| at <= now));
-                let status = if expired { AWAITING_PAYMENT } else { status };
-                let seen_in_time = seen_in_time || status != AWAITING_PAYMENT;
+                let mut next = payment.clone();
+                let status = record_received(&mut next, &order.status, &received, now);
                 if order.status == status
-                    && amount_of(payment, "receivedZatoshi") == received.total
                     && order.confirmations == confirmations
                     && order.txids == received.txids
-                    && (payment["expired"] == true) == expired
-                    && (payment["seenInTime"] == true) == seen_in_time
+                    && ["receivedZatoshi", "expired", "seenInTime"].iter().all(|key| payment[key] == next[key])
                 {
                     return;
                 }
+                *payment = next;
                 order.status = status.to_string();
                 order.confirmations = confirmations;
                 order.txids = received.txids.clone();
-                payment["receivedZatoshi"] = json!(received.total.to_string());
-                payment["remainingZatoshi"] = json!(due.saturating_sub(received.total).to_string());
-                payment["overpaidZatoshi"] = json!(received.total.saturating_sub(due).to_string());
-                if expired {
-                    payment["expired"] = json!(true);
-                }
-                if seen_in_time {
-                    payment["seenInTime"] = json!(true);
-                }
                 changed += 1;
             });
             if let Err(err) = result {

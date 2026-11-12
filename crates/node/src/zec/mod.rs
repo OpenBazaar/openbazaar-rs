@@ -20,16 +20,19 @@
 //! (`PUT /zec/stores`), which signs the store's v3 record again with bit 2
 //! set; checkout and the catalog read the signed flag only. `zec-stores.obv`
 //! keeps the choice for the next boot. The node's own store opts in the same
-//! way on testnet4 (see `own.rs`), but cannot be paid in Zcash yet: a sale
-//! from another node carries bitcoin terms only (phase 2). Ironwood is the
-//! pool that pays; escrow is Bitcoin-only.
+//! way on testnet4 (see `own.rs`) and is paid by buyers on other nodes
+//! through a sale (see `sale.rs`). Ironwood is the pool that pays; escrow is
+//! Bitcoin-only.
 
 mod checkout;
 mod http;
 mod own;
+mod sale;
 #[cfg(test)]
 mod own_tests;
 pub(crate) mod rate;
+#[cfg(test)]
+mod sale_tests;
 #[cfg(test)]
 mod tests;
 
@@ -54,6 +57,7 @@ use crate::{Egress, Error, Node};
 pub(crate) use checkout::{add_zec_flags, rail_of};
 pub(crate) use http::response;
 pub(crate) use own::own_store_allowed;
+pub(crate) use sale::{add_terms, follow_seller, payment_from_terms};
 
 const WATCH_FILE: &str = "zec-watch.obv";
 const STATE_FILE: &str = "zec-state.obv";
@@ -64,7 +68,7 @@ const SYNC_BLOCKS: u64 = 100;
 const SYNC_STEPS: usize = 20;
 /// How often the sync thread looks at its stop flag.
 const TICK: Duration = Duration::from_millis(250);
-/// How often to ask the indexer when no wallet is catching up and no Zcash order waits.
+/// How often to ask the indexer when no wallet is catching up and no Zcash order or sale waits.
 const IDLE: Duration = Duration::from_secs(15 * 60);
 
 /// One Zcash wallet. `wallet` is `None` until its viewing key is known.
@@ -181,6 +185,11 @@ impl ZecNode {
         self.stores.get(seller).map(guard)
     }
 
+    /// The own store's wallet.
+    pub(crate) fn own(&self) -> MutexGuard<'_, Slot> {
+        guard(&self.own)
+    }
+
     fn slots(&self) -> impl Iterator<Item = &Mutex<Slot>> {
         std::iter::once(&self.own).chain(self.stores.values())
     }
@@ -268,9 +277,8 @@ fn with_zec(
 /// Why a store's Zcash choice could not change.
 pub(crate) enum AcceptError {
     Unknown(String),
-    /// The own store on a network where it may not take Zcash yet.
-    Mainnet,
-    Off,
+    /// The own store could not take a Zcash order now.
+    NotReady(own::NotReady),
     Locked,
     Failed(String),
 }
@@ -352,7 +360,7 @@ impl Node {
         }
     }
 
-    /// One Zcash round: sync every wallet, then update Zcash orders. Returns how many orders changed.
+    /// One Zcash round: sync every wallet, then update Zcash orders and sales. Returns how many changed.
     pub fn zec_sync_once(&self) -> Result<usize, String> {
         let chain = self.zec.chain().ok_or("Zcash is off")?.clone();
         self.zec_fill_keys();
@@ -363,7 +371,7 @@ impl Node {
                 failed = Some(err);
             }
         }
-        let changed = self.zec_update_orders();
+        let changed = self.zec_update_orders() + self.zec_update_sales();
         match failed {
             Some(err) if changed == 0 => Err(err),
             _ => Ok(changed),
@@ -404,7 +412,7 @@ impl Node {
         result
     }
 
-    /// First sync, a wallet still behind the last tip, or a Zcash order not yet Paid.
+    /// First sync, a wallet still behind the last tip, or a Zcash order or sale not yet Paid.
     pub(crate) fn zec_needs_sync(&self) -> bool {
         let catching_up = self.zec.slots().any(|slot| {
             guard(slot).wallet.as_ref().is_some_and(|wallet| {
@@ -424,6 +432,11 @@ impl Node {
                         .as_ref()
                         .is_some_and(|payment| payment["rail"] == "zec")
             })
+            || self.sales().list().any(|sale| {
+                sale["payment"]["rail"] == "zec"
+                    && (sale["status"] == crate::watch::AWAITING_PAYMENT
+                        || sale["status"] == crate::watch::PAYMENT_SEEN)
+            })
     }
 
     pub(crate) fn zec_sync_wait(every: Duration, needs: bool) -> Duration {
@@ -435,7 +448,7 @@ impl Node {
     }
 
     /// Sync every `every` on this thread until `stop`. Idle nodes wait [`IDLE`],
-    /// and catch up on the next tick once an order is placed or a wallet is still behind.
+    /// and catch up on the next tick once an order or sale is placed or a wallet is still behind.
     pub(crate) fn run_zec(&self, every: Duration, stop: &AtomicBool) {
         if self.zec.chain().is_none() {
             return;

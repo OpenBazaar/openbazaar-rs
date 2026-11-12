@@ -13,6 +13,7 @@ import {
   orderPollingDone,
   ordersSettled,
   payKind,
+  sellerZcashNote,
   zcashDue
 } from './orderState.ts'
 
@@ -163,6 +164,16 @@ test('a Zcash order keeps its shielded address, needs 30 confirmations, and does
   assert.equal(confirmationTarget('zec', due?.confirmationsNeeded, 1), 30)
   assert.equal(confirmationTarget('zec', undefined, 1), 30, 'the Zcash default, not the bitcoin one')
   assert.equal(moneroDue(parsed.payment), null)
+
+  // The same order to a store on another node: the direct-pay warning, and whose rate and whose watch it is.
+  const remote = { ...parsed, remote: { delivered: true } }
+  assert.equal(directPayWarning(remote, payKind(remote)), DIRECT_PAY_WARNING)
+  assert.equal(
+    sellerZcashNote(remote),
+    "The seller's node set the amount: 18,000 sats at its rate of 1,229,360 sats for 1 ZEC. It watches this address and tells your node when the payment arrives."
+  )
+  assert.equal(sellerZcashNote(parsed), null, 'a store on this node is priced and watched here')
+  assert.equal(directPayWarning({ ...remote, status: ORDER_STATUS.paymentSeen }, 'zec'), null, 'the seller saw the payment')
 
   const paid = zcashDue({ rail: 'zec', zcash: { ...parsed.payment!.zcash!, receivedZatoshi: '1463422', overpaidZatoshi: '7' } })
   assert.deepEqual([paid?.awaiting, paid?.remainingZec, paid?.overpaidZec], [false, '0', '0.00000007'])

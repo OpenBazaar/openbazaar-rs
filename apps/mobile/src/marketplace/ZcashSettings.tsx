@@ -1,4 +1,4 @@
-import { fetchZecBackend, fetchZecStores, setStoreAcceptsZec, type ZecBackend } from '../zec'
+import { fetchZecBackend, fetchZecStores, setStoreAcceptsZec, type ZecBackend, type ZecStores } from '../zec'
 import { useNodeResource } from '../useNodeResource'
 import { RailMark } from './RailMark'
 import { FormError, useSubmit } from './WalletLock'
@@ -31,6 +31,7 @@ export function ZcashSettings() {
       {!zec ? (
         <p className='ob-page-intro' role='status'>{backend.loading ? 'Checking Zcash…' : 'Zcash status unavailable.'}</p>
       ) : !zec.enabled ? (
+        <>
         <section className='ob-settings-card'>
           <h2>Zcash is off on this node</h2>
           <p>
@@ -40,41 +41,15 @@ export function ZcashSettings() {
             {zec.network === 'testnet' ? ' On testnet4 the node pays on Zcash testnet.' : ''}
           </p>
         </section>
+        {/* A store whose record still takes Zcash: say that its Zcash orders are declined, and let it be switched off. */}
+        {stores.data?.stores.some(store => store.problem) && (
+          <StoresCard stores={stores.data.stores.filter(store => store.problem)} busy={toggle.busy} error={toggle.error} onAccept={accept} />
+        )}
+        </>
       ) : (
         <>
           <IndexerCard zec={zec} />
-          {stores.data && (
-            <section className='ob-settings-card' aria-labelledby='ob-zec-stores'>
-              <header className='ob-settings-card-heading'>
-                <h2 id='ob-zec-stores'>Stores that take Zcash</h2>
-                <p>Turning Zcash on signs the store record again so buyers see it at checkout.</p>
-              </header>
-              {stores.data.stores.length === 0 && <p className='ob-page-intro'>No store on this node can take Zcash yet.</p>}
-              {stores.data.stores.map(store => (
-                <div className='ob-setting-row' key={store.seller}>
-                  <label htmlFor={`ob-zec-${store.seller}`}>
-                    <strong>{store.seller}</strong>
-                    <span>{store.own ? 'Your store. People still on the first release, v0.1.0-alpha.1, will not see it while Zcash is on, until they update.' : 'Demo store on this node'}</span>
-                  </label>
-                  <span className='ob-setting-switch'>
-                    <input
-                      id={`ob-zec-${store.seller}`}
-                      type='checkbox'
-                      role='switch'
-                      checked={store.acceptsZec}
-                      disabled={toggle.busy}
-                      onChange={e => void accept(store.seller, e.target.checked)}
-                    />
-                    <span />
-                  </span>
-                </div>
-              ))}
-              <FormError message={toggle.error} />
-              <p className='ob-settings-footnote'>
-                Buyers on other nodes cannot pay your store in Zcash yet. For now the switch only adds Zcash to your store's signed record.
-              </p>
-            </section>
-          )}
+          {stores.data && <StoresCard stores={stores.data.stores} busy={toggle.busy} error={toggle.error} onAccept={accept} />}
           <section className='ob-settings-card' aria-labelledby='ob-zec-reveals'>
             <h2 id='ob-zec-reveals'>Who sees what</h2>
             <p>{zec.reveals}</p>
@@ -85,6 +60,35 @@ export function ZcashSettings() {
         </>
       )}
     </div>
+  )
+}
+
+function StoresCard({ stores, busy, error, onAccept }: { stores: ZecStores['stores']; busy: boolean; error: string; onAccept: (seller: string, on: boolean) => Promise<void> }) {
+  return (
+    <section className='ob-settings-card' aria-labelledby='ob-zec-stores'>
+      <header className='ob-settings-card-heading'>
+        <h2 id='ob-zec-stores'>Stores that take Zcash</h2>
+        <p>Turning Zcash on signs the store record again so buyers see it at checkout.</p>
+      </header>
+      {stores.length === 0 && <p className='ob-page-intro'>No store on this node can take Zcash yet.</p>}
+      {stores.map(store => (
+        <div className='ob-setting-row' key={store.seller}>
+          <label htmlFor={`ob-zec-${store.seller}`}>
+            <strong>{store.seller}</strong>
+            <span>{store.own ? 'Your store. People still on the first release, v0.1.0-alpha.1, will not see it while Zcash is on, until they update.' : 'Demo store on this node'}</span>
+            {store.problem && <span className='ob-form-error' role='alert'>Zcash orders are declined for now. {store.problem}</span>}
+          </label>
+          <span className='ob-setting-switch'>
+            <input id={`ob-zec-${store.seller}`} type='checkbox' role='switch' checked={store.acceptsZec} disabled={busy} onChange={e => void onAccept(store.seller, e.target.checked)} />
+            <span />
+          </span>
+        </div>
+      ))}
+      <FormError message={error} />
+      <p className='ob-settings-footnote'>
+        A buyer on another node who chooses Zcash gets a shielded address and a ZEC amount from this node, at this node's rate, good for one hour. This node watches the address and marks the sale paid after 30 confirmations.
+      </p>
+    </section>
   )
 }
 

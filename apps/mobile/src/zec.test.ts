@@ -18,13 +18,14 @@ test("the stores list says which stores take Zcash, and which is the node's own"
     network: "testnet",
     enabled: true,
     stores: [
-      { seller: "Brook and Pine", own: true, acceptsZec: false },
+      { seller: "Brook and Pine", own: true, acceptsZec: false, problem: "Zcash is off on this node. Start it with --zec-indexer." },
       { seller: "Marlow Goods", acceptsZec: true },
       { seller: "Hale Paper", acceptsZec: false },
     ],
   });
   assert.equal(stores.enabled, true);
   assert.deepEqual(stores.stores.map((store) => [store.seller, store.own, store.acceptsZec]), [["Brook and Pine", true, false], ["Marlow Goods", false, true], ["Hale Paper", false, false]]);
+  assert.deepEqual(stores.stores.map((store) => store.problem), ["Zcash is off on this node. Start it with --zec-indexer.", null, null], "why the own store would decline a Zcash order now");
   assert.throws(() => parseZecStores({ network: "testnet4", stores: [] }), "testnet4 is not a Zcash network");
 });
 

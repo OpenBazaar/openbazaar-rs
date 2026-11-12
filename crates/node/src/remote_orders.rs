@@ -11,7 +11,8 @@
 //! checkout showed (exactly that for a sats price; a quarter more for a
 //! fiat price, which moves with the rate), in which case the order stops.
 //! From there the chain watcher moves the order to Paid as for any direct
-//! order, a "shipped" reply carries the tracking or the digital goods, and
+//! order (a Zcash order follows the seller's replies instead, see
+//! `zec/sale.rs`), a "shipped" reply carries the tracking or the digital goods, and
 //! `POST /orders/{id}/complete` tells the seller it arrived.
 
 use openbazaar_protocol::Listing;
@@ -46,7 +47,7 @@ impl Node {
     /// The followed URL when `listing` is from a store on another node.
     /// Refuses what such a store cannot take, and the own store: escrow, and
     /// a rail only a seller wallet on this node can take (`local_rail`:
-    /// Monero or Zcash), since a remote seller's terms carry bitcoin only.
+    /// Monero), since a remote seller's terms carry bitcoin or Zcash only.
     pub(crate) fn remote_package(&self, listing: &Listing, direct: bool, local_rail: bool) -> Result<Option<String>, OrderError> {
         if listing.store_id == self.own_store {
             return Err(OrderError::Invalid("That is your own store."));
@@ -213,8 +214,9 @@ impl Node {
 
 /// Apply one seller reply to the order. Each kind is idempotent and only
 /// moves the order forward.
-fn apply_reply(order: &mut crate::buyer_orders::BuyerOrder, body: &Value, network: crate::NetworkMode) {
+pub(crate) fn apply_reply(order: &mut crate::buyer_orders::BuyerOrder, body: &Value, network: crate::NetworkMode) {
     let remote = order.remote.clone().unwrap_or_default();
+    crate::zec::follow_seller(order, &body["zec"]);
     match body["kind"].as_str() {
         Some("terms") if order.status == AWAITING_SELLER => {
             let amount = body["amountSats"].as_u64().unwrap_or(0);
@@ -222,27 +224,33 @@ fn apply_reply(order: &mut crate::buyer_orders::BuyerOrder, body: &Value, networ
             let address = body["address"].as_str().unwrap_or("");
             let limit = ceiling(estimate, remote["fiat"].as_bool().unwrap_or(false));
             let problem = crate::checkout_terms::quote_problem(&remote, body);
-            let accepted = match crate::network::address_for(address, network) {
-                Err(_) => Err("The seller's payment address is not valid here.".to_string()),
-                Ok(_) if problem.is_some() => Err(problem.unwrap_or_default()),
-                Ok(_) if amount == 0 || amount > limit => {
-                    Err(format!("The seller asked {amount} sats; checkout showed {estimate}. Nothing was paid."))
-                }
-                Ok(address) => Ok(address),
-            };
-            match accepted {
-                Ok(address) => {
-                    order.items_sats = body["itemsSats"].as_u64().unwrap_or(order.items_sats);
-                    order.shipping_sats = body["shippingSats"].as_u64().unwrap_or(order.shipping_sats);
-                    order.total_sats = amount;
-                    order.payment = Some(json!({
+            let payment = match remote["rail"] == "zec" {
+                true => crate::zec::payment_from_terms(body, network.zcash()),
+                false => crate::network::address_for(address, network).map_err(|_| "The seller's payment address is not valid here.".to_string()).map(|address| {
+                    json!({
                         "network": network.as_str(),
                         "onchain": address.to_string(),
                         "address": address.to_string(),
                         "amountSats": amount,
                         "bip21": crate::network::bip21(&address, bitcoin::Amount::from_sat(amount)),
                         "watched": ["onchain"],
-                    }));
+                    })
+                }),
+            };
+            let accepted = match payment {
+                Err(invalid) => Err(invalid),
+                Ok(_) if problem.is_some() => Err(problem.unwrap_or_default()),
+                Ok(_) if amount == 0 || amount > limit => {
+                    Err(format!("The seller asked {amount} sats; checkout showed {estimate}. Nothing was paid."))
+                }
+                Ok(payment) => Ok(payment),
+            };
+            match accepted {
+                Ok(payment) => {
+                    order.items_sats = body["itemsSats"].as_u64().unwrap_or(order.items_sats);
+                    order.shipping_sats = body["shippingSats"].as_u64().unwrap_or(order.shipping_sats);
+                    order.total_sats = amount;
+                    order.payment = Some(payment);
                     order.status = AWAITING_PAYMENT.to_string();
                     if let Some(remote) = order.remote.as_mut().filter(|_| !body["quote"].is_null()) {
                         remote["sellerQuote"] = body["quote"].clone();

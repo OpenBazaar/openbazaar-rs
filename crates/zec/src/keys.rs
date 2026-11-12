@@ -107,6 +107,15 @@ impl ViewKey {
     }
 }
 
+/// Whether `address` is the kind this crate hands out for an order: a Unified
+/// Address on `network` whose only receiver is Orchard-protocol.
+pub fn is_order_address(address: &str, network: ZecNetwork) -> bool {
+    let params = network.params();
+    let receiver = UnifiedAddress::decode(&params, address).ok().and_then(|ua| ua.orchard().copied());
+    let only = receiver.and_then(|receiver| UnifiedAddress::from_receivers(Some(receiver), None, None, None, None));
+    only.is_some_and(|only| only.encode(&params) == address)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -156,5 +165,18 @@ mod tests {
         let change = key.orchard().address_at(1u32, Scope::Internal);
         assert_eq!(key.index_of(&change), None, "change is not an order address");
         assert!(ViewKey::from_seed(&SEED, ZecNetwork::Testnet).unwrap().address(1).starts_with("utest1"));
+    }
+
+    #[test]
+    fn an_order_address_is_orchard_only_and_on_its_network() {
+        let key = ViewKey::from_seed(&SEED, ZecNetwork::Testnet).unwrap();
+        assert!(is_order_address(&key.address(4), ZecNetwork::Testnet));
+        assert!(!is_order_address(&key.address(4), ZecNetwork::Mainnet), "another network");
+        use zcash_address::unified::{Address, Encoding, Receiver, Revision, Uitem};
+        let items = vec![Uitem::Data(Receiver::Orchard(key.receiver(4).to_raw_address_bytes())), Uitem::Data(Receiver::P2pkh([7; 20]))];
+        let both = Address::try_from_items(Revision::R0, items).unwrap();
+        let both = both.encode(&zcash_protocol::consensus::NetworkType::Test);
+        assert!(UnifiedAddress::decode(&ZecNetwork::Testnet.params(), &both).is_ok() && !is_order_address(&both, ZecNetwork::Testnet), "a transparent receiver could be paid in the clear");
+        assert!(!is_order_address("tmNope", ZecNetwork::Testnet));
     }
 }

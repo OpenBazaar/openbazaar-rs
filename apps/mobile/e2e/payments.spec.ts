@@ -435,6 +435,59 @@ test('a direct order to a store on another node warns above the payment details'
   await expect(warning).toHaveCount(0)
 })
 
+test('a Zcash order to a store on another node shows the warning, the seller\'s rate, and the seller\'s updates', async ({
+  page
+}) => {
+  const { id, order } = await checkout(page)
+  const address = 'utest1' + 'q'.repeat(60)
+  const payment = {
+    rail: 'zec',
+    network: 'testnet',
+    pool: 'ironwood',
+    zcashAddress: address,
+    uri: `zcash:${address}?amount=0.02277608`,
+    amountZatoshi: '2277608',
+    receivedZatoshi: '0',
+    satsPerZec: 1_229_360,
+    priceSats: 28_000,
+    expiresAt: 4_000_000_000,
+    confirmationsNeeded: 30,
+    watched: []
+  }
+  let state: Record<string, unknown> = {
+    ...order,
+    id,
+    created: 1,
+    network: 'testnet4',
+    totalSats: 28_000,
+    receivedSats: 0,
+    confirmations: 0,
+    txids: [],
+    paying: false,
+    payment,
+    remote: { delivered: true }
+  }
+  await page.route(`**/orders/${id}`, route => route.fulfill({ json: state }))
+  await page.route('**/orders', route => route.fulfill({ json: { orders: [state] } }))
+  await page.clock.install()
+  await page.reload()
+  await page.getByRole('button', { name: 'Your orders', exact: true }).click()
+  await page.getByRole('button', { name: 'Order from Marlow Goods', exact: true }).click()
+  const warning = page.getByRole('note').filter({ hasText: DIRECT_PAY_WARNING })
+  await expect(warning).toBeVisible()
+  await expect(page.getByRole('img', { name: /QR code/ })).toHaveAttribute('data-payment-uri', payment.uri)
+  await expect(page.getByText("The seller's node set the amount: 28,000 sats at its rate of 1,229,360 sats for 1 ZEC. It watches this address and tells your node when the payment arrives.", { exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Pay from your node wallet', exact: true })).toHaveCount(0)
+  state = { ...state, status: 'Payment seen', confirmations: 3, payment: { ...payment, receivedZatoshi: '2277608', seenInTime: true } }
+  await page.clock.fastForward(16000)
+  await expect(page.getByText('Payment seen. Waiting for 27 more confirmations.', { exact: true })).toBeVisible()
+  await expect(page.getByText('Received 0.02277608 / 0.02277608 ZEC', { exact: true })).toBeVisible()
+  await expect(warning).toHaveCount(0)
+  state = { ...state, status: 'Paid', confirmations: 30 }
+  await page.clock.fastForward(16000)
+  await expect(page.locator('.ob-payment-progress strong')).toHaveText('Paid')
+})
+
 test('network mismatch and escrow are read-only', async ({ page }) => {
   const { id, order } = await checkout(page)
   await fundedUi(page)
