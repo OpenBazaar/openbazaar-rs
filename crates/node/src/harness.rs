@@ -35,6 +35,8 @@ pub(crate) const PASSPHRASE: &str = "correct horse battery";
 #[derive(Default)]
 pub(crate) struct Chain {
     pub tip: Mutex<u32>,
+    /// How often the tip was asked for.
+    pub tip_reads: std::sync::atomic::AtomicUsize,
     pub by_script: Mutex<HashMap<ScriptBuf, Vec<AddressTx>>>,
     /// Coins sent to node wallets, and whether each is confirmed.
     pub wallet_txs: Mutex<Vec<(Transaction, bool)>>,
@@ -143,6 +145,7 @@ impl MockChain {
 
 impl ChainSource for MockChain {
     fn tip_height(&self) -> Result<u32, String> {
+        self.0.tip_reads.fetch_add(1, Ordering::SeqCst);
         Ok(self.tip())
     }
 

@@ -122,8 +122,50 @@ pub(crate) mod fake_socks {
 
     use std::io::{Read, Write};
     use std::net::TcpListener;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::mpsc;
+    use std::sync::Arc;
     use std::thread;
+
+    /// SOCKS5 CONNECT: greeting, optional username, destination. Leaves the port consumed.
+    fn connect(stream: &mut std::net::TcpStream) -> Option<(u8, String)> {
+        let mut greeting = [0u8; 2];
+        stream.read_exact(&mut greeting).ok()?;
+        let mut methods = vec![0u8; greeting[1] as usize];
+        let _ = stream.read_exact(&mut methods);
+        if methods.contains(&2) {
+            // Username and password, as Tor accepts for circuit isolation.
+            let _ = stream.write_all(&[5, 2]);
+            let mut version = [0u8; 2];
+            let _ = stream.read_exact(&mut version);
+            let _ = stream.read_exact(&mut vec![0u8; version[1] as usize]);
+            let mut len = [0u8; 1];
+            let _ = stream.read_exact(&mut len);
+            let _ = stream.read_exact(&mut vec![0u8; len[0] as usize]);
+            let _ = stream.write_all(&[1, 0]);
+        } else {
+            let _ = stream.write_all(&[5, 0]);
+        }
+        let mut request = [0u8; 4];
+        stream.read_exact(&mut request).ok()?;
+        let host = match request[3] {
+            3 => {
+                let mut len = [0u8; 1];
+                let _ = stream.read_exact(&mut len);
+                let mut name = vec![0u8; len[0] as usize];
+                let _ = stream.read_exact(&mut name);
+                String::from_utf8_lossy(&name).into_owned()
+            }
+            1 => {
+                let mut ip = [0u8; 4];
+                let _ = stream.read_exact(&mut ip);
+                format!("{}.{}.{}.{}", ip[0], ip[1], ip[2], ip[3])
+            }
+            other => format!("type {other}"),
+        };
+        let _ = stream.read_exact(&mut [0u8; 2]);
+        Some((request[3], host))
+    }
 
     /// The proxy URL and a receiver for `(address type, host)` of each CONNECT.
     pub(crate) fn start() -> (String, mpsc::Receiver<(u8, String)>) {
@@ -133,50 +175,36 @@ pub(crate) mod fake_socks {
         thread::spawn(move || {
             for stream in listener.incoming() {
                 let Ok(mut stream) = stream else { continue };
-                let mut greeting = [0u8; 2];
-                if stream.read_exact(&mut greeting).is_err() {
-                    continue;
-                }
-                let mut methods = vec![0u8; greeting[1] as usize];
-                let _ = stream.read_exact(&mut methods);
-                if methods.contains(&2) {
-                    // Username and password, as Tor accepts for circuit isolation.
-                    let _ = stream.write_all(&[5, 2]);
-                    let mut version = [0u8; 2];
-                    let _ = stream.read_exact(&mut version);
-                    let _ = stream.read_exact(&mut vec![0u8; version[1] as usize]);
-                    let mut len = [0u8; 1];
-                    let _ = stream.read_exact(&mut len);
-                    let _ = stream.read_exact(&mut vec![0u8; len[0] as usize]);
-                    let _ = stream.write_all(&[1, 0]);
-                } else {
-                    let _ = stream.write_all(&[5, 0]);
-                }
-                let mut request = [0u8; 4];
-                if stream.read_exact(&mut request).is_err() {
-                    continue;
-                }
-                let host = match request[3] {
-                    3 => {
-                        let mut len = [0u8; 1];
-                        let _ = stream.read_exact(&mut len);
-                        let mut name = vec![0u8; len[0] as usize];
-                        let _ = stream.read_exact(&mut name);
-                        String::from_utf8_lossy(&name).into_owned()
-                    }
-                    1 => {
-                        let mut ip = [0u8; 4];
-                        let _ = stream.read_exact(&mut ip);
-                        format!("{}.{}.{}.{}", ip[0], ip[1], ip[2], ip[3])
-                    }
-                    other => format!("type {other}"),
-                };
-                let _ = tx.send((request[3], host));
+                let Some(seen) = connect(&mut stream) else { continue };
+                let _ = tx.send(seen);
                 // Host unreachable: the client gives up without a request.
                 let _ = stream.write_all(&[5, 4, 0, 1, 0, 0, 0, 0, 0, 0]);
             }
         });
         (url, rx)
+    }
+
+    /// A proxy whose every destination answers one HTTP request with `answer`.
+    /// Returns the proxy URL and how many requests were answered.
+    pub(crate) fn start_http(answer: &'static str) -> (String, Arc<AtomicUsize>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("socks5h://{}", listener.local_addr().unwrap());
+        let asked = Arc::new(AtomicUsize::new(0));
+        let counter = asked.clone();
+        thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { continue };
+                if connect(&mut stream).is_none() {
+                    continue;
+                }
+                let _ = stream.write_all(&[5, 0, 0, 1, 0, 0, 0, 0, 0, 0]);
+                if stream.read(&mut [0u8; 2048]).is_ok_and(|read| read > 0) {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                    let _ = stream.write_all(answer.as_bytes());
+                }
+            }
+        });
+        (url, asked)
     }
 }
 

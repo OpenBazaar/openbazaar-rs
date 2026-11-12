@@ -27,9 +27,9 @@
 mod checkout;
 mod http;
 mod own;
-pub(crate) mod rate;
 #[cfg(test)]
 mod own_tests;
+pub(crate) mod rate;
 #[cfg(test)]
 mod tests;
 
@@ -41,7 +41,7 @@ use std::time::{Duration, Instant};
 
 use bitcoin::secp256k1::SecretKey;
 use openbazaar_protocol::{Catalog, Store};
-use openbazaar_zec::{BackendStatus, ViewKey, ZecChain, ZecNetwork, ZecWallet};
+use openbazaar_zec::{BackendStatus, SharedTip, ViewKey, ZecChain, ZecNetwork, ZecWallet};
 use serde_json::{json, Value};
 
 use crate::buyer_orders::now_secs;
@@ -64,6 +64,8 @@ const SYNC_BLOCKS: u64 = 100;
 const SYNC_STEPS: usize = 20;
 /// How often the sync thread looks at its stop flag.
 const TICK: Duration = Duration::from_millis(250);
+/// How often to ask the indexer when no wallet is catching up and no Zcash order waits.
+const IDLE: Duration = Duration::from_secs(15 * 60);
 
 /// One Zcash wallet. `wallet` is `None` until its viewing key is known.
 pub(crate) struct Slot {
@@ -83,7 +85,12 @@ impl Slot {
             }
             None => None,
         };
-        let mut slot = Self { dir: dir.to_path_buf(), wallet: None, last_sync: None, error: None };
+        let mut slot = Self {
+            dir: dir.to_path_buf(),
+            wallet: None,
+            last_sync: None,
+            error: None,
+        };
         if let Some(keys) = keys {
             slot.load(keys, vault, network)?;
         }
@@ -92,7 +99,9 @@ impl Slot {
 
     fn load(&mut self, keys: ViewKey, vault: &Vault, network: NetworkMode) -> Result<(), Error> {
         let wallet = match vault.read_sealed(&self.dir.join(STATE_FILE))? {
-            Some(bytes) => ZecWallet::decode(&bytes, network.zcash(), keys).map_err(Error::Detail)?,
+            Some(bytes) => {
+                ZecWallet::decode(&bytes, network.zcash(), keys).map_err(Error::Detail)?
+            }
             None => ZecWallet::new(network.zcash(), keys),
         };
         self.wallet = Some(wallet);
@@ -131,11 +140,20 @@ fn guard<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 
 impl ZecNode {
     /// `sellers` names each demo store's wallet directory under `dir/wallets`, as `(seller, dir name)`.
-    pub(crate) fn open(dir: &Path, vault: &Vault, network: NetworkMode, sellers: &[(String, String)], egress: Egress) -> Result<Self, Error> {
+    pub(crate) fn open(
+        dir: &Path,
+        vault: &Vault,
+        network: NetworkMode,
+        sellers: &[(String, String)],
+        egress: Egress,
+    ) -> Result<Self, Error> {
         let wallets = dir.join("wallets");
         let mut stores = BTreeMap::new();
         for (seller, name) in sellers {
-            stores.insert(seller.clone(), Mutex::new(Slot::open(&wallets.join(name), vault, network)?));
+            stores.insert(
+                seller.clone(),
+                Mutex::new(Slot::open(&wallets.join(name), vault, network)?),
+            );
         }
         let accepts_path = dir.join(STORES_FILE);
         let accepts = read_accepts(&accepts_path, vault)?;
@@ -177,7 +195,9 @@ impl ZecNode {
         }
         let list: Vec<&String> = accepts.iter().collect();
         let bytes = serde_json::to_vec(&list).map_err(|err| err.to_string())?;
-        self.vault.write_sealed(&self.accepts_path, &bytes).map_err(|err| err.to_string())
+        self.vault
+            .write_sealed(&self.accepts_path, &bytes)
+            .map_err(|err| err.to_string())
     }
 
     /// The `zecBackend` field of `GET /network`: what the indexer is and
@@ -187,7 +207,10 @@ impl ZecNode {
             Some(chain) => chain.status().value(),
             None => BackendStatus::off(self.zec_network()).value(),
         };
-        let scanned = self.slots().filter_map(|slot| guard(slot).wallet.as_ref().and_then(ZecWallet::scanned)).min();
+        let scanned = self
+            .slots()
+            .filter_map(|slot| guard(slot).wallet.as_ref().and_then(ZecWallet::scanned))
+            .min();
         let error = self.slots().find_map(|slot| guard(slot).error.clone());
         value["enabled"] = json!(self.chain().is_some());
         value["pool"] = json!("ironwood");
@@ -210,20 +233,31 @@ fn read_accepts(path: &Path, vault: &Vault) -> Result<BTreeSet<String>, Error> {
 }
 
 /// Sign each demo store that opted in to Zcash again with `acceptsZec`.
-pub(crate) fn apply_signed_accepts(dir: &Path, vault: &Vault, catalog: &mut Catalog, network: NetworkMode) -> Result<(), Error> {
+pub(crate) fn apply_signed_accepts(
+    dir: &Path,
+    vault: &Vault,
+    catalog: &mut Catalog,
+    network: NetworkMode,
+) -> Result<(), Error> {
     let accepts = read_accepts(&dir.join(STORES_FILE), vault)?;
     for store in &mut catalog.stores {
         if !accepts.contains(&store.name) {
             continue;
         }
-        let Some(secret) = crate::fixture_secret(store, network) else { continue };
+        let Some(secret) = crate::fixture_secret(store, network) else {
+            continue;
+        };
         *store = with_zec(store, true, &secret).map_err(Error::Protocol)?;
     }
     Ok(())
 }
 
 /// `store` signed again with `accept` as its Zcash flag.
-fn with_zec(store: &Store, accept: bool, secret: &SecretKey) -> Result<Store, openbazaar_protocol::Error> {
+fn with_zec(
+    store: &Store,
+    accept: bool,
+    secret: &SecretKey,
+) -> Result<Store, openbazaar_protocol::Error> {
     let mut next = store.clone();
     if let Some(details) = next.details.as_mut() {
         details.accepts_zec = accept;
@@ -259,14 +293,23 @@ impl Node {
             return self.set_own_accepts_zec(&store, accept);
         }
         if !self.zec.stores.contains_key(seller) {
-            return Err(AcceptError::Unknown("That seller has no wallet on this node.".into()));
+            return Err(AcceptError::Unknown(
+                "That seller has no wallet on this node.".into(),
+            ));
         }
         if store.details.is_none() {
-            return Err(AcceptError::Unknown("That store's record cannot carry a Zcash choice.".into()));
+            return Err(AcceptError::Unknown(
+                "That store's record cannot carry a Zcash choice.".into(),
+            ));
         }
-        let secret = self.store_secret(&store.id).ok_or_else(|| AcceptError::Unknown("This node does not hold that store's key.".into()))?;
-        let signed = with_zec(&store, accept, &secret).map_err(|err| AcceptError::Failed(err.to_string()))?;
-        self.zec.save_accepts(seller, accept).map_err(AcceptError::Failed)?;
+        let secret = self.store_secret(&store.id).ok_or_else(|| {
+            AcceptError::Unknown("This node does not hold that store's key.".into())
+        })?;
+        let signed = with_zec(&store, accept, &secret)
+            .map_err(|err| AcceptError::Failed(err.to_string()))?;
+        self.zec
+            .save_accepts(seller, accept)
+            .map_err(AcceptError::Failed)?;
         let mut catalog = self.catalog_mut();
         if let Some(old) = catalog.stores.iter_mut().find(|old| old.id == signed.id) {
             *old = signed;
@@ -284,12 +327,17 @@ impl Node {
 
     /// Use `chain` for Zcash. Without one, Zcash checkout is refused.
     pub fn set_zec_chain(&self, chain: Arc<dyn ZecChain>) -> Result<(), String> {
-        self.zec.chain.set(chain).map_err(|_| "the Zcash chain source is already set".to_string())
+        self.zec
+            .chain
+            .set(chain)
+            .map_err(|_| "the Zcash chain source is already set".to_string())
     }
 
     /// Derive viewing keys for wallets that had only a spend tier, while unlocked.
     fn zec_fill_keys(&self) {
-        let Ok(key) = self.lock.spend_key() else { return };
+        let Ok(key) = self.lock.spend_key() else {
+            return;
+        };
         for slot in self.zec.slots() {
             let mut slot = guard(slot);
             if slot.wallet.is_some() {
@@ -308,9 +356,10 @@ impl Node {
     pub fn zec_sync_once(&self) -> Result<usize, String> {
         let chain = self.zec.chain().ok_or("Zcash is off")?.clone();
         self.zec_fill_keys();
+        let shared = SharedTip::new(chain.as_ref());
         let mut failed = None;
         for slot in self.zec.slots() {
-            if let Err(err) = self.sync_zec_slot(slot, chain.as_ref()) {
+            if let Err(err) = self.sync_zec_slot(slot, &shared) {
                 failed = Some(err);
             }
         }
@@ -325,7 +374,9 @@ impl Node {
     /// An order address handed out meanwhile is found by the copy too: the
     /// viewing key decrypts every address.
     fn sync_zec_slot(&self, slot: &Mutex<Slot>, chain: &dyn ZecChain) -> Result<(), String> {
-        let Some(mut copy) = guard(slot).wallet.clone() else { return Ok(()) };
+        let Some(mut copy) = guard(slot).wallet.clone() else {
+            return Ok(());
+        };
         let mut result = Ok(());
         for _ in 0..SYNC_STEPS {
             match copy.sync_step(chain, SYNC_BLOCKS) {
@@ -353,20 +404,54 @@ impl Node {
         result
     }
 
-    /// Sync every `every` on this thread until `stop`.
+    /// First sync, a wallet still behind the last tip, or a Zcash order not yet Paid.
+    pub(crate) fn zec_needs_sync(&self) -> bool {
+        let catching_up = self.zec.slots().any(|slot| {
+            guard(slot).wallet.as_ref().is_some_and(|wallet| {
+                match (wallet.scanned(), wallet.tip()) {
+                    (None, _) => true,
+                    (Some(scanned), Some(tip)) => scanned < tip,
+                    _ => false,
+                }
+            })
+        });
+        catching_up
+            || self.orders().on_network().any(|order| {
+                order.status != crate::watch::PAID
+                    && order.settlement == "direct"
+                    && order
+                        .payment
+                        .as_ref()
+                        .is_some_and(|payment| payment["rail"] == "zec")
+            })
+    }
+
+    pub(crate) fn zec_sync_wait(every: Duration, needs: bool) -> Duration {
+        if needs {
+            every
+        } else {
+            IDLE
+        }
+    }
+
+    /// Sync every `every` on this thread until `stop`. Idle nodes wait [`IDLE`],
+    /// and catch up on the next tick once an order is placed or a wallet is still behind.
     pub(crate) fn run_zec(&self, every: Duration, stop: &AtomicBool) {
         if self.zec.chain().is_none() {
             return;
         }
         let mut next_sync = Instant::now();
         while !stop.load(Ordering::Relaxed) {
+            let needs = self.zec_needs_sync();
             if Instant::now() >= next_sync {
                 match self.zec_sync_once() {
                     Ok(0) => {}
                     Ok(changed) => eprintln!("ob-node: {changed} Zcash order status change(s)"),
                     Err(err) => eprintln!("ob-node: Zcash: {err}"),
                 }
-                next_sync = Instant::now() + every;
+                next_sync = Instant::now() + Self::zec_sync_wait(every, self.zec_needs_sync());
+            } else if needs && next_sync.saturating_duration_since(Instant::now()) > every {
+                next_sync = Instant::now();
             }
             std::thread::sleep(TICK);
         }

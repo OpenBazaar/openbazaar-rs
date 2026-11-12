@@ -66,6 +66,29 @@ fn direct_order_moves_from_awaiting_to_seen_to_paid_and_persists() {
 }
 
 #[test]
+fn the_watcher_reads_the_tip_only_while_an_order_waits_on_the_chain() {
+    let (_dir, chain, node) = testnet();
+    let tip_reads = || chain.0.tip_reads.swap(0, std::sync::atomic::Ordering::SeqCst);
+    for _ in 0..44 {
+        assert_eq!(node.watch_once().unwrap(), 0);
+    }
+    assert_eq!(tip_reads(), 0, "44 rounds with no order and no sale");
+
+    let placed = checkout(&node, &[("Paperback novel", "Marlow Goods", "direct")]);
+    let id = placed[0]["orderId"].as_str().unwrap();
+    assert_eq!(node.watch_once().unwrap(), 0);
+    assert_eq!(tip_reads(), 1, "an order awaiting payment is watched every round");
+    chain.pay_external(placed[0]["payment"]["address"].as_str().unwrap(), placed[0]["totalSats"].as_u64().unwrap());
+    assert_eq!(node.watch_once().unwrap(), 1, "and its payment is seen on the next round");
+    assert_eq!(order(&node, id)["status"], "Payment seen");
+    chain.mine();
+    node.watch_once().unwrap();
+    assert_eq!((order(&node, id)["status"].as_str(), tip_reads()), (Some("Paid"), 2));
+    node.watch_once().unwrap();
+    assert_eq!(tip_reads(), 0, "nothing waits again");
+}
+
+#[test]
 fn underpayment_stays_awaiting_and_shows_what_arrived() {
     let (_dir, chain, node) = testnet();
     let placed = checkout(&node, &[("Paperback novel", "Marlow Goods", "direct")]);
