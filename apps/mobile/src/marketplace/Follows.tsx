@@ -1,8 +1,9 @@
 import { useState, type FormEvent } from "react";
 import { fetchDirectory, followStore, unfollowStore, type DirectoryStore } from "../follows";
 import { useNodeResource } from "../useNodeResource";
+import { FollowAddress } from "./FollowAddress";
 
-/** Stores this node already has, by name. A pasted key is the only way to add one. */
+/** Stores this node already has, by name. One is added by a pasted key, or by its address ([FollowAddress]). */
 export function Follows({ onChanged }: { onChanged: (message: string) => void }) {
   const resource = useNodeResource(fetchDirectory, 15000);
   const [storeId, setStoreId] = useState("");
@@ -45,5 +46,6 @@ export function Follows({ onChanged }: { onChanged: (message: string) => void })
       <span><strong>{store.name ?? "Waiting for the store's record"}</strong><small>{store.listings} listing{store.listings === 1 ? "" : "s"}</small></span>
       {store.added ? <button className="ob-text-link" disabled={busy} onClick={() => void change(() => unfollowStore(store.storeId), "Stopped following that store")}>Remove</button> : null}
     </li>)}</ul>}
+    <FollowAddress onChanged={onChanged}/>
   </div>;
 }
