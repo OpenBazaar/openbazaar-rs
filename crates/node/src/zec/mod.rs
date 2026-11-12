@@ -27,7 +27,7 @@
 
 mod checkout;
 mod http;
-mod rate;
+pub(crate) mod rate;
 #[cfg(test)]
 mod tests;
 

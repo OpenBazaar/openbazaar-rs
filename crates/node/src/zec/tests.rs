@@ -2,6 +2,7 @@
 
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 use openbazaar_zec::amount::zatoshi_for_sats;
 use openbazaar_zec::mock::MockChain as ZecChainMock;
@@ -172,6 +173,27 @@ fn escrow_stores_that_do_not_accept_it_and_missing_prices_refuse_zcash() {
     let (_, network) = request(&off, "GET", "/network", "");
     assert_eq!((&network["zecBackend"]["enabled"], &network["zecBackend"]["backend"]), (&json!(false), &json!("none")));
     let (status, _) = place(&off, "Paperback novel", "Marlow Goods", "direct", "btc");
+    assert!(status.contains("200"), "the bitcoin rail is unchanged");
+}
+
+#[test]
+fn a_btc_price_older_than_the_zec_limit_does_not_price_a_zcash_order() {
+    let Setup { node, btc: _btc, zec: _zec, dir: _dir } = setup();
+    node.zec.rate.set_for_tests(None);
+    node.zec.rate.set_usd_for_tests(1229.36);
+    node.rates.set_answer_for_tests(100_000.0, super::rate::USABLE - Duration::from_secs(60));
+    let (_, payment) = zec_order(&node);
+    assert_eq!(payment["satsPerZec"], 1_229_360);
+    assert_eq!(request(&node, "GET", "/rates", "").1["zec"]["satsPerZec"], 1_229_360);
+
+    // Coinbase has failed for longer than the limit; the node still holds its last answer.
+    node.rates.set_answer_for_tests(100_000.0, super::rate::USABLE + Duration::from_secs(60));
+    let (status, refused) = place(&node, "Paperback novel", "Marlow Goods", "direct", "zec");
+    assert!(status.contains("400") && refused["error"].as_str().unwrap().contains("no ZEC price"), "{status} {refused}");
+    let (_, rates) = request(&node, "GET", "/rates", "");
+    assert_eq!(rates["zec"], Value::Null);
+    assert_eq!(rates["currencies"]["USD"], 100_000.0, "the bitcoin estimate still shows the old answer");
+    let (status, _) = place(&node, "Paperback novel", "Marlow Goods", "direct", "btc");
     assert!(status.contains("200"), "the bitcoin rail is unchanged");
 }
 
