@@ -1037,6 +1037,9 @@ impl Node {
     }
 
     fn introduction_listings(&self, id: [u8; 32]) -> Result<Vec<Vec<u8>>, String> {
+        if !self.local.introductions {
+            return Err("introductions are off".into());
+        }
         let hosts = self.seed_replica.lock().unwrap_or_else(|err| err.into_inner()).introduction_hosts();
         let state_dir = self.data_dir.join("tor-client");
         let mut last = String::from("no introduction answered");
@@ -2138,5 +2141,18 @@ mod tests {
         assert!(node.directory_sale_url(&node.own_store).is_none());
         let demo = node.catalog().stores.iter().find(|store| crate::demo_secret(store).is_some()).unwrap().id;
         assert!(node.directory_sale_url(&demo).is_none());
+    }
+
+    #[test]
+    fn a_node_with_introductions_off_does_not_ask_one_for_listings() {
+        use crate::harness::TempDir;
+        use crate::network::NetworkMode;
+
+        let dir = TempDir::new();
+        let mut local = crate::LocalConfig::headless();
+        local.introductions = false;
+        let node = Node::open_local(&dir.0, crate::load_catalog(NetworkMode::Testnet4).unwrap(), crate::NodeConfig::offline(NetworkMode::Testnet4), local).unwrap();
+        assert!(node.introduction_listings([7; 32]).is_err());
+        assert!(!node.data_dir.join("tor-client").exists(), "no Tor client was opened to dial one");
     }
 }

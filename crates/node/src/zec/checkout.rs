@@ -54,7 +54,8 @@ fn amount_of(payment: &Value, key: &str) -> u64 {
 impl Node {
     /// Sats per ZEC now, from Kraken's ZEC/USD and this node's BTC/USD.
     pub(crate) fn sats_per_zec(&self) -> Option<u64> {
-        self.zec.rate.sats_per_zec(self.rates.btc_price("USD"))
+        let btc_usd = self.rates.btc_price("USD").filter(|_| self.rates.answered_within(super::rate::USABLE));
+        self.zec.rate.sats_per_zec(btc_usd)
     }
 
     /// Everything a Zcash package needs, checked before any letter is sealed.

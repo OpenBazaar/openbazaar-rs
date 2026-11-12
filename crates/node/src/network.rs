@@ -136,8 +136,12 @@ pub struct ServeOptions {
     pub pair_codes: bool,
     /// `--proxy socks5h://HOST:PORT` for rates and chain queries.
     pub proxy: Option<String>,
-    /// False with `--no-rates`.
+    /// False with `--no-rates` or `--fixed-rates`.
     pub live_rates: bool,
+    /// `--fixed-rates BTCUSD=N,ZECUSD=N`: testnet4 prices in whole dollars, with no rate server asked.
+    pub fixed_rates: Option<(u32, u32)>,
+    /// False with `--no-introductions`: the directory's introductions are not asked.
+    pub introductions: bool,
     /// `--xmr-daemon URL`: monerod RPC for Monero direct pay. Empty turns Monero off.
     pub xmr_daemons: Vec<String>,
     /// `--zec-indexer URL`: Zaino or lightwalletd for Zcash direct pay. Empty turns Zcash off.
@@ -175,6 +179,8 @@ impl ServeOptions {
         let mut pair_codes = true;
         let mut proxy = None;
         let mut live_rates = true;
+        let mut fixed_rates = None;
+        let mut introductions = true;
         let mut xmr_daemons: Vec<String> = Vec::new();
         let mut zec_indexers: Vec<String> = Vec::new();
         let mut lightning = crate::LnFlags::default();
@@ -252,6 +258,8 @@ impl ServeOptions {
                 "--no-pair-codes" => pair_codes = false,
                 "--proxy" => proxy = Some(crate::egress::Egress::parse_proxy(&value("--proxy")?)?),
                 "--no-rates" => live_rates = false,
+                "--fixed-rates" => fixed_rates = Some(parse_fixed_rates(&value("--fixed-rates")?)?),
+                "--no-introductions" => introductions = false,
                 "--xmr-daemon" => {
                     let text = value("--xmr-daemon")?;
                     xmr_daemons.extend(text.split(',').map(str::trim).filter(|url| !url.is_empty()).map(String::from));
@@ -278,6 +286,9 @@ impl ServeOptions {
             }
         }
         let network = network.unwrap_or(NetworkMode::Testnet4);
+        if fixed_rates.is_some() && network != NetworkMode::Testnet4 {
+            return Err("--fixed-rates is for testnet4 only. Mainnet prices come from the rate servers".to_string());
+        }
         let peers = peers
             .iter()
             .map(|peer| crate::chain_backend::parse_peer(peer, network))
@@ -310,7 +321,9 @@ impl ServeOptions {
             shop_origin,
             pair_codes,
             proxy,
-            live_rates,
+            live_rates: live_rates && fixed_rates.is_none(),
+            fixed_rates,
+            introductions,
             xmr_daemons,
             zec_indexers,
             lightning,
@@ -386,6 +399,14 @@ impl ServeOptions {
 /// it: `/api` (mainnet), `/testnet4/api`, `/testnet/api`, `/signet/api`.
 /// Onion services are not the clearnet TLS name, so the scheme is `http`.
 pub(crate) const MEMPOOL_ONION_HOST: &str = "mempoolhqx4isw62xs7abwphsq7ldayuidyx2v2oethdhhj6mlo2r6ad.onion";
+
+/// `BTCUSD=N,ZECUSD=N`, each a whole number of dollars above zero.
+fn parse_fixed_rates(text: &str) -> Result<(u32, u32), String> {
+    let refused = || format!("--fixed-rates must be BTCUSD=N,ZECUSD=N in whole dollars, not {text:?}");
+    let dollars = |pair: &str, name: &str| pair.strip_prefix(name).and_then(|n| n.parse().ok()).filter(|n| *n > 0).ok_or_else(refused);
+    let (btc, zec) = text.split_once(',').ok_or_else(refused)?;
+    Ok((dollars(btc, "BTCUSD=")?, dollars(zec, "ZECUSD=")?))
+}
 
 /// The Esplora base to dial for the tip, fees, and broadcasts.
 ///
@@ -534,7 +555,7 @@ mod tests {
         let options = ServeOptions::parse(&[]).unwrap();
         assert_eq!(options.vault, VaultChoice::Keystore, "the key goes to the OS keystore unless told otherwise");
         assert_eq!(options.shop_origin, "http://127.0.0.1:4173");
-        assert!(options.pair_codes && options.live_rates && options.proxy.is_none());
+        assert!(options.pair_codes && options.live_rates && options.introductions && options.proxy.is_none());
         let options = ServeOptions::parse(&args(&[
             "--vault",
             "passphrase",
@@ -544,15 +565,35 @@ mod tests {
             "--proxy",
             "socks5://127.0.0.1:9050",
             "--no-rates",
+            "--no-introductions",
         ]))
         .unwrap();
         assert_eq!(options.vault, VaultChoice::Passphrase);
         assert_eq!(options.shop_origin, "http://localhost:19006");
-        assert!(!options.pair_codes && !options.live_rates);
+        assert!(!options.pair_codes && !options.live_rates && !options.introductions);
         assert_eq!(options.proxy.as_deref(), Some("socks5h://127.0.0.1:9050"));
         for bad in [&["--vault", "plain"][..], &["--shop-origin", "https://evil.example"], &["--proxy", "http://127.0.0.1:8080"]] {
             assert!(ServeOptions::parse(&args(bad)).is_err(), "{bad:?}");
         }
+    }
+
+    #[test]
+    fn fixed_rates_are_for_testnet4_and_ask_no_rate_server() {
+        let fixed = &["--fixed-rates", "BTCUSD=100000,ZECUSD=50"][..];
+        let options = ServeOptions::parse(&args(fixed)).unwrap();
+        assert_eq!(options.fixed_rates, Some((100_000, 50)));
+        assert!(!options.live_rates && !options.egress().live_rates, "no rate server is asked");
+        let tor = &["--no-rates", "--proxy", "socks5h://127.0.0.1:9050"][..];
+        assert_eq!(ServeOptions::parse(&args(&[fixed, tor].concat())).unwrap().fixed_rates, Some((100_000, 50)));
+        assert_eq!(ServeOptions::parse(&[]).unwrap().fixed_rates, None);
+
+        let err = ServeOptions::parse(&args(&[fixed, &["--network", "mainnet"]].concat())).unwrap_err();
+        assert!(err.contains("--fixed-rates is for testnet4 only"), "{err}");
+        for bad in ["BTCUSD=100000", "ZECUSD=50,BTCUSD=100000", "BTCUSD=0,ZECUSD=50", "BTCUSD=100000,ZECUSD=49.5", "BTCUSD=100000,ZECUSD=50,EURUSD=1"] {
+            let err = ServeOptions::parse(&args(&["--fixed-rates", bad])).unwrap_err();
+            assert!(err.contains("--fixed-rates must be BTCUSD=N,ZECUSD=N"), "{bad}: {err}");
+        }
+        assert!(ServeOptions::parse(&args(&["--fixed-rates"])).is_err());
     }
 
     #[test]

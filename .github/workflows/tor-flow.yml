@@ -22,15 +22,29 @@ jobs:
   rust:
     name: nodes over tor
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    # Room for two attempts that both fail slowly, about 16 minutes each.
+    timeout-minutes: 40
+    env:
+      # The ignored tests that need nothing but Tor, each run whatever the
+      # other does. introductions.rs needs an operator key file and stays out.
+      # No -p: the whole workspace resolves the same features as ci.yml, so
+      # the cached build is the one used.
+      TOR_TESTS: cargo test --locked --no-fail-fast --test onion_letter --test market_flow -- --ignored --nocapture
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: false
-      # The ignored tests that need nothing but Tor, each run whatever the
-      # other does. introductions.rs needs an operator key file and stays out.
-      # No -p: the whole workspace resolves the same features as ci.yml, so
-      # the cached build is the one used.
-      - run: cargo test --locked --no-fail-fast --test onion_letter --test market_flow -- --ignored --nocapture
+      # A first failure is usually Tor having a bad moment, so the tests get one
+      # retry. The first attempt keeps its failure and its output, and the
+      # retry shows as skipped when it was not needed. Failing twice fails the job.
+      - name: tor tests
+        id: first
+        continue-on-error: true
+        run: $TOR_TESTS
+      - name: tor tests, the one retry
+        if: steps.first.outcome == 'failure'
+        run: |
+          echo "::warning title=tor tests retried::The first attempt failed; its output is in the step before this one."
+          $TOR_TESTS

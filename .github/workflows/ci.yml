@@ -27,6 +27,22 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      # The Lightning regtest tests pass without running when there is no
+      # bitcoind, so one goes on PATH: the official Bitcoin Core build, checked
+      # against the hash in the SHA256SUMS file published beside it.
+      - name: install bitcoind
+        env:
+          BITCOIN_CORE: "29.0"
+          SHA256: a681e4f6ce524c338a105f214613605bac6c33d58c31dc5135bbc02bc458bb6c
+        run: |
+          cd "$RUNNER_TEMP"
+          tarball="bitcoin-$BITCOIN_CORE-x86_64-linux-gnu.tar.gz"
+          curl -fsSL --retry 3 -O "https://bitcoincore.org/bin/bitcoin-core-$BITCOIN_CORE/$tarball"
+          echo "$SHA256  $tarball" | sha256sum --check
+          tar -xzf "$tarball"
+          echo "$RUNNER_TEMP/bitcoin-$BITCOIN_CORE/bin" >> "$GITHUB_PATH"
+      # Without a bitcoind the job stops here, before those tests can skip.
+      - run: bitcoind --version
       # The lockfile pins crates. Do not pass --ignored: the live Arti dial
       # stays ignored when that test is on the branch. Crates are not vendored,
       # so the runner fetches the locked versions instead of using --offline.

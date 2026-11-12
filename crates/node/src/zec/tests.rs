@@ -2,6 +2,7 @@
 
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 use openbazaar_zec::amount::zatoshi_for_sats;
 use openbazaar_zec::mock::MockChain as ZecChainMock;
@@ -171,6 +172,37 @@ fn a_quote_lapses_after_an_hour_and_a_late_payment_is_recorded_but_not_marked_pa
 }
 
 #[test]
+fn a_payment_whose_blocks_are_replaced_before_paid_is_gone_until_it_is_mined_again() {
+    let Setup { node, zec, btc: _btc, dir: _dir } = setup();
+    let (id, payment) = zec_order(&node);
+    let due = zatoshi(&payment["amountZatoshi"]);
+    zec.pay(address(&payment), due);
+    zec.mine(3);
+    node.zec_sync_once().unwrap();
+    let seen = order(&node, &id);
+    assert_eq!((&seen["status"], &seen["confirmations"]), (&json!("Payment seen"), &json!(3)), "{seen}");
+
+    zec.reorg(3);
+    zec.mine(4);
+    node.zec_sync_once().unwrap();
+    let gone = order(&node, &id);
+    assert_eq!((&gone["status"], &gone["confirmations"]), (&json!("Awaiting payment"), &json!(0)), "{gone}");
+    assert_eq!(zatoshi(&gone["payment"]["receivedZatoshi"]), 0);
+    assert_eq!(zatoshi(&gone["payment"]["remainingZatoshi"]), due);
+    assert_eq!(gone["txids"], json!([]));
+
+    zec.pay(address(&payment), due);
+    zec.mine(CONFIRMATIONS - 1);
+    node.zec_sync_once().unwrap();
+    assert_eq!(order(&node, &id)["status"], "Payment seen", "29 confirmations on the new chain");
+    zec.mine(1);
+    node.zec_sync_once().unwrap();
+    let paid = order(&node, &id);
+    assert_eq!(paid["status"], "Paid");
+    assert_eq!(paid["txids"].as_array().unwrap().len(), 1, "only the payment that stayed: {paid}");
+}
+
+#[test]
 fn only_ironwood_pays_an_order() {
     let Setup { node, zec, btc: _btc, dir: _dir } = setup();
     let (id, payment) = zec_order(&node);
@@ -207,6 +239,43 @@ fn escrow_stores_that_do_not_accept_it_and_missing_prices_refuse_zcash() {
     assert_eq!((&network["zecBackend"]["enabled"], &network["zecBackend"]["backend"]), (&json!(false), &json!("none")));
     let (status, _) = place(&off, "Paperback novel", "Marlow Goods", "direct", "btc");
     assert!(status.contains("200"), "the bitcoin rail is unchanged");
+}
+
+#[test]
+fn a_btc_price_older_than_the_zec_limit_does_not_price_a_zcash_order() {
+    let Setup { node, btc: _btc, zec: _zec, dir: _dir } = setup();
+    node.zec.rate.set_for_tests(None);
+    node.zec.rate.set_usd_for_tests(1229.36);
+    node.rates.set_answer_for_tests(100_000.0, super::rate::USABLE - Duration::from_secs(60));
+    let (_, payment) = zec_order(&node);
+    assert_eq!(payment["satsPerZec"], 1_229_360);
+    assert_eq!(request(&node, "GET", "/rates", "").1["zec"]["satsPerZec"], 1_229_360);
+
+    // Coinbase has failed for longer than the limit; the node still holds its last answer.
+    node.rates.set_answer_for_tests(100_000.0, super::rate::USABLE + Duration::from_secs(60));
+    let (status, refused) = place(&node, "Paperback novel", "Marlow Goods", "direct", "zec");
+    assert!(status.contains("400") && refused["error"].as_str().unwrap().contains("no ZEC price"), "{status} {refused}");
+    let (_, rates) = request(&node, "GET", "/rates", "");
+    assert_eq!(rates["zec"], Value::Null);
+    assert_eq!(rates["currencies"]["USD"], 100_000.0, "the bitcoin estimate still shows the old answer");
+    let (status, _) = place(&node, "Paperback novel", "Marlow Goods", "direct", "btc");
+    assert!(status.contains("200"), "the bitcoin rail is unchanged");
+}
+
+#[test]
+fn fixed_rates_price_a_zcash_order_with_no_rate_server_and_say_they_are_fixed() {
+    let Setup { mut node, btc: _btc, zec: _zec, dir: _dir } = setup();
+    let off = Egress { proxy: None, live_rates: false };
+    node.rates = crate::rates::Rates::new(off.clone());
+    node.zec.rate = super::rate::ZecRate::new(off);
+    assert_eq!(request(&node, "GET", "/rates", "").1["zec"], Value::Null);
+
+    node.set_fixed_rates(100_000, 50);
+    let (_, rates) = request(&node, "GET", "/rates", "");
+    assert_eq!((&rates["source"], &rates["currencies"]), (&json!("fixed"), &json!({"USD": 100_000.0})));
+    assert_eq!((&rates["zec"]["source"], &rates["zec"]["satsPerZec"]), (&json!("fixed"), &json!(50_000)));
+    assert_eq!(rates["zec"]["currencies"]["USD"], 50.0, "a fixed price has no age");
+    assert_eq!(zec_order(&node).1["satsPerZec"], 50_000);
 }
 
 #[test]

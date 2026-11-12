@@ -23,6 +23,7 @@ import { HomeNodePanel } from "./HomeNodePanel";
 import { HomeNodeBadge, ModeratorDeskLink } from "./HomeNodeGate";
 import { LightningSettings } from "./LightningSettings";
 import { ZcashSettings } from "./ZcashSettings";
+import { fetchNetwork } from "../nodeWallet";
 import { LightningOrderPayment, LightningWalletCard } from "./LightningPayment";
 import { priceDrops, rememberPrices, savedHashesAfterRefresh, sameWatches, signedPrice, type WatchedListing } from "../priceNotices";
 import { fetchProfile, formatPrice, salesToShip, setRole } from "../seller";
@@ -123,6 +124,7 @@ export default function Marketplace() {
   const [toast, setToast] = useState("");
   const build = useBuildInfo();
   const profile = useNodeResource(fetchProfile, 0);
+  const network = useNodeResource(fetchNetwork, 0);
   const openDesk = useContext(ModeratorDeskLink);
   const seller = profile.data?.role === "seller";
   const sales = useSales(seller, sale => setToast(`New order: ${sale.lines.map(l => l.title).join(", ")}`));
@@ -302,7 +304,7 @@ export default function Marketplace() {
           <NavItem icon="grid" active={section === "store-labels"} onClick={() => navigate("store-labels")}>Store labels</NavItem>
           <NavItem icon="globe" active={section === "home-node"} onClick={() => navigate("home-node")}>Home node</NavItem>
           <NavItem icon="bolt" active={section === "lightning"} onClick={() => navigate("lightning")}>Lightning</NavItem>
-          <NavItem icon="wallet" active={section === "zcash"} onClick={() => navigate("zcash")}>Zcash</NavItem>
+          {network.data?.network === "testnet4" && <NavItem icon="wallet" active={section === "zcash"} onClick={() => navigate("zcash")}>Zcash</NavItem>}
           <NavItem icon="globe" active={section === "follows"} onClick={() => navigate("follows")}>Followed stores</NavItem>
           {profile.data && (seller ? <NavItem icon="home" active={section === "store"} onClick={() => navigate("store")}>Store settings</NavItem> : <NavItem icon="home" active={false} onClick={() => void startSelling()}>Start selling</NavItem>)}
           <div className="ob-settings-currency"><label className="ob-field">Display currency<select aria-label="Display currency" value={currency} onChange={e => { const c = e.target.value as CurrencyCode; setCurrency(c); try { localStorage.setItem("ob-shop-currency", c); } catch {} }}><option value="USD">USD · US dollar</option><option value="EUR">EUR · Euro</option><option value="GBP">GBP · British pound</option><option value="JPY">JPY · Japanese yen</option></select></label><p>Used for price estimates.</p></div>

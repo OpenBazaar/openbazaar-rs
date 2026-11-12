@@ -18,17 +18,16 @@ use crate::Egress;
 
 const SOURCE: &str = "https://api.kraken.com/0/public/Ticker?pair=ZECUSD";
 const FRESH: Duration = Duration::from_secs(5 * 60);
-/// An order is never priced from an answer older than this.
-const USABLE: Duration = Duration::from_secs(30 * 60);
+/// An order is never priced from an answer older than this, for ZEC/USD or for the BTC/USD it is crossed with.
+pub(crate) const USABLE: Duration = Duration::from_secs(30 * 60);
 
 pub(crate) struct ZecRate {
     /// The last ZEC/USD answer.
     cache: Mutex<Option<(Instant, f64)>>,
     egress: Egress,
     source: String,
-    /// Tests pin sats per ZEC instead of asking Kraken and Coinbase.
-    #[cfg(test)]
-    fixed: Mutex<Option<u64>>,
+    /// Tests and `--fixed-rates` pin sats per ZEC instead of asking Kraken and Coinbase.
+    pub(crate) fixed: Mutex<Option<u64>>,
 }
 
 impl ZecRate {
@@ -37,7 +36,6 @@ impl ZecRate {
             cache: Mutex::new(None),
             egress,
             source: SOURCE.to_string(),
-            #[cfg(test)]
             fixed: Mutex::new(None),
         }
     }
@@ -62,7 +60,6 @@ impl ZecRate {
 
     /// Sats per ZEC given the node's BTC/USD price, or `None` without either price.
     pub(crate) fn sats_per_zec(&self, btc_usd: Option<f64>) -> Option<u64> {
-        #[cfg(test)]
         if let Some(sats) = *self.fixed.lock().unwrap_or_else(|err| err.into_inner()) {
             return Some(sats);
         }
@@ -80,12 +77,19 @@ impl ZecRate {
                 }
             }
         }
-        json!({ "base": "ZEC", "satsPerZec": sats, "decimals": 8, "source": "kraken", "currencies": currencies })
+        let source = if self.fixed.lock().unwrap_or_else(|err| err.into_inner()).is_some() { "fixed" } else { "kraken" };
+        json!({ "base": "ZEC", "satsPerZec": sats, "decimals": 8, "source": source, "currencies": currencies })
     }
 
     #[cfg(test)]
     pub(crate) fn set_for_tests(&self, sats: Option<u64>) {
         *self.fixed.lock().unwrap() = sats;
+    }
+
+    /// Tests keep a fresh ZEC/USD answer and leave the BTC/USD leg live.
+    #[cfg(test)]
+    pub(crate) fn set_usd_for_tests(&self, usd: f64) {
+        *self.cache.lock().unwrap() = Some((Instant::now(), usd));
     }
 }
 

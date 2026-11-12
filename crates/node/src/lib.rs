@@ -123,6 +123,8 @@ mod multinode_tests;
 #[cfg(test)]
 mod multinode_durable_tests;
 #[cfg(test)]
+mod multinode_payment_tests;
+#[cfg(test)]
 mod multinode_seller_tests;
 #[cfg(test)]
 mod multinode_variant_tests;
@@ -233,6 +235,8 @@ pub struct LocalConfig {
     /// `POST /pair` prints one-time codes. The desktop app turns this off.
     pub pair_codes: bool,
     pub egress: Egress,
+    /// Ask the directory's introductions. `--no-introductions` turns this off.
+    pub introductions: bool,
     /// `--local-shop`: the web export a browser on this machine loads.
     /// Remote browsers keep using `--web-dir` on the onion gateway.
     pub local_shop: Option<PathBuf>,
@@ -247,6 +251,7 @@ impl LocalConfig {
             shop_origin: http_guard::DEFAULT_SHOP_ORIGIN.to_string(),
             pair_codes: true,
             egress: Egress::default(),
+            introductions: true,
             local_shop: None,
         }
     }
@@ -534,10 +539,17 @@ impl Node {
         self.buyer_orders.lock().unwrap_or_else(|err| err.into_inner())
     }
 
+    /// `--fixed-rates`: price orders from these dollar figures for 1 BTC and
+    /// 1 ZEC instead of a rate server's. `ServeOptions` takes it on testnet4 only.
+    pub fn set_fixed_rates(&self, btc_usd: u32, zec_usd: u32) {
+        *self.rates.fixed.lock().unwrap() = Some([("USD".to_string(), f64::from(btc_usd))].into());
+        *self.zec.rate.fixed.lock().unwrap() = openbazaar_zec::amount::sats_per_zec(f64::from(zec_usd), f64::from(btc_usd));
+    }
+
     pub(crate) fn rates_value(&self) -> Value {
         let mut value = self.rates.value();
         value["xmr"] = self.xmr.rate.value(&value);
-        value["zec"] = self.zec.rate.value(&value);
+        value["zec"] = self.zec.rate.value(if self.rates.answered_within(zec::rate::USABLE) { &value } else { &Value::Null });
         value
     }
 
@@ -580,7 +592,9 @@ impl Node {
             scope.spawn(|| self.run_lightning(&stop));
             scope.spawn(|| self.run_order_mail(&stop));
             scope.spawn(|| self.run_replicas(poll.min(Duration::from_secs(30)), &stop));
-            scope.spawn(|| self.run_introductions(&stop));
+            if self.local.introductions {
+                scope.spawn(|| self.run_introductions(&stop));
+            }
             if self.onion_dir.lock().unwrap_or_else(|err| err.into_inner()).is_some() {
                 match crate::sale_gate::bind() {
                     Ok(listener) => match listener.local_addr() {

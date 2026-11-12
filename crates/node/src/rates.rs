@@ -31,8 +31,7 @@ pub(crate) struct Rates {
     cache: Mutex<Option<Cached>>,
     egress: Egress,
     source: String,
-    /// Tests pin the rates instead of asking Coinbase.
-    #[cfg(test)]
+    /// Tests and `--fixed-rates` pin the rates instead of asking Coinbase.
     pub(crate) fixed: Mutex<Option<BTreeMap<String, f64>>>,
 }
 
@@ -42,7 +41,6 @@ impl Rates {
             cache: Mutex::new(None),
             egress,
             source: SOURCE.to_string(),
-            #[cfg(test)]
             fixed: Mutex::new(None),
         }
     }
@@ -52,10 +50,30 @@ impl Rates {
         self.value()["currencies"][currency].as_f64().filter(|price| price.is_finite() && *price > 0.0)
     }
 
+    /// `true` while the last Coinbase answer is younger than `limit`. When
+    /// Coinbase fails, `value` goes on serving the old answer at any age.
+    pub(crate) fn answered_within(&self, limit: Duration) -> bool {
+        if self.fixed.lock().unwrap_or_else(|err| err.into_inner()).is_some() {
+            return true;
+        }
+        let guard = self.cache.lock().unwrap_or_else(|err| err.into_inner());
+        guard.as_ref().is_some_and(|cached| cached.at.elapsed() < limit)
+    }
+
+    /// Tests keep a BTC/USD answer of this age, as if Coinbase had failed since.
+    #[cfg(test)]
+    pub(crate) fn set_answer_for_tests(&self, usd: f64, age: Duration) {
+        *self.cache.lock().unwrap() = Some(Cached {
+            at: Instant::now() - age,
+            currencies: BTreeMap::from([("USD".to_string(), usd)]),
+        });
+    }
+
     pub(crate) fn value(&self) -> Value {
-        #[cfg(test)]
         if let Some(fixed) = self.fixed.lock().unwrap_or_else(|err| err.into_inner()).as_ref() {
-            return rates_json(fixed);
+            let mut value = rates_json(fixed);
+            value["source"] = json!("fixed");
+            return value;
         }
         if !self.egress.live_rates {
             return json!({ "base": "BTC", "currencies": {}, "live": false });
