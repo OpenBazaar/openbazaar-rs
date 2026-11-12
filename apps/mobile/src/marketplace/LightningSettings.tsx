@@ -13,6 +13,7 @@ import {
 import { useNodeResource } from '../useNodeResource'
 import { RailMark } from './RailMark'
 import { Dialog, FormError, Passphrase, useSubmit } from './WalletLock'
+import { CopyAddress } from './CopyAddress'
 
 /** Seller settings: which stores take Lightning, the LSP, and channels. */
 export function LightningSettings() {
@@ -98,7 +99,7 @@ export function LightningSettings() {
           <div className='ob-spend-confirm'>
             <h2>How the LSP sees your payments</h2>
             <p className='ob-page-intro'>{stores.data.lspNotice}</p>
-            {ln?.lsp && <p className='ob-settings-footnote'>LSP: <code>{ln.lsp.nodeId}@{ln.lsp.address}</code></p>}
+            {ln?.lsp && <CopyAddress value={`${ln.lsp.nodeId}@${ln.lsp.address}`} label='Copy LSP connection'/>}
             <FormError message={toggle.error} />
             <div className='ob-form-actions'>
               <button className='ob-secondary' type='button' onClick={() => setPending(null)}>Cancel</button>
@@ -139,7 +140,7 @@ function NodeCard({ ln }: { ln: LnStatus }) {
           {ln.running ? 'Running' : ln.keys === 'unlock-to-create' ? 'Unlock the wallet once to create its Lightning keys' : 'Starting'}
         </dd>
         <dt>LSP</dt>
-        <dd>{ln.lsp ? <>{ln.lsp.address} · {ln.lsp.connected ? 'connected' : 'not connected'}</> : 'None. Open channels yourself.'}</dd>
+        <dd>{ln.lsp ? <><CopyAddress value={`${ln.lsp.nodeId}@${ln.lsp.address}`} label='Copy LSP connection'/><span className='ob-meta'>{ln.lsp.connected ? 'Connected' : 'Not connected'}</span></> : 'None. Open channels yourself.'}</dd>
         {ln.balances && (
           <>
             <dt>Can receive</dt>
@@ -149,7 +150,7 @@ function NodeCard({ ln }: { ln: LnStatus }) {
         {ln.nodeId && (
           <>
             <dt>Node ID</dt>
-            <dd><code>{ln.nodeId}</code></dd>
+            <dd><CopyAddress value={ln.nodeId} label='Copy Lightning node ID'/></dd>
           </>
         )}
       </dl>

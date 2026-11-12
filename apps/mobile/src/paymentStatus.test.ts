@@ -28,6 +28,16 @@ test('a paid order shows Confirmed instead of a stale count', () => {
   assert.equal(view({ status: 'Paid', confirmations: 4 }).confirmations, 'Confirmed')
 })
 
+test('fulfilled orders do not request another payment when local counters lag', () => {
+  for (const status of ['Shipped', 'Completed']) {
+    const result = view({ status, confirmations: 0, payTxid: 'ab', sending: true, wallet: { spendableSats: 0, totalSats: 0 } })
+    assert.equal(result.progress, null)
+    assert.equal(result.balance, null)
+    assert.equal(result.confirmations, 'Local confirmation details unavailable')
+    assert.equal(view({ status, confirmations: 4 }).confirmations, 'Confirmations: 4')
+  }
+})
+
 test('confirmations before Paid show progress against the requirement', () => {
   assert.equal(view({ status: 'Payment seen', confirmations: 1, requiredConfirmations: 2 }).confirmations, 'Confirmations: 1 / 2')
   assert.equal(view({ requiredConfirmations: undefined }).confirmations, 'Confirmations: 0')

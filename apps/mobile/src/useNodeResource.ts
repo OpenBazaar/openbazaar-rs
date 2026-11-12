@@ -5,9 +5,10 @@ import { afterShopPair } from './catalog'
 // returning to the app refreshes immediately, without overlapping requests.
 export function useNodeResource<T>(
   fetcher: () => Promise<T>,
-  intervalMs: number,
+  intervalMs: number | ((data: T | null) => number),
   enabled = true,
-  stopWhen?: (data: T) => boolean
+  stopWhen?: (data: T) => boolean,
+  isEqual?: (previous: T, next: T) => boolean
 ) {
   const [data, setData] = useState<T | null>(null)
   const [error, setError] = useState('')
@@ -17,10 +18,15 @@ export function useNodeResource<T>(
   stopRef.current = stopWhen
   const fetchRef = useRef(fetcher)
   fetchRef.current = fetcher
+  const intervalRef = useRef(intervalMs)
+  intervalRef.current = intervalMs
+  const equalRef = useRef(isEqual)
+  equalRef.current = isEqual
   const active = useRef(false)
   const generation = useRef(0)
   const inFlight = useRef<Promise<void> | null>(null)
   const queued = useRef<Promise<void> | null>(null)
+  const scheduleRef = useRef<(() => void) | null>(null)
   const refresh = useCallback(
     async function refreshResource(): Promise<void> {
       if (!enabled || !active.current) return
@@ -38,8 +44,10 @@ export function useNodeResource<T>(
         try {
           const next = await Promise.resolve().then(() => fetchRef.current())
           if (generation.current === current) {
-            latestData.current = next
-            setData(next)
+            if (latestData.current === null || !equalRef.current?.(latestData.current, next)) {
+              latestData.current = next
+              setData(next)
+            }
             setError('')
           }
         } catch (e) {
@@ -49,7 +57,10 @@ export function useNodeResource<T>(
             )
         } finally {
           inFlight.current = null
-          if (generation.current === current) setLoading(false)
+          if (generation.current === current) {
+            setLoading(false)
+            scheduleRef.current?.()
+          }
         }
       })()
       inFlight.current = pending
@@ -63,27 +74,42 @@ export function useNodeResource<T>(
     active.current = enabled
     if (!enabled) return
     setLoading(true)
-    void refresh()
     const visible = () =>
       typeof document === 'undefined' || document.visibilityState !== 'hidden'
-    const poll = () => {
-      if (
-        visible() &&
-        !(latestData.current && stopRef.current?.(latestData.current))
-      )
-        void refresh()
+    let timer: ReturnType<typeof setTimeout> | undefined
+    let sequence = 0
+    let disposed = false
+    const schedule = () => {
+      clearTimeout(timer)
+      if (disposed || !visible()) return
+      const delay = typeof intervalRef.current === 'function' ? intervalRef.current(latestData.current) : intervalRef.current
+      if (delay > 0 && !(latestData.current && stopRef.current?.(latestData.current))) timer = setTimeout(() => void poll(), delay)
     }
-    const timer = intervalMs > 0 ? setInterval(poll, intervalMs) : undefined
+    scheduleRef.current = schedule
+    const poll = async (force = false) => {
+      const current = ++sequence
+      clearTimeout(timer)
+      if (!visible()) return
+      if (force || !(latestData.current && stopRef.current?.(latestData.current))) await refresh()
+      if (disposed || current !== sequence || !visible()) return
+      schedule()
+    }
+    // Returning to a tab also discovers new orders in an otherwise settled list.
+    const visibilityChanged = () => { void poll(true) }
+    void poll(true)
     if (typeof document !== 'undefined')
-      document.addEventListener('visibilitychange', poll)
+      document.addEventListener('visibilitychange', visibilityChanged)
     return () => {
+      disposed = true
+      scheduleRef.current = null
+      sequence++
       active.current = false
       generation.current += 1
-      if (timer) clearInterval(timer)
+      clearTimeout(timer)
       if (typeof document !== 'undefined')
-        document.removeEventListener('visibilitychange', poll)
+        document.removeEventListener('visibilitychange', visibilityChanged)
     }
-  }, [refresh, intervalMs])
+  }, [refresh, typeof intervalMs === 'number' ? intervalMs : null])
   // A request that failed for want of a pairing code can succeed once one is typed.
   useEffect(() => afterShopPair(() => void refresh()), [refresh])
   const update = useCallback((next: T) => {
@@ -93,6 +119,7 @@ export function useNodeResource<T>(
     setData(next)
     setError('')
     setLoading(false)
+    scheduleRef.current?.()
   }, [])
   return { data, error, loading, refresh, update }
 }

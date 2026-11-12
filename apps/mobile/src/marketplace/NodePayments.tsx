@@ -48,6 +48,9 @@ import { RailMark } from './RailMark'
 import { Dialog, SpendConfirmDialog, UnlockDialog, WalletLockPanel, useLockState } from './WalletLock'
 import { PageHeading } from './PageHeading'
 import { onThisComputer, pairShop, shopPairingMessage } from '../catalog'
+import { copyValueLabel } from '../copyControl'
+import { InfoTip } from './InfoTip'
+import { CopyAddress, CopyButton } from './CopyAddress'
 import { pairingKind, pairingWalletPrompt } from '../pairingUi'
 import { SpeedUpPayment } from './SpeedUpPayment'
 
@@ -157,43 +160,22 @@ export function WalletAmount({
 export function CopyPaymentValue({
   label,
   value,
+  help,
   children,
   button = false
 }: {
   label: string
   value: string
+  help?: ReactNode
   children?: ReactNode
   button?: boolean
 }) {
-  const [message, setMessage] = useState('')
-  const timer = useRef<number | null>(null)
-  const copyLabel = `Copy ${label.charAt(0).toLowerCase()}${label.slice(1)}`
-  useEffect(() => {
-    setMessage('')
-    return () => { if (timer.current) window.clearTimeout(timer.current) }
-  }, [value])
   return (
     <div className='ob-copy-value'>
-      <span>{label}</span>
+      <span className='ob-copy-label'>{label}{help && <InfoTip label='Transaction privacy'>{help}</InfoTip>}</span>
       <code>{value}</code>
       <div className='ob-copy-actions'>
-        <button
-          className={button ? 'ob-secondary' : 'ob-text-link'}
-          type='button'
-          aria-live='polite'
-          onClick={() => {
-            void navigator.clipboard.writeText(value).then(
-              () => {
-                setMessage('Copied')
-                if (timer.current) window.clearTimeout(timer.current)
-                timer.current = window.setTimeout(() => setMessage(''), 2000)
-              },
-              () => setMessage('Copy the text above manually')
-            )
-          }}
-        >
-          {message || copyLabel}
-        </button>
+        <CopyButton value={value} label={copyValueLabel(label)} className={button ? 'ob-secondary' : 'ob-text-link'}/>
         {children}
       </div>
     </div>
@@ -364,7 +346,7 @@ export function WalletPanel({ rates, currency, onOrders }: {
       {network.data && <ConnectionCard info={network.data} />}
       {settings && <Dialog label='Wallet settings' onCancel={() => setSettings(false)}><h2>Wallet settings</h2><WalletLockPanel lock={lock} /><div className='ob-form-actions'><button type='button' className='ob-secondary' onClick={() => setSettings(false)}>Done</button></div></Dialog>}
       {receive && !receiveBlocked && address && <Dialog label='Receive bitcoin' onCancel={() => setReceive(false)}>
-        <div className='ob-wallet-receive-dialog'><h2>Receive bitcoin</h2><p>{current?.network === 'testnet4' ? 'Testnet4 only · test coins, no value' : 'Bitcoin mainnet only'}</p><PaymentQr value={bitcoinUri(address)} paper /><p className='ob-wallet-dialog-address'>{address}</p><p>Scan this code from the wallet sending your funds.</p></div>
+        <div className='ob-wallet-receive-dialog'><h2>Receive bitcoin</h2><p>{current?.network === 'testnet4' ? 'Testnet4 only · test coins, no value' : 'Bitcoin mainnet only'}</p><PaymentQr value={bitcoinUri(address)} paper /><CopyAddress value={address} label='Copy receive address'/><p>Scan this code from the wallet sending your funds.</p></div>
         <div className='ob-form-actions'><button className='ob-secondary' type='button' onClick={() => setReceive(false)}>Done</button></div>
       </Dialog>}
     </section>
@@ -379,7 +361,7 @@ function WalletActivityList({ activity, available, stale }: { activity: WalletAc
       : visible.length === 0 ? <p className='ob-wallet-empty'>{activity.length ? 'No activity matches this filter.' : stale ? 'No activity in the last available wallet data.' : 'No transactions yet. Fund your wallet to get started.'}</p>
       : <ul className='ob-wallet-activity'>{visible.map(tx => <li key={tx.txid}>
         <details><summary><span className={`ob-wallet-direction ${tx.direction === 'in' ? 'is-incoming' : ''}`} aria-hidden='true'>{tx.direction === 'in' ? '↙' : '↗'}</span><span className='ob-wallet-transaction'><strong>{tx.label}</strong><span className='ob-activity-meta'>{tx.confirmed ? 'Confirmed' : 'Pending'}{tx.time ? ` · ${new Date(tx.time * 1000).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}` : ''}</span></span><span className='ob-activity-amount'>{tx.direction === 'in' ? '+' : '−'}{tx.sats.toLocaleString('en-US')} sats</span><span className='ob-wallet-expand' aria-hidden='true'>⌄</span></summary>
-          <div className='ob-wallet-transaction-details'><CopyPaymentValue label='Transaction ID' value={tx.txid} />{tx.direction === 'out' && <p>Net wallet movement, including network fees.</p>}<p>{EXTERNAL_TX_NOTE}</p></div>
+          <div className='ob-wallet-transaction-details'><CopyPaymentValue label='Transaction ID' value={tx.txid} help={<>{tx.direction === 'out' && <p>Net wallet movement includes network fees.</p>}<p>{EXTERNAL_TX_NOTE}</p></>} /></div>
         </details>
       </li>)}</ul>}
   </section>
@@ -405,6 +387,7 @@ export function OrderPayment({
     orderPollingDone
   )
   const order = resource.data ?? initial
+  const fulfilled = order.status === 'Shipped' || order.status === ORDER_STATUS.completed
   const due = amountDue(order.totalSats, order.receivedSats)
   const kind = payKind(order)
   const monero = moneroDue(order.payment)
@@ -511,13 +494,13 @@ export function OrderPayment({
           <span>
             Received {zcash.receivedZec} / {zcash.amountZec} ZEC
           </span>
-        ) : (
+        ) : !fulfilled || order.receivedSats > 0 ? (
           <span>
             Received {order.receivedSats.toLocaleString()} /{' '}
             {order.totalSats.toLocaleString()} sats
           </span>
-        )}
-        {kind === 'btc' && order.status !== ORDER_STATUS.declined && (
+        ) : null}
+        {kind === 'btc' && (order.status === ORDER_STATUS.awaitingPayment || order.status === ORDER_STATUS.paymentSeen) && (
           <span>
             Still owed: {due.toLocaleString()} sats ({bitcoinAmount(due)} BTC)
           </span>
@@ -534,9 +517,9 @@ export function OrderPayment({
           key={txid}
           label={order.payTxid === txid ? 'Sent transaction' : 'Transaction'}
           value={txid}
+          help={EXTERNAL_TX_NOTE}
         />
       ))}
-      {txids.length > 0 && <p className='ob-wallet-note'>{EXTERNAL_TX_NOTE}</p>}
       {(error || order.payError || resource.error) && (
         <p role='alert' className='ob-form-error'>
           {error || order.payError || resource.error}

@@ -41,6 +41,8 @@ export function paymentStatusView(input: PaymentStatusInput): PaymentStatusView 
 }
 
 function confirmationsText({ status, confirmations, requiredConfirmations }: PaymentStatusInput): string {
+  if (status === 'Shipped' || status === ORDER_STATUS.completed)
+    return confirmations > 0 ? `Confirmations: ${confirmations}` : 'Local confirmation details unavailable'
   if (status === ORDER_STATUS.paid) return 'Confirmed'
   return requiredConfirmations === undefined
     ? `Confirmations: ${confirmations}`
@@ -48,6 +50,7 @@ function confirmationsText({ status, confirmations, requiredConfirmations }: Pay
 }
 
 function progressText({ status, confirmations, requiredConfirmations, sending, payTxid }: PaymentStatusInput): string | null {
+  if (status === 'Shipped' || status === ORDER_STATUS.completed) return null
   if (sending) return 'Sending payment from your node wallet…'
   if (status === ORDER_STATUS.paid) return null
   if (status === ORDER_STATUS.paymentSeen) {
@@ -59,7 +62,8 @@ function progressText({ status, confirmations, requiredConfirmations, sending, p
   return null
 }
 
-function balanceNote({ network, dueSats, wallet }: PaymentStatusInput): BalanceNote | null {
+function balanceNote({ network, status, dueSats, wallet }: PaymentStatusInput): BalanceNote | null {
+  if (status === ORDER_STATUS.paid || status === 'Shipped' || status === ORDER_STATUS.completed) return null
   if (!wallet || dueSats <= 0) return null
   const reserve = FEE_RESERVE_SATS[network]
   const needed = dueSats + reserve

@@ -25,8 +25,9 @@ async function fixture(page: Page, network = 'testnet4', locked = false) {
 }
 
 for (const [width, dark] of [[320, false], [768, true], [1366, false], [1920, true]] as const) {
-  test(`wallet overview and receive flow fit ${width}px`, async ({ page }, info) => {
+  test(`wallet overview and receive flow fit ${width}px`, async ({ page, context }, info) => {
     await page.setViewportSize({ width, height: 900 })
+    await context.grantPermissions(['clipboard-read', 'clipboard-write'])
     await fixture(page)
     let addressCalls = 0
     await page.route('**/wallet/address', route => { addressCalls++; return route.fulfill({ json: { network: 'testnet4', address: freshAddress } }) })
@@ -41,6 +42,9 @@ for (const [width, dark] of [[320, false], [768, true], [1366, false], [1920, tr
     await expect(page.getByLabel('Lock after inactivity', { exact: true })).toHaveCount(0)
     expect(await page.locator('.ob-content').evaluate(el => el.scrollWidth <= el.clientWidth + 1)).toBeTruthy()
     await page.screenshot({ path: info.outputPath(`wallet-${width}.png`) })
+    await page.getByRole('button', { name: 'Copy receive address', exact: true }).click()
+    await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(address)
+    await expect(page.locator('.ob-wallet-receive .ob-copy-button')).toHaveText('Copied')
     const filter = page.getByRole('combobox', { name: 'Filter wallet activity', exact: true })
     await filter.selectOption('out')
     await expect(page.locator('.ob-wallet-activity li')).toHaveCount(1)
@@ -52,6 +56,8 @@ for (const [width, dark] of [[320, false], [768, true], [1366, false], [1920, tr
     const dialog = page.getByRole('dialog', { name: 'Receive bitcoin', exact: true })
     await expect(dialog.getByRole('img', { name: 'Bitcoin payment QR code', exact: true })).toHaveAttribute('data-payment-uri', `bitcoin:${address}`)
     expect(addressCalls).toBe(0)
+    await dialog.getByRole('button', { name: 'Copy receive address', exact: true }).click()
+    await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(address)
     const qrBox = await dialog.getByRole('img').boundingBox()
     expect(Math.abs(qrBox!.width - qrBox!.height)).toBeLessThan(1)
     await page.screenshot({ path: info.outputPath(`receive-${width}.png`) })
@@ -59,6 +65,8 @@ for (const [width, dark] of [[320, false], [768, true], [1366, false], [1920, tr
     await page.getByRole('button', { name: 'New address', exact: true }).click()
     await expect(page.locator('.ob-wallet-receive code')).toHaveText(freshAddress)
     expect(addressCalls).toBe(1)
+    await page.getByRole('button', { name: 'Copy receive address', exact: true }).click()
+    await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(freshAddress)
     await page.getByRole('button', { name: 'Wallet settings', exact: true }).click()
     const settings = page.getByRole('dialog', { name: 'Wallet settings', exact: true })
     await expect(settings.getByText('Lock after inactivity', { exact: true })).not.toBeVisible()

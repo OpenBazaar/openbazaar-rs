@@ -3,6 +3,7 @@ import { shopPairingMessage } from '../catalog'
 import { nodeTarget, servedByHomeNode } from '../homeNode/transport'
 import { bitcoinAmount } from '../nodeWallet'
 import { useNodeResource } from '../useNodeResource'
+import { CopyAddress } from './CopyAddress'
 import {
   confirmBackup,
   fetchLock,
@@ -68,6 +69,7 @@ export function Passphrase({
         type='password'
         value={value}
         autoFocus={autoFocus}
+        data-dialog-autofocus={autoFocus || undefined}
         autoComplete={autoComplete}
         onChange={e => onChange(e.target.value)}
       />
@@ -428,6 +430,7 @@ export function Dialog({ label, onCancel, children }: { label: string; onCancel:
     const previous = document.activeElement as HTMLElement | null
     const current = dialog.current
     current?.showModal()
+    current?.querySelector<HTMLInputElement>('[data-dialog-autofocus]')?.focus({ preventScroll: true })
     return () => {
       current?.close()
       previous?.focus()
@@ -517,7 +520,7 @@ export function SpendConfirmDialog({
           </dd>
           <dt>Address</dt>
           <dd>
-            <code>{quote.address}</code>
+            <CopyAddress value={quote.address} label='Copy payment address'/>
           </dd>
           <dt>Network</dt>
           <dd>{mainnet ? 'Mainnet' : 'Testnet4 · test coins, no value'}</dd>
