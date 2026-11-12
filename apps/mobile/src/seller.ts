@@ -48,6 +48,14 @@ export type ProfileChanges = Partial<
   Pick<SellerProfile, "name" | "region" | "tagline" | "about" | "avatar" | "banner" | "shippingPolicy" | "returnsPolicy" | "processingTime" | "shipsTo">
 >;
 
+export type StoreImageField = "avatar" | "banner";
+
+/** A PUT /store/profile body that sets or clears one storefront image. */
+export function storeImageChange(field: StoreImageField, hash: string | null): ProfileChanges {
+  if (hash !== null && !/^[0-9a-f]{64}$/.test(hash)) throw new Error("The node did not keep the image.");
+  return { [field]: hash };
+}
+
 /** "SAT" prices in sats; the rest in the currency's minor unit. */
 export type PriceCurrency = "SAT" | "USD" | "EUR" | "GBP" | "JPY";
 export const PRICE_CURRENCIES: readonly PriceCurrency[] = ["USD", "EUR", "GBP", "JPY", "SAT"];

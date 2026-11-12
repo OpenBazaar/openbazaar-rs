@@ -38,6 +38,24 @@ export type StoreList = { stores: StoreSummary[]; rejected: number };
 
 export type StoreImage = { contentType: string; bytes: Uint8Array };
 
+const IMAGE_HASH = /^[0-9a-f]{64}$/;
+
+function imageHash(value: string | null | undefined): string | null {
+  return value && IMAGE_HASH.test(value) ? value : null;
+}
+
+/** Avatar and banner hashes the storefront should show, from a profile or a signed store record. */
+export function storefrontImages(source: {
+  avatar?: string | null;
+  banner?: string | null;
+  details?: { avatar: string | null; banner: string | null } | null;
+}): { avatar: string | null; banner: string | null } {
+  return {
+    avatar: imageHash(source.avatar) ?? imageHash(source.details?.avatar),
+    banner: imageHash(source.banner) ?? imageHash(source.details?.banner),
+  };
+}
+
 const UNREADABLE = "The shop sent a store the page could not read.";
 
 function recordOf(value: unknown): Record<string, unknown> {

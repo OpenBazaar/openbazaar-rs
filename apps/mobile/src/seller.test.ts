@@ -6,7 +6,7 @@ import { sha256 } from "@noble/hashes/sha2.js";
 
 import { parseBuyerOrder, showPairingWith } from "./catalog.ts";
 import { bytesToHex, verifyListingRecord } from "./records.ts";
-import { displayNameError, draftOf, formatPrice, fromMinorUnits, parseFollows, parseOwnListings, parseProfile, parseSale, salesToShip, testNetworkSeeds, toMinorUnits, uploadImage } from "./seller.ts";
+import { displayNameError, draftOf, formatPrice, fromMinorUnits, parseFollows, parseOwnListings, parseProfile, parseSale, salesToShip, storeImageChange, testNetworkSeeds, toMinorUnits, uploadImage } from "./seller.ts";
 
 const SECRET = new Uint8Array(32).fill(7);
 const STORE = bytesToHex(schnorr.getPublicKey(SECRET));
@@ -108,6 +108,12 @@ test("a store display name is required and at most 64 bytes", () => {
   assert.match(displayNameError("N".repeat(65)) ?? "", /64/);
   assert.equal(displayNameError("字".repeat(21)), null);
   assert.match(displayNameError("字".repeat(22)) ?? "", /64/);
+});
+
+test("a storefront image PUT names one field and refuses a hash that is not SHA-256 hex", () => {
+  assert.deepEqual(storeImageChange("avatar", IMAGE), { avatar: IMAGE });
+  assert.deepEqual(storeImageChange("banner", null), { banner: null });
+  assert.throws(() => storeImageChange("avatar", "not a hash"), /did not keep the image/);
 });
 
 test("the profile reads the node's values and drops unknown ones", () => {

@@ -1,5 +1,6 @@
 import type { CurrencyCode, ListingHeader, RateTable } from "../catalog";
 import type { SellerProfile } from "../seller";
+import { storefrontImages } from "../stores";
 import { Empty, ProductCard } from "./Marketplace";
 import { MediaImage } from "./SellerKit";
 import { RailMark } from "./RailMark";
@@ -10,10 +11,11 @@ import { StoreAddress } from "./StoreAddress";
 export function OwnStore({ profile, listings, rates, currency, onOpen, onEdit, onAddListing }: { profile: SellerProfile; listings: ListingHeader[]; rates: RateTable; currency: CurrencyCode; onOpen: (listing: ListingHeader) => void; onEdit: () => void; onAddListing: () => void }) {
   const own = listings.filter(listing => listing.storeId === profile.storeKey);
   const policies = [["Processing", profile.processingTime], ["Shipping", profile.shippingPolicy], ["Returns", profile.returnsPolicy]].filter(([, text]) => text);
+  const images = storefrontImages(profile);
   return <section className="ob-storefront" aria-labelledby="ob-storefront-name">
-    <div className="ob-storefront-banner">{profile.banner && <MediaImage hash={profile.banner} alt="" className="ob-store-banner-img"/>}</div>
+    <div className="ob-storefront-banner">{images.banner && <MediaImage hash={images.banner} alt="" className="ob-store-banner-img"/>}</div>
     <header className="ob-storefront-head">
-      <span className="ob-store-avatar is-large">{profile.avatar ? <MediaImage hash={profile.avatar} alt={`${profile.name} avatar`}/> : profile.name.charAt(0)}</span>
+      <span className="ob-store-avatar is-large">{images.avatar ? <MediaImage hash={images.avatar} alt={`${profile.name} avatar`}/> : profile.name.charAt(0)}</span>
       <div>
         <h1 id="ob-storefront-name">{profile.name}</h1>
         {profile.tagline && <p className="ob-storefront-tagline">{profile.tagline}</p>}

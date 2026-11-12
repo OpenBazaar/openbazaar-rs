@@ -1,6 +1,7 @@
 import type { CurrencyCode, ListingHeader, RateTable } from "../catalog";
 import type { StoreSummary } from "../records";
 import type { Verdict } from "../safety/filter";
+import { storefrontImages } from "../stores";
 import { Empty, Icon, ProductCard } from "./Marketplace";
 import { CoveredCard } from "./Safety";
 import { MediaImage } from "./SellerKit";
@@ -24,6 +25,7 @@ export function CatalogStore({ storeId, followable, onFollowChanged, store, list
   onBack: () => void;
 }) {
   const details = store?.record.details ?? null;
+  const images = storefrontImages({ avatar: store?.avatar, details });
   const name = store?.name || listings[0]?.seller || "Store";
   const region = store?.region ?? "";
   const tagline = store?.tagline ?? "";
@@ -33,9 +35,9 @@ export function CatalogStore({ storeId, followable, onFollowChanged, store, list
   const ordered = [...listings].sort((a, b) => b.listedOn - a.listedOn || a.title.localeCompare(b.title));
   return <section className="ob-storefront" aria-labelledby="ob-store-page-name">
     <button className="ob-back" onClick={onBack}><Icon name="arrow" size={16}/>Back to products</button>
-    <div className="ob-storefront-banner">{details?.banner && <MediaImage hash={details.banner} alt="" className="ob-store-banner-img"/>}</div>
+    <div className="ob-storefront-banner">{images.banner && <MediaImage hash={images.banner} alt="" className="ob-store-banner-img"/>}</div>
     <header className="ob-storefront-head">
-      <span className="ob-store-avatar is-large">{store?.avatar ? <MediaImage hash={store.avatar} alt={`${name} avatar`}/> : name.charAt(0)}</span>
+      <span className="ob-store-avatar is-large">{images.avatar ? <MediaImage hash={images.avatar} alt={`${name} avatar`}/> : name.charAt(0)}</span>
       <div>
         <h1 id="ob-store-page-name">{name}</h1>
         {tagline && <p className="ob-storefront-tagline">{tagline}</p>}

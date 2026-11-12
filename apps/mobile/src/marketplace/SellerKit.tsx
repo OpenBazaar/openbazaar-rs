@@ -37,7 +37,7 @@ export function MediaImage({ hash, alt, className, fallback = null }: { hash: st
 }
 
 /** A file input that uploads each chosen image and hands back its hash. */
-export function ImageUpload({ label, onUploaded, disabled = false, multiple = false }: { label: string; onUploaded: (hash: string) => void; disabled?: boolean; multiple?: boolean }) {
+export function ImageUpload({ label, onUploaded, disabled = false, multiple = false }: { label: string; onUploaded: (hash: string) => void | Promise<void>; disabled?: boolean; multiple?: boolean }) {
   const input = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -46,7 +46,7 @@ export function ImageUpload({ label, onUploaded, disabled = false, multiple = fa
     setBusy(true);
     setError("");
     try {
-      for (const file of Array.from(files)) onUploaded(await uploadImage(file));
+      for (const file of Array.from(files)) await onUploaded(await uploadImage(file));
     } catch (e) {
       setError(e instanceof Error ? e.message : "The image could not be uploaded.");
     } finally {

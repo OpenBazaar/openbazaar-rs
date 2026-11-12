@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
 import { sha256Hex } from "./records.ts";
-import { checkStoreImage, MAX_MEDIA_BYTES, parseStoreList, parseStorePage } from "./stores.ts";
+import { checkStoreImage, MAX_MEDIA_BYTES, parseStoreList, parseStorePage, storefrontImages } from "./stores.ts";
 
 type Raw = { stores: Record<string, unknown>[]; listings: Record<string, unknown>[]; moderator: { id: string; name: string } };
 const raw = (): Raw => JSON.parse(readFileSync(new URL("./catalog.json", import.meta.url), "utf8")) as Raw;
@@ -57,6 +57,16 @@ test("a store page for another key, or with a broken record, is refused", () => 
   const broken = page(1);
   broken.store.record = String(broken.store.record).replace(/^4f/, "4e");
   assert.throws(() => parseStorePage(broken, key));
+});
+
+test("the storefront shows signed image hashes and ignores anything that is not one", () => {
+  const avatar = "ab".repeat(32);
+  const banner = "cd".repeat(32);
+  assert.deepEqual(storefrontImages({ avatar, banner }), { avatar, banner });
+  assert.deepEqual(storefrontImages({ details: { avatar, banner } }), { avatar, banner });
+  assert.deepEqual(storefrontImages({ avatar: null, details: { avatar, banner: null } }), { avatar, banner: null });
+  assert.deepEqual(storefrontImages({ avatar: "not a hash", banner: "00", details: { avatar: null, banner } }), { avatar: null, banner });
+  assert.deepEqual(storefrontImages({}), { avatar: null, banner: null });
 });
 
 test("an image is returned only when its bytes hash to the signed hash", () => {
