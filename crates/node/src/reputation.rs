@@ -2,8 +2,9 @@
 //!
 //! Finished escrow sales are payouts (a release or a dispute settlement),
 //! not a direct pay and not a sale the seller paid to itself. While a store
-//! has none, direct pay is refused and an escrow cannot start without a
-//! passing bond. The count is a number. Buyer keys and orders are not published.
+//! has none, an escrow cannot start without a passing bond. Direct pay is
+//! not held back: a new store takes it, and the buyer's client warns before
+//! paying. The count is a number. Buyer keys and orders are not published.
 
 use std::fs;
 
@@ -16,7 +17,6 @@ use crate::instructions::ESCROW_MAINNET_REFUSAL;
 use crate::network::NetworkMode;
 use crate::Node;
 
-pub(crate) const NEW_SELLER_DIRECT: &str = "A new seller takes moderated escrow, with the moderator named.";
 pub(crate) const NEW_SELLER_BOND: &str = "A new seller posts a reputation bond before an escrow sale.";
 
 /// One row the finished-sale count looks at. A direct pay is never a row
@@ -34,14 +34,6 @@ pub(crate) fn counts_toward_finished(row: Finish) -> bool {
 
 pub(crate) fn finished_escrow_count(rows: &[Finish]) -> u32 {
     rows.iter().copied().filter(|row| counts_toward_finished(*row)).count() as u32
-}
-
-pub(crate) fn direct_pay_allowed(finished: u32) -> Result<(), &'static str> {
-    if finished == 0 {
-        Err(NEW_SELLER_DIRECT)
-    } else {
-        Ok(())
-    }
 }
 
 pub(crate) fn escrow_start_allowed(finished: u32, bond_ok: bool) -> Result<(), &'static str> {
@@ -117,15 +109,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_store_with_zero_finished_escrow_sales_cannot_skip_escrow() {
-        assert_eq!(direct_pay_allowed(0), Err(NEW_SELLER_DIRECT));
+    fn a_store_with_zero_finished_escrow_sales_starts_escrow_only_with_a_bond() {
         assert_eq!(escrow_start_allowed(0, false), Err(NEW_SELLER_BOND));
         assert!(escrow_start_allowed(0, true).is_ok(), "a passing bond lets the first escrow start");
     }
 
     #[test]
-    fn a_store_with_one_finished_escrow_sale_can_take_direct_pay() {
-        assert!(direct_pay_allowed(1).is_ok());
+    fn a_store_with_one_finished_escrow_sale_is_not_asked_for_a_bond() {
         assert!(escrow_start_allowed(1, false).is_ok(), "an established store is not asked for a bond");
     }
 

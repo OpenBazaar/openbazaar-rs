@@ -30,6 +30,7 @@ import { paymentStatusView } from './paymentStatus'
 import {
   canOfferBitcoinPay,
   confirmationTarget,
+  directPayWarning,
   moneroDue,
   zcashDue,
   ORDER_STATUS,
@@ -311,7 +312,8 @@ export function NativeOrderPayment({
     monero = moneroDue(order.payment),
     zcash = zcashDue(order.payment),
     escrow = kind === 'escrow',
-    offerBitcoinPay = canOfferBitcoinPay(order, kind, due)
+    offerBitcoinPay = canOfferBitcoinPay(order, kind, due),
+    directWarning = directPayWarning(order, kind)
   const [busy, setBusy] = useState(false),
     [error, setError] = useState(''),
     [step, setStep] = useState<'unlock' | Quote | null>(null),
@@ -441,6 +443,7 @@ export function NativeOrderPayment({
             network.error}
         </Text>
       ) : null}
+      {directWarning ? <Text style={s.error}>{directWarning}</Text> : null}
       {escrow ? (
         <Text style={s.body}>Escrow status is read-only in this client.</Text>
       ) : kind === 'xmr' ? (

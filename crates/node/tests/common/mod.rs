@@ -1,10 +1,13 @@
 //! Real `ob-node serve` processes for tests.
 //!
 //! Each node runs the binary on a free loopback port with its own temporary
-//! data dir, a file vault, no rates, no introductions, and a chain server that
-//! only answers 503. Nothing here reaches the internet unless a test passes
-//! `--remote`. Dropping a node kills the process and removes its data dir, also
-//! while a test is failing; the node's log is printed then.
+//! data dir, a file vault, no rates, no introductions, and the loopback chain
+//! server the test names: one that only answers 503 ([`chain_stub`]), or a
+//! stand-in Esplora ([`esplora`]). Nothing here reaches the internet unless a
+//! test passes `--remote`. Dropping a node kills the process and removes its
+//! data dir, also while a test is failing; the node's log is printed then.
+
+pub mod esplora;
 
 use std::fs::{self, File};
 use std::io::{Read, Write};
@@ -137,8 +140,8 @@ impl Drop for RealNode {
         let _ = self.child.wait();
         if std::thread::panicking() {
             let log = fs::read_to_string(self.dir.path().join("serve.log")).unwrap_or_default();
-            // Every poll logs the chain stub's refusal. Those lines are left out.
-            let lines: Vec<&str> = log.lines().filter(|line| !line.contains(" 503")).collect();
+            // Every poll logs the chain stub's refusal, or the wallet scan the stand-in Esplora does not serve. Those lines are left out.
+            let lines: Vec<&str> = log.lines().filter(|line| !line.contains(" 503") && !line.contains("wallet sync: ")).collect();
             eprintln!("--- {} node log ---\n{}", self.name, lines[lines.len().saturating_sub(60)..].join("\n"));
         }
     }
