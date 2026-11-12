@@ -26,7 +26,8 @@ import { ZcashSettings } from "./ZcashSettings";
 import { fetchNetwork } from "../nodeWallet";
 import { LightningOrderPayment, LightningWalletCard } from "./LightningPayment";
 import { priceDrops, rememberPrices, savedHashesAfterRefresh, sameWatches, signedPrice, type WatchedListing } from "../priceNotices";
-import { fetchProfile, formatPrice, salesToShip, setRole } from "../seller";
+import { fetchProfile, formatPrice, setRole } from "../seller";
+import { readSalesSeen, salesBadge, salesSeenSnapshot, writeSalesSeen, type SaleSight, type SalesSeen } from "../salesBadge";
 import { Onboarding } from "./Onboarding";
 import { StoreSetup } from "./StoreSetup";
 import { Coupons } from "./Coupons";
@@ -128,7 +129,16 @@ export default function Marketplace() {
   const openDesk = useContext(ModeratorDeskLink);
   const seller = profile.data?.role === "seller";
   const sales = useSales(seller, sale => setToast(`New order: ${sale.lines.map(l => l.title).join(", ")}`));
-  const toShip = salesToShip(sales.data ?? []);
+  const storeKey = profile.data?.storeKey ?? "";
+  const [salesSeen, setSalesSeen] = useState<SalesSeen | null>(null);
+  useEffect(() => { setSalesSeen(readSalesSeen(storeKey)); }, [storeKey]);
+  const salesCount = salesBadge(sales.data ?? [], salesSeen);
+  function rememberSales(list: SaleSight[]) {
+    if (!storeKey) return;
+    const next = salesSeenSnapshot(list);
+    setSalesSeen(next);
+    writeSalesSeen(storeKey, next);
+  }
   const [newListing, setNewListing] = useState(0);
   const [safety, setSafety] = useState(readSafety);
   const [revealed, setRevealed] = useState<string[]>([]);
@@ -258,7 +268,7 @@ export default function Marketplace() {
     const own = profile.data;
     if (!inStore) return null;
     if (!own) return <p role="status">{profile.error || "Loading your store…"}</p>;
-    if (section === "sales") return <Sales sales={sales} {...money}/>;
+    if (section === "sales") return <Sales sales={sales} {...money} onSeen={rememberSales}/>;
     if (section === "listings") return <StoreListings key={newListing} profile={own} {...money} startNew={newListing > 0} onChanged={storeChanged} onOpenSettings={() => navigate("store")}/>;
     if (section === "coupons") return <Coupons onChanged={storeChanged}/>;
     if (section === "storefront" && own.setUp) return <OwnStore profile={own} listings={catalog?.listings ?? []} {...money} onOpen={open} onEdit={() => navigate("store")} onAddListing={() => { navigate("listings"); setNewListing(n => n + 1); }}/>;
@@ -282,7 +292,7 @@ export default function Marketplace() {
           <NavItem icon="home" active={navSection === "storefront"} onClick={() => navigate("storefront")}>Storefront</NavItem>
           <NavItem icon="grid" active={navSection === "listings"} onClick={() => navigate("listings")}>Listings</NavItem>
           <NavItem icon="ticket" active={navSection === "coupons"} onClick={() => navigate("coupons")}>Coupons</NavItem>
-          <NavItem icon="paper" active={navSection === "sales"} onClick={() => navigate("sales")} count={toShip || undefined}>Sales</NavItem>
+          <NavItem icon="paper" active={navSection === "sales"} onClick={() => navigate("sales")} count={salesCount?.count} countNew={salesCount?.accent} countLabel={salesCount?.ariaLabel}>Sales</NavItem>
         </nav></>}
         {openDesk && <><div className="ob-nav-label ob-store-nav-label">Moderation</div><nav className="ob-main-nav ob-store-nav" aria-label="Moderation">
           <NavItem icon="shield" active={false} onClick={openDesk}>Moderator desk</NavItem>
@@ -344,7 +354,7 @@ export default function Marketplace() {
     <PairingDialog/>
   </div>}</NodePaymentsProvider>;
 }
-function NavItem({ icon, children, active, count, onClick }: { icon: IconName; children: ReactNode; active: boolean; count?: number; onClick: () => void }) { return <button className={`ob-nav-item ${active ? "is-active" : ""}`} aria-label={typeof children === "string" ? children : undefined} title={typeof children === "string" ? children : undefined} aria-current={active ? "page" : undefined} onClick={onClick}><Icon name={icon} size={19}/><span>{children}</span>{count !== undefined && <span className="ob-nav-count">{count}</span>}</button>; }
+function NavItem({ icon, children, active, count, countNew, countLabel, onClick }: { icon: IconName; children: ReactNode; active: boolean; count?: number; countNew?: boolean; countLabel?: string; onClick: () => void }) { return <button className={`ob-nav-item ${active ? "is-active" : ""}`} aria-label={typeof children === "string" ? children : undefined} title={typeof children === "string" ? children : undefined} aria-current={active ? "page" : undefined} onClick={onClick}><Icon name={icon} size={19}/><span>{children}</span>{count !== undefined && <span className={`ob-nav-count${countNew ? " is-new" : ""}`} aria-label={countLabel}>{count}</span>}</button>; }
 export function Empty({ icon, illustration, title, text, children }: { icon: IconName; illustration?: "bag" | "saved"; title: string; text: string; children?: ReactNode }) { return <div className="ob-empty">{illustration ? <MarketEmptyArtwork variant={illustration}/> : <span className="ob-empty-icon"><Icon name={icon} size={30}/></span>}<h2>{title}</h2><p>{text}</p>{children && <div className="ob-empty-actions">{children}</div>}</div>; }
 export function ProductImage({ listing, image = listing.images[0], ...props }: { listing: ListingHeader; image?: string; className?: string }) { const src = photo(listing); const placeholder = <Icon name={categoryIcons[listing.category] ?? "bag"} size={55}/>; return <div className={`ob-product-image ${src || image ? "" : "ob-product-placeholder"} ${props.className ?? ""}`}>{image ? <MediaImage hash={image} alt={listing.title} fallback={placeholder}/> : src ? <img src={src} alt={listing.title} loading="lazy"/> : placeholder}</div>; }
 export function ProductCard({ listing, rates, currency, saved, onSave, onOpen, onStore }: { listing: ListingHeader; rates: RateTable; currency: CurrencyCode; saved: boolean; onSave?: () => void; onOpen: () => void; onStore?: () => void }) {

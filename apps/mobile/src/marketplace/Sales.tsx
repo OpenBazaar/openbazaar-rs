@@ -95,9 +95,12 @@ function SaleDetail({ sale, rates, currency, onChange }: { sale: Sale; rates: Ra
   </div>;
 }
 
-export function Sales({ sales, rates, currency }: { sales: SalesResource; rates: RateTable; currency: CurrencyCode }) {
+export function Sales({ sales, rates, currency, onSeen }: { sales: SalesResource; rates: RateTable; currency: CurrencyCode; onSeen?: (list: Sale[]) => void }) {
   const [expanded, setExpanded] = useState<string | null>(null);
   const list = sales.data ?? [];
+  const seen = useRef(onSeen);
+  seen.current = onSeen;
+  useEffect(() => { if (sales.data) seen.current?.(sales.data); }, [sales.data]);
   return <section className="ob-orders ob-sales">
     <PageHeading title="Sales" description="Orders buyers placed with your store, paid straight to your node's wallet." action={<button className="ob-secondary" disabled={sales.loading} onClick={() => void sales.refresh()}>Refresh sales</button>}/>
     {sales.error && <p className="ob-form-error" role="alert">{sales.error}</p>}

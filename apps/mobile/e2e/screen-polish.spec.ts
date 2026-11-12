@@ -89,3 +89,51 @@ for (const [width, dark] of [[320, false], [768, true], [1280, false], [1920, tr
     }
   })
 }
+
+const STORE_KEY = 'ab'.repeat(32)
+function saleRow(id: string, status: string, created: number) {
+  return {
+    id, created, status, network: 'testnet4',
+    lines: [{ title: 'Hand-thrown stoneware mug', listingHash: 'c'.repeat(64), quantity: 1, kind: 'physical', priceSats: 25000 }],
+    itemsSats: 25000, shippingSats: 3000, totalSats: 28000, receivedSats: status === 'Paid' ? 28000 : 0, confirmations: status === 'Paid' ? 1 : 0,
+    shipTo: 'Test Buyer\n1 Test Street\nTest City, 00000', txids: status === 'Paid' ? ['d'.repeat(64)] : []
+  }
+}
+
+test('the Sales sidebar badge shows new sales, then the total after Sales is opened', async ({ page }) => {
+  const seen = saleRow('aa'.repeat(16), 'Awaiting payment', 1794000000)
+  const shipped = saleRow('bb'.repeat(16), 'Shipped', 1794000001)
+  const fresh = saleRow('cc'.repeat(16), 'Paid', 1796000000)
+  let sales = [seen, shipped, fresh]
+  await page.addInitScript(({ key, openedAt, statuses }) => {
+    localStorage.setItem(key, JSON.stringify({ openedAt, statuses }))
+  }, { key: `ob-sales-seen:${STORE_KEY}`, openedAt: 1795000000, statuses: { [seen.id]: seen.status, [shipped.id]: shipped.status } })
+  await page.route('**/store/profile', async route => {
+    const response = await route.fetch()
+    await route.fulfill({ json: { ...await response.json(), role: 'seller', setUp: true, name: 'Brook and Pine', storeKey: STORE_KEY } })
+  })
+  await page.route('**/sales', route => route.fulfill({ json: { sales } }))
+  await page.route('**/offers', route => route.fulfill({ json: { offers: [] } }))
+  await page.setViewportSize({ width: 1280, height: 900 })
+  await page.goto('/')
+  await expect(page.getByRole('heading', { name: /^All products/ })).toBeVisible()
+  const badge = page.getByRole('navigation', { name: 'Your store', exact: true }).locator('.ob-nav-count')
+  await expect(badge).toHaveText('1')
+  await expect(badge).toHaveClass(/is-new/)
+  await expect(badge).toHaveAttribute('aria-label', '3 sales, 1 new')
+  await page.locator('.ob-sidebar').screenshot({ path: '/tmp/sales-badge-new.png' })
+
+  await navigation(page, 'Sales', 'Your store')
+  await expect(page.getByRole('heading', { name: 'Sales', exact: true })).toBeVisible()
+  await navigation(page, 'Products')
+  await expect(badge).toHaveText('3')
+  await expect(badge).not.toHaveClass(/is-new/)
+  await expect(badge).toHaveAttribute('aria-label', '3 sales')
+  await page.locator('.ob-sidebar').screenshot({ path: '/tmp/sales-badge-neutral.png' })
+
+  sales = [seen, shipped, fresh, saleRow('dd'.repeat(16), 'Awaiting payment', 1797000000)]
+  await expect(badge).toHaveClass(/is-new/, { timeout: 15000 })
+  await expect(badge).toHaveText('1')
+  await expect(badge).toHaveAttribute('aria-label', '4 sales, 1 new')
+})
+

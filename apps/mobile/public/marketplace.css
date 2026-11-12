@@ -195,6 +195,18 @@ svg {
   color: #3a6266;
   border-radius: 4px;
 }
+.ob-main-nav .ob-nav-count.is-new {
+  background: var(--ob-action);
+  color: #fff;
+}
+.ob-main-nav.ob-store-nav .ob-nav-count:not(.is-new) {
+  display: block;
+  min-width: 0;
+  height: auto;
+  background: none;
+  border-radius: 0;
+  color: #83908a;
+}
 .ob-nav-label {
   margin: 31px 12px 13px;
   font-size: 9px;
@@ -3585,6 +3597,8 @@ svg {
 :root[data-ob-theme="dark"] { --ob-action: #2469d2; --ob-action-hover: #2472da; --ob-link: #8fc4ff; }
 .ob-app .ob-primary { background: var(--ob-action); }
 .ob-app .ob-primary:hover:not(:disabled) { background: var(--ob-action-hover); }
+.ob-main-nav .ob-nav-count.is-new { background: var(--ob-action); color: #fff; }
+.ob-main-nav.ob-store-nav .ob-nav-count:not(.is-new) { background: none; color: var(--ob-muted, #6f7d73); }
 .ob-transaction-link,.ob-text-link:hover,.ob-back:hover,.ob-product-title:hover { color: var(--ob-link); }
 .ob-checkout-grid .ob-mini-package { border-bottom: 0; padding-bottom: 0; }
 .ob-checkout-grid .ob-mini-package + .ob-mini-package { border-top: 1px solid var(--ob-line); padding-top: 20px; margin-top: 20px; }
