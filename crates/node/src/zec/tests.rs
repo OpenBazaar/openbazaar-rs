@@ -229,6 +229,22 @@ fn a_btc_price_older_than_the_zec_limit_does_not_price_a_zcash_order() {
 }
 
 #[test]
+fn fixed_rates_price_a_zcash_order_with_no_rate_server_and_say_they_are_fixed() {
+    let Setup { mut node, btc: _btc, zec: _zec, dir: _dir } = setup();
+    let off = Egress { proxy: None, live_rates: false };
+    node.rates = crate::rates::Rates::new(off.clone());
+    node.zec.rate = super::rate::ZecRate::new(off);
+    assert_eq!(request(&node, "GET", "/rates", "").1["zec"], Value::Null);
+
+    node.set_fixed_rates(100_000, 50);
+    let (_, rates) = request(&node, "GET", "/rates", "");
+    assert_eq!((&rates["source"], &rates["currencies"]), (&json!("fixed"), &json!({"USD": 100_000.0})));
+    assert_eq!((&rates["zec"]["source"], &rates["zec"]["satsPerZec"]), (&json!("fixed"), &json!(50_000)));
+    assert_eq!(rates["zec"]["currencies"]["USD"], 50.0, "a fixed price has no age");
+    assert_eq!(zec_order(&node).1["satsPerZec"], 50_000);
+}
+
+#[test]
 fn a_locked_node_takes_zcash_orders_and_marks_them_paid() {
     let Setup { node, zec, btc, dir } = setup();
     node.lock.lock();

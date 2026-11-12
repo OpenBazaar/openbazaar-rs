@@ -12,6 +12,8 @@
 //! receives nothing. [`MockChain::pay_in_pool`] breaks the rule on purpose,
 //! for tests of a server that does not follow consensus.
 
+pub mod indexer;
+
 use std::sync::Mutex;
 
 use orchard::note::{ExtractedNoteCommitment, NoteVersion, RandomSeed, Rho};
