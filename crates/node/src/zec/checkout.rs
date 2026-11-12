@@ -138,14 +138,18 @@ impl Node {
             let result = self.orders().update(&id, |order| {
                 let Some(payment) = order.payment.as_mut() else { return };
                 // A quote the node had not seen paid in full by its expiry stays unpaid. What arrives later is still recorded.
+                // One it did see in time never lapses: if a reorg drops that payment, the order is paid when it is mined again.
+                let seen_in_time = payment["seenInTime"] == true;
                 let expired = payment["expired"] == true
-                    || (order.status == AWAITING_PAYMENT && payment["expiresAt"].as_u64().is_some_and(|at| at <= now));
+                    || (!seen_in_time && order.status == AWAITING_PAYMENT && payment["expiresAt"].as_u64().is_some_and(|at| at <= now));
                 let status = if expired { AWAITING_PAYMENT } else { status };
+                let seen_in_time = seen_in_time || status != AWAITING_PAYMENT;
                 if order.status == status
                     && amount_of(payment, "receivedZatoshi") == received.total
                     && order.confirmations == confirmations
                     && order.txids == received.txids
                     && (payment["expired"] == true) == expired
+                    && (payment["seenInTime"] == true) == seen_in_time
                 {
                     return;
                 }
@@ -157,6 +161,9 @@ impl Node {
                 payment["overpaidZatoshi"] = json!(received.total.saturating_sub(due).to_string());
                 if expired {
                     payment["expired"] = json!(true);
+                }
+                if seen_in_time {
+                    payment["seenInTime"] = json!(true);
                 }
                 changed += 1;
             });

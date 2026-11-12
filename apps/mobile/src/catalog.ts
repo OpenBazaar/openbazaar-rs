@@ -235,6 +235,8 @@ export type ZcashPaymentFields = {
   expiresAt: number | null;
   /** The node let the quote lapse. It records what arrives but does not mark the order paid. */
   expired: boolean;
+  /** The node saw the full amount before the quote lapsed. Such an order never lapses, even if a reorg drops the payment. */
+  seenInTime: boolean;
 };
 
 export type DirectPayment = {
@@ -1058,6 +1060,7 @@ function parseZcash(payment: Record<string, unknown>): ZcashPaymentFields | null
     confirmationsNeeded: typeof needed === "number" && Number.isSafeInteger(needed) && needed > 0 ? needed : 30,
     expiresAt: typeof payment.expiresAt === "number" && Number.isSafeInteger(payment.expiresAt) ? payment.expiresAt : null,
     expired: payment.expired === true,
+    seenInTime: payment.seenInTime === true,
   };
 }
 

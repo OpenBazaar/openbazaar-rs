@@ -158,6 +158,7 @@ export type ZcashFields = {
   confirmationsNeeded: number
   expiresAt: number | null
   expired: boolean
+  seenInTime: boolean
 }
 
 export type ZcashDue = {
@@ -190,6 +191,8 @@ export function zcashDue(payment: { rail?: string; zcash?: ZcashFields | null } 
     return null
   }
   const remaining = amount > received ? amount - received : 0n
+  // A quote the node saw paid in full in time has no deadline left, even if a reorg dropped the payment.
+  const expiresAt = fields.seenInTime ? null : fields.expiresAt
   return {
     network: fields.network,
     address: fields.address,
@@ -202,7 +205,7 @@ export function zcashDue(payment: { rail?: string; zcash?: ZcashFields | null } 
     overpaidZec: overpaid > 0n ? formatZec(overpaid) : null,
     confirmationsNeeded: fields.confirmationsNeeded,
     awaiting: remaining > 0n,
-    expiresAt: fields.expiresAt,
-    expired: fields.expired || (remaining > 0n && fields.expiresAt != null && fields.expiresAt * 1000 <= now)
+    expiresAt,
+    expired: fields.expired || (remaining > 0n && expiresAt != null && expiresAt * 1000 <= now)
   }
 }

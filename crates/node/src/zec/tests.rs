@@ -203,6 +203,46 @@ fn a_payment_whose_blocks_are_replaced_before_paid_is_gone_until_it_is_mined_aga
 }
 
 #[test]
+fn a_payment_seen_in_time_and_dropped_by_a_reorg_after_the_hour_pays_the_order_when_it_is_mined_again() {
+    let Setup { node, zec, btc: _btc, dir: _dir } = setup();
+    let (id, payment) = zec_order(&node);
+    let (part_id, part) = zec_order(&node);
+    let due = zatoshi(&payment["amountZatoshi"]);
+    zec.pay(address(&payment), due);
+    zec.pay(address(&part), due / 2);
+    zec.mine(3);
+    node.zec_sync_once().unwrap();
+    assert_eq!(order(&node, &id)["status"], "Payment seen");
+
+    // The hour passes, then the blocks that held both payments are replaced.
+    for id in [&id, &part_id] {
+        node.orders().update(id, |order| order.payment.as_mut().unwrap()["expiresAt"] = json!(1)).unwrap();
+    }
+    zec.reorg(3);
+    zec.mine(4);
+    for _ in 0..2 {
+        node.zec_sync_once().unwrap();
+        let gone = order(&node, &id);
+        assert_eq!((&gone["status"], &gone["payment"]["expired"]), (&json!("Awaiting payment"), &Value::Null), "seen in full in time: it does not lapse");
+        assert_eq!(zatoshi(&gone["payment"]["receivedZatoshi"]), 0);
+    }
+    assert_eq!(order(&node, &part_id)["payment"]["expired"], true, "a part payment in time is not the order seen paid");
+
+    zec.pay(address(&payment), due);
+    zec.pay(address(&part), due);
+    zec.mine(CONFIRMATIONS - 1);
+    node.zec_sync_once().unwrap();
+    assert_eq!(order(&node, &id)["status"], "Payment seen");
+    zec.mine(1);
+    node.zec_sync_once().unwrap();
+    let paid = order(&node, &id);
+    assert_eq!((&paid["status"], &paid["payment"]["expired"]), (&json!("Paid"), &Value::Null), "{paid}");
+    let late = order(&node, &part_id);
+    assert_eq!((&late["status"], &late["payment"]["expired"]), (&json!("Awaiting payment"), &json!(true)), "first paid in full after the hour: recorded, not paid");
+    assert_eq!(late["payment"]["receivedZatoshi"], part["amountZatoshi"]);
+}
+
+#[test]
 fn only_ironwood_pays_an_order() {
     let Setup { node, zec, btc: _btc, dir: _dir } = setup();
     let (id, payment) = zec_order(&node);
