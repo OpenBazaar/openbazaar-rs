@@ -236,12 +236,22 @@ fn fixed_rates_price_a_zcash_order_with_no_rate_server_and_say_they_are_fixed() 
     node.zec.rate = super::rate::ZecRate::new(off);
     assert_eq!(request(&node, "GET", "/rates", "").1["zec"], Value::Null);
 
-    node.set_fixed_rates(100_000, 50);
+    node.set_fixed_rates(100_000, 50).unwrap();
     let (_, rates) = request(&node, "GET", "/rates", "");
     assert_eq!((&rates["source"], &rates["currencies"]), (&json!("fixed"), &json!({"USD": 100_000.0})));
     assert_eq!((&rates["zec"]["source"], &rates["zec"]["satsPerZec"]), (&json!("fixed"), &json!(50_000)));
     assert_eq!(rates["zec"]["currencies"]["USD"], 50.0, "a fixed price has no age");
     assert_eq!(zec_order(&node).1["satsPerZec"], 50_000);
+}
+
+#[test]
+fn a_mainnet_node_refuses_fixed_rates() {
+    let dir = TempDir::new();
+    let node = open_node(&dir.0, NetworkMode::Mainnet, &MockChain::new(), 1, unreachable_escrow());
+    let err = node.set_fixed_rates(100_000, 50).unwrap_err();
+    assert!(err.contains("testnet4 only"), "{err}");
+    let (_, rates) = request(&node, "GET", "/rates", "");
+    assert_eq!((&rates["source"], &rates["zec"]), (&Value::Null, &Value::Null), "{rates}");
 }
 
 #[test]
