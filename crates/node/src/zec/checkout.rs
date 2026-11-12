@@ -17,10 +17,13 @@ use openbazaar_zec::amount::{format_zec, zatoshi_for_sats};
 use openbazaar_zec::{zcash_uri, CONFIRMATIONS};
 use serde_json::{json, Value};
 
-use crate::watch::{direct_progress, PAID};
+use crate::buyer_orders::now_secs;
+use crate::watch::{direct_progress, AWAITING_PAYMENT, PAID};
 use crate::{Node, OrderError};
 
 pub(crate) const ESCROW_IS_BITCOIN_ONLY: &str = "Escrow is Bitcoin-only. Pay in Zcash with direct pay.";
+/// A quote fixes the ZEC amount at the price at checkout, so it lasts an hour, as a Lightning invoice does.
+const QUOTE_SECS: u64 = 60 * 60;
 pub(crate) const NOT_SYNCED: &str = "This node has not read the Zcash chain yet, so a Zcash payment could be missed. Try again in a few minutes, or pay in bitcoin.";
 
 /// `true` for the Zcash rail. Refuses Zcash with escrow.
@@ -99,6 +102,7 @@ impl Node {
             "satsPerZec": sats_per_zec,
             "priceSats": total_sats,
             "receivedZatoshi": "0",
+            "expiresAt": now_secs() + QUOTE_SECS,
             "confirmationsNeeded": CONFIRMATIONS,
             "watched": ["zec"],
         }))
@@ -116,6 +120,7 @@ impl Node {
             })
             .collect();
         let mut changed = 0;
+        let now = now_secs();
         for (id, seller, payment) in open {
             let Some(index) = payment["addressIndex"].as_u64().and_then(|n| u32::try_from(n).ok()) else { continue };
             let received = match self.zec.store(&seller) {
@@ -130,10 +135,15 @@ impl Node {
             let confirmations = received.confirmations.unwrap_or(0).min(u64::from(u32::MAX)) as u32;
             let result = self.orders().update(&id, |order| {
                 let Some(payment) = order.payment.as_mut() else { return };
+                // A quote the node had not seen paid in full by its expiry stays unpaid. What arrives later is still recorded.
+                let expired = payment["expired"] == true
+                    || (order.status == AWAITING_PAYMENT && payment["expiresAt"].as_u64().is_some_and(|at| at <= now));
+                let status = if expired { AWAITING_PAYMENT } else { status };
                 if order.status == status
                     && amount_of(payment, "receivedZatoshi") == received.total
                     && order.confirmations == confirmations
                     && order.txids == received.txids
+                    && (payment["expired"] == true) == expired
                 {
                     return;
                 }
@@ -143,6 +153,9 @@ impl Node {
                 payment["receivedZatoshi"] = json!(received.total.to_string());
                 payment["remainingZatoshi"] = json!(due.saturating_sub(received.total).to_string());
                 payment["overpaidZatoshi"] = json!(received.total.saturating_sub(due).to_string());
+                if expired {
+                    payment["expired"] = json!(true);
+                }
                 changed += 1;
             });
             if let Err(err) = result {

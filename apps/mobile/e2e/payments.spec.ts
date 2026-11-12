@@ -1,4 +1,5 @@
 import { test, expect, type Page } from '@playwright/test'
+import { DIRECT_PAY_WARNING } from '../src/orderState.ts'
 
 test.afterEach(async ({ page }) => {
   // Let any wallet refresh finish before Playwright disposes its API responses.
@@ -378,6 +379,60 @@ test('partial payment QR, confirmations, tx links, and status polling', async ({
   await expect(
     page.getByRole('button', { name: 'Pay from your node wallet', exact: true })
   ).toHaveCount(0)
+})
+
+test('a direct order to a store on another node warns above the payment details', async ({
+  page
+}) => {
+  const { id, order } = await checkout(page)
+  await fundedUi(page)
+  const local = {
+    ...order,
+    id,
+    created: 1,
+    network: 'testnet4',
+    receivedSats: 0,
+    confirmations: 0,
+    txids: [],
+    paying: false
+  }
+  let state: Record<string, unknown> = local
+  await page.route(`**/orders/${id}`, route => route.fulfill({ json: state }))
+  await page.route('**/orders', route =>
+    route.fulfill({ json: { orders: [state] } })
+  )
+  await page.clock.install()
+  await page.reload()
+  await page.getByRole('button', { name: 'Your orders', exact: true }).click()
+  await page
+    .getByRole('button', { name: 'Order from Marlow Goods', exact: true })
+    .click()
+  const pay = page.getByRole('button', {
+    name: 'Pay from your node wallet',
+    exact: true
+  })
+  const warning = page.getByRole('note').filter({ hasText: DIRECT_PAY_WARNING })
+  await expect(pay).toBeVisible()
+  await expect(warning).toHaveCount(0)
+  state = { ...local, remote: { delivered: true, seller: 'ab'.repeat(32) } }
+  await page.clock.fastForward(16000)
+  await expect(warning).toBeVisible()
+  await expect(pay).toBeVisible()
+  // The pay button, and the address and QR code under it, come after the warning.
+  const above = await warning.evaluate(note =>
+    ['button.ob-primary', '.ob-external-payment'].every(selector => {
+      const node = note.closest('.ob-order-payment')?.querySelector(selector)
+      return (
+        !!node &&
+        !!(note.compareDocumentPosition(node) & Node.DOCUMENT_POSITION_FOLLOWING)
+      )
+    })
+  )
+  expect(above).toBe(true)
+  state = { ...state, receivedSats: order.totalSats, status: 'Paid' }
+  await page.clock.fastForward(16000)
+  await expect(page.locator('.ob-payment-progress strong')).toHaveText('Paid')
+  await expect(warning).toHaveCount(0)
 })
 
 test('network mismatch and escrow are read-only', async ({ page }) => {

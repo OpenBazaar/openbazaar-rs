@@ -33,7 +33,6 @@ impl Pair {
         let seller = peer(&chain, confirmations);
         let buyer = peer(&chain, confirmations);
         let listing = open_store(&seller.node);
-        seller.node.record_finished_escrow_sale().expect("an established store has one finished escrow");
         let (status, follows) = request(&buyer.node, "POST", "/follows", &json!({ "url": seller.url }).to_string());
         assert!(status.contains("200"), "{status} {follows}");
         assert_eq!(follows["follows"][0]["name"], "Brook and Pine", "{follows}");
@@ -141,6 +140,17 @@ fn a_sale_goes_from_listing_to_completed_across_two_nodes() {
     assert_eq!(pair.sales()[0]["status"], COMPLETED);
     pair.deliver();
     assert_eq!(order(&pair.buyer.node, &id)["remote"]["sellerCompleted"], true);
+}
+
+#[test]
+fn a_store_with_no_finished_escrow_sale_takes_a_direct_order() {
+    let pair = Pair::new();
+    assert_eq!(pair.seller.node.finished_escrow_sales(), 0, "the store is new");
+    let placed = pair.checkout(1);
+    pair.deliver();
+    let answered = order(&pair.buyer.node, placed["orderId"].as_str().unwrap());
+    assert_eq!(answered["status"], AWAITING_PAYMENT, "{answered}");
+    assert_eq!(answered["payment"]["address"], pair.sales()[0]["address"], "the seller named the address to pay");
 }
 
 #[test]

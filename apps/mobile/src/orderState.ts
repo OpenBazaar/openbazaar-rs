@@ -75,6 +75,19 @@ export function canOfferBitcoinPay(
   return kind === 'btc' && order.status === ORDER_STATUS.awaitingPayment && dueSats > 0 && !order.payTxid
 }
 
+/** What a buyer is told before paying a store on another node directly. It is the same for every store: the node cannot check a seller's history. */
+export const DIRECT_PAY_WARNING =
+  'This payment goes straight to the seller. There is no escrow and no moderator, and this app cannot vouch for the seller. A payment cannot be reversed.'
+
+/** The warning to show with the payment details of a direct order to a store on another node, until the buyer has paid. */
+export function directPayWarning(
+  order: { status: string; remote?: unknown; payTxid?: string | null },
+  kind: PayKind
+): string | null {
+  const unpaid = order.status === ORDER_STATUS.awaitingPayment && !order.payTxid
+  return order.remote && kind !== 'escrow' && unpaid ? DIRECT_PAY_WARNING : null
+}
+
 /** Confirmations an order needs: what its Monero or Zcash payment names, or the node's bitcoin setting. */
 export function confirmationTarget(
   kind: PayKind,
@@ -143,6 +156,8 @@ export type ZcashFields = {
   receivedZatoshi: string
   overpaidZatoshi: string
   confirmationsNeeded: number
+  expiresAt: number | null
+  expired: boolean
 }
 
 export type ZcashDue = {
@@ -155,10 +170,13 @@ export type ZcashDue = {
   overpaidZec: string | null
   confirmationsNeeded: number
   awaiting: boolean
+  expiresAt: number | null
+  /** The quote lapsed unpaid: by the node's word, or by this clock before the node's next look. */
+  expired: boolean
 }
 
 /** What a Zcash order still asks for. Received counts Ironwood notes only, as the node does. */
-export function zcashDue(payment: { rail?: string; zcash?: ZcashFields | null } | null | undefined): ZcashDue | null {
+export function zcashDue(payment: { rail?: string; zcash?: ZcashFields | null } | null | undefined, now = Date.now()): ZcashDue | null {
   const fields = payment?.rail === 'zec' ? payment.zcash : null
   if (!fields) return null
   let amount: bigint
@@ -183,6 +201,8 @@ export function zcashDue(payment: { rail?: string; zcash?: ZcashFields | null } 
     remainingZec: formatZec(remaining),
     overpaidZec: overpaid > 0n ? formatZec(overpaid) : null,
     confirmationsNeeded: fields.confirmationsNeeded,
-    awaiting: remaining > 0n
+    awaiting: remaining > 0n,
+    expiresAt: fields.expiresAt,
+    expired: fields.expired || (remaining > 0n && fields.expiresAt != null && fields.expiresAt * 1000 <= now)
   }
 }

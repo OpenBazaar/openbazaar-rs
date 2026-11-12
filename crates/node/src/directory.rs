@@ -2049,7 +2049,6 @@ mod tests {
         let other_id = xonly(&other);
         let reused = Admission::sign(other_id, tx.compute_txid().to_byte_array(), 0, height, &other).unwrap();
         assert!(!crate::admission::fee_confirmed(&chain, NetworkMode::Testnet4, &head, &reused), "one fee admits one store id");
-        assert!(crate::reputation::direct_pay_allowed(0).is_err(), "the fee does not unlock direct pay");
 
         let dir = TempDir::new();
         let mut intro = Replica::open(&dir.0).unwrap();

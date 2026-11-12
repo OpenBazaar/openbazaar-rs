@@ -34,6 +34,7 @@ import { paymentStatusView } from '../paymentStatus'
 import {
   canOfferBitcoinPay,
   confirmationTarget,
+  directPayWarning,
   moneroDue,
   zcashDue,
   ORDER_STATUS,
@@ -407,6 +408,7 @@ export function OrderPayment({
   const zcash = zcashDue(order.payment)
   const escrow = kind === 'escrow'
   const offerBitcoinPay = canOfferBitcoinPay(order, kind, due)
+  const directWarning = directPayWarning(order, kind)
   const net = network.data?.network
   const orderNetwork = order.network ?? order.payment?.network
   const mismatch =
@@ -537,6 +539,11 @@ export function OrderPayment({
           {error || order.payError || resource.error}
         </p>
       )}
+      {directWarning && (
+        <p role='note' className='ob-form-error'>
+          {directWarning}
+        </p>
+      )}
       {escrow ? (
         <>
           {order.escrow?.moderator ? (
@@ -572,13 +579,19 @@ export function OrderPayment({
       ) : kind === 'zec' ? (
         <>
           {view.progress && <p role='status'>{view.progress}</p>}
-          {zcash && zcash.awaiting && order.status === ORDER_STATUS.awaitingPayment ? (
+          {zcash?.expired ? (
+            <p className='ob-form-error' role='alert'>
+              This Zcash quote has expired. Do not pay it. Place the order again for a new one.
+              {zcash.receivedZec !== '0' ? ` ${zcash.receivedZec} ZEC arrived and is recorded on this order, but the order was not marked paid.` : ''}
+            </p>
+          ) : zcash && zcash.awaiting && order.status === ORDER_STATUS.awaitingPayment ? (
             <div className='ob-payment-options'>
               <PaymentQr value={zcash.uri} />
               <CopyPaymentValue label='Zcash address' value={zcash.address} />
               <CopyPaymentValue label='Amount in ZEC' value={zcash.remainingZec} />
               <p className='ob-page-intro'>
                 Send only {zcash.network} Zcash to this shielded address, from any Zcash wallet. It has no transparent receiver, so the wallet sends shielded and the payment lands in Ironwood. The QR code requests the remaining amount.
+                {zcash.expiresAt != null ? ` The quote expires ${new Date(zcash.expiresAt * 1000).toLocaleTimeString(undefined, { timeStyle: 'short' })}.` : ''}
               </p>
             </div>
           ) : zcash ? (

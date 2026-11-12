@@ -166,10 +166,6 @@ impl Node {
             self.queue_reply(&route, &json!({ "v": 1, "kind": "declined", "reason": crate::vacation::AWAY_MESSAGE })).map_err(retry)?;
             return Ok(());
         }
-        if let Err(reason) = crate::reputation::direct_pay_allowed(self.finished_escrow_sales()) {
-            self.queue_reply(&route, &json!({ "v": 1, "kind": "declined", "reason": reason })).map_err(retry)?;
-            return Ok(());
-        }
         let priced = match order.terms.lines.is_empty() {
             true => self.price_order(&order),
             false => self.price_terms_order(&id, &order, &opened.sender.0)?,
@@ -195,7 +191,6 @@ impl Node {
     /// The order's lines priced now, or why the store declines it.
     fn price_order(&self, order: &Order) -> Result<Priced, String> {
         let lines = order_lines(order)?;
-        crate::reputation::direct_pay_allowed(self.finished_escrow_sales())?;
         if order.options.get("settlement").map(String::as_str) != Some("direct") {
             return Err("This store takes direct payment only.".into());
         }

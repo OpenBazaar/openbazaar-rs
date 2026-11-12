@@ -30,6 +30,7 @@ import { paymentStatusView } from './paymentStatus'
 import {
   canOfferBitcoinPay,
   confirmationTarget,
+  directPayWarning,
   moneroDue,
   zcashDue,
   ORDER_STATUS,
@@ -311,7 +312,8 @@ export function NativeOrderPayment({
     monero = moneroDue(order.payment),
     zcash = zcashDue(order.payment),
     escrow = kind === 'escrow',
-    offerBitcoinPay = canOfferBitcoinPay(order, kind, due)
+    offerBitcoinPay = canOfferBitcoinPay(order, kind, due),
+    directWarning = directPayWarning(order, kind)
   const [busy, setBusy] = useState(false),
     [error, setError] = useState(''),
     [step, setStep] = useState<'unlock' | Quote | null>(null),
@@ -441,6 +443,7 @@ export function NativeOrderPayment({
             network.error}
         </Text>
       ) : null}
+      {directWarning ? <Text style={s.error}>{directWarning}</Text> : null}
       {escrow ? (
         <Text style={s.body}>Escrow status is read-only in this client.</Text>
       ) : kind === 'xmr' ? (
@@ -462,13 +465,19 @@ export function NativeOrderPayment({
       ) : kind === 'zec' ? (
         <>
           {view.progress ? <Text style={s.body}>{view.progress}</Text> : null}
-          {zcash && zcash.awaiting && order.status === ORDER_STATUS.awaitingPayment ? (
+          {zcash?.expired ? (
+            <Text style={s.body}>
+              This Zcash quote has expired. Do not pay it. Place the order again for a new one.
+              {zcash.receivedZec !== '0' ? ` ${zcash.receivedZec} ZEC arrived and is recorded on this order, but the order was not marked paid.` : ''}
+            </Text>
+          ) : zcash && zcash.awaiting && order.status === ORDER_STATUS.awaitingPayment ? (
             <>
               <Qr value={zcash.uri} />
               <Copy label='Zcash address' value={zcash.address} />
               <Copy label='Amount in ZEC' value={zcash.remainingZec} />
               <Text style={s.body}>
                 Send only {zcash.network} Zcash to this shielded address, from any Zcash wallet.
+                {zcash.expiresAt != null ? ` The quote expires ${new Date(zcash.expiresAt * 1000).toLocaleTimeString(undefined, { timeStyle: 'short' })}.` : ''}
               </Text>
             </>
           ) : zcash ? null : (
