@@ -123,6 +123,8 @@ mod multinode_tests;
 #[cfg(test)]
 mod multinode_durable_tests;
 #[cfg(test)]
+mod multinode_payment_tests;
+#[cfg(test)]
 mod multinode_seller_tests;
 #[cfg(test)]
 mod multinode_variant_tests;
