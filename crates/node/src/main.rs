@@ -194,7 +194,10 @@ fn serve(args: &[String]) -> ExitCode {
         }
     };
     if let Some((btc_usd, zec_usd)) = options.fixed_rates {
-        node.set_fixed_rates(btc_usd, zec_usd);
+        if let Err(err) = node.set_fixed_rates(btc_usd, zec_usd) {
+            eprintln!("ob-node: {err}");
+            return ExitCode::from(1);
+        }
     }
     if let Some(config) = xmr {
         let chain = match openbazaar_xmr::DaemonChain::new(config) {
