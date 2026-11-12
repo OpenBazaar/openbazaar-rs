@@ -1,5 +1,6 @@
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
+  Alert,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -70,11 +71,16 @@ function Action({
     </Pressable>
   )
 }
-function Copy({ label, value }: { label: string; value: string }) {
+function Copy({ label, value, help }: { label: string; value: string; help?: string }) {
   const [message, setMessage] = useState('')
+  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  useEffect(() => {
+    setMessage('')
+    return () => clearTimeout(timer.current)
+  }, [value])
   return (
     <View style={s.copy}>
-      <Text style={s.label}>{label}</Text>
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}><Text style={s.label}>{label}</Text>{help && <Pressable accessibilityRole='button' accessibilityLabel='Transaction privacy' onPress={() => Alert.alert('Transaction privacy', help)} style={{ minHeight: 44, minWidth: 44, alignItems: 'center', justifyContent: 'center' }}><Text style={{ color: '#1062a9', fontSize: 18 }}>ⓘ</Text></Pressable>}</View>
       <Text selectable style={s.code}>
         {value}
       </Text>
@@ -82,7 +88,7 @@ function Copy({ label, value }: { label: string; value: string }) {
         label={message || `Copy ${label.toLowerCase()}`}
         onPress={() => {
           void Clipboard.setStringAsync(value).then(
-            () => setMessage('Copied'),
+            () => { setMessage('Copied'); clearTimeout(timer.current); timer.current = setTimeout(() => setMessage(''), 2000) },
             () => setMessage('Copy failed; select the text above')
           )
         }}
@@ -416,21 +422,21 @@ export function NativeOrderPayment({
         <Text style={s.body}>
           Received {zcash.receivedZec} / {zcash.amountZec} ZEC
         </Text>
-      ) : (
+      ) : !['Shipped', ORDER_STATUS.completed].includes(order.status) || order.receivedSats > 0 ? (
         <Text style={s.body}>
           Received {order.receivedSats.toLocaleString()} /{' '}
           {order.totalSats.toLocaleString()} sats
         </Text>
-      )}
+      ) : null}
       <Text style={s.body}>{view.confirmations}</Text>
       {txids.map(txid => (
         <Copy
           key={txid}
           label={order.payTxid === txid ? 'Sent transaction' : 'Transaction'}
           value={txid}
+          help={EXTERNAL_TX_NOTE}
         />
       ))}
-      {txids.length > 0 ? <Text style={s.body}>{EXTERNAL_TX_NOTE}</Text> : null}
       {error ||
       order.payError ||
       resource.error ||
@@ -488,9 +494,9 @@ export function NativeOrderPayment({
         </>
       ) : (
         <>
-          <Text style={s.body}>
+          {(order.status === ORDER_STATUS.awaitingPayment || order.status === ORDER_STATUS.paymentSeen) && <Text style={s.body}>
             Still owed: {due.toLocaleString()} sats ({bitcoinAmount(due)} BTC)
-          </Text>
+          </Text>}
           {mismatch && (
             <Text style={s.error}>
               Order, wallet, and node networks must match.
@@ -538,9 +544,7 @@ export function NativeOrderPayment({
                     {bitcoinAmount(step.amountSats)} BTC) to {order.seller}.
                     Network fee at most {step.feeCapSats.toLocaleString()} sats.
                   </Text>
-                  <Text selectable style={s.code}>
-                    {step.address}
-                  </Text>
+                  <Copy label='Payment address' value={step.address} />
                   <Text style={s.body}>
                     Your node will refuse to send anything else. This expires in{' '}
                     {step.expiresInSecs} seconds.

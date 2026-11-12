@@ -7,12 +7,13 @@ import { useLockedAction } from "./SellerKit";
 const DAY = 86_400;
 
 /// Bids waiting on this store. Accept, counter, or decline with the answer route.
-export function OfferInbox() {
+export function OfferInbox({ showEmpty = false }: { showEmpty?: boolean }) {
   const bids = useNodeResource(fetchWaitingBids, 15000, true, list => list.length === 0);
   if (bids.error) return <p className="ob-form-error" role="alert">{bids.error}</p>;
-  if (!bids.data?.length) return null;
+  if (bids.loading && showEmpty) return <p role="status">Loading offers…</p>;
+  if (!bids.data?.length) return showEmpty ? <p className="ob-order-no-results">No offers awaiting a response.</p> : null;
   return <div className="ob-orders">
-    <h2>Offers</h2>
+    {!showEmpty && <h2>Offers</h2>}
     {bids.data.map(bid => <BidRow key={bid.id} bid={bid} onDone={() => void bids.refresh()}/>)}
   </div>;
 }

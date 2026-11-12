@@ -1,7 +1,6 @@
 import { useContext, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
-import { afterShopPair, onThisComputer, shopPairingMessage, fetchCatalog, fetchLabelers, fetchOrders, fetchRates, type LabelerState, type BuyerOrder, type CurrencyCode, type ListingHeader, type RateTable, type ShopCatalog } from "../catalog";
+import { afterShopPair, fetchCatalog, fetchLabelers, fetchRates, type LabelerState, type BuyerOrder, type CurrencyCode, type ListingHeader, type RateTable, type ShopCatalog } from "../catalog";
 import { servedByHomeNode } from "../homeNode/transport";
-import { pairingKind, pairingOrdersText } from "../pairingUi";
 import { filterListings, matchingStores, storesWithoutListings } from "../search";
 import { fetchStore } from "../stores";
 import { Bag, Addresses, MarketplaceCheckout, CheckoutConfirmation } from "./Commerce";
@@ -17,7 +16,6 @@ import { VendorLabelPicker } from "./VendorLabelPicker";
 import { LabelersPanel } from "./Labelers";
 import { CanopyDivider, MarketEmptyArtwork } from "./MarketArtwork";
 import { NetworkBadge, NodePaymentsProvider, OrderPayment, WalletPanel } from "./NodePayments";
-import { ordersSettled } from "../orderState";
 import { useNodeResource } from "../useNodeResource";
 import { PageHeading } from "./PageHeading";
 import { BuildLine, BuildMismatchWarning, useBuildInfo } from "./BuildInfo";
@@ -35,15 +33,15 @@ import { StoreSetup } from "./StoreSetup";
 import { Coupons } from "./Coupons";
 import { StoreListings } from "./StoreListings";
 import { Sales, useSales } from "./Sales";
+import { Orders } from "./Orders";
 import { OwnStore } from "./OwnStore";
 import { CatalogStore } from "./CatalogStore";
 import { shopHistory } from "./shopHistory";
 import { Follows } from "./Follows";
 import { FollowButton } from "./FollowButton";
-import { RemoteOrderStatus } from "./RemoteOrder";
 import { ListingRails } from "./RailMark";
 import { MediaImage } from "./SellerKit";
-import { PairButton, PairingBanner, PairingDialog } from "./PairingDialog";
+import { PairingBanner, PairingDialog } from "./PairingDialog";
 import { BrowsersSettings } from "./BrowsersSettings";
 
 type IconName = "settings" | "wallet" | "sun" | "moon" | "compass" | "heart" | "bag" | "arrow" | "search" | "chevron" | "check" | "shield" | "globe" | "close" | "menu" | "book" | "cup" | "home" | "music" | "shirt" | "tool" | "paper" | "grid" | "pin" | "bolt" | "external" | "ticket";
@@ -130,7 +128,7 @@ export default function Marketplace() {
   const network = useNodeResource(fetchNetwork, 0);
   const openDesk = useContext(ModeratorDeskLink);
   const seller = profile.data?.role === "seller";
-  const sales = useSales(seller, sale => setToast(`New order: ${sale.lines.map(l => l.title).join(", ")}`));
+  const sales = useSales(seller, sale => setToast(`New order: ${sale.lines.map(l => l.title).join(", ")}`), section === "sales");
   const storeKey = profile.data?.storeKey ?? "";
   const [salesSeen, setSalesSeen] = useState<SalesSeen | null>(null);
   useEffect(() => { setSalesSeen(readSalesSeen(storeKey)); }, [storeKey]);
@@ -374,16 +372,4 @@ export function Payment({ receipt }: { receipt: BuyerOrder | import("../catalog"
   const id = "id" in receipt ? receipt.id : receipt.orderId;
   if (receipt.payment?.ln) return <LightningOrderPayment key={id} id={id} initial={receipt} invoice={receipt.payment.ln}/>;
   return <OrderPayment key={id} id={id} initial={receipt}/>;
-}
-function Orders({ rates, currency, onBrowse }: { rates: RateTable; currency: CurrencyCode; onBrowse: () => void }) {
-  const resource = useNodeResource(fetchOrders, 12000, true, ordersSettled);
-  const [expanded, setExpanded] = useState<string | null>(null);
-  const orders = resource.data ?? [];
-  return <section className="ob-orders"><PageHeading title="Your orders" description="Track deliveries and complete payments." action={<button className="ob-secondary" disabled={resource.loading} onClick={() => void resource.refresh()}>Refresh orders</button>}/>
-    {resource.error && (shopPairingMessage(resource.error) ? <Empty icon="bag" title="Pair this browser to see your orders" text={pairingOrdersText(pairingKind(onThisComputer()))}><PairButton/></Empty> : <p className="ob-form-error" role="alert">{resource.error}</p>)}
-    {resource.loading ? <p role="status">Loading orders…</p> : !resource.data ? null : !orders.length ? <Empty icon="bag" title="No orders yet" text="Orders appear here after checkout."><button className="ob-primary" onClick={onBrowse}>Browse products</button></Empty> : orders.map(order => <article className="ob-order-row" key={order.id}>
-      <button className="ob-order-toggle" onClick={() => setExpanded(expanded === order.id ? null : order.id)} aria-expanded={expanded === order.id} aria-label={`Order from ${order.seller}`}><span className="ob-order-icon"><Icon name="bag"/></span><span className="ob-order-name"><strong>{order.lines.map(l => l.title).join(", ")}</strong><span>{order.seller} · {new Date(order.created * (order.created < 1e12 ? 1000 : 1)).toLocaleDateString()}</span></span><span className="ob-order-status">{order.status}</span><Money sats={order.totalSats} rates={rates} currency={currency}/><Icon name="chevron" size={16}/></button>
-      {expanded === order.id && <div className="ob-order-expanded"><p className="ob-meta">Order {order.id}</p><RemoteOrderStatus order={order} onChange={() => void resource.refresh()}/>{(!order.remote || order.payment) && <Payment receipt={order}/>}</div>}
-    </article>)}
-  </section>;
 }

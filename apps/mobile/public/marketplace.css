@@ -4437,3 +4437,138 @@ button.ob-detail-seller:hover strong { color: var(--ob-link); }
   .ob-case-toolbar>div button { white-space:nowrap; font-size:13px; gap:6px; padding-inline:6px; }
   .ob-case-workspace:not(.has-multiple) .ob-case-queue { display:none; }
 }
+
+/* Order workspace: overview, next action, supporting records. */
+.ob-order-center { max-width:1180px; }
+.ob-order-center .ob-page-heading h1 { font-size:26px; font-weight:600; }
+.ob-order-controls { display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:16px; margin:20px 0; }
+.ob-order-controls>div { display:flex; flex-wrap:wrap; gap:4px; }
+.ob-order-controls button { display:flex; align-items:center; gap:8px; padding:8px 12px; min-height:40px; color:var(--ob-secondary); font-size:14px; border-radius:6px; }
+.ob-order-controls button[aria-pressed="true"] { background:var(--ob-selected); color:var(--ob-ink); font-weight:600; }
+.ob-order-controls button span { font-size:12px; font-variant-numeric:tabular-nums; }
+.ob-order-controls>input { flex:0 1 290px; min-width:0; max-width:100%; min-height:40px; padding:9px 12px; border:1px solid var(--ob-line); border-radius:7px; background:var(--ob-surface); color:var(--ob-ink); font:inherit; font-size:14px; }
+.ob-order-ledger { border:1px solid var(--ob-line); border-radius:10px; overflow:hidden; background:var(--ob-surface); }
+.ob-order-center .ob-order-row { margin:0; border:0; border-radius:0; }
+.ob-order-center .ob-order-row+.ob-order-row { border-top:1px solid var(--ob-line); }
+.ob-order-center .ob-order-toggle { display:grid; grid-template-columns:minmax(0,1fr) minmax(100px,auto) auto 18px; gap:20px; padding:18px 22px; align-items:center; text-align:left; width:100%; }
+.ob-order-center .ob-order-name { display:grid; gap:5px; min-width:0; }
+.ob-order-center .ob-order-name strong { font-size:15px; font-weight:600; line-height:1.5; overflow-wrap:anywhere; }
+.ob-order-center .ob-order-name>span { color:var(--ob-secondary); font-size:13px; line-height:1.5; }
+.ob-order-center .ob-order-name .ob-order-row-meta { font-size:12px; }
+.ob-order-center .ob-order-status { font-size:13px; line-height:1.5; padding:5px 9px; border-radius:5px; background:var(--ob-subtle); color:var(--ob-secondary); white-space:normal; }
+.ob-order-center .ob-order-status.is-actionable { color:var(--ob-link); background:var(--ob-selected); }
+.ob-order-row-open { color:var(--ob-secondary); font-size:20px; }
+.ob-order-center .ob-order-expanded { border-top:1px solid var(--ob-line); background:var(--ob-paper); padding:22px; }
+.ob-order-next { margin-bottom:22px; max-width:75ch; }
+.ob-order-next>span { color:var(--ob-secondary); font-size:13px; }
+.ob-order-next h2 { font-size:21px; font-weight:600; line-height:1.4; margin:4px 0 8px; }
+.ob-order-next p { font-size:14px; line-height:1.6; color:var(--ob-secondary); }
+.ob-order-detail-grid { display:grid; grid-template-columns:minmax(0,1fr) 290px; align-items:start; gap:24px; }
+.ob-order-primary { min-width:0; display:grid; gap:18px; }
+.ob-order-primary:empty { display:none; }
+.ob-order-center .ob-fulfill { margin:0; padding:20px; border:1px solid var(--ob-line); border-radius:8px; background:var(--ob-surface); }
+.ob-order-center .ob-fulfill h3 { font-size:17px; font-weight:600; margin:0 0 18px; }
+.ob-order-center .ob-fulfill .ob-field-grid { gap:16px; grid-template-columns:repeat(2,minmax(0,1fr)); }
+.ob-order-center .ob-fulfill .ob-field { font-size:14px; }
+.ob-order-center .ob-fulfill .ob-form-actions { margin-top:18px; }
+.ob-order-facts-panel { padding:18px; border:1px solid var(--ob-line); border-radius:8px; background:var(--ob-surface); min-width:0; }
+.ob-order-facts-panel h3,.ob-order-delivery h3 { font-size:15px; font-weight:600; margin:0 0 12px; }
+.ob-order-facts-panel ul { padding:0; margin:0 0 16px; list-style:none; display:grid; gap:12px; }
+.ob-order-facts-panel li { display:flex; justify-content:space-between; gap:12px; font-size:14px; line-height:1.5; }
+.ob-order-facts-panel li>span:first-child { min-width:0; overflow-wrap:anywhere; }
+.ob-order-facts-panel li small { display:block; font-size:13px; color:var(--ob-secondary); }
+.ob-order-facts-panel dl { display:grid; gap:12px; padding-top:16px; margin:0; border-top:1px solid var(--ob-line); }
+.ob-order-facts-panel dl>div { display:flex; justify-content:space-between; gap:12px; font-size:13px; }
+.ob-order-facts-panel dt { color:var(--ob-secondary); }
+.ob-order-facts-panel dd { margin:0; }
+.ob-order-facts-panel section { border-top:1px solid var(--ob-line); padding-top:16px; margin-top:16px; }
+.ob-order-facts-panel section p { font-size:14px; line-height:1.6; overflow-wrap:anywhere; }
+.ob-order-record { border-top:1px solid var(--ob-line); min-width:0; }
+.ob-order-record>summary { min-height:44px; padding:12px 0; cursor:pointer; font-size:14px; color:var(--ob-secondary); }
+.ob-order-record code { display:block; font-size:13px; overflow-wrap:anywhere; padding-bottom:12px; }
+.ob-order-record .ob-sale-facts { grid-template-columns:minmax(0,1fr); gap:16px; }
+.ob-order-delivery { padding:18px; border:1px solid var(--ob-line); border-radius:8px; background:var(--ob-surface); }
+.ob-order-center .ob-remote-order { display:grid; gap:12px; }
+.ob-order-center .ob-payment-progress { background:var(--ob-surface); padding:16px; border:1px solid var(--ob-line); border-radius:8px; }
+.ob-order-center .ob-payment-options { grid-template-columns:minmax(0,1fr); }
+.ob-order-no-results { padding:36px 22px; border:1px solid var(--ob-line); border-radius:8px; }
+.ob-order-no-results h2 { font-size:18px; margin-bottom:8px; }
+.ob-order-no-results p { font-size:14px; color:var(--ob-secondary); }
+.ob-sales-views { display:flex; gap:24px; border-bottom:1px solid var(--ob-line); margin-bottom:18px; }
+.ob-sales-views button { min-height:44px; color:var(--ob-secondary); font-size:14px; border-bottom:2px solid transparent; }
+.ob-sales-views button[aria-current="page"] { color:var(--ob-ink); border-bottom-color:var(--ob-link); font-weight:600; }
+.ob-offers-title { font-size:19px; margin:18px 0!important; }
+@container workspace (max-width:850px) { .ob-order-detail-grid { grid-template-columns:minmax(0,1fr); } }
+@media (max-width:640px) {
+ .ob-order-controls { gap:12px; }
+ .ob-order-controls>input { flex:1 1 100%; font-size:16px; min-height:44px; }
+ .ob-order-controls button { padding:8px; min-height:44px; }
+ .ob-order-center .ob-order-toggle { grid-template-columns:minmax(0,1fr) auto; padding:16px; gap:12px; }
+ .ob-order-center .ob-order-name { grid-column:1 / -1; }
+ .ob-order-center .ob-order-status { justify-self:start; }
+ .ob-order-row-open { display:none; }
+ .ob-order-center .ob-order-expanded { padding:16px; }
+ .ob-order-center .ob-fulfill { padding:16px; }
+ .ob-order-center .ob-fulfill .ob-field-grid { grid-template-columns:minmax(0,1fr); }
+}
+
+@media (max-width:1000px) { .ob-order-detail-grid { grid-template-columns:minmax(0,1fr); } }
+@media (max-width:640px) {
+ .ob-order-center .ob-page-heading { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:8px 12px; align-items:center; }
+ .ob-order-center .ob-page-heading>div:first-child { display:contents; }
+ .ob-order-center .ob-page-heading p { grid-row:2; grid-column:1 / -1; margin:0; }
+ .ob-order-center .ob-page-heading-action { grid-row:1; grid-column:2; }
+}
+
+/* Large order histories: bounded pages and compact, labeled controls. */
+.ob-order-controls { scroll-margin-top:20px; }
+.ob-order-refine { display:flex; flex-wrap:wrap; align-items:flex-end; gap:12px 16px; margin:-4px 0 18px; }
+.ob-order-refine label,.ob-order-list-meta>label { display:flex; align-items:center; gap:8px; color:var(--ob-secondary); font-size:13px; }
+.ob-order-refine select,.ob-order-refine input,.ob-order-list-meta select { min-height:40px; max-width:100%; min-width:0; border:1px solid var(--ob-line); border-radius:6px; background:var(--ob-surface); color:var(--ob-ink); padding:8px 10px; font:inherit; font-size:14px; }
+.ob-order-refine .ob-text-link { min-height:40px; font-size:13px; }
+.ob-order-list-meta { display:flex; align-items:center; flex-wrap:wrap; gap:12px 18px; margin:0 0 12px; }
+.ob-order-list-meta>p { margin:0 auto 0 0; color:var(--ob-secondary); font-size:13px; font-variant-numeric:tabular-nums; }
+.ob-order-pagination { display:flex; align-items:center; gap:4px; }
+.ob-order-pagination button { min-height:40px; min-width:34px; padding:8px 10px; border:1px solid var(--ob-line); border-radius:6px; font-size:14px; color:var(--ob-ink); background:var(--ob-surface); }
+.ob-order-pagination button:disabled { opacity:.4; cursor:default; }
+.ob-order-pagination>span { padding:0 8px; font-size:13px; color:var(--ob-secondary); white-space:nowrap; font-variant-numeric:tabular-nums; }
+.ob-order-pagination-footer { display:flex; justify-content:flex-end; margin-top:16px; }
+@media(max-width:640px) {
+ .ob-order-refine { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:12px; }
+ .ob-order-refine label { display:grid; gap:6px; min-width:0; }
+ .ob-order-refine label:first-child { grid-column:1/-1; }
+ .ob-order-refine select,.ob-order-refine input,.ob-order-list-meta select { min-height:44px; font-size:16px; width:100%; }
+ .ob-order-refine .ob-text-link { grid-column:1/-1; text-align:left; }
+ .ob-order-list-meta { gap:12px; }
+ .ob-order-list-meta>label { margin-left:auto; }
+ .ob-order-list-meta .ob-order-pagination { flex-basis:100%; }
+ .ob-order-pagination { width:100%; justify-content:space-between; gap:3px; }
+ .ob-order-pagination button { min-height:44px; min-width:30px; padding:8px; font-size:13px; }
+ .ob-order-pagination>span { padding:0 3px; font-size:12px; }
+}
+
+/* Supplemental transaction help stays beside the relevant label. */
+.ob-copy-label { display:flex; align-items:center; gap:6px; }
+.ob-info-tip-trigger { display:inline-flex; align-items:center; justify-content:center; flex:0 0 auto; width:30px; height:30px; padding:0; border:0; border-radius:5px; color:var(--ob-secondary); background:transparent; cursor:help; vertical-align:middle; }
+.ob-info-tip-trigger:hover,.ob-info-tip-trigger:focus-visible { color:var(--ob-link); background:var(--ob-selected); }
+.ob-info-tip-trigger:focus-visible { outline:2px solid var(--ob-link); outline-offset:2px; }
+.ob-info-tip { position:fixed; z-index:2000; box-sizing:border-box; width:330px; max-width:calc(100vw - 24px); max-height:calc(100dvh - 24px); overflow:auto; padding:12px 14px; border:1px solid var(--ob-line); border-radius:8px; background:var(--ob-surface); color:var(--ob-ink); box-shadow:0 6px 24px #0003; font-family:"Instrument Sans",Arial,sans-serif; font-size:14px; font-weight:400; line-height:1.6; text-align:left; overflow-wrap:anywhere; }
+.ob-info-tip p { margin:0; }
+.ob-info-tip p+p { margin-top:8px; }
+.ob-transaction-value { display:flex; gap:6px; align-items:flex-start; }
+.ob-transaction-value code { flex:1; min-width:0; padding:0; }
+@media (pointer:coarse) { .ob-info-tip-trigger { width:44px; height:44px; } }
+
+/* Addresses remain selectable and copyable in every context, including dialogs. */
+.ob-copy-button { display:inline-flex; align-items:center; justify-content:center; gap:6px; min-height:32px; max-width:100%; text-align:left; }
+.ob-copy-button svg { flex:none; }
+.ob-copy-address { display:flex; flex-wrap:wrap; align-items:center; gap:6px 12px; min-width:0; width:100%; text-align:left; }
+.ob-copy-address>code { flex:1 1 180px; min-width:0; padding:0; margin:0; color:var(--ob-ink); background:none; border:0; font-family:ui-monospace,'SF Mono',Menlo,monospace; font-size:13px; line-height:1.7; overflow-wrap:anywhere; word-break:normal; user-select:text; }
+.ob-copy-address>.ob-copy-button { flex:0 0 auto; }
+.ob-wallet-receive-dialog>.ob-copy-address { justify-content:center; }
+.ob-wallet-receive-dialog>.ob-copy-address>code { flex-basis:100%; text-align:center; font-size:14px; }
+.ob-wallet-receive-dialog>.ob-copy-address>.ob-copy-button { min-height:44px; }
+@media(max-width:640px), (pointer:coarse) { .ob-copy-button { min-height:44px; } }
+.ob-transaction-value { flex-wrap:wrap; align-items:center; }
+.ob-transaction-value>code { flex:1 1 240px; }
+.ob-transaction-actions { display:flex; align-items:center; gap:4px; }

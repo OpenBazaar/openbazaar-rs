@@ -76,8 +76,10 @@ for (const [width, dark] of [[320, false], [768, true], [1280, false], [1920, tr
     await capture(page, info, 'coupons')
 
     await navigation(page, 'Sales', 'Your store')
+    await page.getByRole('navigation', { name: 'Sales views', exact: true }).getByRole('button', { name: 'Offers', exact: true }).click()
     await expect(page.getByRole('heading', { name: 'Offers', exact: true })).toBeVisible()
     await capture(page, info, 'offers')
+    await page.getByRole('navigation', { name: 'Sales views', exact: true }).getByRole('button', { name: 'Orders', exact: true }).click()
     await page.getByRole('button', { name: 'Sale Hand-thrown stoneware mug', exact: true }).click()
     await expect(page.getByRole('heading', { name: 'Ship this order', exact: true })).toBeVisible()
     await capture(page, info, 'sale-details')

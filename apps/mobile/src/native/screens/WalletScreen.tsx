@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ScrollView, Text } from "react-native";
 import * as Clipboard from "expo-clipboard";
 
@@ -18,6 +18,11 @@ export function WalletScreen() {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const address = fresh ?? wallet?.receiveAddress ?? null;
+  const copyTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  useEffect(() => {
+    setMessage(null);
+    return () => clearTimeout(copyTimer.current);
+  }, [address]);
   const balance = wallet?.balance ?? {};
   return (
     <ScrollView contentContainerStyle={ui.screen}>
@@ -39,7 +44,7 @@ export function WalletScreen() {
           <Text selectable style={ui.subtitle}>
             {address}
           </Text>
-          <Button label={message ?? "Copy address"} kind="plain" onPress={() => void Clipboard.setStringAsync(address).then(() => setMessage("Copied"))} />
+          <Button label={message ?? "Copy address"} kind="plain" onPress={() => void Clipboard.setStringAsync(address).then(() => { setMessage("Copied"); clearTimeout(copyTimer.current); copyTimer.current = setTimeout(() => setMessage(null), 2000); }, () => setMessage("Copy failed; select the address"))} />
           <Button
             label="New address"
             kind="plain"
