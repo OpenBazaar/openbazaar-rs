@@ -97,6 +97,17 @@ impl MockChain {
         }
     }
 
+    /// A one-block reorg: an empty block replaces the newest one, so its
+    /// transactions are back in the mempool.
+    pub fn reorg(&self) {
+        let tip = self.tip();
+        for txs in self.0.by_script.lock().unwrap().values_mut() {
+            for tx in txs.iter_mut().filter(|tx| tx.height == Some(tip)) {
+                tx.height = None;
+            }
+        }
+    }
+
     /// Give a node wallet a confirmed coin it can spend.
     pub fn fund_wallet(&self, address: &Address, sats: u64) {
         self.send_to_wallet(address, sats, true);
@@ -492,6 +503,7 @@ pub(crate) struct Peer {
     pub url: String,
     slot: Arc<Mutex<Option<Arc<Node>>>>,
     escrow: EscrowConfig,
+    confirmations: u32,
     dir: TempDir,
 }
 
@@ -500,12 +512,17 @@ impl Peer {
     /// HTTP on a thread. The chain watcher, pay worker, and mail loop do not
     /// run; tests drive them so every step is deterministic.
     pub fn spawn(chain: &MockChain, escrow: impl FnOnce(String) -> EscrowConfig) -> Self {
+        Self::spawn_with(chain, 1, escrow)
+    }
+
+    /// [`Self::spawn`] for a node that calls a payment final after `confirmations` blocks.
+    pub fn spawn_with(chain: &MockChain, confirmations: u32, escrow: impl FnOnce(String) -> EscrowConfig) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let url = format!("http://127.0.0.1:{port}");
         let dir = TempDir::new();
         let escrow = escrow(url.clone());
-        let node = Arc::new(open_node(&dir.0, NetworkMode::Testnet4, chain, 1, escrow.clone()));
+        let node = Arc::new(open_node(&dir.0, NetworkMode::Testnet4, chain, confirmations, escrow.clone()));
         let slot = Arc::new(Mutex::new(Some(Arc::clone(&node))));
         let serving = Arc::clone(&slot);
         std::thread::spawn(move || {
@@ -518,6 +535,7 @@ impl Peer {
             url,
             slot,
             escrow,
+            confirmations,
             dir,
         }
     }
@@ -533,7 +551,7 @@ impl Peer {
         self.stop();
         let mut config = NodeConfig::offline(NetworkMode::Testnet4);
         config.chain = Box::new(chain.clone());
-        config.confirmations = 1;
+        config.confirmations = self.confirmations;
         config.escrow = self.escrow.clone();
         let node = Node::open_with(&self.dir.0, load_catalog(NetworkMode::Testnet4).unwrap(), config).unwrap();
         if unlocked {
@@ -571,13 +589,18 @@ pub(crate) struct Market {
 
 impl Market {
     pub fn new() -> Self {
+        Self::with_confirmations(1)
+    }
+
+    /// [`Self::new`] with nodes that call a payment final after `confirmations` blocks.
+    pub fn with_confirmations(confirmations: u32) -> Self {
         let chain = MockChain::new();
-        let moderator = Peer::spawn(&chain, |url| EscrowConfig {
+        let moderator = Peer::spawn_with(&chain, confirmations, |url| EscrowConfig {
             mailbox_url: Some(url),
             moderates: true,
             ..EscrowConfig::default()
         });
-        let vendor = Peer::spawn(&chain, |url| EscrowConfig {
+        let vendor = Peer::spawn_with(&chain, confirmations, |url| EscrowConfig {
             mailbox_url: Some(url),
             moderator_url: Some(moderator.url.clone()),
             ..EscrowConfig::default()
@@ -588,7 +611,7 @@ impl Market {
             .collect();
         let moderator_url = moderator.url.clone();
         vendor.node.publish_store_bond("Marlow Goods").expect("the demo vendor posts a reputation bond");
-        let buyer = Peer::spawn(&chain, move |url| EscrowConfig {
+        let buyer = Peer::spawn_with(&chain, confirmations, move |url| EscrowConfig {
             mailbox_url: Some(url),
             vendors,
             moderator_url: Some(moderator_url),

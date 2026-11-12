@@ -138,6 +138,37 @@ fn an_order_waits_for_all_of_it_then_is_seen_then_paid_after_thirty_confirmation
 }
 
 #[test]
+fn a_payment_whose_blocks_are_replaced_before_paid_is_gone_until_it_is_mined_again() {
+    let Setup { node, zec, btc: _btc, dir: _dir } = setup();
+    let (id, payment) = zec_order(&node);
+    let due = zatoshi(&payment["amountZatoshi"]);
+    zec.pay(address(&payment), due);
+    zec.mine(3);
+    node.zec_sync_once().unwrap();
+    let seen = order(&node, &id);
+    assert_eq!((&seen["status"], &seen["confirmations"]), (&json!("Payment seen"), &json!(3)), "{seen}");
+
+    zec.reorg(3);
+    zec.mine(4);
+    node.zec_sync_once().unwrap();
+    let gone = order(&node, &id);
+    assert_eq!((&gone["status"], &gone["confirmations"]), (&json!("Awaiting payment"), &json!(0)), "{gone}");
+    assert_eq!(zatoshi(&gone["payment"]["receivedZatoshi"]), 0);
+    assert_eq!(zatoshi(&gone["payment"]["remainingZatoshi"]), due);
+    assert_eq!(gone["txids"], json!([]));
+
+    zec.pay(address(&payment), due);
+    zec.mine(CONFIRMATIONS - 1);
+    node.zec_sync_once().unwrap();
+    assert_eq!(order(&node, &id)["status"], "Payment seen", "29 confirmations on the new chain");
+    zec.mine(1);
+    node.zec_sync_once().unwrap();
+    let paid = order(&node, &id);
+    assert_eq!(paid["status"], "Paid");
+    assert_eq!(paid["txids"].as_array().unwrap().len(), 1, "only the payment that stayed: {paid}");
+}
+
+#[test]
 fn only_ironwood_pays_an_order() {
     let Setup { node, zec, btc: _btc, dir: _dir } = setup();
     let (id, payment) = zec_order(&node);

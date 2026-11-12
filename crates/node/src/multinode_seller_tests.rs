@@ -10,23 +10,28 @@ use crate::seller_store_tests::{open_store, png, upload};
 use crate::watch::{AWAITING_PAYMENT, AWAITING_SELLER, COMPLETED, DECLINED, PAID, PAYMENT_SEEN, SHIPPED};
 use crate::EscrowConfig;
 
-fn peer(chain: &MockChain) -> Peer {
-    Peer::spawn(chain, |url| EscrowConfig { mailbox_url: Some(url), ..EscrowConfig::default() })
+fn peer(chain: &MockChain, confirmations: u32) -> Peer {
+    Peer::spawn_with(chain, confirmations, |url| EscrowConfig { mailbox_url: Some(url), ..EscrowConfig::default() })
 }
 
-struct Pair {
-    chain: MockChain,
-    seller: Peer,
-    buyer: Peer,
+pub(crate) struct Pair {
+    pub chain: MockChain,
+    pub seller: Peer,
+    pub buyer: Peer,
     listing: Value,
 }
 
 impl Pair {
     /// A seller with one listing, and a buyer that follows it.
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
+        Self::with_confirmations(1)
+    }
+
+    /// [`Self::new`] with nodes that call a payment final after `confirmations` blocks.
+    pub(crate) fn with_confirmations(confirmations: u32) -> Self {
         let chain = MockChain::new();
-        let seller = peer(&chain);
-        let buyer = peer(&chain);
+        let seller = peer(&chain, confirmations);
+        let buyer = peer(&chain, confirmations);
         let listing = open_store(&seller.node);
         seller.node.record_finished_escrow_sale().expect("an established store has one finished escrow");
         let (status, follows) = request(&buyer.node, "POST", "/follows", &json!({ "url": seller.url }).to_string());
@@ -40,7 +45,7 @@ impl Pair {
     }
 
     /// Check out the listing on the buyer's node. Returns the order.
-    fn checkout(&self, quantity: u32) -> Value {
+    pub(crate) fn checkout(&self, quantity: u32) -> Value {
         let body = json!({
             "shipTo": ship_to(),
             "packages": [{ "settlement": "direct", "lines": [{ "listingHash": self.hash(), "quantity": quantity }] }],
@@ -51,19 +56,19 @@ impl Pair {
     }
 
     /// Send every queued letter and reply, both ways.
-    fn deliver(&self) {
+    pub(crate) fn deliver(&self) {
         for _ in 0..3 {
             self.buyer.node.flush_order_mail(true);
             self.seller.node.flush_order_mail(true);
         }
     }
 
-    fn sales(&self) -> Vec<Value> {
+    pub(crate) fn sales(&self) -> Vec<Value> {
         let (_, sales) = request(&self.seller.node, "GET", "/sales", "");
         sales["sales"].as_array().unwrap().clone()
     }
 
-    fn mine(&self) {
+    pub(crate) fn mine(&self) {
         self.chain.mine();
         self.seller.node.watch_once().unwrap();
         self.buyer.node.watch_once().unwrap();
