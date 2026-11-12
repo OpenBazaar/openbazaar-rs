@@ -23,7 +23,7 @@ struct Setup {
     dir: TempDir,
 }
 
-fn open(dir: &Path, btc: &MockChain, zec: &Arc<ZecChainMock>) -> Node {
+pub(super) fn open(dir: &Path, btc: &MockChain, zec: &Arc<ZecChainMock>) -> Node {
     let node = open_node(dir, NetworkMode::Testnet4, btc, 1, unreachable_escrow());
     node.set_zec_chain(zec.clone()).unwrap();
     node.zec.rate.set_for_tests(Some(SATS_PER_ZEC));
@@ -321,7 +321,7 @@ fn an_order_is_refused_until_the_wallet_has_read_the_chain_once() {
 }
 
 #[test]
-fn only_demo_stores_opt_in_and_the_choice_is_signed_and_kept() {
+fn a_demo_store_opts_in_and_the_choice_is_signed_and_kept() {
     let Setup { node, zec, btc, dir } = setup();
     let store = node.seller_store("Marlow Goods").unwrap();
     assert!(store.details.as_ref().unwrap().accepts_zec);
@@ -330,13 +330,6 @@ fn only_demo_stores_opt_in_and_the_choice_is_signed_and_kept() {
     let node = open(&dir.0, &btc, &zec);
     assert!(node.accepts_zec("Marlow Goods"), "the choice survives a restart");
     node.seller_store("Marlow Goods").unwrap().verify().unwrap();
-
-    let secret = node.store_secret(&node.own_store).expect("unlocked");
-    node.publish_own(openbazaar_protocol::ContentRating::General, crate::own_store::Rails::default(), &secret).unwrap();
-    let own = node.own_record().expect("the own store is published").name;
-    let (status, value) = request(&node, "PUT", "/zec/stores", &json!({"seller": own, "accept": true}).to_string());
-    assert!(status.contains("409") && value["error"] == super::OWN_STORE_LATER, "{status} {value}");
-    assert!(!node.own_record().unwrap().details.unwrap().accepts_zec, "no published record sets the Zcash bit yet");
 
     let (status, _) = request(&node, "PUT", "/zec/stores", &json!({"seller": "Nobody", "accept": true}).to_string());
     assert!(status.contains("404"), "{status}");

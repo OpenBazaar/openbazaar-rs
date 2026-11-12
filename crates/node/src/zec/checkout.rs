@@ -25,6 +25,8 @@ pub(crate) const ESCROW_IS_BITCOIN_ONLY: &str = "Escrow is Bitcoin-only. Pay in 
 /// A quote fixes the ZEC amount at the price at checkout, so it lasts an hour, as a Lightning invoice does.
 const QUOTE_SECS: u64 = 60 * 60;
 pub(crate) const NOT_SYNCED: &str = "This node has not read the Zcash chain yet, so a Zcash payment could be missed. Try again in a few minutes, or pay in bitcoin.";
+/// For a store whose record takes Zcash but whose wallet is not on this node: a sale between nodes carries bitcoin terms only.
+pub(crate) const OTHER_NODE: &str = "This node cannot place a Zcash order with this store yet. Pay in bitcoin.";
 
 /// `true` for the Zcash rail. Refuses Zcash with escrow.
 pub(crate) fn rail_of(value: Option<&Value>, escrow: bool) -> Result<bool, OrderError> {
@@ -73,7 +75,7 @@ impl Node {
             }
             Some(slot) if slot.wallet.is_some() => {}
             Some(_) => return Err(OrderError::Locked(crate::wallet_lock::State::Locked.as_str())),
-            None => return Err(OrderError::Invalid("That seller has no wallet on this node.")),
+            None => return Err(OrderError::Invalid(OTHER_NODE)),
         }
         if self.sats_per_zec().is_none() {
             return Err(OrderError::Invalid("There is no ZEC price right now, so a Zcash order cannot be priced. Try again, or pay in bitcoin."));

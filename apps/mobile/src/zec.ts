@@ -17,7 +17,8 @@ export type ZecStores = {
   network: ZecNetwork
   /** `false` until the node runs with `--zec-indexer`. */
   enabled: boolean
-  stores: { seller: string; acceptsZec: boolean }[]
+  /** `own` is this node's own store: its record goes to other nodes. The rest are demo stores. */
+  stores: { seller: string; own: boolean; acceptsZec: boolean }[]
 }
 export type ZecBackend = {
   enabled: boolean
@@ -86,7 +87,7 @@ export function parseZecStores(value: unknown): ZecStores {
   return {
     network: parseNetwork(r.network),
     enabled: r.enabled === true,
-    stores: stores.map(store => ({ seller: text(store.seller), acceptsZec: store.acceptsZec === true }))
+    stores: stores.map(store => ({ seller: text(store.seller), own: store.own === true, acceptsZec: store.acceptsZec === true }))
   }
 }
 

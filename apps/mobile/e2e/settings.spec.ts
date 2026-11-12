@@ -92,6 +92,26 @@ test('Zcash settings say how to turn it on when the node has no indexer', async 
   await expect(page.getByRole('switch', { name: 'Marlow Goods' })).toHaveCount(0)
 })
 
+test('Zcash settings switch your own store on, and say who stops seeing it and that it cannot be paid yet', async ({ page }) => {
+  const network = await (await page.request.get('/network')).json()
+  await page.route('**/network', route => route.fulfill({ json: { ...network, zecBackend: { ...network.zecBackend, enabled: true, backend: 'mock' } } }))
+  let on = false
+  await page.route('**/zec/stores', route => {
+    if (route.request().method() === 'PUT') on = route.request().postDataJSON().accept
+    return route.fulfill({ json: { network: 'testnet', enabled: true, stores: [{ seller: 'Brook and Pine', own: true, acceptsZec: on }] } })
+  })
+  await page.goto('/')
+  await page.getByRole('button', { name: 'Settings', exact: true }).click()
+  await page.getByRole('button', { name: 'Zcash', exact: true }).click()
+  const own = page.getByRole('switch', { name: /^Brook and Pine/ })
+  await expect(own).not.toBeChecked()
+  await expect(page.getByText('Your store. People still on the first release, v0.1.0-alpha.1, will not see it while Zcash is on, until they update.', { exact: true })).toBeVisible()
+  await expect(page.getByText('Buyers on other nodes cannot pay your store in Zcash yet.')).toBeVisible()
+  await own.click()
+  await expect(own).toBeChecked()
+  expect(on).toBe(true)
+})
+
 test('Settings has no Zcash page on a mainnet node', async ({ page }) => {
   const network = await (await page.request.get('/network')).json()
   await page.route('**/network', route => route.fulfill({ json: { ...network, network: 'mainnet' } }))
