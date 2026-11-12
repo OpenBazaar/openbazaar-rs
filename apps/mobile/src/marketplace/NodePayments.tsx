@@ -34,6 +34,7 @@ import { paymentStatusView } from '../paymentStatus'
 import {
   canOfferBitcoinPay,
   confirmationTarget,
+  directPayWarning,
   moneroDue,
   zcashDue,
   ORDER_STATUS,
@@ -407,6 +408,7 @@ export function OrderPayment({
   const zcash = zcashDue(order.payment)
   const escrow = kind === 'escrow'
   const offerBitcoinPay = canOfferBitcoinPay(order, kind, due)
+  const directWarning = directPayWarning(order, kind)
   const net = network.data?.network
   const orderNetwork = order.network ?? order.payment?.network
   const mismatch =
@@ -535,6 +537,11 @@ export function OrderPayment({
       {(error || order.payError || resource.error) && (
         <p role='alert' className='ob-form-error'>
           {error || order.payError || resource.error}
+        </p>
+      )}
+      {directWarning && (
+        <p role='note' className='ob-form-error'>
+          {directWarning}
         </p>
       )}
       {escrow ? (

@@ -1,10 +1,13 @@
 //! A seller and a buyer as two real `ob-node` processes: the seller opens a
-//! store and lists, the buyer follows it and orders, and the seller answers.
+//! new store and lists, the buyer follows it and orders, the seller names an
+//! address, the buyer pays it, the seller ships, and the buyer confirms.
 //!
 //! The in-process tests (`multinode_seller_tests.rs`) cover the same sale on
 //! a mock chain, and step the mail loops by hand. Here nothing steps them:
-//! the binary's own `serve` loops carry the order and its answer, through its
-//! flag parsing and its HTTP guard. No payment is made.
+//! the binary's own `serve` loops carry the order and every answer, through
+//! its flag parsing and its HTTP guard, and its own watchers ask a stand-in
+//! Esplora server on loopback. Someone outside the nodes pays the address:
+//! the stand-in serves no wallet scan, so the buyer's node wallet is empty.
 //!
 //! The loopback test runs with `cargo test`. The Tor test is ignored so that
 //! stays offline:
@@ -17,20 +20,21 @@ mod common;
 
 use std::time::Duration;
 
-use common::{chain_stub, timed, wait_for, RealNode};
+use common::esplora::Esplora;
+use common::{timed, wait_for, RealNode};
 use serde_json::{json, Value};
 
 const PASSPHRASE: &str = "correct horse battery";
 
 #[test]
 fn two_real_nodes_trade_on_loopback() {
-    let chain = chain_stub();
+    let chain = Esplora::start();
     let limit = Duration::from_secs(30);
-    let seller = RealNode::start("seller", &chain, &[], limit);
-    let buyer = RealNode::start("buyer", &chain, &[], limit);
+    let seller = RealNode::start("seller", &chain.url, &[], limit);
+    let buyer = RealNode::start("buyer", &chain.url, &[], limit);
     let listing = open_store(&seller);
     setup(&buyer);
-    order_and_answer(&seller, &buyer, &seller.url, &listing, limit);
+    sale_to_completed(&seller, &buyer, &chain, &seller.url, &listing, limit);
     for node in [&seller, &buyer] {
         let client = node.data_dir().join("tor-client");
         assert!(!client.exists(), "the {} node opened the Tor client that dials the introductions", node.name);
@@ -38,33 +42,21 @@ fn two_real_nodes_trade_on_loopback() {
 }
 
 #[test]
-#[ignore = "bootstraps two Arti clients; fails unless the order and its answer cross Tor"]
+#[ignore = "bootstraps two Arti clients; fails unless the order and every answer cross Tor"]
 fn two_real_nodes_trade_over_tor() {
-    let chain = chain_stub();
+    // The chain stand-in stays on loopback; only the letters cross Tor.
+    let chain = Esplora::start();
     // An onion takes 10 to 200 seconds to publish, and a letter that found it
     // unpublished waits out a doubling backoff before it is sent again.
     let limit = Duration::from_secs(480);
-    let seller = RealNode::start("seller", &chain, &["--remote"], limit);
-    let buyer = RealNode::start("buyer", &chain, &["--remote"], limit);
+    let seller = RealNode::start("seller", &chain.url, &["--remote"], limit);
+    let buyer = RealNode::start("buyer", &chain.url, &["--remote"], limit);
     let listing = open_store(&seller);
     setup(&buyer);
     let store = store_onion(&seller, limit);
     // The buyer asks for the answer at an onion only once its own Tor is up.
     store_onion(&buyer, limit);
-    order_and_answer(&seller, &buyer, &format!("http://{store}"), &listing, limit);
-}
-
-/// The business outcome: what the seller's answer says, on both nodes.
-///
-/// This is the one place that knows it. Today a store with no finished sale
-/// opens no sale for a direct order, so the buyer's order stops here. That is
-/// a product gap, not the goal. When the new-store fix lands this becomes:
-/// the order is "Awaiting payment" with a payment address, and the seller
-/// lists the sale.
-fn check_outcome(order: &Value, sales: &[Value]) {
-    assert_eq!(order["status"], "Declined by the seller", "{order}");
-    assert!(order["remote"]["reason"].as_str().unwrap().contains("moderated escrow"), "{order}");
-    assert!(sales.is_empty(), "{sales:?}");
+    sale_to_completed(&seller, &buyer, &chain, &format!("http://{store}"), &listing, limit);
 }
 
 fn setup(node: &RealNode) {
@@ -140,9 +132,11 @@ fn store_onion(node: &RealNode, limit: Duration) -> String {
     })
 }
 
-/// The buyer follows the store at `store_url`, orders the listing, and the
-/// seller's answer comes back. Each wait takes at most `limit`.
-fn order_and_answer(seller: &RealNode, buyer: &RealNode, store_url: &str, listing: &Value, limit: Duration) {
+/// The buyer follows the new store at `store_url` and orders the listing; the
+/// seller names an address; it is paid on the stand-in chain and both nodes
+/// call the order paid; the seller ships; the buyer confirms it arrived.
+/// Each wait takes at most `limit`.
+fn sale_to_completed(seller: &RealNode, buyer: &RealNode, chain: &Esplora, store_url: &str, listing: &Value, limit: Duration) {
     let (status, follows) = timed("the buyer's follow", || buyer.request("POST", "/follows", &json!({ "url": store_url }).to_string()));
     assert_eq!(status, 200, "{follows}");
     let copy = wait_for("the buyer's copy of the listing", limit, || {
@@ -163,14 +157,47 @@ fn order_and_answer(seller: &RealNode, buyer: &RealNode, store_url: &str, listin
         let (_, order) = buyer.request("GET", &path, "");
         if ready(&order) { Ok(order) } else { Err(order.to_string()) }
     };
+    let sale_when = |ready: fn(&Value) -> bool| {
+        let (_, sales) = seller.request("GET", "/sales", "");
+        match sales["sales"].as_array().map(Vec::as_slice) {
+            Some([sale]) if ready(sale) => Ok(sale.clone()),
+            _ => Err(sales.to_string()),
+        }
+    };
     wait_for("the order to reach the seller's node", limit, || order_when(|order| order["remote"]["delivered"] == true));
 
-    // From here the test only reads. The seller's order loop sends the answer
-    // and the buyer's node files it under the seller's key for this order.
-    let answered = wait_for("the seller's answer", limit, || order_when(|order| order["remote"]["seller"].is_string()));
-    assert_ne!(answered["status"], "Awaiting seller", "{answered}");
-    assert_eq!(answered["remote"]["url"], store_url, "the order went to the address the buyer follows");
-    let (status, sales) = seller.request("GET", "/sales", "");
-    assert_eq!(status, 200, "{sales}");
-    check_outcome(&answered, sales["sales"].as_array().unwrap());
+    // The seller's order loop sends the terms and the buyer's node files them
+    // under the seller's key for this order. The store has no finished sale.
+    let terms = wait_for("the seller's terms", limit, || order_when(|order| order["remote"]["seller"].is_string()));
+    assert_eq!(terms["status"], "Awaiting payment", "a new store takes a direct order: {terms}");
+    assert_eq!(terms["remote"]["url"], store_url, "the order went to the address the buyer follows");
+    let total = 25_000 + 3_000;
+    assert_eq!(terms["totalSats"], total, "{terms}");
+    let address = terms["payment"]["address"].as_str().unwrap();
+    let sale = wait_for("the seller's sale", limit, || sale_when(|_| true));
+    assert_eq!((&sale["status"], &sale["address"], &sale["totalSats"]), (&json!("Awaiting payment"), &json!(address), &json!(total)), "{sale}");
+    assert!(sale["shipTo"].as_str().unwrap().contains("14 Larch Lane"), "{sale}");
+
+    // Each node's own watcher asks the chain: first the payment, then its block.
+    chain.pay(address, total);
+    wait_for("the buyer's node to see the payment", limit, || order_when(|order| order["status"] == "Payment seen"));
+    wait_for("the seller's node to see the payment", limit, || sale_when(|sale| sale["status"] == "Payment seen"));
+    chain.mine();
+    let paid = wait_for("the seller's node to call the sale paid", limit, || sale_when(|sale| sale["status"] == "Paid"));
+    assert_eq!(paid["receivedSats"], total, "{paid}");
+    let paid = wait_for("the buyer's node to hear the seller was paid", limit, || {
+        order_when(|order| order["status"] == "Paid" && order["remote"]["sellerSawPayment"] == true)
+    });
+    assert_eq!(paid["receivedSats"], total, "{paid}");
+
+    let fulfill = json!({ "carrier": "USPS", "tracking": "9400 1000 0000 0000 0000 00" });
+    let (status, shipped) = seller.request("POST", &format!("/sales/{}/fulfill", sale["id"].as_str().unwrap()), &fulfill.to_string());
+    assert_eq!((status, &shipped["status"]), (200, &json!("Shipped")), "{shipped}");
+    let arriving = wait_for("the buyer's node to hear it shipped", limit, || order_when(|order| order["status"] == "Shipped"));
+    assert_eq!(arriving["remote"]["fulfillment"]["tracking"], fulfill["tracking"], "{arriving}");
+
+    let (status, done) = timed("the buyer's confirmation", || buyer.request("POST", &format!("{path}/complete"), ""));
+    assert_eq!((status, &done["status"]), (200, &json!("Completed")), "{done}");
+    wait_for("the seller's node to hear it arrived", limit, || sale_when(|sale| sale["status"] == "Completed"));
+    wait_for("the seller's last answer", limit, || order_when(|order| order["remote"]["sellerCompleted"] == true));
 }

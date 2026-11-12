@@ -1,33 +1,21 @@
 //! Real `ob-node serve` processes for tests.
 //!
 //! Each node runs the binary on a free loopback port with its own temporary
-//! data dir, a file vault, no rates, no introductions, and a chain server that
-//! only answers 503. Nothing here reaches the internet unless a test passes
-//! `--remote`. Dropping a node kills the process and removes its data dir, also
-//! while a test is failing; the node's log is printed then.
+//! data dir, a file vault, no rates, no introductions, and the stand-in chain
+//! server on loopback that the test names ([`esplora`]). Nothing here reaches
+//! the internet unless a test passes `--remote`. Dropping a node kills the
+//! process and removes its data dir, also while a test is failing; the node's
+//! log is printed then.
+
+pub mod esplora;
 
 use std::fs::{self, File};
-use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
-
-/// A stand-in Esplora server that answers every request 503, so a node's
-/// chain calls fail at once and on this machine. Returns its URL.
-pub fn chain_stub() -> String {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let url = format!("http://{}", listener.local_addr().unwrap());
-    std::thread::spawn(move || {
-        for mut stream in listener.incoming().flatten() {
-            let _ = stream.read(&mut [0u8; 1024]);
-            let _ = stream.write_all(b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
-        }
-    });
-    url
-}
 
 /// Run one step and say on stderr how long it took.
 pub fn timed<T>(step: &str, run: impl FnOnce() -> T) -> T {
@@ -137,8 +125,8 @@ impl Drop for RealNode {
         let _ = self.child.wait();
         if std::thread::panicking() {
             let log = fs::read_to_string(self.dir.path().join("serve.log")).unwrap_or_default();
-            // Every poll logs the chain stub's refusal. Those lines are left out.
-            let lines: Vec<&str> = log.lines().filter(|line| !line.contains(" 503")).collect();
+            // Every poll logs the wallet scan the stand-in chain does not serve. Those lines are left out.
+            let lines: Vec<&str> = log.lines().filter(|line| !line.contains("wallet sync: ")).collect();
             eprintln!("--- {} node log ---\n{}", self.name, lines[lines.len().saturating_sub(60)..].join("\n"));
         }
     }
