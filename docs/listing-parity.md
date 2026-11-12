@@ -236,7 +236,7 @@ Reviews are the first part of a larger plan. Only the first item is built.
 1. **Receipt-locked, replicated reviews** (built, above): one review per paid order, a per-order key committed before the outcome, checked by every node from the signed receipt, kept by other nodes so the seller can't drop it, with one signed seller reply.
 2. **Moderator dispute rulings as signed public outcomes** (later): which side the funds were released to, with no addresses or identities, so a store's disputes can be counted.
 3. **Optional seller bond** (later): a time-locked output the buyer can verify on chain before ordering. It is collateral that shows commitment, not a fund a third party can slash.
-4. **New-seller state** (later): no stars until a store has verified sales, and its first sales shown as moderated escrow with the moderator named.
+4. **New-seller state** (later): no stars until a store has verified sales. A new store already takes direct pay from another node; escrow still needs a passing reputation bond.
 5. **Self-deals** (later): direct payments between a seller and itself must not count like completed escrow sales once ratings weigh them.
 
 There is no reviewer profile, no third-party review service and no score across stores in any of these.
