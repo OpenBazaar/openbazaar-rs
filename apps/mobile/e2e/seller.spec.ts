@@ -2,7 +2,7 @@ import { test, expect, type Page } from '@playwright/test'
 
 // Two real disposable nodes (see server.mjs): a fresh seller node and the
 // shop's buyer node. The seller publishes a listing. Followed stores takes a
-// store key, not a node address.
+// store key, or a store address in its own card (follow.spec.ts).
 const SELLER_UI = `http://127.0.0.1:${process.env.OB_E2E_SELLER_UI_PORT || 48174}`
 const PASSPHRASE = 'seller e2e passphrase'
 // A valid 1×1 PNG; the node only keeps real images.
@@ -150,14 +150,14 @@ test('the seller lists, edits, and removes goods', async ({ page }, info) => {
   await expect(page.getByText('This is your listing.')).toBeVisible()
 })
 
-test('followed stores take a store key and no address', async ({ page }) => {
+test('followed stores take a store key, and a store address only in its own card', async ({ page }) => {
   await page.goto('/')
-  await expect(page.getByLabel('Store node address')).toHaveCount(0)
+  await expect(page.getByLabel('Store address')).toHaveCount(0)
   await page.getByRole('button', { name: 'Settings' }).click()
   await page.getByRole('button', { name: 'Followed stores' }).click()
-  await expect(page.getByLabel('Store node address')).toHaveCount(0)
+  await expect(page.getByLabel('Store address', { exact: true })).toBeVisible()
   await expect(page.getByRole('button', { name: 'Open the test network store' })).toHaveCount(0)
-  await expect(page.getByRole('button', { name: 'Follow store' })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Follow store', exact: true })).toBeVisible()
   await expect(page.getByLabel('Store key', { exact: true })).toBeVisible()
   await expect(page.getByRole('button', { name: 'Add store', exact: true })).toBeVisible()
 })

@@ -156,6 +156,7 @@
 .ob-follow-list li { display: flex; justify-content: space-between; gap: 16px; align-items: center; padding: 14px 16px; border: 1px solid var(--ob-line); border-radius: 10px; background: var(--ob-surface); }
 .ob-follow-list li > span { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .ob-follow-list small { color: var(--ob-secondary); word-break: break-all; }
+.ob-follow-address { margin-top: 24px; }
 .ob-follow { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; max-width: 100%; }
 .ob-follow .ob-secondary { white-space: nowrap; }
 .ob-follow .ob-secondary[aria-pressed="true"] { border-color: var(--ob-brand); background: var(--ob-selected); }

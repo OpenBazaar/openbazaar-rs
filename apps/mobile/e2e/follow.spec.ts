@@ -121,6 +121,61 @@ test('a sample store the directory does not list, and the own store, have no fol
   await expect(page.locator('.ob-follow')).toHaveCount(0)
 })
 
+// `/follows` is answered here the way the node answers it
+// (crates/node/src/replicas.rs): the list comes back even when the store could
+// not be fetched, with the reason on the row.
+test('a store is followed by a pasted address, with progress and a plain reason when it fails', async ({ page }) => {
+  const url = `http://${'a2'.repeat(28)}.onion`
+  const posted: (string | null)[] = []
+  let rows: object[] = []
+  let selling = false
+  let answer = () => {}
+  const asked = new Promise<void>(resolve => { answer = resolve })
+  await page.route('**/follows', async route => {
+    const method = route.request().method()
+    if (method === 'POST') {
+      posted.push(route.request().postData())
+      await asked
+      rows = [selling ? { url, storeId: 'cd'.repeat(32), name: 'Cedar Workshop', listings: 2, fetched: 1, error: null } : { url, storeId: null, name: null, listings: 0, fetched: 0, error: 'that node is not selling' }]
+    }
+    if (method === 'DELETE') rows = []
+    await route.fulfill({ json: { follows: rows, seeds: [] } })
+  })
+  await page.goto('/')
+  await page.getByRole('button', { name: 'Settings', exact: true }).click()
+  await page.getByRole('button', { name: 'Followed stores', exact: true }).click()
+  await expect(page.getByLabel('Store key', { exact: true })).toBeVisible()
+  const card = page.locator('.ob-follow-address')
+  const field = card.getByLabel('Store address', { exact: true })
+  const submit = card.locator('.ob-follow-form button')
+
+  await field.fill('http://shop.example')
+  await submit.click()
+  await expect(card.getByRole('alert')).toHaveText("That is not a store address. Paste the address from the seller's storefront: http:// and a name that ends in .onion.")
+  expect(posted).toEqual([])
+
+  await field.fill(` ${url.slice('http://'.length)}/ `)
+  await submit.click()
+  await expect(submit).toBeDisabled()
+  await expect(submit).toHaveText('Following…')
+  await expect(card.getByRole('status')).toHaveText('Reaching the store. Over Tor this can take a minute.')
+  answer()
+  await expect(card.getByRole('alert')).toHaveText('That node answered, but it has no open store yet. Your node keeps the address and checks again.')
+  expect(posted).toEqual([JSON.stringify({ url })])
+  await expect(card.locator('.ob-follow-list li')).toContainText('Not reached yet')
+  await expect(card.getByRole('status')).toHaveCount(0)
+
+  selling = true
+  await field.fill(url)
+  await submit.click()
+  await expect(page.locator('.ob-toast')).toHaveText('Following Cedar Workshop. Its listings are in Products.')
+  await expect(card.locator('.ob-follow-list li')).toContainText('2 listings')
+  await expect(card.getByRole('alert')).toHaveCount(0)
+  await card.getByRole('button', { name: 'Remove', exact: true }).click()
+  await expect(page.locator('.ob-toast')).toHaveText('Stopped following that store')
+  await expect(card.locator('.ob-follow-list li')).toHaveCount(0)
+})
+
 for (const [width, dark] of [[320, false], [390, true]] as const) {
   test(`the follow button fits the store and listing pages at ${width}px`, async ({ page }) => {
     await page.setViewportSize({ width, height: 800 })

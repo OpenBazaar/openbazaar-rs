@@ -1,11 +1,10 @@
 import type { CurrencyCode, ListingHeader, RateTable } from "../catalog";
-import { NODE_ORIGIN } from "../catalog";
 import type { SellerProfile } from "../seller";
 import { Empty, ProductCard } from "./Marketplace";
-import { CopyPaymentValue } from "./NodePayments";
 import { MediaImage } from "./SellerKit";
 import { RailMark } from "./RailMark";
 import { StoreReviewsPanel } from "./Reviews";
+import { StoreAddress } from "./StoreAddress";
 
 /** The seller's store as buyers see it: the signed storefront and its listings. */
 export function OwnStore({ profile, listings, rates, currency, onOpen, onEdit, onAddListing }: { profile: SellerProfile; listings: ListingHeader[]; rates: RateTable; currency: CurrencyCode; onOpen: (listing: ListingHeader) => void; onEdit: () => void; onAddListing: () => void }) {
@@ -34,8 +33,7 @@ export function OwnStore({ profile, listings, rates, currency, onOpen, onEdit, o
         <p className="ob-rail"><RailMark rail="bitcoin" />Bitcoin{profile.network === "testnet4" ? " (testnet4)" : ""}, paid directly</p>
         {profile.acceptsXmr && <p className="ob-rail"><RailMark rail="monero" />Monero, paid directly</p>}
         {profile.acceptsLightning && <p className="ob-rail"><RailMark rail="lightning" />Lightning, paid directly</p>}
-        <CopyPaymentValue label="Store address" value={NODE_ORIGIN}/>
-        <p className="ob-meta">Another node follows your store at this address. It keeps a signed copy, so buyers still see your listings while you are offline.</p>
+        <StoreAddress/>
         <StoreReviewsPanel storeKey={profile.storeKey} own/>
       </aside>
     </div>
