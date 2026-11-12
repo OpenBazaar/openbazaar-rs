@@ -6,9 +6,9 @@
 //! listener when it is serving the local shop ([`crate::http_guard`],
 //! [`crate::browser`]). No route hands out the pairing token: the desktop
 //! app reads it from the data dir, and a browser shop trades a one-time code
-//! from the node's terminal for it at `POST /pair` ([`crate::pairing`]).
-//! A browser on this machine can instead open a one-time path and receive a
-//! short-lived cookie ([`crate::browser`]).
+//! for it at `POST /pair` ([`crate::pairing`]). A paired shop can mint that
+//! code to show in Settings. A local-shop browser on loopback can instead
+//! open a one-time path and receive a short-lived cookie ([`crate::browser`]).
 //! The listener is bound to 127.0.0.1; the peer check refuses a connection
 //! that was forwarded from somewhere else. There is no other way to name a
 //! peer from this server.
@@ -205,7 +205,7 @@ fn route(node: &Node, request: &Request<'_>, client: Client, origin: Option<&str
         (_, path) if path.starts_with("/xmr/") => crate::xmr::response(node, client, head, method, path, body, origin),
         (_, path) if path.starts_with("/zec/") => crate::zec::response(node, client, head, method, path, body, origin),
         (_, path) if path.starts_with("/ln/") => crate::lightning::response(node, client, head, method, path, body, origin),
-        ("POST", "/pair") => pairing::response(node, body, origin),
+        ("POST", "/pair") => pairing::response(node, client, head, body, origin),
         ("GET", "/rates") => json_body("200 OK", &node.rates_value(), origin),
         ("GET", "/addresses") => addresses_list(node, client, head, origin),
         ("POST", "/addresses") => addresses_create(node, client, head, body, origin),

@@ -1,5 +1,7 @@
 import { useContext, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
-import { afterShopPair, shopPairingMessage, fetchCatalog, fetchLabelers, fetchOrders, fetchRates, type LabelerState, type BuyerOrder, type CurrencyCode, type ListingHeader, type RateTable, type ShopCatalog } from "../catalog";
+import { afterShopPair, onThisComputer, shopPairingMessage, fetchCatalog, fetchLabelers, fetchOrders, fetchRates, type LabelerState, type BuyerOrder, type CurrencyCode, type ListingHeader, type RateTable, type ShopCatalog } from "../catalog";
+import { servedByHomeNode } from "../homeNode/transport";
+import { pairingKind, pairingOrdersText } from "../pairingUi";
 import { filterListings, matchingStores, storesWithoutListings } from "../search";
 import { fetchStore } from "../stores";
 import { Bag, Addresses, MarketplaceCheckout, CheckoutConfirmation } from "./Commerce";
@@ -42,7 +44,7 @@ import { RemoteOrderStatus } from "./RemoteOrder";
 import { ListingRails } from "./RailMark";
 import { MediaImage } from "./SellerKit";
 import { PairButton, PairingBanner, PairingDialog } from "./PairingDialog";
-
+import { BrowsersSettings } from "./BrowsersSettings";
 
 type IconName = "settings" | "wallet" | "sun" | "moon" | "compass" | "heart" | "bag" | "arrow" | "search" | "chevron" | "check" | "shield" | "globe" | "close" | "menu" | "book" | "cup" | "home" | "music" | "shirt" | "tool" | "paper" | "grid" | "pin" | "bolt" | "external" | "ticket";
 export function Icon({ name, size = 20, ...props }: { name: IconName; size?: number; className?: string }) {
@@ -98,7 +100,7 @@ function btc(sats: number) { return `${(sats / 1e8).toFixed(8).replace(/0+$/, ""
 export function Money({ sats, rates, currency, large = false }: { sats: number; rates: RateTable; currency: CurrencyCode; large?: boolean }) { const estimate = fiat(sats, rates, currency); return <div className={`ob-money ${large ? "ob-money-large" : ""}`}><span>{sats.toLocaleString("en-US")} <small>sats</small></span>{estimate && <span className="ob-estimate" title={`Estimated value in ${currency}`}>≈ {estimate}</span>}</div>; }
 function Brand({ theme }: { theme: "light" | "dark" }) { return <span className="ob-brand"><span className="ob-brand-icon"><img src={theme === "light" ? "brand/ob-market-logo-light.png" : "brand/ob-market-logo-256.png"} alt="" width={42} height={42}/></span><span>OpenBazaar<span className="ob-brand-dot">.</span></span></span>; }
 
-type Section = "discover" | "saved" | "orders" | "bag" | "addresses" | "safety" | "wallet" | "store-labels" | "home-node" | "lightning" | "zcash" | "follows" | StoreSection;
+type Section = "discover" | "saved" | "orders" | "bag" | "addresses" | "safety" | "wallet" | "store-labels" | "home-node" | "browsers" | "lightning" | "zcash" | "follows" | StoreSection;
 type StoreSection = "storefront" | "listings" | "coupons" | "sales" | "store";
 const STORE_SECTIONS: readonly Section[] = ["storefront", "listings", "coupons", "sales", "store"];
 type Page = { name: "browse" } | { name: "store"; storeId: string } | { name: "detail"; listing: ListingHeader; fromStore?: string } | { name: "checkout"; lines: CartLine[]; returnTo?: ListingHeader; fromStore?: string } | { name: "receipt"; receipt: CheckoutReceipt };
@@ -253,8 +255,8 @@ export default function Marketplace() {
     } catch {}
   }
   const followable = (storeId: string) => !!profile.data && storeId !== profile.data.storeKey;
-  const activeTitle = section === "storefront" ? "Your storefront" : section === "listings" ? "Your listings" : section === "coupons" ? "Coupons" : section === "sales" ? "Sales" : section === "store" ? "Store settings" : section === "follows" ? "Followed stores" : section === "saved" ? "Saved goods" : section === "orders" ? "Your orders" : section === "bag" ? "Your bag" : section === "addresses" ? "Your addresses" : section === "wallet" ? "Wallet" : section === "safety" ? "Content filters" : section === "store-labels" ? "Store labels" : section === "home-node" ? "Home node" : section === "lightning" ? "Lightning" : section === "zcash" ? "Zcash" : "Products";
-  const inSettings = ["safety", "addresses", "store-labels", "home-node", "lightning", "zcash", "follows"].includes(section);
+  const activeTitle = section === "storefront" ? "Your storefront" : section === "listings" ? "Your listings" : section === "coupons" ? "Coupons" : section === "sales" ? "Sales" : section === "store" ? "Store settings" : section === "follows" ? "Followed stores" : section === "saved" ? "Saved goods" : section === "orders" ? "Your orders" : section === "bag" ? "Your bag" : section === "addresses" ? "Your addresses" : section === "wallet" ? "Wallet" : section === "safety" ? "Content filters" : section === "store-labels" ? "Store labels" : section === "home-node" ? "Home node" : section === "browsers" ? "Browsers" : section === "lightning" ? "Lightning" : section === "zcash" ? "Zcash" : "Products";
+  const inSettings = ["safety", "addresses", "store-labels", "home-node", "browsers", "lightning", "zcash", "follows"].includes(section);
   const inStore = STORE_SECTIONS.includes(section);
   const merchantWorkspace = inStore && page.name === "browse";
   const browsing = page.name === "browse" && (section === "discover" || (section === "saved" && saved.length > 0));
@@ -263,7 +265,7 @@ export default function Marketplace() {
 
   const money = { rates, currency };
   const navSection: Section = page.name === "receipt" ? "orders" : section;
-  const utilityView = page.name !== "browse" ? null : section === "saved" && saved.length === 0 ? <section><PageHeading title="Saved goods"/><Empty illustration="saved" icon="heart" title="No saved products" text="Save products using the heart button."><button className="ob-primary" onClick={() => navigate("discover")}>Browse products <Icon name="arrow" size={17}/></button></Empty></section> : section === "wallet" ? <><WalletPanel {...money} onOrders={() => navigate("orders")}/><LightningWalletCard {...money}/></> : section === "lightning" ? <LightningSettings/> : section === "zcash" ? <ZcashSettings/> : section === "home-node" ? <div className="ob-settings-page"><header className="ob-settings-heading"><h1>Home node</h1><p>Run your store on an always-on computer and manage it from anywhere over Tor.</p></header><HomeNodePanel/></div> : section === "addresses" ? <Addresses/> : section === "safety" ? <SafetySettingsPanel settings={safety} onChange={setSafety} labelSources={<LabelersPanel state={labelers} onState={setLabelerState}/>}/> : section === "orders" ? <Orders {...money} onBrowse={() => navigate("discover")}/> : section === "follows" ? <Follows onChanged={message => { setToast(message); void load(); }}/> : storeView();
+  const utilityView = page.name !== "browse" ? null : section === "saved" && saved.length === 0 ? <section><PageHeading title="Saved goods"/><Empty illustration="saved" icon="heart" title="No saved products" text="Save products using the heart button."><button className="ob-primary" onClick={() => navigate("discover")}>Browse products <Icon name="arrow" size={17}/></button></Empty></section> : section === "wallet" ? <><WalletPanel {...money} onOrders={() => navigate("orders")}/><LightningWalletCard {...money}/></> : section === "lightning" ? <LightningSettings/> : section === "zcash" ? <ZcashSettings/> : section === "home-node" ? <div className="ob-settings-page"><header className="ob-settings-heading"><h1>Home node</h1><p>Run your store on an always-on computer and manage it from anywhere over Tor.</p></header><HomeNodePanel/></div> : section === "browsers" ? <BrowsersSettings/> : section === "addresses" ? <Addresses/> : section === "safety" ? <SafetySettingsPanel settings={safety} onChange={setSafety} labelSources={<LabelersPanel state={labelers} onState={setLabelerState}/>}/> : section === "orders" ? <Orders {...money} onBrowse={() => navigate("discover")}/> : section === "follows" ? <Follows onChanged={message => { setToast(message); void load(); }}/> : storeView();
   function storeView() {
     const own = profile.data;
     if (!inStore) return null;
@@ -313,6 +315,7 @@ export default function Marketplace() {
           <NavItem icon="pin" active={section === "addresses"} onClick={() => navigate("addresses")}>Addresses</NavItem>
           <NavItem icon="grid" active={section === "store-labels"} onClick={() => navigate("store-labels")}>Store labels</NavItem>
           <NavItem icon="globe" active={section === "home-node"} onClick={() => navigate("home-node")}>Home node</NavItem>
+          {!servedByHomeNode() && <NavItem icon="globe" active={section === "browsers"} onClick={() => navigate("browsers")}>Browsers</NavItem>}
           <NavItem icon="bolt" active={section === "lightning"} onClick={() => navigate("lightning")}>Lightning</NavItem>
           {network.data?.network === "testnet4" && <NavItem icon="wallet" active={section === "zcash"} onClick={() => navigate("zcash")}>Zcash</NavItem>}
           <NavItem icon="globe" active={section === "follows"} onClick={() => navigate("follows")}>Followed stores</NavItem>
@@ -377,7 +380,7 @@ function Orders({ rates, currency, onBrowse }: { rates: RateTable; currency: Cur
   const [expanded, setExpanded] = useState<string | null>(null);
   const orders = resource.data ?? [];
   return <section className="ob-orders"><PageHeading title="Your orders" description="Track deliveries and complete payments." action={<button className="ob-secondary" disabled={resource.loading} onClick={() => void resource.refresh()}>Refresh orders</button>}/>
-    {resource.error && (shopPairingMessage(resource.error) ? <Empty icon="bag" title="Pair this browser to see your orders" text="Your orders are kept on your node. Type its pairing code to see them here."><PairButton/></Empty> : <p className="ob-form-error" role="alert">{resource.error}</p>)}
+    {resource.error && (shopPairingMessage(resource.error) ? <Empty icon="bag" title="Pair this browser to see your orders" text={pairingOrdersText(pairingKind(onThisComputer()))}><PairButton/></Empty> : <p className="ob-form-error" role="alert">{resource.error}</p>)}
     {resource.loading ? <p role="status">Loading orders…</p> : !resource.data ? null : !orders.length ? <Empty icon="bag" title="No orders yet" text="Orders appear here after checkout."><button className="ob-primary" onClick={onBrowse}>Browse products</button></Empty> : orders.map(order => <article className="ob-order-row" key={order.id}>
       <button className="ob-order-toggle" onClick={() => setExpanded(expanded === order.id ? null : order.id)} aria-expanded={expanded === order.id} aria-label={`Order from ${order.seller}`}><span className="ob-order-icon"><Icon name="bag"/></span><span className="ob-order-name"><strong>{order.lines.map(l => l.title).join(", ")}</strong><span>{order.seller} · {new Date(order.created * (order.created < 1e12 ? 1000 : 1)).toLocaleDateString()}</span></span><span className="ob-order-status">{order.status}</span><Money sats={order.totalSats} rates={rates} currency={currency}/><Icon name="chevron" size={16}/></button>
       {expanded === order.id && <div className="ob-order-expanded"><p className="ob-meta">Order {order.id}</p><RemoteOrderStatus order={order} onChange={() => void resource.refresh()}/>{(!order.remote || order.payment) && <Payment receipt={order}/>}</div>}
