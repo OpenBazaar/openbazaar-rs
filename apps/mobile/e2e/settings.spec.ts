@@ -114,6 +114,21 @@ test('Zcash settings switch your own store on, and say who stops seeing it, how 
   await expect(page.getByRole('alert').filter({ hasText: 'Zcash orders are declined for now. This node has no ZEC price right now' })).toBeVisible()
 })
 
+test('Settings can mint a pairing code for another browser', async ({ page }) => {
+  await page.goto('/')
+  await page.getByRole('button', { name: 'Settings', exact: true }).click()
+  await page.getByRole('button', { name: 'Browsers', exact: true }).click()
+  await expect(page.getByRole('heading', { name: 'Browsers', exact: true })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Pairing code', exact: true })).toBeVisible()
+  await page.getByRole('button', { name: 'Create pairing code', exact: true }).click()
+  const code = page.getByRole('status', { name: 'Pairing code', exact: true })
+  await expect(code).toBeVisible()
+  await expect(code.locator('code')).toHaveText(/^[ABCDEFGHJKMNPQRSTVWXYZ23456789]{4}-[ABCDEFGHJKMNPQRSTVWXYZ23456789]{4}$/)
+  await expect(page.getByRole('button', { name: 'Copy pairing code', exact: true })).toBeVisible()
+  await expect(page.getByText('This code works once and expires after 5 minutes. Type it in the other browser.', { exact: true })).toBeVisible()
+  await expect(page.getByText(/pairing\.token/)).toHaveCount(0)
+})
+
 test('Settings has no Zcash page on a mainnet node', async ({ page }) => {
   const network = await (await page.request.get('/network')).json()
   await page.route('**/network', route => route.fulfill({ json: { ...network, network: 'mainnet' } }))

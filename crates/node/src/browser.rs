@@ -141,7 +141,11 @@ fn mint(node: &Node, client: &Client, head: &str, origin: Option<&str>) -> Vec<u
     if !client.loopback || header(head, REMOTE_VIA_HEADER).is_some() {
         return json_error("403 Forbidden", "This stays on this machine.", origin);
     }
-    if !secret_eq(header(head, PAIR_HEADER), node.pairing_token()) {
+    let paired = secret_eq(header(head, PAIR_HEADER), node.pairing_token());
+    // A local-shop page on this machine may mint without the pairing token:
+    // anyone who can open loopback can already read the terminal code. A
+    // forwarded remote (SSH/Tor) is not loopback and still types a code.
+    if !paired && node.local.local_shop.is_none() {
         return json_error(
             "403 Forbidden",
             "The shop is not paired with this node.",
@@ -328,7 +332,10 @@ mod tests {
             "ob_local_8787={}; ob_local_8788={}",
             jar["ob_local_8787"], jar["ob_local_8788"]
         );
-        assert!(signed_in(&first, 8787, &both), "the first shop stays signed in");
+        assert!(
+            signed_in(&first, 8787, &both),
+            "the first shop stays signed in"
+        );
         assert!(signed_in(&second, 8788, &both));
 
         let first_only = format!("ob_local_8787={}", jar["ob_local_8787"]);
@@ -371,12 +378,6 @@ mod tests {
         std::fs::create_dir(&shop).unwrap();
         node.local.local_shop = Some(shop);
         let token = node.pairing_token().to_string();
-        let refused = call(
-            &node,
-            "POST /browser-session HTTP/1.1\r\nHost: 127.0.0.1:8787\r\nContent-Length: 0\r\n\r\n",
-            true,
-        );
-        assert!(refused.contains("403"), "{refused}");
         let remote = format!(
             "POST /browser-session HTTP/1.1\r\nHost: 127.0.0.1:8787\r\nX-Ob-Pair: {token}\r\n{REMOTE_VIA_HEADER}: tor:1\r\nContent-Length: 0\r\n\r\n"
         );
@@ -387,7 +388,7 @@ mod tests {
 
         let minted = call(
             &node,
-            &format!("POST /browser-session HTTP/1.1\r\nHost: 127.0.0.1:8787\r\nX-Ob-Pair: {token}\r\nContent-Length: 0\r\n\r\n"),
+            "POST /browser-session HTTP/1.1\r\nHost: 127.0.0.1:8787\r\nContent-Length: 0\r\n\r\n",
             true,
         );
         let ticket = ticket_from(&minted, &token);
@@ -528,6 +529,85 @@ mod tests {
             true
         )
         .contains("404"));
+    }
+
+    #[test]
+    fn a_loopback_local_shop_pairs_without_a_code() {
+        let (dir, mut node) = node();
+        let shop = dir.0.join("shop");
+        std::fs::create_dir(&shop).unwrap();
+        node.local.local_shop = Some(shop);
+        let token = node.pairing_token().to_string();
+        let minted = call(
+            &node,
+            "POST /browser-session HTTP/1.1\r\nHost: 127.0.0.1:8787\r\nContent-Length: 0\r\n\r\n",
+            true,
+        );
+        let ticket = ticket_from(&minted, &token);
+        let opened = call(
+            &node,
+            &format!("GET /browser/{ticket} HTTP/1.1\r\nHost: 127.0.0.1:8787\r\n\r\n"),
+            true,
+        );
+        assert!(opened.starts_with("HTTP/1.1 303"), "{opened}");
+        assert!(!opened.contains(&token), "{opened}");
+        let cookie = opened
+            .split("\r\n")
+            .find_map(|line| line.strip_prefix("Set-Cookie: ob_local_8787="))
+            .unwrap();
+        let id = cookie.split(';').next().unwrap();
+        let orders = format!(
+            "GET /orders HTTP/1.1\r\nHost: 127.0.0.1:8787\r\nOrigin: http://127.0.0.1:8787\r\nCookie: ob_local_8787={id}\r\n\r\n"
+        );
+        let ok = call(&node, &orders, true);
+        assert!(ok.contains("200") && ok.contains("orders"), "{ok}");
+        assert!(!ok.contains(&token));
+    }
+
+    #[test]
+    fn a_non_loopback_request_cannot_pair_without_a_code() {
+        let (dir, mut node) = node();
+        let shop = dir.0.join("shop");
+        std::fs::create_dir(&shop).unwrap();
+        node.local.local_shop = Some(shop);
+        let token = node.pairing_token().to_string();
+        let forwarded = call(
+            &node,
+            "POST /browser-session HTTP/1.1\r\nHost: 127.0.0.1:8787\r\nContent-Length: 0\r\n\r\n",
+            false,
+        );
+        assert!(
+            forwarded.contains("403"),
+            "a forwarded local-shop page still types a code: {forwarded}"
+        );
+        assert!(!forwarded.contains(&token), "{forwarded}");
+        let with_token = call(
+            &node,
+            &format!("POST /browser-session HTTP/1.1\r\nHost: 127.0.0.1:8787\r\nX-Ob-Pair: {token}\r\nContent-Length: 0\r\n\r\n"),
+            false,
+        );
+        assert!(
+            with_token.contains("403"),
+            "the cookie path stays on this machine: {with_token}"
+        );
+    }
+
+    #[test]
+    fn tokenless_mint_needs_the_local_shop() {
+        let (_dir, node) = node();
+        let refused = call(
+            &node,
+            "POST /browser-session HTTP/1.1\r\nHost: 127.0.0.1:8787\r\nContent-Length: 0\r\n\r\n",
+            true,
+        );
+        assert!(refused.contains("403"), "{refused}");
+        let token = node.pairing_token().to_string();
+        let minted = call(
+            &node,
+            &format!("POST /browser-session HTTP/1.1\r\nHost: 127.0.0.1:8787\r\nX-Ob-Pair: {token}\r\nContent-Length: 0\r\n\r\n"),
+            true,
+        );
+        ticket_from(&minted, &token);
     }
 
     #[test]

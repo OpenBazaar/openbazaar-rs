@@ -8,7 +8,8 @@ import { lnBlockedReason, lnStoreKeys, parseLnInvoice, type LnInvoice } from "./
 // the node's pairing token as X-Ob-Pair. The desktop app starts its own node
 // on a free loopback port and sets __OB_NODE_ORIGIN__ and __OB_PAIR_TOKEN__
 // before this script runs; only a 127.0.0.1 origin is taken. In a browser the
-// node gives the token only for a one-time code printed in its terminal.
+// node gives the token for a one-time code, or a loopback local-shop page
+// signs in with a cookie from POST /browser-session.
 // A page served by a home node to a remote browser talks only to that origin
 // and signs each request with its device key (src/homeNode/transport.ts).
 // A page served by this machine's node (`ob-local-shop`) talks to that same
@@ -525,7 +526,7 @@ const NOT_PAIRED = "The shop is not paired with this node.";
 /// The browser still needs a pairing code. This is the ask, not a finished failure.
 export class ShopPairingNeeded extends Error {
   constructor() {
-    super("Type the pairing code shown in your node's terminal.");
+    super("Type the pairing code from your node.");
     this.name = "ShopPairingNeeded";
   }
 }
@@ -560,6 +561,39 @@ export function showPairingWith(ask: PairingAsk): () => void {
 /// A missing cookie or a dismissed prompt. The server uses the same sentence.
 export function shopPairingMessage(message: string): boolean {
   return message === NOT_PAIRED || message === new ShopPairingNeeded().message;
+}
+
+const PAIR_CODE_PATTERN = /^[ABCDEFGHJKMNPQRSTVWXYZ23456789]{4}-[ABCDEFGHJKMNPQRSTVWXYZ23456789]{4}$/;
+
+/// The shop page is this machine's node, opened at a loopback name.
+export function onThisComputer(): boolean {
+  if (!servedByLocalShop() || typeof location === "undefined") return false;
+  const host = location.hostname.toLowerCase();
+  return host === "127.0.0.1" || host === "localhost" || host === "[::1]" || host === "::1";
+}
+
+/// Same-origin `/browser/{ticket}` from a mint body. The node always names
+/// `127.0.0.1`; the page keeps the host the user already opened.
+export function browserTicketPath(body: string, origin: string): string | null {
+  const ticket = body.trim().split("/browser/").pop() ?? "";
+  if (ticket.length !== 64 || ![...ticket].every(ch => /[0-9a-fA-F]/.test(ch))) return null;
+  return `${origin.replace(/\/$/, "")}/browser/${ticket}`;
+}
+
+/// A paired shop mints a one-time code for another browser. Never the pairing token.
+export async function mintBrowserPairingCode(): Promise<string> {
+  const value = recordOf(
+    await paired("/pair", { method: "POST", body: "{}", headers: { "Content-Type": "application/json" } }),
+    "A pairing code could not be made.",
+  );
+  if (typeof value.token === "string") {
+    throw new Error("A pairing code could not be made.");
+  }
+  const code = value.code;
+  if (typeof code !== "string" || !PAIR_CODE_PATTERN.test(code)) {
+    throw new Error("A pairing code could not be made.");
+  }
+  return code;
 }
 
 /// The localhost cookie is enough. The pairing token stays out of this page
@@ -632,7 +666,56 @@ function forgetToken(): void {
 }
 
 /// Ask the node to print a code, then trade the code the user types for the token.
+/// On this machine's local shop, Continue mints the same one-time path `open-shop.sh` uses.
 async function pairWithCode(): Promise<string> {
+  return onThisComputer() ? pairHere() : pairByTypedCode();
+}
+
+async function pairHere(): Promise<string> {
+  const ask = pairingAsk;
+  if (!ask) {
+    throw new Error("Open the shop in a browser to pair it with your node.");
+  }
+  let token = "";
+  setAwaitingCode(false);
+  const paired = await ask(async (code) => {
+    if (code.trim()) {
+      token = await tradeTypedCode(code);
+      return;
+    }
+    await openLoopbackSession();
+  });
+  if (!paired) {
+    setAwaitingCode(true);
+    throw new ShopPairingNeeded();
+  }
+  if (token) tokenStore()?.setItem(TOKEN_KEY, token);
+  resetLocalShopSession();
+  notePaired();
+  return token;
+}
+
+async function openLoopbackSession(): Promise<void> {
+  let response: Response;
+  try {
+    response = await fetch(`${NODE_ORIGIN}/browser-session`, { method: "POST", cache: "no-store" });
+  } catch {
+    throw new NodeOfflineError();
+  }
+  if (!response.ok) {
+    throw new Error("Type the pairing code from your node.");
+  }
+  const origin = typeof location === "undefined" ? NODE_ORIGIN : location.origin;
+  const path = browserTicketPath(await response.text(), origin);
+  if (!path) {
+    throw new Error("The shop could not start a session on this computer.");
+  }
+  if (typeof location !== "undefined" && typeof location.assign === "function") {
+    location.assign(path);
+  }
+}
+
+async function pairByTypedCode(): Promise<string> {
   const asked = await postPair({});
   if (asked.status === 403) {
     throw new Error(asked.error ?? "This node does not pair browser shops.");
@@ -644,11 +727,7 @@ async function pairWithCode(): Promise<string> {
   let token = "";
   setAwaitingCode(false);
   const paired = await ask(async (code) => {
-    const traded = await postPair({ code });
-    if (typeof traded.token !== "string" || !TOKEN_PATTERN.test(traded.token)) {
-      throw new Error(traded.error ?? "That pairing code is wrong or has expired.");
-    }
-    token = traded.token;
+    token = await tradeTypedCode(code);
   });
   if (!paired) {
     setAwaitingCode(true);
@@ -658,6 +737,14 @@ async function pairWithCode(): Promise<string> {
   resetLocalShopSession();
   notePaired();
   return token;
+}
+
+async function tradeTypedCode(code: string): Promise<string> {
+  const traded = await postPair({ code });
+  if (typeof traded.token !== "string" || !TOKEN_PATTERN.test(traded.token)) {
+    throw new Error(traded.error ?? "That pairing code is wrong or has expired.");
+  }
+  return traded.token;
 }
 
 async function postPair(body: { code?: string }): Promise<{ status: number; token?: unknown; error?: string }> {

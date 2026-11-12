@@ -47,7 +47,8 @@ import { isLocked, lockWallet, quotePayment, type LockStatus, type Quote, type T
 import { RailMark } from './RailMark'
 import { Dialog, SpendConfirmDialog, UnlockDialog, WalletLockPanel, useLockState } from './WalletLock'
 import { PageHeading } from './PageHeading'
-import { pairShop, shopPairingMessage } from '../catalog'
+import { onThisComputer, pairShop, shopPairingMessage } from '../catalog'
+import { pairingKind, pairingWalletPrompt } from '../pairingUi'
 import { SpeedUpPayment } from './SpeedUpPayment'
 
 function usePaymentState(activeWallet: boolean, onWallet: () => void) {
@@ -255,6 +256,7 @@ export function WalletPanel({ rates, currency, onOrders }: {
   const status = lock.data
   const mismatch = !!current && !!network.data && current.network !== network.data.network
   const pairing = [error, wallet.error, network.error, lock.error].some(message => !!message && shopPairingMessage(message))
+  const pairingPrompt = pairingWalletPrompt(pairingKind(onThisComputer()))
   const address = current && freshAddress?.network === current.network ? freshAddress.address : current?.receiveAddress
   const showFiat = current?.network === 'mainnet'
   const receiveBlocked = !address || mismatch || !!wallet.error || !!network.error || pairing
@@ -298,7 +300,7 @@ export function WalletPanel({ rates, currency, onOrders }: {
       <PageHeading title="Your wallet" description="Pay for purchases. Store proceeds are held separately." action={
         <button type='button' className='ob-secondary' aria-label='Wallet settings' onClick={() => setSettings(true)}>Settings</button>
       } />
-      {pairing ? <div className='ob-wallet-alert' role='status'><p>Pair this app with your node to view its wallet.</p><button className='ob-secondary' onClick={() => void enterPairingCode()}>Enter pairing code</button></div>
+      {pairing ? <div className='ob-wallet-alert' role='status'><p>{pairingPrompt.text}</p><button className='ob-secondary' onClick={() => void enterPairingCode()}>{pairingPrompt.action}</button></div>
         : (error || wallet.error || network.error || lock.error) && <p className='ob-form-error' role='alert'>{error || wallet.error || network.error || lock.error}{current && wallet.error ? ' Showing the last available balance.' : ''}</p>}
       {mismatch && <p className='ob-form-error' role='alert'>Wallet and node networks do not match. Payments are disabled.</p>}
       <section className='ob-wallet-summary' aria-label='Wallet balance'>
