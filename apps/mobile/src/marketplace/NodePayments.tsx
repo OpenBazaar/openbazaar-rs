@@ -579,13 +579,19 @@ export function OrderPayment({
       ) : kind === 'zec' ? (
         <>
           {view.progress && <p role='status'>{view.progress}</p>}
-          {zcash && zcash.awaiting && order.status === ORDER_STATUS.awaitingPayment ? (
+          {zcash?.expired ? (
+            <p className='ob-form-error' role='alert'>
+              This Zcash quote has expired. Do not pay it. Place the order again for a new one.
+              {zcash.receivedZec !== '0' ? ` ${zcash.receivedZec} ZEC arrived and is recorded on this order, but the order was not marked paid.` : ''}
+            </p>
+          ) : zcash && zcash.awaiting && order.status === ORDER_STATUS.awaitingPayment ? (
             <div className='ob-payment-options'>
               <PaymentQr value={zcash.uri} />
               <CopyPaymentValue label='Zcash address' value={zcash.address} />
               <CopyPaymentValue label='Amount in ZEC' value={zcash.remainingZec} />
               <p className='ob-page-intro'>
                 Send only {zcash.network} Zcash to this shielded address, from any Zcash wallet. It has no transparent receiver, so the wallet sends shielded and the payment lands in Ironwood. The QR code requests the remaining amount.
+                {zcash.expiresAt != null ? ` The quote expires ${new Date(zcash.expiresAt * 1000).toLocaleTimeString(undefined, { timeStyle: 'short' })}.` : ''}
               </p>
             </div>
           ) : zcash ? (

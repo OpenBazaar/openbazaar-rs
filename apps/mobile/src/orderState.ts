@@ -156,6 +156,8 @@ export type ZcashFields = {
   receivedZatoshi: string
   overpaidZatoshi: string
   confirmationsNeeded: number
+  expiresAt: number | null
+  expired: boolean
 }
 
 export type ZcashDue = {
@@ -168,10 +170,13 @@ export type ZcashDue = {
   overpaidZec: string | null
   confirmationsNeeded: number
   awaiting: boolean
+  expiresAt: number | null
+  /** The quote lapsed unpaid: by the node's word, or by this clock before the node's next look. */
+  expired: boolean
 }
 
 /** What a Zcash order still asks for. Received counts Ironwood notes only, as the node does. */
-export function zcashDue(payment: { rail?: string; zcash?: ZcashFields | null } | null | undefined): ZcashDue | null {
+export function zcashDue(payment: { rail?: string; zcash?: ZcashFields | null } | null | undefined, now = Date.now()): ZcashDue | null {
   const fields = payment?.rail === 'zec' ? payment.zcash : null
   if (!fields) return null
   let amount: bigint
@@ -196,6 +201,8 @@ export function zcashDue(payment: { rail?: string; zcash?: ZcashFields | null } 
     remainingZec: formatZec(remaining),
     overpaidZec: overpaid > 0n ? formatZec(overpaid) : null,
     confirmationsNeeded: fields.confirmationsNeeded,
-    awaiting: remaining > 0n
+    awaiting: remaining > 0n,
+    expiresAt: fields.expiresAt,
+    expired: fields.expired || (remaining > 0n && fields.expiresAt != null && fields.expiresAt * 1000 <= now)
   }
 }

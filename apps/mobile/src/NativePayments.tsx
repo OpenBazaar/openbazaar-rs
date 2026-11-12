@@ -465,13 +465,19 @@ export function NativeOrderPayment({
       ) : kind === 'zec' ? (
         <>
           {view.progress ? <Text style={s.body}>{view.progress}</Text> : null}
-          {zcash && zcash.awaiting && order.status === ORDER_STATUS.awaitingPayment ? (
+          {zcash?.expired ? (
+            <Text style={s.body}>
+              This Zcash quote has expired. Do not pay it. Place the order again for a new one.
+              {zcash.receivedZec !== '0' ? ` ${zcash.receivedZec} ZEC arrived and is recorded on this order, but the order was not marked paid.` : ''}
+            </Text>
+          ) : zcash && zcash.awaiting && order.status === ORDER_STATUS.awaitingPayment ? (
             <>
               <Qr value={zcash.uri} />
               <Copy label='Zcash address' value={zcash.address} />
               <Copy label='Amount in ZEC' value={zcash.remainingZec} />
               <Text style={s.body}>
                 Send only {zcash.network} Zcash to this shielded address, from any Zcash wallet.
+                {zcash.expiresAt != null ? ` The quote expires ${new Date(zcash.expiresAt * 1000).toLocaleTimeString(undefined, { timeStyle: 'short' })}.` : ''}
               </Text>
             </>
           ) : zcash ? null : (
