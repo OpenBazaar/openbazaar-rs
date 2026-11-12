@@ -5,6 +5,8 @@ import { parseBuyerOrder } from './catalog.ts'
 import {
   canOfferBitcoinPay,
   confirmationTarget,
+  DIRECT_PAY_WARNING,
+  directPayWarning,
   isPaid,
   moneroDue,
   ORDER_STATUS,
@@ -40,6 +42,22 @@ test('a remote order keeps polling until the seller finishes or declines it', ()
   assert.equal(orderPollingDone({ status: ORDER_STATUS.completed, remote }), true)
   assert.equal(orderPollingDone({ status: ORDER_STATUS.declined, remote }), true)
   assert.equal(ordersSettled([{ status: ORDER_STATUS.paid }, { status: ORDER_STATUS.completed, remote }]), true)
+})
+
+test('a direct order to a store on another node warns the buyer until it is paid', () => {
+  const remote = { delivered: true }
+  const order = { ...bitcoin, remote }
+  assert.equal(directPayWarning(order, 'btc'), DIRECT_PAY_WARNING)
+  for (const said of ['straight to the seller', 'no escrow', 'no moderator', 'cannot vouch', 'cannot be reversed']) {
+    assert.ok(DIRECT_PAY_WARNING.includes(said), said)
+  }
+  assert.equal(directPayWarning(bitcoin, 'btc'), null, 'a store on this node')
+  assert.equal(directPayWarning({ ...order, remote: null }, 'btc'), null)
+  assert.equal(directPayWarning(order, 'escrow'), null, 'an escrow order is not a direct payment')
+  assert.equal(directPayWarning({ ...order, payTxid: 'ab' }, 'btc'), null, 'the node already sent the payment')
+  for (const status of ['Awaiting seller', ORDER_STATUS.paymentSeen, ORDER_STATUS.paid, ORDER_STATUS.declined, ORDER_STATUS.completed]) {
+    assert.equal(directPayWarning({ ...order, status }, 'btc'), null, status)
+  }
 })
 
 test('escrow status never offers the bitcoin pay button', () => {

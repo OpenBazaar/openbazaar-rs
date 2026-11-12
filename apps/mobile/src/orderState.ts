@@ -75,6 +75,19 @@ export function canOfferBitcoinPay(
   return kind === 'btc' && order.status === ORDER_STATUS.awaitingPayment && dueSats > 0 && !order.payTxid
 }
 
+/** What a buyer is told before paying a store on another node directly. It is the same for every store: the node cannot check a seller's history. */
+export const DIRECT_PAY_WARNING =
+  'This payment goes straight to the seller. There is no escrow and no moderator, and this app cannot vouch for the seller. A payment cannot be reversed.'
+
+/** The warning to show with the payment details of a direct order to a store on another node, until the buyer has paid. */
+export function directPayWarning(
+  order: { status: string; remote?: unknown; payTxid?: string | null },
+  kind: PayKind
+): string | null {
+  const unpaid = order.status === ORDER_STATUS.awaitingPayment && !order.payTxid
+  return order.remote && kind !== 'escrow' && unpaid ? DIRECT_PAY_WARNING : null
+}
+
 /** Confirmations an order needs: what its Monero or Zcash payment names, or the node's bitcoin setting. */
 export function confirmationTarget(
   kind: PayKind,
