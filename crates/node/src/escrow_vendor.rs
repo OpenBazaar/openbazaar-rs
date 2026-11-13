@@ -234,6 +234,7 @@ impl Node {
         if let Some(offer) = self.repeated_request(seller, &mail.escrow, &buyer)? {
             return self.send_to_buyer(&mail.escrow, Kind::Offer, offer);
         }
+        self.ensure_testnet_bond();
         crate::reputation::escrow_start_allowed(self.finished_escrow_sales(), self.passing_bond())?;
         let ctx = self.escrow_context(self.sale_moderator(seller, chosen)?)?;
         let (index, secret, payout) = {

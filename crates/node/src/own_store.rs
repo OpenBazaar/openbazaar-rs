@@ -241,11 +241,13 @@ impl Node {
         };
         if self.own_record().is_some_and(|record| current(&record, &want)) {
             self.own_pending.store(false, Ordering::Relaxed);
+            self.ensure_testnet_bond();
             return Ok(());
         }
         let store = sign(want, secret)?;
         write_cached(&self.data_dir, self.lock.vault(), &store)?;
         self.serve_own(store);
+        self.ensure_testnet_bond();
         Ok(())
     }
 

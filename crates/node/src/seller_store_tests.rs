@@ -84,6 +84,13 @@ fn seller() -> (TempDir, Node) {
 }
 
 #[test]
+fn opening_an_own_store_on_testnet_posts_a_reputation_bond() {
+    let (_dir, node) = seller();
+    open_store(&node);
+    assert!(node.passing_bond(), "a published own store can start escrow without a hand-placed bond");
+}
+
+#[test]
 fn a_new_node_has_no_role_until_the_user_chooses_one() {
     let (_dir, node) = seller();
     let (_, profile) = request(&node, "GET", "/store/profile", "");

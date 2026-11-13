@@ -102,6 +102,21 @@ impl Node {
         }
         Ok(())
     }
+
+    /// On testnet4, post the demo reputation bond for the own store if it
+    /// has none yet. Mainnet never posts one. A missing own store or a locked
+    /// spend tier is left alone so the caller can retry after unlock.
+    pub(crate) fn ensure_testnet_bond(&self) {
+        if self.network != NetworkMode::Testnet4 || self.passing_bond() {
+            return;
+        }
+        let Some(name) = self.own_record().map(|store| store.name) else {
+            return;
+        };
+        if let Err(err) = self.publish_store_bond(&name) {
+            eprintln!("ob-node: reputation bond: {err}");
+        }
+    }
 }
 
 #[cfg(test)]
