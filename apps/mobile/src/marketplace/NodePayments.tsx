@@ -388,17 +388,21 @@ export function OrderPayment({
   )
   const order = resource.data ?? initial
   const fulfilled = order.status === 'Shipped' || order.status === ORDER_STATUS.completed
-  const due = amountDue(order.totalSats, order.receivedSats)
   const kind = payKind(order)
+  const due =
+    kind === 'escrow' && order.escrow?.fundingSats
+      ? order.escrow.fundingSats
+      : amountDue(order.totalSats, order.receivedSats)
   const monero = moneroDue(order.payment)
   const zcash = zcashDue(order.payment)
   const escrow = kind === 'escrow'
+  const payAddress = escrow ? order.escrow?.address : order.payment?.address
   const offerBitcoinPay = canOfferBitcoinPay(order, kind, due)
   const directWarning = directPayWarning(order, kind)
   const net = network.data?.network
   const orderNetwork = order.network ?? order.payment?.network
   const mismatch =
-    kind === 'btc' &&
+    (kind === 'btc' || kind === 'escrow') &&
     !!net &&
     ((!!orderNetwork && orderNetwork !== net) ||
       (!!wallet.data && wallet.data.network !== net))
@@ -414,7 +418,7 @@ export function OrderPayment({
     dueSats: due,
     sending: order.paying || sending,
     payTxid: order.payTxid,
-    wallet: kind === 'btc' ? wallet.data?.balance : null
+    wallet: kind === 'btc' || kind === 'escrow' ? wallet.data?.balance : null
   })
   const lowBalance = !!view.balance
   const blocked =
@@ -500,7 +504,7 @@ export function OrderPayment({
             {order.totalSats.toLocaleString()} sats
           </span>
         ) : null}
-        {kind === 'btc' && (order.status === ORDER_STATUS.awaitingPayment || order.status === ORDER_STATUS.paymentSeen) && (
+        {(kind === 'btc' || kind === 'escrow') && (order.status === ORDER_STATUS.awaitingPayment || order.status === ORDER_STATUS.paymentSeen || order.status === ORDER_STATUS.awaitingFunding) && (
           <span>
             Still owed: {due.toLocaleString()} sats ({bitcoinAmount(due)} BTC)
           </span>
@@ -542,11 +546,14 @@ export function OrderPayment({
               Moderator fee {order.escrow.moderatorFeeSats.toLocaleString()} sats, paid from the escrow to the moderator key in the terms.
             </p>
           ) : null}
-          <p className='ob-page-intro'>
-            Escrow payment is not available here yet. You can track this order’s status here.
-          </p>
+          {order.status === ORDER_STATUS.awaitingTerms && (
+            <p className='ob-page-intro'>
+              Waiting for the seller to name the escrow address and amounts. You can pay from this node or another wallet once those terms arrive.
+            </p>
+          )}
         </>
-      ) : kind === 'xmr' ? (
+      ) : null}
+      {escrow && order.status === ORDER_STATUS.awaitingTerms ? null : kind === 'xmr' ? (
         <>
           {view.progress && <p role='status'>{view.progress}</p>}
           {monero && monero.awaiting && order.status === ORDER_STATUS.awaitingPayment && !order.payTxid ? (
@@ -635,18 +642,18 @@ export function OrderPayment({
               </div>
               <details className='ob-external-payment'>
                 <summary>Pay from another wallet</summary>
-                {order.payment?.address &&
+                {payAddress &&
                   !mismatch &&
                   orderNetwork &&
                   net &&
                   !network.error && (
                     <>
                       <PaymentQr
-                        value={bitcoinUri(order.payment.address, due)}
+                        value={bitcoinUri(payAddress, due)}
                       />
                       <CopyPaymentValue
                         label='Payment address'
-                        value={order.payment.address}
+                        value={payAddress}
                       />
                       <CopyPaymentValue
                         label='Amount in BTC'

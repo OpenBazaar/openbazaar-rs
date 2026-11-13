@@ -113,7 +113,7 @@ fn the_storefront_is_signed_into_the_store_record() {
     let (_, profile) = request(&node, "GET", "/store/profile", "");
     assert_eq!((profile["name"].as_str(), profile["role"].as_str()), (Some("Brook and Pine"), Some("seller")));
     assert_eq!(profile["listingCount"], 1);
-    assert_eq!(profile["escrowAvailable"], false);
+    assert_eq!(profile["escrowAvailable"], true);
 
     for (body, why) in [
         (json!({ "name": "" }), "an empty name"),
@@ -125,6 +125,19 @@ fn the_storefront_is_signed_into_the_store_record() {
         assert!(status.contains("400"), "{why}: {status}");
     }
     assert_eq!(node.own_record().unwrap().name, "Brook and Pine", "a refused edit changes nothing");
+}
+
+#[test]
+fn the_own_store_offers_testnet_escrow_and_mainnet_refuses_it() {
+    let (_dir, node) = seller();
+    let listing = open_store(&node);
+    assert_eq!(listing["acceptsModerator"], true);
+    let dir = TempDir::new();
+    let main = open_node(&dir.0, NetworkMode::Mainnet, &MockChain::new(), 1, EscrowConfig::default());
+    let listing = open_store(&main);
+    let (_, profile) = request(&main, "GET", "/store/profile", "");
+    assert_eq!(profile["escrowAvailable"], false);
+    assert_eq!(listing["acceptsModerator"], false);
 }
 
 #[test]

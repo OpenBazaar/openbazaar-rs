@@ -21,6 +21,7 @@ use rand::{RngCore, SeedableRng};
 use serde_json::{json, Value};
 
 use crate::escrow_mail::{hex, unhex};
+use crate::network::NetworkMode;
 use crate::vault::Vault;
 use crate::{Error, Node};
 
@@ -401,7 +402,7 @@ impl Node {
             seller: store.name.clone(),
             stock,
             listed_on,
-            moderated: false,
+            moderated: self.network == NetworkMode::Testnet4,
             kind: draft.kind,
             product: String::new(),
             shipping_sats,
