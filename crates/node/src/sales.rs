@@ -166,8 +166,12 @@ impl Node {
             self.queue_reply(&route, &json!({ "v": 1, "kind": "declined", "reason": crate::vacation::AWAY_MESSAGE })).map_err(retry)?;
             return Ok(());
         }
-        let zec = order.options.get("rail").is_some_and(|rail| rail == "zec");
-        let priced = match (zec.then(|| self.zec_sale_refusal()).flatten(), order.terms.lines.is_empty()) {
+        let rail = order.options.get("rail").map(String::as_str);
+        let priced = match (match rail {
+            Some("zec") => self.zec_sale_refusal(),
+            Some("xmr") => self.xmr_sale_refusal(),
+            _ => None,
+        }, order.terms.lines.is_empty()) {
             (Some(reason), _) => Err(reason.to_string()),
             (None, true) => self.price_order(&order),
             (None, false) => self.price_terms_order(&id, &order, &opened.sender.0)?,
@@ -175,7 +179,7 @@ impl Node {
         match priced {
             Ok(mut priced) => {
                 let checked = priced.checked.take();
-                let result = self.open_sale(id.clone(), sender, &order, route, priced, zec);
+                let result = self.open_sale(id.clone(), sender, &order, route, priced, rail);
                 match (&result, checked) {
                     (Ok(()), Some(checked)) => self.record_terms(&id, &checked),
                     (Err(_), Some(_)) => self.release_units(&id),
@@ -223,10 +227,14 @@ impl Node {
         Ok(Priced { lines: values, items, shipping, digital, physical, quote: Value::Null, checked: None })
     }
 
-    /// Keep the sale and reply with its terms. A Zcash sale (`zec`) has a `payment` and no bitcoin `address`, so [`Self::watch_sales`] skips it.
-    fn open_sale(&self, id: String, sender: String, order: &Order, route: Route, priced: Priced, zec: bool) -> Result<(), MailError> {
+    /// Keep the sale and reply with its terms. A Zcash or Monero sale has a `payment` and no bitcoin `address`, so [`Self::watch_sales`] skips it.
+    fn open_sale(&self, id: String, sender: String, order: &Order, route: Route, priced: Priced, rail: Option<&str>) -> Result<(), MailError> {
         let total = priced.items.checked_add(priced.shipping).ok_or_else(|| refused("the total overflows"))?;
-        let payment = if zec { Some(self.zec_sale_payment(total).map_err(retry)?) } else { None };
+        let payment = match rail {
+            Some("zec") => Some(self.zec_sale_payment(total).map_err(retry)?),
+            Some("xmr") => Some(self.xmr_sale_payment(total).map_err(retry)?),
+            _ => None,
+        };
         let address = match payment {
             Some(_) => None,
             None => Some(self.buyer_wallet().fresh_address().map_err(retry)?.to_string()),
@@ -269,7 +277,11 @@ impl Node {
             terms["quote"] = priced.quote;
         }
         if let Some(payment) = payment {
-            crate::zec::add_terms(&mut terms, &payment);
+            match payment["rail"].as_str() {
+                Some("zec") => crate::zec::add_terms(&mut terms, &payment),
+                Some("xmr") => crate::xmr::add_terms(&mut terms, &payment),
+                _ => {}
+            }
             sale["payment"] = payment;
         }
         self.sales().insert(sale).map_err(retry)?;
