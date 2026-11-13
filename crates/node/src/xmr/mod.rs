@@ -19,12 +19,16 @@
 //! signs the store's v3 record again with `acceptsXmr` set. Checkout and the
 //! catalog read the flag from the signed record only. `xmr-stores.obv` keeps
 //! the choice for the demo stores, whose records are rebuilt from fixtures at
-//! every boot. Escrow is Bitcoin-only.
+//! every boot. The node's own store opts in the same way and is paid by
+//! buyers on other nodes through a sale (see `sale.rs`). Escrow is Bitcoin-only.
 
 mod checkout;
 mod http;
 mod pay;
 mod rate;
+mod sale;
+#[cfg(test)]
+mod sale_tests;
 #[cfg(test)]
 mod tests;
 
@@ -49,6 +53,7 @@ use crate::{Egress, Error, Node};
 pub(crate) use checkout::{add_xmr_flags, catalog_response, rail_of};
 pub(crate) use http::response;
 pub(crate) use pay::XmrTerms;
+pub(crate) use sale::{add_terms, follow_seller, payment_from_terms};
 
 const WATCH_FILE: &str = "xmr-watch.obv";
 const STATE_FILE: &str = "xmr-state.obv";
@@ -290,6 +295,11 @@ impl Node {
         }
         self.xmr.store(seller)
     }
+
+    /// Whether this node holds a Monero wallet that can take that seller's orders.
+    fn xmr_holds_wallet(&self, seller: &str) -> bool {
+        self.own_record().is_some_and(|store| store.name == seller) || self.xmr.stores.contains_key(seller)
+    }
 }
 
 impl XmrNode {
@@ -332,7 +342,7 @@ impl Node {
         }
     }
 
-    /// One Monero round: sync every wallet, then update Monero orders. Returns how many orders changed.
+    /// One Monero round: sync every wallet, then update Monero orders and sales. Returns how many changed.
     pub fn xmr_sync_once(&self) -> Result<usize, String> {
         let chain = self.xmr.chain().ok_or("Monero is off")?.clone();
         self.xmr_fill_keys();
@@ -342,7 +352,7 @@ impl Node {
                 failed = Some(err);
             }
         }
-        let changed = self.xmr_update_orders();
+        let changed = self.xmr_update_orders() + self.xmr_update_sales();
         match failed {
             Some(err) if changed == 0 => Err(err),
             _ => Ok(changed),

@@ -4,7 +4,8 @@
 //! The seller's own Monero wallet hands out a subaddress used for this order
 //! only, and the price in sats becomes piconero at the current XMR/BTC rate,
 //! rounded up. The order's `payment` then has no `address` field, so the
-//! bitcoin watcher and pay worker never touch it.
+//! bitcoin watcher and pay worker never touch it. A store on another node
+//! prices and watches its own Monero orders (see `sale.rs`).
 //!
 //! Status, from the seller wallet's view of that subaddress:
 //! Awaiting payment (nothing, or less than due: `receivedPiconero` shows
@@ -17,6 +18,7 @@ use openbazaar_xmr::amount::{format_xmr, piconero_for_sats};
 use openbazaar_xmr::{monero_uri, CONFIRMATIONS};
 use serde_json::{json, Value};
 
+use super::Slot;
 use crate::http::{json_body, json_error};
 use crate::watch::{direct_progress, PAID};
 use crate::{catalog_value, Node, OrderError};
@@ -54,24 +56,30 @@ pub(crate) fn add_xmr_flags(node: &Node, value: &mut Value) {
     if let Some(listings) = value["listings"].as_array_mut() {
         for listing in listings {
             let seller = listing["seller"].as_str().unwrap_or_default();
-            listing["acceptsXmr"] = json!(enabled && node.accepts_xmr(seller));
+            // A store with its wallet here needs this node's daemon. A store on another node watches its own payments.
+            let can = if node.xmr_holds_wallet(seller) { enabled } else { true };
+            listing["acceptsXmr"] = json!(can && node.accepts_xmr(seller));
         }
     }
     value["xmr"] = json!({ "enabled": enabled, "network": node.xmr.xmr_network().as_str() });
 }
 
-fn amount_of(payment: &Value, key: &str) -> u64 {
+pub(super) fn amount_of(payment: &Value, key: &str) -> u64 {
     payment[key].as_str().and_then(|text| text.parse().ok()).unwrap_or(0)
 }
 
 impl Node {
     /// Everything a Monero package needs, checked before any letter is sealed.
     pub(crate) fn xmr_ready(&self, seller: &str) -> Result<(), OrderError> {
-        if self.xmr.chain().is_none() {
-            return Err(OrderError::Invalid("Monero is off on this node. Start it with --xmr-daemon to pay in Monero."));
-        }
         if !self.accepts_xmr(seller) {
             return Err(OrderError::Invalid("This store does not accept Monero."));
+        }
+        // A store on another node prices the order and watches the payment, so this node needs no daemon for it.
+        if !self.xmr_holds_wallet(seller) {
+            return Ok(());
+        }
+        if self.xmr.chain().is_none() {
+            return Err(OrderError::Invalid("Monero is off on this node. Start it with --xmr-daemon to pay in Monero."));
         }
         match self.xmr_seller_slot(seller) {
             Some(slot) if slot.wallet.is_some() => {}
@@ -87,8 +95,13 @@ impl Node {
     /// The `payment` of a Monero order: a fresh subaddress of the seller and the amount in piconero.
     pub(crate) fn xmr_payment(&self, total_sats: u64, seller: &str) -> Result<Value, OrderError> {
         let sats_per_xmr = self.xmr.rate.sats_per_xmr().ok_or(OrderError::Invalid("There is no XMR price right now."))?;
-        let piconero = piconero_for_sats(total_sats, sats_per_xmr).ok_or(OrderError::Invalid("That order is too large to price in Monero."))?;
         let mut slot = self.xmr_seller_slot(seller).ok_or(OrderError::Invalid("That seller has no wallet on this node."))?;
+        self.xmr_issue_payment(total_sats, sats_per_xmr, &mut slot)
+    }
+
+    /// A fresh subaddress of the wallet in `slot`, and `total_sats` in piconero at `sats_per_xmr`.
+    pub(super) fn xmr_issue_payment(&self, total_sats: u64, sats_per_xmr: u64, slot: &mut Slot) -> Result<Value, OrderError> {
+        let piconero = piconero_for_sats(total_sats, sats_per_xmr).ok_or(OrderError::Invalid("That order is too large to price in Monero."))?;
         let wallet = slot.wallet.as_mut().ok_or(OrderError::Locked(crate::wallet_lock::State::Locked.as_str()))?;
         let (index, address) = wallet.issue_subaddress();
         slot.save(&self.xmr.vault).map_err(|err| OrderError::Failed(err.to_string()))?;

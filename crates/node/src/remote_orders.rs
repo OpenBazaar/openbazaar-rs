@@ -11,8 +11,8 @@
 //! checkout showed (exactly that for a sats price; a quarter more for a
 //! fiat price, which moves with the rate), in which case the order stops.
 //! From there the chain watcher moves the order to Paid as for any direct
-//! order (a Zcash order follows the seller's replies instead, see
-//! `zec/sale.rs`), a "shipped" reply carries the tracking or the digital goods, and
+//! order (a Zcash or Monero order follows the seller's replies instead, see
+//! `zec/sale.rs` and `xmr/sale.rs`), a "shipped" reply carries the tracking or the digital goods, and
 //! `POST /orders/{id}/complete` tells the seller it arrived.
 
 use openbazaar_protocol::Listing;
@@ -45,12 +45,11 @@ fn ceiling(estimate: u64, fiat: bool) -> u64 {
 
 impl Node {
     /// The followed URL when `listing` is from a store on another node.
-    /// Refuses the own store, and a rail only a seller wallet on this node
-    /// can take (`local_rail`: Monero). Direct bitcoin or Zcash orders go
+    /// Refuses the own store. Direct bitcoin, Zcash, or Monero orders go
     /// over the order mail to that URL. Escrow is not a remote order: it
     /// uses `--escrow-vendor` on this node, so a followed testnet store that
     /// offers moderated listings can be checked out with `settlement: escrow`.
-    pub(crate) fn remote_package(&self, listing: &Listing, direct: bool, local_rail: bool) -> Result<Option<String>, OrderError> {
+    pub(crate) fn remote_package(&self, listing: &Listing, direct: bool) -> Result<Option<String>, OrderError> {
         if listing.store_id == self.own_store {
             return Err(OrderError::Invalid("That is your own store."));
         }
@@ -58,9 +57,6 @@ impl Node {
         let Some(url) = followed.or_else(|| self.directory_sale_url(&listing.store_id)) else {
             return Ok(None);
         };
-        if local_rail {
-            return Err(OrderError::Invalid("This store takes direct bitcoin payment only."));
-        }
         if !direct {
             return Ok(None);
         }
@@ -222,6 +218,7 @@ impl Node {
 pub(crate) fn apply_reply(order: &mut crate::buyer_orders::BuyerOrder, body: &Value, network: crate::NetworkMode) {
     let remote = order.remote.clone().unwrap_or_default();
     crate::zec::follow_seller(order, &body["zec"]);
+    crate::xmr::follow_seller(order, &body["xmr"]);
     match body["kind"].as_str() {
         Some("terms") if order.status == AWAITING_SELLER => {
             let amount = body["amountSats"].as_u64().unwrap_or(0);
@@ -229,9 +226,10 @@ pub(crate) fn apply_reply(order: &mut crate::buyer_orders::BuyerOrder, body: &Va
             let address = body["address"].as_str().unwrap_or("");
             let limit = ceiling(estimate, remote["fiat"].as_bool().unwrap_or(false));
             let problem = crate::checkout_terms::quote_problem(&remote, body);
-            let payment = match remote["rail"] == "zec" {
-                true => crate::zec::payment_from_terms(body, network.zcash()),
-                false => crate::network::address_for(address, network).map_err(|_| "The seller's payment address is not valid here.".to_string()).map(|address| {
+            let payment = match remote["rail"].as_str() {
+                Some("zec") => crate::zec::payment_from_terms(body, network.zcash()),
+                Some("xmr") => crate::xmr::payment_from_terms(body, network.monero()),
+                _ => crate::network::address_for(address, network).map_err(|_| "The seller's payment address is not valid here.".to_string()).map(|address| {
                     json!({
                         "network": network.as_str(),
                         "onchain": address.to_string(),
