@@ -367,7 +367,7 @@ fn a_followed_testnet_store_can_be_checked_out_with_escrow() {
     let seller = Peer::spawn_with(&chain, 1, |url| EscrowConfig { mailbox_url: Some(url), ..EscrowConfig::default() });
     let listing = open_store(&seller.node);
     assert_eq!(listing["acceptsModerator"], true);
-    seller.node.publish_store_bond("Brook and Pine").expect("the own store posts a testnet bond");
+    assert!(seller.node.passing_bond(), "publishing the own store posts the testnet reputation bond");
     let vendor = seller.url.clone();
     let buyer = Peer::spawn_with(&chain, 1, move |url| EscrowConfig {
         mailbox_url: Some(url),
@@ -417,7 +417,6 @@ fn a_followed_escrow_checkout_does_not_hold_the_catalog_lock() {
     let chain = MockChain::new();
     let seller = Peer::spawn_with(&chain, 1, |url| EscrowConfig { mailbox_url: Some(url), ..EscrowConfig::default() });
     let listing = open_store(&seller.node);
-    seller.node.publish_store_bond("Brook and Pine").expect("the own store posts a testnet bond");
     let vendor = seller.url.clone();
     let buyer = Peer::spawn_with(&chain, 1, move |url| EscrowConfig {
         mailbox_url: Some(url),
