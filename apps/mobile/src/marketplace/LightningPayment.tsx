@@ -1,7 +1,6 @@
 import { useRef, useState, type FormEvent } from 'react'
 import { fetchOrder, type BuyerOrder, type CurrencyCode, type RateTable, type SellerOrder } from '../catalog'
 import {
-  fetchLnStatus,
   issueLnTicket,
   lnNetworkLabel,
   payLnOrder,
@@ -12,40 +11,9 @@ import {
 } from '../lightning'
 import { type LockStatus, isLocked } from '../walletLock'
 import { useNodeResource } from '../useNodeResource'
-import { CopyPaymentValue, PaymentQr, usePairedNode, WalletAmount } from './NodePayments'
+import { CopyPaymentValue, PaymentQr, usePairedNode } from './NodePayments'
 import { RailMark } from './RailMark'
 import { Dialog, FormError, Passphrase, UnlockDialog, useSubmit } from './WalletLock'
-
-/** The Lightning part of the wallet page. Nothing while Lightning is off. */
-export function LightningWalletCard({ rates, currency }: { rates: RateTable; currency: CurrencyCode }) {
-  const { network } = usePairedNode()
-  const status = useNodeResource(fetchLnStatus, 15000)
-  const ln = status.data
-  const showFiat = network.data?.network === 'mainnet'
-  if (!ln?.enabled) return null
-  return (
-    <section className='ob-wallet-page ob-wallet-fund' aria-labelledby='ob-ln-wallet'>
-      <h2 id='ob-ln-wallet' className='ob-rail'><RailMark rail='lightning' /> Lightning</h2>
-      <p>{ln.network ? lnNetworkLabel(ln.network) : ''} · {ln.running ? `${ln.channels.length} channel${ln.channels.length === 1 ? '' : 's'}` : 'starting'}</p>
-      {ln.balances && (
-        <div className='ob-wallet-balances'>
-          <article>
-            <h2>Can spend</h2>
-            <WalletAmount sats={ln.balances.lightningSats} rates={rates} currency={currency} showFiat={showFiat} />
-          </article>
-          <article className='is-pending'>
-            <h2>Can receive</h2>
-            <WalletAmount sats={ln.balances.inboundSats} rates={rates} currency={currency} showFiat={showFiat} />
-          </article>
-        </div>
-      )}
-      {ln.balances && ln.balances.onchainSats > 0 && (
-        <p className='ob-wallet-note'>{ln.balances.onchainSats.toLocaleString()} sats sit in the Lightning node's on-chain wallet, from closed channels or for opening new ones.</p>
-      )}
-      {status.error && <p className='ob-form-error' role='alert'>{status.error}</p>}
-    </section>
-  )
-}
 
 /** Payment of one order on the Lightning rail: the invoice, and paying it from this node. */
 export function LightningOrderPayment({ id, initial, invoice }: { id: string; initial: BuyerOrder | SellerOrder; invoice: LnInvoice }) {

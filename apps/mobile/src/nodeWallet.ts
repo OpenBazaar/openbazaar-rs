@@ -6,6 +6,8 @@ import {
   type BuyerOrder,
   type NetworkName
 } from './catalog'
+import { parseXmrBackend, type XmrBackend } from './xmr'
+import { parseZecBackend, type ZecBackend } from './zec'
 
 export type ChainBackend = {
   backend: string
@@ -19,6 +21,8 @@ export type ChainBackend = {
   fallbackActive: boolean
 }
 export type NetworkInfo = {
+  xmrBackend?: XmrBackend | null
+  zecBackend?: ZecBackend | null
   network: NetworkName
   confirmations: number
   publicChainServer: boolean
@@ -99,6 +103,8 @@ export { connectionRows, privacyStatus, type ConnectionRow } from './walletConne
 export async function fetchNetwork(): Promise<NetworkInfo> {
   const r = record(await openJson('/network'))
   return {
+    xmrBackend: r.xmrBackend ? parseXmrBackend(r.xmrBackend) : null,
+    zecBackend: r.zecBackend ? parseZecBackend(r.zecBackend) : null,
     network: network(r.network),
     confirmations: number(r.confirmations),
     publicChainServer: r.publicChainServer === true,
