@@ -135,3 +135,20 @@ fn escrow_letters_that_sign_wait_for_an_unlock() {
     assert_eq!(market.deliver(), 1);
     assert_eq!(order(buyer, &id)["status"], AWAITING_FUNDING);
 }
+
+#[test]
+fn a_dropped_escrow_request_is_sent_again_while_waiting_for_terms() {
+    let market = Market::new();
+    let (buyer, vendor) = (&market.buyer.node, &market.vendor.node);
+    let placed = checkout(buyer, &[("Paperback novel", "Marlow Goods", "escrow")]);
+    let id = placed[0]["orderId"].as_str().unwrap().to_string();
+    let waiting = vendor.escrow.inbox.list().unwrap();
+    assert_eq!(waiting.len(), 1, "checkout posted the request");
+    let _ = vendor.escrow.inbox.take(&waiting[0]).unwrap();
+    assert_eq!(market.deliver(), 0, "the vendor dropped the accepted letter");
+    assert_eq!(order(buyer, &id)["status"], AWAITING_TERMS);
+    assert_eq!(buyer.retry_escrow_requests(false), 0, "the first send is still within backoff");
+    assert_eq!(buyer.retry_escrow_requests(true), 1);
+    assert_eq!(market.deliver(), 2, "the resent request is answered and the offer is countersigned");
+    assert_eq!(order(buyer, &id)["status"], AWAITING_FUNDING);
+}

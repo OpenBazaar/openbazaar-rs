@@ -43,13 +43,13 @@ use serde_json::{json, Map, Value};
 use crate::buyer_orders::BuyerOrder;
 use crate::coin_locks::OPEN_LOCK_TTL;
 use crate::escrow_mail::{hex, id_hex, parse_id, unhex, EscrowId, Kind, Mail};
-use crate::escrow_outbox::{now_secs, Sent};
+use crate::escrow_outbox::{now_secs, Sent, BACKOFF_BASE, BACKOFF_MAX};
 use crate::escrow_vendor::{offer_digest, offer_digest_with_listing};
 use crate::instructions::{ESCROW_DEMO_WARNING, ESCROW_MAINNET_REFUSAL};
 use crate::network::{address_for, NetworkMode};
 use crate::pay_order::{check_fee, check_terms, psbt_fee, PayError, TERMS_CHANGED};
 use crate::spend_tickets::SpendTerms;
-use crate::watch::{AWAITING_FUNDING, DISPUTED, FUNDED, RELEASED, SETTLED};
+use crate::watch::{AWAITING_FUNDING, AWAITING_TERMS, DISPUTED, FUNDED, RELEASED, SETTLED};
 use crate::{Node, OrderError};
 
 mod state;
@@ -101,6 +101,18 @@ fn key_index(escrow: &Value) -> Result<u32, String> {
 
 fn failed(err: impl std::fmt::Display) -> String {
     err.to_string()
+}
+
+/// Whether a Request that already went out should be sent again at `now`.
+fn request_retry_due(escrow: &Value, created: u64, now: u64) -> bool {
+    let last = escrow.get("lastRequestAt").and_then(Value::as_u64).unwrap_or(created);
+    let attempts = escrow.get("requestAttempts").and_then(Value::as_u64).unwrap_or(1);
+    let shift = attempts.saturating_sub(1).min(16) as u32;
+    let wait = BACKOFF_BASE
+        .as_secs()
+        .saturating_mul(1u64 << shift)
+        .min(BACKOFF_MAX.as_secs());
+    now.saturating_sub(last) >= wait
 }
 
 impl Node {
@@ -196,15 +208,69 @@ impl Node {
     }
 
     /// Send the request for a stored order. When it is refused or only
-    /// queued, the reason is kept on the order and returned.
+    /// queued, the reason is kept on the order and returned. A 202 from the
+    /// vendor's drop is [`Sent::Delivered`]: the letter is in their inbox,
+    /// and this node records the attempt so [`Self::retry_escrow_requests`]
+    /// can send again if terms never arrive.
     pub(crate) fn send_escrow_request(&self, order_id: &str) -> Result<(), String> {
+        let attempts = {
+            let orders = self.orders();
+            orders
+                .get(order_id)
+                .and_then(|order| order.escrow.as_ref())
+                .and_then(|escrow| escrow.get("requestAttempts"))
+                .and_then(Value::as_u64)
+                .unwrap_or(0)
+        } + 1;
+        let now = now_secs();
         let error = match self.try_send_request(order_id) {
-            Ok(Sent::Delivered) => return Ok(()),
-            Ok(Sent::Queued(err)) => format!("The vendor's node could not be reached yet ({err}). This node keeps trying."),
+            Ok(Sent::Delivered) => {
+                let _ = self.update_escrow(
+                    order_id,
+                    None,
+                    json!({ "lastRequestAt": now, "requestAttempts": attempts, "error": null }),
+                );
+                return Ok(());
+            }
+            Ok(Sent::Queued(err)) => {
+                format!("The vendor's node could not be reached yet ({err}). This node keeps trying.")
+            }
             Err(err) => err,
         };
-        let _ = self.update_escrow(order_id, None, json!({ "error": error }));
+        let _ = self.update_escrow(
+            order_id,
+            None,
+            json!({ "lastRequestAt": now, "requestAttempts": attempts, "error": error }),
+        );
         Err(error)
+    }
+
+    /// Send Request again for every order still waiting on vendor terms.
+    /// `force` ignores backoff so a test can resend at once. A locked node
+    /// skips: the per-order key is spend-tier.
+    pub(crate) fn retry_escrow_requests(&self, force: bool) -> usize {
+        if self.lock.state() != crate::wallet_lock::State::Unlocked {
+            return 0;
+        }
+        let now = now_secs();
+        let ids: Vec<String> = {
+            let orders = self.orders();
+            orders
+                .on_network()
+                .filter(|order| {
+                    order.status == AWAITING_TERMS
+                        && order.escrow.as_ref().is_some_and(|escrow| {
+                            escrow.get("stage").and_then(Value::as_str) == Some("requested")
+                                && (force || request_retry_due(escrow, order.created, now))
+                        })
+                })
+                .map(|order| order.id.clone())
+                .collect()
+        };
+        for id in &ids {
+            let _ = self.send_escrow_request(id);
+        }
+        ids.len()
     }
 
     fn try_send_request(&self, order_id: &str) -> Result<Sent, String> {

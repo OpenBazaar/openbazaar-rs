@@ -397,6 +397,7 @@ impl Node {
         while !stop.load(Ordering::Relaxed) {
             self.process_escrow_mail();
             self.flush_escrow_outbox(false);
+            self.retry_escrow_requests(false);
             self.refresh_moderator_identity();
             std::thread::sleep(MAIL_POLL);
         }

@@ -30,7 +30,7 @@ use openbazaar_escrow::{
 use serde_json::{json, Value};
 
 use crate::escrow_buyer::read_attempt;
-use crate::escrow_mail::{hex, id_hex, key_bytes, EscrowId, Kind, Mail};
+use crate::escrow_mail::{hex, id_hex, key_bytes, EscrowId, Kind, Mail, RETRY_LATER};
 use crate::network::NetworkMode;
 use crate::Node;
 
@@ -235,7 +235,9 @@ impl Node {
             return self.send_to_buyer(&mail.escrow, Kind::Offer, offer);
         }
         self.ensure_testnet_bond();
-        crate::reputation::escrow_start_allowed(self.finished_escrow_sales(), self.passing_bond())?;
+        if let Err(err) = crate::reputation::escrow_start_allowed(self.finished_escrow_sales(), self.passing_bond()) {
+            return Err(format!("{RETRY_LATER}{err}"));
+        }
         let ctx = self.escrow_context(self.sale_moderator(seller, chosen)?)?;
         let (index, secret, payout) = {
             let mut wallet = self.store_wallet(seller).map_err(failed)?;
