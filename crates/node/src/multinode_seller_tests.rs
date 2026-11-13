@@ -142,6 +142,56 @@ fn a_sale_goes_from_listing_to_completed_across_two_nodes() {
     assert_eq!(order(&pair.buyer.node, &id)["remote"]["sellerCompleted"], true);
 }
 
+struct DeliveredTracking;
+
+impl crate::tracking::TrackingProvider for DeliveredTracking {
+    fn name(&self) -> &'static str {
+        "aftership"
+    }
+
+    fn fetch(&self, slug: &str, tracking_number: &str) -> Result<crate::tracking::TrackingSnapshot, String> {
+        assert_eq!((slug, tracking_number), ("usps", "9400100000"));
+        Ok(crate::tracking::TrackingSnapshot {
+            status: "delivered".to_string(),
+            events: vec![crate::tracking::TrackingEvent {
+                at: "2026-11-13T15:04:05Z".to_string(),
+                status: "delivered".to_string(),
+                city: "Portland".to_string(),
+                state: "OR".to_string(),
+                country: "United States".to_string(),
+            }],
+            delivered_at: Some("2026-11-13T15:04:05Z".to_string()),
+        })
+    }
+}
+
+#[test]
+fn seller_tracking_progress_reaches_the_buyer_without_the_buyer_node_asking_a_provider() {
+    let pair = Pair::new();
+    pair.seller.node.set_tracking_provider(std::sync::Arc::new(DeliveredTracking));
+    let placed = pair.checkout(1);
+    let id = placed["orderId"].as_str().unwrap().to_string();
+    pair.deliver();
+    fund_node_wallet(&pair.buyer.node, &pair.chain, 100_000);
+    pay(&pair.buyer.node, &id, "{}");
+    pair.mine();
+    pair.deliver();
+    let sale_id = pair.sales()[0]["id"].as_str().unwrap().to_string();
+    let fulfill = json!({ "carrier": "USPS", "tracking": "9400 1000 00" }).to_string();
+    let (status, shipped) = request(&pair.seller.node, "POST", &format!("/sales/{sale_id}/fulfill"), &fulfill);
+    assert!(status.contains("200"), "{status} {shipped}");
+    pair.deliver();
+    assert_eq!(order(&pair.buyer.node, &id)["status"], SHIPPED);
+
+    assert_eq!(pair.seller.node.watch_tracking(), 1);
+    assert_eq!(pair.sales()[0]["tracking"]["status"], "delivered");
+    pair.deliver();
+    let tracked = order(&pair.buyer.node, &id);
+    assert_eq!(tracked["remote"]["tracking"]["status"], "delivered", "{tracked}");
+    assert_eq!(tracked["remote"]["tracking"]["events"][0]["city"], "Portland");
+    assert_eq!(tracked["status"], SHIPPED, "tracking evidence alone does not complete the order");
+}
+
 #[test]
 fn a_store_with_no_finished_escrow_sale_takes_a_direct_order() {
     let pair = Pair::new();

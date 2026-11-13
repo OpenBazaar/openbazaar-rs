@@ -170,6 +170,9 @@ pub struct ServeOptions {
     pub fixed_rates: Option<(u32, u32)>,
     /// False with `--no-introductions`: the directory's introductions are not asked.
     pub introductions: bool,
+    /// `--tracking aftership`: seller-side shipment tracking. The API key is
+    /// read from `OB_TRACKING_API_KEY`, never from the command line.
+    pub tracking_aftership: bool,
     /// `--xmr-daemon URL`: monerod RPC for Monero direct pay. Empty turns Monero off.
     pub xmr_daemons: Vec<String>,
     /// `--zec-indexer URL`: Zaino or lightwalletd for Zcash direct pay. Empty turns Zcash off.
@@ -208,6 +211,7 @@ impl ServeOptions {
         let mut proxy = None;
         let mut live_rates = true;
         let mut fixed_rates = None;
+        let mut tracking_aftership = false;
         let mut introductions = true;
         let mut xmr_daemons: Vec<String> = Vec::new();
         let mut zec_indexers: Vec<String> = Vec::new();
@@ -288,6 +292,12 @@ impl ServeOptions {
                 "--no-rates" => live_rates = false,
                 "--fixed-rates" => fixed_rates = Some(parse_fixed_rates(&value("--fixed-rates")?)?),
                 "--no-introductions" => introductions = false,
+                "--tracking" => {
+                    tracking_aftership = match value("--tracking")?.as_str() {
+                        "aftership" => true,
+                        other => return Err(format!("--tracking must be aftership, not {other:?}")),
+                    }
+                }
                 "--xmr-daemon" => {
                     let text = value("--xmr-daemon")?;
                     xmr_daemons.extend(text.split(',').map(str::trim).filter(|url| !url.is_empty()).map(String::from));
@@ -351,6 +361,7 @@ impl ServeOptions {
             proxy,
             live_rates: live_rates && fixed_rates.is_none(),
             fixed_rates,
+            tracking_aftership,
             introductions,
             xmr_daemons,
             zec_indexers,
@@ -584,6 +595,9 @@ mod tests {
         assert_eq!(options.vault, VaultChoice::Keystore, "the key goes to the OS keystore unless told otherwise");
         assert_eq!(options.shop_origin, "http://127.0.0.1:4173");
         assert!(options.pair_codes && options.live_rates && options.introductions && options.proxy.is_none());
+        assert!(!options.tracking_aftership, "shipment tracking is off until the seller turns it on");
+        assert!(ServeOptions::parse(&args(&["--tracking", "aftership"])).unwrap().tracking_aftership);
+        assert!(ServeOptions::parse(&args(&["--tracking", "OB_TRACKING_API_KEY=secret"])).is_err(), "a tracking key is never a flag value");
         let options = ServeOptions::parse(&args(&[
             "--vault",
             "passphrase",

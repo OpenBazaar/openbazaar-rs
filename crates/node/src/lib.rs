@@ -96,6 +96,7 @@ mod store_http;
 mod store_profile;
 mod vacation;
 mod stores;
+mod tracking;
 mod vault;
 mod vault_key;
 mod vendor_labels;
@@ -319,6 +320,9 @@ pub struct Node {
     pub(crate) order_outbox: escrow_outbox::Outbox,
     /// Loopback or Tor, for catalog, order mail, and reviews.
     pub(crate) peers: Arc<peer_http::PeerLink>,
+    /// Seller-side shipment tracking provider, enabled by the operator.
+    /// Holds the provider key in memory only; off by default.
+    pub(crate) tracking: Mutex<Option<Arc<dyn tracking::TrackingProvider>>>,
     pub(crate) data_dir: PathBuf,
     pub(crate) media: media::Media,
     pub(crate) letter_guard: letter_auth::LetterGuard,
@@ -475,6 +479,7 @@ impl Node {
             reviews: Mutex::new(reviews::ReviewPool::open(&dir, vault.clone())?),
             order_outbox: order_mail::open_outbox(&dir, vault.clone(), Arc::clone(&peers))?,
             peers,
+            tracking: Mutex::new(None),
             data_dir: dir.clone(),
             media: media::Media::open(dir.join("media"), network)?,
             letter_guard: letter_auth::LetterGuard::open(&dir)?,

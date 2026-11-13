@@ -2,6 +2,7 @@ import { verifiedListings, verifiedStore, type StoreSummary } from "./records.ts
 import type { LabelerLabel } from "./safety/filter";
 import { homeFetch, servedByHomeNode, servedByLocalShop, signedFetch, targetPrefix } from "./homeNode/transport.ts";
 import { lnBlockedReason, lnStoreKeys, parseLnInvoice, type LnInvoice } from "./lightning.ts";
+import { parseShipmentTracking, type ShipmentTracking } from "./shipment.ts";
 
 // The shop dials only this origin. A query parameter, settings field, seed,
 // peer, or vendor address cannot point it anywhere else. Paired requests send
@@ -203,6 +204,7 @@ export type RemoteOrder = {
   sellerSawPayment: boolean;
   sellerCompleted: boolean;
   fulfillment: Fulfillment | null;
+  tracking: ShipmentTracking | null;
   /** The seller sold out before this order was paid, and owes a refund. */
   oversold: boolean;
   /** Signed receipts kept for reviewing this order. */
@@ -991,6 +993,7 @@ function parseRemote(value: unknown): RemoteOrder | null {
     fulfillment: fulfillment
       ? { carrier: text(fulfillment.carrier), tracking: text(fulfillment.tracking), note: text(fulfillment.note), content: text(fulfillment.content) }
       : null,
+    tracking: parseShipmentTracking(remote.tracking),
     oversold: Array.isArray(remote.oversold) && remote.oversold.length > 0,
     receipts: Array.isArray(remote.receipts) ? remote.receipts.length : 0,
     review: parseOrderReview(remote.review),
