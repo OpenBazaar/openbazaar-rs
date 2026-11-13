@@ -214,10 +214,14 @@ fn with_xmr(store: &Store, accept: bool, secret: &SecretKey) -> Result<Store, op
     next.resign(secret)
 }
 
+pub(crate) const NEEDS_DAEMON: &str = "Monero is off on this node. Start it with --xmr-daemon.";
+
 /// Why a store's Monero choice could not change.
 pub(crate) enum AcceptError {
     Unknown(String),
     Locked,
+    /// The own store cannot take Monero until `--xmr-daemon` is set.
+    Off,
     Failed(String),
 }
 
@@ -235,23 +239,25 @@ impl Node {
     /// Opt a store in or out by signing its record again. Only stores whose
     /// Monero wallets this node holds; the own store's key needs an unlock.
     pub(crate) fn set_accepts_xmr(&self, seller: &str, accept: bool) -> Result<(), AcceptError> {
-        if !self.xmr.stores.contains_key(seller) {
-            return Err(AcceptError::Unknown("That seller has no wallet on this node.".into()));
-        }
         let store = self.seller_store(seller).map_err(AcceptError::Unknown)?;
-        if store.details.is_none() {
-            return Err(AcceptError::Unknown("That store's record cannot carry a Monero choice.".into()));
-        }
-        let secret = match self.store_secret(&store.id) {
-            Some(secret) => secret,
-            None if store.id == self.own_store => return Err(AcceptError::Locked),
-            None => return Err(AcceptError::Unknown("This node does not hold that store's key.".into())),
-        };
         if store.id == self.own_store {
+            if accept && self.xmr.chain().is_none() {
+                return Err(AcceptError::Off);
+            }
+            let secret = self.store_secret(&store.id).ok_or(AcceptError::Locked)?;
             let rating = store.rating.unwrap_or(openbazaar_protocol::ContentRating::General);
             let rails = crate::own_store::Rails { xmr: accept, ..crate::own_store::Rails::of(Some(&store)) };
             return self.publish_own(rating, rails, &secret).map_err(|err| AcceptError::Failed(err.to_string()));
         }
+        if !self.xmr.stores.contains_key(seller) {
+            return Err(AcceptError::Unknown("That seller has no wallet on this node.".into()));
+        }
+        if store.details.is_none() {
+            return Err(AcceptError::Unknown("That store's record cannot carry a Monero choice.".into()));
+        }
+        let secret = self
+            .store_secret(&store.id)
+            .ok_or_else(|| AcceptError::Unknown("This node does not hold that store's key.".into()))?;
         let signed = with_xmr(&store, accept, &secret).map_err(|err| AcceptError::Failed(err.to_string()))?;
         self.xmr.save_accepts(seller, accept).map_err(AcceptError::Failed)?;
         let mut catalog = self.catalog_mut();
@@ -265,8 +271,24 @@ impl Node {
         json!({
             "network": self.xmr.xmr_network().as_str(),
             "enabled": self.xmr.chain().is_some(),
-            "stores": self.xmr.stores.keys().map(|seller| json!({ "seller": seller, "acceptsXmr": self.accepts_xmr(seller) })).collect::<Vec<_>>(),
+            "stores": self.own_xmr_value().into_iter().chain(self.xmr.stores.keys().map(|seller| json!({ "seller": seller, "acceptsXmr": self.accepts_xmr(seller) }))).collect::<Vec<_>>(),
         })
+    }
+
+    /// The own store's row in `GET /xmr/stores`, once it has a record.
+    fn own_xmr_value(&self) -> Option<Value> {
+        let store = self.own_record()?;
+        let accepts = store.details.is_some_and(|details| details.accepts_xmr);
+        let problem = (accepts && self.xmr.chain().is_none()).then_some(NEEDS_DAEMON);
+        Some(json!({ "seller": store.name, "own": true, "acceptsXmr": accepts, "problem": problem }))
+    }
+
+    /// The seller's Monero wallet: the node wallet for the own store, else a demo store slot.
+    fn xmr_seller_slot(&self, seller: &str) -> Option<MutexGuard<'_, Slot>> {
+        if self.own_record().is_some_and(|store| store.name == seller) {
+            return Some(self.xmr.buyer());
+        }
+        self.xmr.store(seller)
     }
 }
 
