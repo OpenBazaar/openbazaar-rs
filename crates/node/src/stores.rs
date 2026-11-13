@@ -108,6 +108,21 @@ impl Node {
         let secret = StoreSecret::from_bytes(fixture_store_keys(seller)?.mailbox).ok()?;
         (self.seller_mail_key(seller).ok()? == secret.public_key()).then_some(secret)
     }
+
+    /// Mailbox secret this node uses as escrow vendor for `seller`: a demo
+    /// store's fixture key, or the own store's mailbox from the receive tier.
+    pub(crate) fn vendor_mail_secret(&self, seller: &str) -> Option<StoreSecret> {
+        if let Some(secret) = self.seller_mail_secret(seller) {
+            return Some(secret);
+        }
+        let store = self.own_record()?;
+        if store.name != seller {
+            return None;
+        }
+        let wallet = self.buyer_wallet();
+        let key = wallet.watch.store_mailbox_key().ok()?;
+        StoreSecret::from_bytes(*key).ok()
+    }
 }
 
 /// One line per store: what a store list or a listing's store link needs.

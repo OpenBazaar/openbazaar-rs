@@ -5,7 +5,8 @@
 //! HTTP or that node's sale onion, stored in its `escrow-mail/` mailbox, and opened by
 //! [`Node::process_escrow_mail`]. Which of the node's keys opens a letter
 //! decides the role it is handled in: the node's own mail key (buyer), a
-//! seller's order mailbox key (vendor), or the fixture moderator's key.
+//! demo store's or the own store's mailbox key (vendor), or the fixture
+//! moderator's key.
 //!
 //! Each letter is signed inside its ciphertext by the sender's key for that
 //! escrow and role ([`crate::letter_auth`]). A letter whose signature fails,
@@ -445,12 +446,18 @@ impl Node {
             Ok(opened) => return Ok((Desk::Buyer, opened)),
             Err(err) => refuse(err)?,
         }
-        for seller in self.store_wallets.keys() {
-            let Some(secret) = self.seller_mail_secret(seller) else {
+        let mut sellers: Vec<String> = self.store_wallets.keys().cloned().collect();
+        if let Some(name) = self.own_record().map(|store| store.name) {
+            if !sellers.iter().any(|seller| seller == &name) {
+                sellers.push(name);
+            }
+        }
+        for seller in sellers {
+            let Some(secret) = self.vendor_mail_secret(&seller) else {
                 continue;
             };
             match open_message(letter, &secret) {
-                Ok(opened) => return Ok((Desk::Vendor(seller.clone()), opened)),
+                Ok(opened) => return Ok((Desk::Vendor(seller), opened)),
                 Err(err) => refuse(err)?,
             }
         }
