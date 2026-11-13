@@ -116,7 +116,14 @@ pub(super) async fn run(shared: Arc<Shared>, config: FilterConfig) {
             Err(err) => format!("the filter client failed: {err}"),
         };
         logs.abort();
-        shared.set_error(outcome);
+        let rescan_restart = shared
+            .restart_from
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .is_some();
+        if !rescan_restart {
+            shared.set_error(outcome);
+        }
         shared.save();
         if shared.stopping() {
             return;
@@ -159,7 +166,23 @@ fn builder(config: &FilterConfig, state: ChainState) -> Builder {
 }
 
 fn chain_state(shared: &Shared) -> ChainState {
-    let index = shared.index();
+    let restart_from = shared
+        .restart_from
+        .lock()
+        .unwrap_or_else(|err| err.into_inner())
+        .take();
+    chain_state_from(&shared.index(), restart_from)
+}
+
+/// Client start point. A pending followed-address rescan is a checkpoint at
+/// that height, not a tip snapshot: Kyoto's `rescan_from` cannot re-emit the
+/// lookback after filter commitments have been wiped.
+pub(super) fn chain_state_from(index: &super::index::FilterIndex, restart_from: Option<u32>) -> ChainState {
+    if let Some(from) = restart_from {
+        if let Some(hash) = index.hash_at(from) {
+            return ChainState::Checkpoint(HashCheckpoint::new(from, hash));
+        }
+    }
     let snapshot = index.snapshot();
     if snapshot.is_empty() {
         return ChainState::Checkpoint(HashCheckpoint::new(
@@ -265,9 +288,15 @@ async fn events(shared: &Shared, requester: &Requester, mut events: UnboundedRec
         }
         let rescan = shared.index().take_rescan();
         if let Some(from) = rescan {
-            if requester.rescan_from(from).is_err() {
-                return;
-            }
+            // Kyoto `rescan_from` clears filter commitments and then errors
+            // (UnknownFilterHash / headers that do not connect). Restart the
+            // client from that height so the range is a first-time sync.
+            *shared
+                .restart_from
+                .lock()
+                .unwrap_or_else(|err| err.into_inner()) = Some(from);
+            let _ = requester.shutdown();
+            return;
         }
     }
 }

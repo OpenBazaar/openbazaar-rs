@@ -128,6 +128,9 @@ pub(crate) struct Shared {
     fee: Mutex<Option<(f64, Instant)>>,
     wake: Notify,
     stop: AtomicBool,
+    /// Restart the BIP157 client from this height instead of calling `rescan_from`.
+    /// Kyoto's rescan wipes filter commitments and then errors with UnknownFilterHash.
+    restart_from: Mutex<Option<u32>>,
 }
 
 impl Shared {
@@ -266,6 +269,7 @@ impl FilterChain {
                 fee: Mutex::new(None),
                 wake: Notify::new(),
                 stop: AtomicBool::new(false),
+                restart_from: Mutex::new(None),
             }),
             config,
             started: Mutex::new(None),
