@@ -80,7 +80,8 @@ impl Node {
             ));
         }
         expect_order_fields(body)?;
-        let catalog = self.catalog();
+        // Clone so a replica refresh can write while this order asks the vendor.
+        let catalog = self.catalog().clone();
         let lines = order_lines(&catalog, body)?;
         let seller = lines[0].0.seller.clone();
         if lines.iter().any(|(listing, _)| listing.seller != seller) {
@@ -188,7 +189,8 @@ impl Node {
             ));
         }
         expect_fields(body, CHECKOUT_FIELDS)?;
-        let catalog = self.catalog();
+        // Clone so a replica refresh can write while this checkout asks the vendor.
+        let catalog = self.catalog().clone();
         let packages = checkout_packages(&catalog, body)?;
         for package in &packages {
             self.allow_settlement(package.settlement, &package.lines[0].0.seller, package.moderator)?;
