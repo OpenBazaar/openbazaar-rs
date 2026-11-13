@@ -183,7 +183,7 @@ pub use escrow_fixture::MODERATOR_FEE_SATS;
 pub use media::MAX_MEDIA;
 pub use http::{http_response, serve_on};
 pub use lightning::LnFlags;
-pub use network::{NetworkMode, ServeOptions, VaultChoice};
+pub use network::{resolve_vault_mode, NetworkMode, ServeOptions, VaultChoice};
 pub use onion_mail::{deliver_letter, letter_digest, poll_mailbox, PollMail, SendLetter, StoredLetter};
 pub use seeds::sign_document;
 

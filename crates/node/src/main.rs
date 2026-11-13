@@ -2,11 +2,12 @@
 
 use std::env;
 use std::fs;
+use std::io::IsTerminal;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
 
-use ob_node::{LocalConfig, NetworkMode, NodeConfig, RemoteConfig, ServeOptions, VaultChoice, VaultMode};
+use ob_node::{resolve_vault_mode, LocalConfig, NetworkMode, NodeConfig, RemoteConfig, ServeOptions, VaultChoice, VaultMode};
 
 const USAGE: &str = "ob-node [print | --version | pair [port] [--network N] [--data-dir DIR] [--lan-page] | devices [port] [--remove ID [--rotate] | --remove-all --rotate] | serve [port] [--remote] [--lan] [--lan-listen ADDR] [--remote-listen 127.0.0.1:PORT] [--web-dir DIR] [--web-listen ADDR --web-origin https://HOST] [--local-shop DIR] [--push-gateway http://ONION] [--network testnet4|mainnet] [--data-dir DIR] [--peer HOST:PORT[,...] | --esplora URL[,URL...]] [--public-fallback | --no-public-fallback] [--confirmations N] [--poll-secs S] [--escrow-vendor SELLER=URL] [--moderator URL] [--moderate] [--vault keystore|passphrase|file] [--shop-origin URL] [--no-pair-codes] [--proxy socks5h://HOST:PORT] [--no-rates] [--fixed-rates BTCUSD=N,ZECUSD=N] [--no-introductions] [--xmr-daemon URL[,URL...]] [--zec-indexer URL[,URL...]] [--onion] [--lightning [--ln-network signet|testnet4|regtest] [--ln-chain esplora:URL|electrum:URL|bitcoind:USER:PASS@HOST:PORT] [--lsp NODE_ID@HOST:PORT [--lsp-token T] | --no-lsp] [--lsp-max-fee-sats N] [--ln-rgs URL | --ln-p2p-gossip] [--ln-listen HOST:PORT]] | send-letter --to ONION|http://127.0.0.1:PORT --file FILE [--data-dir DIR] [--network testnet4|mainnet] [--timeout SECS] | poll-mail [--data-dir DIR] [--network testnet4|mainnet] [--expect SHA256] | sign-seed --key FILE --sequence N [--introductions ONION,ONION] --out FILE | fetch-seed --data-dir DIR --from ONION [--from ONION...]]
 
@@ -26,7 +27,7 @@ Chain data comes from BIP 157/158 compact block filters by default.
 --web-dir serves the web shop export to paired browsers over that onion.
 --web-listen with --web-origin also serves it, and the admin API, to a browser on the open web at that one https address, for a node on a host with no screen. The node speaks plain HTTP on --web-listen, so run it only behind a proxy that ends TLS and sets X-Forwarded-Proto; that proxy sees what the admin onion hides. A browser signs in with a passkey, or with an access key: one a paired device made, or OB_WEB_ACCESS_KEY (obkey- and 52 letters). A new node, with no device, no passkey, and no wallet, belongs to the first browser that opens that address and creates a passkey there; set OB_WEB_ACCESS_KEY before the first start to close that, and to get back in if every passkey is lost. Pairing is not offered on that address.
 --lightning runs an LDK Lightning node for direct pay (see docs/lightning.md). A public peer, Esplora chain source, or gossip server is reached through --proxy, so it does not see this machine's IP. Without --proxy those stay refused. Electrum and bitcoind stay direct. With --remote, inbound Lightning is an onion on that Tor client, forwarded to a loopback socket that is not announced. A public --ln-listen is refused. Mainnet Lightning requires --proxy and an LSP you name (or --no-lsp). There is no mainnet LSP default.
---vault passphrase reads OB_VAULT_PASSPHRASE, or asks on the terminal.
+--vault passphrase reads OB_VAULT_PASSPHRASE, or asks on the terminal. With no terminal and no env it uses --vault file.
 --vault file keeps the key in the data dir; use it only on headless machines and in tests.
 --onion listens for one sealed letter on a Tor onion (virtual port 80) and serves the public shop routes on that same onion: GET /public/store, public media, and reviews. It also answers a seed-document query. The clearnet listener stays on 127.0.0.1. Wallet, escrow spend, and mail secrets stay closed. A clearnet sale URL is still refused.
 send-letter dials --to. An onion uses Arti and fails if the dial fails or times out. A loopback http:// URL posts the letter to /escrow/mail. Any other URL is refused.
@@ -415,18 +416,28 @@ fn unhex32(text: &str) -> Option<[u8; 32]> {
 }
 
 fn vault_mode(options: &ServeOptions) -> Result<VaultMode, String> {
-    match options.vault {
-        VaultChoice::Keystore => Ok(VaultMode::Keystore),
-        VaultChoice::File => {
-            eprintln!("ob-node: WARNING: --vault file keeps the vault key beside the files it encrypts.");
-            Ok(VaultMode::File)
-        }
-        VaultChoice::Passphrase => {
-            if let Ok(passphrase) = env::var(PASSPHRASE_ENV) {
-                return Ok(VaultMode::Passphrase(passphrase));
+    let env_passphrase = env::var(PASSPHRASE_ENV).ok();
+    let resolved = resolve_vault_mode(
+        options.vault,
+        env_passphrase.as_deref(),
+        std::io::stdin().is_terminal(),
+    )?;
+    match resolved {
+        Some(mode @ VaultMode::File) => {
+            if options.vault == VaultChoice::Passphrase {
+                eprintln!(
+                    "ob-node: stdin is not a terminal; using --vault file. Set {PASSPHRASE_ENV} to keep passphrase mode."
+                );
             }
+            eprintln!("ob-node: WARNING: --vault file keeps the vault key beside the files it encrypts.");
+            Ok(mode)
+        }
+        Some(mode) => Ok(mode),
+        None => {
             let new = !options.data_dir().join("vault.lock").exists();
-            let read = |prompt: &str| rpassword::prompt_password(prompt).map_err(|err| format!("the passphrase could not be read: {err}"));
+            let read = |prompt: &str| {
+                rpassword::prompt_password(prompt).map_err(|err| format!("the passphrase could not be read: {err}"))
+            };
             let passphrase = read("Vault passphrase: ")?;
             if new && read("Again: ")? != passphrase {
                 return Err("the passphrases differ".into());

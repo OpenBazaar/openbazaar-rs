@@ -12,6 +12,8 @@ use std::str::FromStr;
 use bitcoin::{Address, Amount, Network};
 use openbazaar_pay::{Bolt12Offer, SilentPaymentCode};
 
+use crate::VaultMode;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NetworkMode {
     Testnet4,
@@ -104,6 +106,32 @@ pub enum VaultChoice {
     Keystore,
     Passphrase,
     File,
+}
+
+/// Turn `--vault` into a [`VaultMode`] at process start.
+///
+/// `--vault passphrase` uses `env_passphrase` when it is set and not empty.
+/// With no env and no terminal (Docker, Railway, systemd), it uses
+/// [`VaultMode::File`] so the process does not open `/dev/tty`. `None` means
+/// the caller should prompt on the terminal.
+pub fn resolve_vault_mode(
+    choice: VaultChoice,
+    env_passphrase: Option<&str>,
+    stdin_is_terminal: bool,
+) -> Result<Option<VaultMode>, String> {
+    match choice {
+        VaultChoice::Keystore => Ok(Some(VaultMode::Keystore)),
+        VaultChoice::File => Ok(Some(VaultMode::File)),
+        VaultChoice::Passphrase => {
+            if let Some(passphrase) = env_passphrase.filter(|text| !text.is_empty()) {
+                return Ok(Some(VaultMode::Passphrase(passphrase.to_string())));
+            }
+            if stdin_is_terminal {
+                return Ok(None);
+            }
+            Ok(Some(VaultMode::File))
+        }
+    }
 }
 
 /// Everything `serve` needs to know before it opens the data directory.
@@ -569,6 +597,33 @@ mod tests {
         ]))
         .unwrap();
         assert_eq!(options.vault, VaultChoice::Passphrase);
+        assert!(
+            resolve_vault_mode(VaultChoice::Passphrase, Some("secret"), false)
+                .unwrap()
+                .is_some_and(|mode| matches!(mode, crate::VaultMode::Passphrase(ref text) if text == "secret")),
+            "a set env is used without a terminal"
+        );
+        assert!(
+            matches!(
+                resolve_vault_mode(VaultChoice::Passphrase, None, false).unwrap(),
+                Some(crate::VaultMode::File)
+            ),
+            "no terminal and no env uses --vault file"
+        );
+        assert!(
+            resolve_vault_mode(VaultChoice::Passphrase, Some(""), false)
+                .unwrap()
+                .is_some_and(|mode| matches!(mode, crate::VaultMode::File)),
+            "an empty env is the same as unset"
+        );
+        assert!(
+            resolve_vault_mode(VaultChoice::Passphrase, None, true).unwrap().is_none(),
+            "a terminal with no env means prompt"
+        );
+        assert!(matches!(
+            resolve_vault_mode(VaultChoice::File, None, false).unwrap(),
+            Some(crate::VaultMode::File)
+        ));
         assert_eq!(options.shop_origin, "http://localhost:19006");
         assert!(!options.pair_codes && !options.live_rates && !options.introductions);
         assert_eq!(options.proxy.as_deref(), Some("socks5h://127.0.0.1:9050"));
