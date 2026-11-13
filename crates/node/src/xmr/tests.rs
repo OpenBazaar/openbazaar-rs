@@ -260,9 +260,51 @@ fn network_and_rates_say_what_the_monero_backend_sees() {
     assert_eq!(rates["xmr"]["satsPerXmr"], SATS_PER_XMR);
     assert_eq!(rates["xmr"]["decimals"], 12);
     let (_, stores) = request(&node, "GET", "/xmr/stores", "");
-    assert_eq!(stores["stores"][0], json!({"seller": "Hale Paper", "acceptsXmr": false}));
+    assert_eq!(stores["stores"][0], json!({"seller": "My store", "own": true, "acceptsXmr": false, "problem": null}));
+    assert!(stores["stores"].as_array().unwrap().iter().any(|store| store == &json!({"seller": "Hale Paper", "acceptsXmr": false})));
     let (status, _) = request(&node, "PUT", "/xmr/stores", &json!({"seller": "Nobody", "accept": true}).to_string());
     assert!(status.contains("404"));
+}
+
+#[test]
+fn the_own_store_needs_a_daemon_before_it_takes_monero() {
+    let dir = TempDir::new();
+    let node = open_node(&dir.0, NetworkMode::Testnet4, &MockChain::new(), 1, unreachable_escrow());
+    crate::seller_store_tests::open_store(&node);
+    let (_, profile) = request(&node, "GET", "/store/profile", "");
+    assert_eq!(profile["xmrAvailable"], false);
+    let (status, value) = request(&node, "PUT", "/xmr/stores", &json!({"seller": "Brook and Pine", "accept": true}).to_string());
+    assert!(status.contains("409"), "{status} {value}");
+    assert_eq!(value["error"], crate::xmr::NEEDS_DAEMON);
+}
+
+/// Bit 0 of the rail-flags byte of the own store's signed record.
+fn signs_xmr(node: &Node) -> bool {
+    let record = node.own_record().unwrap();
+    record.verify().unwrap();
+    let bytes = record.encode().unwrap();
+    bytes[bytes.len() - 64 - 1] & 1 != 0
+}
+
+#[test]
+fn the_own_store_opts_in_and_the_choice_is_signed_and_survives_a_restart() {
+    let Setup { node, xmr, btc, dir } = setup();
+    let listing = crate::seller_store_tests::open_store(&node);
+    let (_, profile) = request(&node, "GET", "/store/profile", "");
+    assert_eq!(profile["xmrAvailable"], true);
+    let (status, stores) = request(&node, "PUT", "/xmr/stores", &json!({"seller": "Brook and Pine", "accept": true}).to_string());
+    assert!(status.contains("200"), "{status} {stores}");
+    assert_eq!(stores["stores"][0], json!({"seller": "Brook and Pine", "own": true, "acceptsXmr": true, "problem": null}));
+    assert!(signs_xmr(&node));
+    let (_, catalog) = request(&node, "GET", "/catalog", "");
+    let own = catalog["listings"].as_array().unwrap().iter().find(|row| row["hash"] == listing["hash"]).expect("own listing");
+    assert_eq!(own["acceptsXmr"], true);
+    drop(node);
+    let node = open(&dir.0, &btc, &xmr);
+    assert!(signs_xmr(&node), "the choice survives a restart");
+    let (status, stores) = request(&node, "PUT", "/xmr/stores", &json!({"seller": "Brook and Pine", "accept": false}).to_string());
+    assert!(status.contains("200") && stores["stores"][0]["acceptsXmr"] == false, "{status} {stores}");
+    assert!(!signs_xmr(&node));
 }
 
 /// Live stagenet run. Opt in with:

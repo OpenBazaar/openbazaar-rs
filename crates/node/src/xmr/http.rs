@@ -57,6 +57,7 @@ pub(crate) fn response(node: &Node, client: &Client, head: &str, method: &str, p
                 match node.set_accepts_xmr(seller, accept) {
                     Ok(()) => json_body("200 OK", &node.xmr_stores_value(), origin),
                     Err(AcceptError::Unknown(message)) => json_error("404 Not Found", &message, origin),
+                    Err(AcceptError::Off) => json_error("409 Conflict", crate::xmr::NEEDS_DAEMON, origin),
                     Err(AcceptError::Locked) => crate::lock_http::locked_response(node.lock.state().as_str(), origin),
                     Err(AcceptError::Failed(detail)) => {
                         eprintln!("ob-node: {detail}");

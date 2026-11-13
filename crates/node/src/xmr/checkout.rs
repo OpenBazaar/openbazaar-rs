@@ -73,7 +73,7 @@ impl Node {
         if !self.accepts_xmr(seller) {
             return Err(OrderError::Invalid("This store does not accept Monero."));
         }
-        match self.xmr.store(seller) {
+        match self.xmr_seller_slot(seller) {
             Some(slot) if slot.wallet.is_some() => {}
             Some(_) => return Err(OrderError::Locked(crate::wallet_lock::State::Locked.as_str())),
             None => return Err(OrderError::Invalid("That seller has no wallet on this node.")),
@@ -88,7 +88,7 @@ impl Node {
     pub(crate) fn xmr_payment(&self, total_sats: u64, seller: &str) -> Result<Value, OrderError> {
         let sats_per_xmr = self.xmr.rate.sats_per_xmr().ok_or(OrderError::Invalid("There is no XMR price right now."))?;
         let piconero = piconero_for_sats(total_sats, sats_per_xmr).ok_or(OrderError::Invalid("That order is too large to price in Monero."))?;
-        let mut slot = self.xmr.store(seller).ok_or(OrderError::Invalid("That seller has no wallet on this node."))?;
+        let mut slot = self.xmr_seller_slot(seller).ok_or(OrderError::Invalid("That seller has no wallet on this node."))?;
         let wallet = slot.wallet.as_mut().ok_or(OrderError::Locked(crate::wallet_lock::State::Locked.as_str()))?;
         let (index, address) = wallet.issue_subaddress();
         slot.save(&self.xmr.vault).map_err(|err| OrderError::Failed(err.to_string()))?;
@@ -122,7 +122,7 @@ impl Node {
         let mut changed = 0;
         for (id, seller, payment) in open {
             let Some(index) = payment["subaddressIndex"].as_u64().and_then(|n| u32::try_from(n).ok()) else { continue };
-            let received = match self.xmr.store(&seller) {
+            let received = match self.xmr_seller_slot(&seller) {
                 Some(slot) => match &slot.wallet {
                     Some(wallet) => wallet.received(index),
                     None => continue,
