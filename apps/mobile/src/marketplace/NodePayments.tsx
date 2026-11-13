@@ -181,7 +181,7 @@ export function CopyPaymentValue({
     </div>
   )
 }
-export function PaymentQr({ value, paper = false }: { value: string; paper?: boolean }) {
+export function PaymentQr({ value, paper = false, label = 'Bitcoin payment QR code' }: { value: string; paper?: boolean; label?: string }) {
   const [src, setSrc] = useState('')
   const [error, setError] = useState(false)
   useEffect(() => {
@@ -213,17 +213,18 @@ export function PaymentQr({ value, paper = false }: { value: string; paper?: boo
       width={224}
       height={224}
       src={src}
-      alt='Bitcoin payment QR code'
+      alt={label}
       data-payment-uri={value}
     />
   ) : (
     <p role='status'>Preparing QR code…</p>
   )
 }
-export function WalletPanel({ rates, currency, onOrders }: {
+export function WalletPanel({ rates, currency, onOrders, embedded = false }: {
   rates: RateTable
   currency: CurrencyCode
   onOrders?: () => void
+  embedded?: boolean
 }) {
   const { wallet, network, lock } = usePairedNode()
   const orders = useNodeResource(fetchOrders, 15000, !!onOrders)
@@ -279,9 +280,9 @@ export function WalletPanel({ rates, currency, onOrders }: {
   const stale = !!wallet.error || !!current?.syncError || mismatch || !current?.lastSync
   return (
     <section className='ob-wallet-page ob-wallet-overview'>
-      <PageHeading title="Your wallet" description="Pay for purchases. Store proceeds are held separately." action={
+      {!embedded && <PageHeading title="Your wallet" description="Pay for purchases. Store proceeds are held separately." action={
         <button type='button' className='ob-secondary' aria-label='Wallet settings' onClick={() => setSettings(true)}>Settings</button>
-      } />
+      } />}
       {pairing ? <div className='ob-wallet-alert' role='status'><p>{pairingPrompt.text}</p><button className='ob-secondary' onClick={() => void enterPairingCode()}>{pairingPrompt.action}</button></div>
         : (error || wallet.error || network.error || lock.error) && <p className='ob-form-error' role='alert'>{error || wallet.error || network.error || lock.error}{current && wallet.error ? ' Showing the last available balance.' : ''}</p>}
       {mismatch && <p className='ob-form-error' role='alert'>Wallet and node networks do not match. Payments are disabled.</p>}

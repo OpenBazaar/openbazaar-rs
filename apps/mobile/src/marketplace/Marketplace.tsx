@@ -1,3 +1,4 @@
+import { WalletPage } from "./WalletPage";
 import { useContext, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { afterShopPair, fetchCatalog, fetchLabelers, fetchRates, type LabelerState, type BuyerOrder, type CurrencyCode, type ListingHeader, type RateTable, type ShopCatalog } from "../catalog";
 import { servedByHomeNode } from "../homeNode/transport";
@@ -15,7 +16,7 @@ import { CoveredCard, HideActions, SafetyInterstitial, SafetySettingsPanel } fro
 import { VendorLabelPicker } from "./VendorLabelPicker";
 import { LabelersPanel } from "./Labelers";
 import { CanopyDivider, MarketEmptyArtwork } from "./MarketArtwork";
-import { NetworkBadge, NodePaymentsProvider, OrderPayment, WalletPanel } from "./NodePayments";
+import { NetworkBadge, NodePaymentsProvider, OrderPayment } from "./NodePayments";
 import { useNodeResource } from "../useNodeResource";
 import { PageHeading } from "./PageHeading";
 import { BuildLine, BuildMismatchWarning, useBuildInfo } from "./BuildInfo";
@@ -25,7 +26,7 @@ import { LightningSettings } from "./LightningSettings";
 import { ZcashSettings } from "./ZcashSettings";
 import { MoneroSettings } from "./MoneroSettings";
 import { fetchNetwork } from "../nodeWallet";
-import { LightningOrderPayment, LightningWalletCard } from "./LightningPayment";
+import { LightningOrderPayment } from "./LightningPayment";
 import { priceDrops, rememberPrices, savedHashesAfterRefresh, sameWatches, signedPrice, type WatchedListing } from "../priceNotices";
 import { fetchProfile, formatPrice, setRole } from "../seller";
 import { readSalesSeen, salesBadge, salesSeenSnapshot, writeSalesSeen, type SaleSight, type SalesSeen } from "../salesBadge";
@@ -264,7 +265,7 @@ export default function Marketplace() {
 
   const money = { rates, currency };
   const navSection: Section = page.name === "receipt" ? "orders" : section;
-  const utilityView = page.name !== "browse" ? null : section === "saved" && saved.length === 0 ? <section><PageHeading title="Saved goods"/><Empty illustration="saved" icon="heart" title="No saved products" text="Save products using the heart button."><button className="ob-primary" onClick={() => navigate("discover")}>Browse products <Icon name="arrow" size={17}/></button></Empty></section> : section === "wallet" ? <><WalletPanel {...money} onOrders={() => navigate("orders")}/><LightningWalletCard {...money}/></> : section === "lightning" ? <LightningSettings/> : section === "zcash" ? <ZcashSettings/> : section === "monero" ? <MoneroSettings/> : section === "home-node" ? <div className="ob-settings-page"><header className="ob-settings-heading"><h1>Home node</h1><p>Run your store on an always-on computer and manage it from anywhere over Tor.</p></header><HomeNodePanel/></div> : section === "browsers" ? <BrowsersSettings/> : section === "addresses" ? <Addresses/> : section === "safety" ? <SafetySettingsPanel settings={safety} onChange={setSafety} labelSources={<LabelersPanel state={labelers} onState={setLabelerState}/>}/> : section === "orders" ? <Orders {...money} onBrowse={() => navigate("discover")}/> : section === "follows" ? <Follows onChanged={message => { setToast(message); void load(); }}/> : storeView();
+  const utilityView = page.name !== "browse" ? null : section === "saved" && saved.length === 0 ? <section><PageHeading title="Saved goods"/><Empty illustration="saved" icon="heart" title="No saved products" text="Save products using the heart button."><button className="ob-primary" onClick={() => navigate("discover")}>Browse products <Icon name="arrow" size={17}/></button></Empty></section> : section === "wallet" ? <WalletPage {...money} onOrders={() => navigate("orders")} onSales={seller ? () => navigate("sales") : undefined} onManage={rail => navigate(rail)}/> : section === "lightning" ? <LightningSettings/> : section === "zcash" ? <ZcashSettings/> : section === "monero" ? <MoneroSettings/> : section === "home-node" ? <div className="ob-settings-page"><header className="ob-settings-heading"><h1>Home node</h1><p>Run your store on an always-on computer and manage it from anywhere over Tor.</p></header><HomeNodePanel/></div> : section === "browsers" ? <BrowsersSettings/> : section === "addresses" ? <Addresses/> : section === "safety" ? <SafetySettingsPanel settings={safety} onChange={setSafety} labelSources={<LabelersPanel state={labelers} onState={setLabelerState}/>}/> : section === "orders" ? <Orders {...money} onBrowse={() => navigate("discover")}/> : section === "follows" ? <Follows onChanged={message => { setToast(message); void load(); }}/> : storeView();
   function storeView() {
     const own = profile.data;
     if (!inStore) return null;
