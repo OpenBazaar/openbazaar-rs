@@ -4488,6 +4488,16 @@ button.ob-detail-seller:hover strong { color: var(--ob-link); }
 .ob-order-record code { display:block; font-size:13px; overflow-wrap:anywhere; padding-bottom:12px; }
 .ob-order-record .ob-sale-facts { grid-template-columns:minmax(0,1fr); gap:16px; }
 .ob-order-delivery { padding:18px; border:1px solid var(--ob-line); border-radius:8px; background:var(--ob-surface); }
+.ob-tracking { display:grid; gap:12px; min-width:0; }
+.ob-tracking-head { display:flex; justify-content:space-between; gap:16px; align-items:start; }
+.ob-tracking-head h3 { font-size:15px; font-weight:600; margin:0 0 4px; }
+.ob-tracking-head p,.ob-tracking-delivered,.ob-tracking-privacy { margin:0; overflow-wrap:anywhere; }
+.ob-tracking-head p,.ob-tracking-privacy,.ob-tracking-events span { color:var(--ob-secondary); font-size:13px; }
+.ob-tracking-events { list-style:none; margin:0; padding:0; display:grid; gap:12px; }
+.ob-tracking-events li { display:grid; grid-template-columns:10px minmax(0,1fr); gap:10px; }
+.ob-tracking-events li>div { display:grid; gap:2px; min-width:0; }
+.ob-tracking-dot { width:8px; height:8px; border-radius:50%; background:var(--ob-link); margin-top:5px; }
+.ob-tracking-privacy { border-top:1px solid var(--ob-line); padding-top:10px; }
 .ob-order-center .ob-remote-order { display:grid; gap:12px; }
 .ob-order-center .ob-payment-progress { background:var(--ob-surface); padding:16px; border:1px solid var(--ob-line); border-radius:8px; }
 .ob-order-center .ob-payment-options { grid-template-columns:minmax(0,1fr); }

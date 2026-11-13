@@ -10,6 +10,8 @@ import { PageHeading } from "./PageHeading";
 import { OrderWorkspace } from "./OrderWorkspace";
 import { InfoTip } from "./InfoTip";
 import { CopyAddress, CopyButton } from "./CopyAddress";
+import { CARRIER_OPTIONS } from "../shipment";
+import { TrackingTimeline } from "./TrackingTimeline";
 
 
 /** Sales, polled while the node is a store. Calls `onNew` once for each sale that appears. */
@@ -55,7 +57,11 @@ function FulfillForm({ sale, onDone, drafts }: { sale: Sale; onDone: (sale: Sale
   const digital = sale.lines.some(line => line.kind === "digital");
   const physical = sale.lines.some(line => line.kind === "physical");
   const initial = drafts.get(sale.id);
-  const [carrier, setCarrier] = useState(initial?.carrier ?? ""), [tracking, setTracking] = useState(initial?.tracking ?? ""), [note, setNote] = useState(initial?.note ?? ""), [content, setContent] = useState(initial?.content ?? "");
+  const knownCarrier = CARRIER_OPTIONS.some(option => option.value === initial?.carrier);
+  const [carrierChoice, setCarrierChoice] = useState(initial?.carrier ? (knownCarrier ? initial.carrier : "Other") : "USPS");
+  const [customCarrier, setCustomCarrier] = useState(knownCarrier ? "" : initial?.carrier ?? "");
+  const carrier = carrierChoice === "Other" ? customCarrier : carrierChoice;
+  const [tracking, setTracking] = useState(initial?.tracking ?? ""), [note, setNote] = useState(initial?.note ?? ""), [content, setContent] = useState(initial?.content ?? "");
   useEffect(() => { drafts.set(sale.id, { carrier, tracking, note, content }); }, [drafts, sale.id, carrier, tracking, note, content]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -81,7 +87,8 @@ function FulfillForm({ sale, onDone, drafts }: { sale: Sale; onDone: (sale: Sale
   return <form className="ob-fulfill" onSubmit={e => void submit(e)} aria-label="Mark as sent">
     <h3>{physical ? "Ship this order" : "Deliver this order"}</h3>
     <div className="ob-field-grid">
-      {physical && <label className="ob-field"><span>Carrier</span><input value={carrier} maxLength={60} placeholder="USPS" onChange={e => setCarrier(e.target.value)}/></label>}
+      {physical && <label className="ob-field"><span>Carrier</span><select value={carrierChoice} onChange={e => setCarrierChoice(e.target.value)}>{CARRIER_OPTIONS.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>}
+      {physical && carrierChoice === "Other" && <label className="ob-field"><span>Carrier name</span><input value={customCarrier} maxLength={60} onChange={e => setCustomCarrier(e.target.value)}/></label>}
       {physical && <label className="ob-field"><span>Tracking number</span><input value={tracking} maxLength={100} onChange={e => setTracking(e.target.value)}/></label>}
       {digital && <label className="ob-field ob-field-wide"><span>Delivery for the buyer</span><textarea value={content} maxLength={4000} placeholder="Download link, license key, or instructions" onChange={e => setContent(e.target.value)}/></label>}
       <label className="ob-field ob-field-wide"><span>Note to the buyer (optional)</span><input value={note} maxLength={1000} onChange={e => setNote(e.target.value)}/></label>
@@ -105,7 +112,7 @@ function SaleDetail({ sale, rates, currency, onChange, drafts }: { sale: Sale; r
       <div className="ob-order-primary">
         {paid && (sale.shipTo || sale.deliveryNote) && <section className="ob-sale-delivery-context">{destination}</section>}
         {paid && <FulfillForm sale={sale} onDone={onChange} drafts={drafts}/>}
-        {sale.fulfillment && <section className="ob-order-delivery"><h3>Delivery record</h3><p>{[sale.fulfillment.carrier, sale.fulfillment.tracking].filter(Boolean).join(" · ") || (physical ? "Shipment recorded" : "Delivered digitally")}</p>{sale.fulfillment.note && <p>{sale.fulfillment.note}</p>}{sale.fulfillment.content && <p className="ob-sale-content">{sale.fulfillment.content}</p>}</section>}
+        {sale.fulfillment && <section className="ob-order-delivery"><h3>Delivery record</h3>{physical ? <TrackingTimeline tracking={sale.tracking} carrier={sale.fulfillment.carrier} trackingNumber={sale.fulfillment.tracking}/> : <p>Delivered digitally</p>}{sale.fulfillment.note && <p>{sale.fulfillment.note}</p>}{sale.fulfillment.content && <p className="ob-sale-content">{sale.fulfillment.content}</p>}</section>}
         {sale.zcash?.expired ? <p className="ob-form-error" role="alert">The Zcash quote for this sale ran out before it was paid in full, so the sale stays unpaid. Do not ship it. What arrives at the address is still counted in the payment records.</p> : pending && !sale.fulfillment && <div className="ob-sale-payment-hold"><strong>{sale.status === "Payment seen" ? "Payment detected" : sale.sentTxid ? "Buyer reported payment" : "Payment outstanding"}</strong><p>{paymentSent(sale) ? "Wait for confirmation before fulfilling this order." : "The buyer has not completed payment. No delivery action is needed yet."}</p></div>}
         <details className="ob-order-record">
           <summary>Payment & transaction records</summary>

@@ -292,6 +292,19 @@ pub(crate) fn apply_reply(order: &mut crate::buyer_orders::BuyerOrder, body: &Va
                 });
             }
         }
+        Some("tracking") if order.status == SHIPPED => {
+            if let Some(remote) = order.remote.as_mut() {
+                let fulfillment = remote["fulfillment"].clone();
+                if let Some(update) = crate::tracking::tracking_update_from_body(
+                    body,
+                    fulfillment["carrier"].as_str().unwrap_or(""),
+                    fulfillment["tracking"].as_str().unwrap_or(""),
+                    crate::escrow_outbox::now_secs(),
+                ) {
+                    remote["tracking"] = update;
+                }
+            }
+        }
         Some("completed") => {
             if let Some(remote) = order.remote.as_mut() {
                 remote["sellerCompleted"] = json!(true);

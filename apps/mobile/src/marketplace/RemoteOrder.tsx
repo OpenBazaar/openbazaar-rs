@@ -2,6 +2,7 @@ import { useState } from "react";
 import type { BuyerOrder } from "../catalog";
 import { completeOrder } from "../seller";
 import { OrderReviewForm } from "./Reviews";
+import { TrackingTimeline } from "./TrackingTimeline";
 
 /** Delivery and seller replies for an order to a store on another node. */
 export function RemoteOrderStatus({ order, onChange }: { order: BuyerOrder; onChange: () => void }) {
@@ -29,7 +30,7 @@ export function RemoteOrderStatus({ order, onChange }: { order: BuyerOrder; onCh
     {remote.oversold && <p className="ob-form-error" role="alert">The seller sold out before your payment arrived. Message {order.seller} to arrange your refund.</p>}
     {sent && <div className="ob-remote-fulfillment">
       <strong>{sent.content ? "Delivered" : "Shipped"}</strong>
-      {(sent.carrier || sent.tracking) && <span>{[sent.carrier, sent.tracking].filter(Boolean).join(" · ")}</span>}
+      {!sent.content && (sent.carrier || sent.tracking) && <TrackingTimeline tracking={remote.tracking} carrier={sent.carrier} trackingNumber={sent.tracking}/>}
       {sent.note && <p>{sent.note}</p>}
       {sent.content && <p className="ob-sale-content">{sent.content}</p>}
     </div>}

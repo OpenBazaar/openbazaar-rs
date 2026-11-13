@@ -10,6 +10,7 @@ import type { CouponBody } from "./couponDraft.ts";
 import { BULK_PATH, bulkEditBody, type BulkChange } from "./bulkEdit.ts";
 import { draftPath } from "./listingDraft.ts";
 import { canShrink, shrinkImage } from "./imageShrink.ts";
+import { parseShipmentTracking, type ShipmentTracking } from "./shipment.ts";
 
 export type Role = "buyer" | "seller";
 
@@ -112,6 +113,7 @@ export type Sale = {
   /** A sale paid in Zcash: `address` is empty and the amounts are in ZEC. `expired`: the quote lapsed unpaid, so the sale stays unpaid whatever arrives. */
   zcash: { address: string; amountZec: string; receivedZec: string; expired: boolean } | null;
   fulfillment: { carrier: string; tracking: string; note: string; content: string; at: number } | null;
+  tracking: ShipmentTracking | null;
 };
 
 export type Fulfill = { carrier?: string; tracking?: string; note?: string; content?: string };
@@ -198,6 +200,7 @@ export function parseSale(value: unknown): Sale {
     network: text(s.network),
     zcash: pay.rail === "zec" ? { address: text(pay.zcashAddress), amountZec: zec(pay.amountZatoshi), receivedZec: zec(pay.receivedZatoshi), expired: pay.expired === true } : null,
     fulfillment: f ? { carrier: text(f.carrier), tracking: text(f.tracking), note: text(f.note), content: text(f.content), at: count(f.at) } : null,
+    tracking: parseShipmentTracking(s.tracking),
   };
 }
 

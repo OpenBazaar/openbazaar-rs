@@ -136,8 +136,9 @@ test("a sale parses with its fulfillment, and paid sales are the ones to ship", 
   const sale = parseSale({ id: "ab12", status: "Paid", totalSats: 28000, lines: [{ title: "Mug", kind: "physical", quantity: 1, priceSats: 25000 }], txids: ["c".repeat(64), "bad"], fulfillment: null });
   assert.equal(sale.lines[0].title, "Mug");
   assert.deepEqual(sale.txids, ["c".repeat(64)]);
-  const shipped = parseSale({ id: "cd34", status: "Shipped", fulfillment: { carrier: "USPS", tracking: "9400" } });
+  const shipped = parseSale({ id: "cd34", status: "Shipped", fulfillment: { carrier: "USPS", tracking: "9400" }, tracking: { status: "in_transit", events: [{ at: "2026-11-13T15:04:05Z", status: "in_transit", city: "Portland" }] } });
   assert.equal(shipped.fulfillment?.carrier, "USPS");
+  assert.equal(shipped.tracking?.events[0].city, "Portland");
   assert.equal(salesToShip([sale, shipped]), 1);
   assert.throws(() => parseSale({ id: "../x" }));
   assert.equal(sale.zcash, null);
@@ -165,11 +166,12 @@ test("follows parse, and a remote buyer order without payment terms yet reads", 
     totalSats: 28000,
     settlement: "direct",
     status: "Awaiting seller",
-    remote: { delivered: true, fulfillment: { carrier: "USPS", tracking: "9400", note: "", content: "" } },
+    remote: { delivered: true, fulfillment: { carrier: "USPS", tracking: "9400", note: "", content: "" }, tracking: { status: "delivered", deliveredAt: "2026-11-13T15:04:05Z", events: [] } },
   });
   assert.equal(order.payment, null);
   assert.equal(order.remote?.delivered, true);
   assert.equal(order.remote?.fulfillment?.tracking, "9400");
+  assert.equal(order.remote?.tracking?.status, "delivered");
 });
 
 /// Runs `run` against a node whose `POST /media` answers `respond`; `sent` collects the bodies it was sent.

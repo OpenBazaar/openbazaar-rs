@@ -369,6 +369,13 @@ impl Node {
             "note": fulfillment["note"],
             "content": fulfillment["content"],
         });
+        let tracking = physical.then(|| {
+            crate::tracking::initial_tracking(
+                fulfillment["carrier"].as_str().unwrap_or(""),
+                fulfillment["tracking"].as_str().unwrap_or(""),
+                crate::escrow_outbox::now_secs(),
+            )
+        });
         let reply = self.with_pending_receipts(&sale, reply);
         let route = Route::of(&sale).map_err(|err| StoreError::Failed(format!("{err:?}")))?;
         self.queue_reply(&route, &reply).map_err(StoreError::Failed)?;
@@ -377,6 +384,9 @@ impl Node {
             .update(id, |sale| {
                 sale["status"] = json!(SHIPPED);
                 sale["fulfillment"] = fulfillment;
+                if let Some(tracking) = tracking {
+                    sale["tracking"] = tracking;
+                }
             })
             .map_err(StoreError::Failed)?
             .ok_or(StoreError::NotFound)?;
