@@ -10,7 +10,7 @@ use bitcoin::{Network, OutPoint, ScriptBuf};
 use super::index::{FilterCheck, FilterIndex, NEW_SCRIPT_LOOKBACK, RECENT_HEADERS};
 use super::mock_peer::{pay, spend, MockPeer, SocksRecorder, TestChain};
 use super::store::{decode, encode, ChainStore};
-use super::driver::{dial_plan, stuck_on_stale_tip};
+use super::driver::{chain_state_from, dial_plan, stuck_on_stale_tip};
 use super::{stale_tip, FilterChain, FilterConfig, STALE_TIP};
 use crate::chain::{ChainSource, WalletRequest};
 use crate::harness::TempDir;
@@ -239,6 +239,29 @@ fn a_rescan_that_syncs_without_filters_is_asked_again() {
     index.synced();
     assert!(!index.is_ready(&script(2)), "no filter in the rescan range arrived");
     assert_eq!(index.take_rescan(), Some(from), "the rescan is asked again");
+    assert_eq!(scan(&mut index, &chain, from), [6]);
+    assert!(index.is_ready(&script(2)));
+}
+
+#[test]
+fn a_pending_rescan_restarts_the_client_from_that_checkpoint() {
+    let mut chain = TestChain::new();
+    for height in 1..=10 {
+        chain.mine(if height == 6 { vec![pay(&script(2), 3_000, 4)] } else { vec![] });
+    }
+    let mut index = FilterIndex::new(Network::Regtest, genesis(&chain));
+    index.watch([script(1)]);
+    assert!(scan(&mut index, &chain, 0).is_empty());
+    assert!(index.watch([script(2)]));
+    let from = index.take_rescan().unwrap();
+    let state = chain_state_from(&index, Some(from));
+    match state {
+        bip157::chain::ChainState::Checkpoint(checkpoint) => {
+            assert_eq!(checkpoint.height, from);
+            assert_eq!(checkpoint.hash, chain.hash(from));
+        }
+        other => panic!("expected a checkpoint, got {other:?}"),
+    }
     assert_eq!(scan(&mut index, &chain, from), [6]);
     assert!(index.is_ready(&script(2)));
 }

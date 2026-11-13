@@ -503,6 +503,20 @@ impl FilterIndex {
         self.rescan_from = Some(from);
     }
 
+    /// Block hash at `height` from the start, a stored commitment, the tip, or a recent header.
+    pub(crate) fn hash_at(&self, height: u32) -> Option<BlockHash> {
+        if height == self.start.height {
+            return Some(self.start.hash);
+        }
+        if let Some((hash, _)) = self.commitments.get(&height) {
+            return Some(*hash);
+        }
+        if height == self.processed.height {
+            return Some(self.processed.hash);
+        }
+        self.headers.get(&height).map(Header::block_hash)
+    }
+
     /// Recent headers up to `processed`, oldest first, for the client's chain state.
     pub(crate) fn snapshot(&self) -> Vec<(u32, Header)> {
         self.headers
