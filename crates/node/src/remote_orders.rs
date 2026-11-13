@@ -45,9 +45,11 @@ fn ceiling(estimate: u64, fiat: bool) -> u64 {
 
 impl Node {
     /// The followed URL when `listing` is from a store on another node.
-    /// Refuses what such a store cannot take, and the own store: escrow, and
-    /// a rail only a seller wallet on this node can take (`local_rail`:
-    /// Monero), since a remote seller's terms carry bitcoin or Zcash only.
+    /// Refuses the own store, and a rail only a seller wallet on this node
+    /// can take (`local_rail`: Monero). Direct bitcoin or Zcash orders go
+    /// over the order mail to that URL. Escrow is not a remote order: it
+    /// uses `--escrow-vendor` on this node, so a followed testnet store that
+    /// offers moderated listings can be checked out with `settlement: escrow`.
     pub(crate) fn remote_package(&self, listing: &Listing, direct: bool, local_rail: bool) -> Result<Option<String>, OrderError> {
         if listing.store_id == self.own_store {
             return Err(OrderError::Invalid("That is your own store."));
@@ -56,8 +58,11 @@ impl Node {
         let Some(url) = followed.or_else(|| self.directory_sale_url(&listing.store_id)) else {
             return Ok(None);
         };
-        if !direct || local_rail {
+        if local_rail {
             return Err(OrderError::Invalid("This store takes direct bitcoin payment only."));
+        }
+        if !direct {
+            return Ok(None);
         }
         if self.sale_reply_url().is_none() {
             return Err(OrderError::Invalid("This node has no address for the seller's reply."));

@@ -7,7 +7,7 @@ use serde_json::{json, Value};
 
 use crate::harness::{fund_node_wallet, order, pay, request, ship_to, MockChain, Peer};
 use crate::seller_store_tests::{open_store, png, upload};
-use crate::watch::{AWAITING_PAYMENT, AWAITING_SELLER, COMPLETED, DECLINED, PAID, PAYMENT_SEEN, SHIPPED};
+use crate::watch::{AWAITING_FUNDING, AWAITING_PAYMENT, AWAITING_SELLER, AWAITING_TERMS, COMPLETED, DECLINED, PAID, PAYMENT_SEEN, SHIPPED};
 use crate::EscrowConfig;
 
 fn peer(chain: &MockChain, confirmations: u32) -> Peer {
@@ -354,8 +354,62 @@ fn a_buyer_cannot_order_from_its_own_store_or_follow_itself() {
         "shipTo": ship_to(),
         "packages": [{ "settlement": "escrow", "lines": [{ "listingHash": pair.hash(), "quantity": 1 }] }],
     });
-    let (status, _) = request(&pair.buyer.node, "POST", "/checkout", &escrow.to_string());
-    assert!(status.contains("400"), "own-store listings take direct pay only: {status}");
+    let (status, refused) = request(&pair.buyer.node, "POST", "/checkout", &escrow.to_string());
+    assert!(status.contains("400"), "{status} {refused}");
+    let error = refused["error"].as_str().unwrap_or("");
+    assert!(error.contains("No node for this seller is set up to take escrow"), "{status} {refused}");
+    assert!(!error.contains("direct bitcoin payment only"), "{status} {refused}");
+}
+
+#[test]
+fn a_followed_testnet_store_can_be_checked_out_with_escrow() {
+    let chain = MockChain::new();
+    let seller = Peer::spawn_with(&chain, 1, |url| EscrowConfig { mailbox_url: Some(url), ..EscrowConfig::default() });
+    let listing = open_store(&seller.node);
+    assert_eq!(listing["acceptsModerator"], true);
+    seller.node.publish_store_bond("Brook and Pine").expect("the own store posts a testnet bond");
+    let vendor = seller.url.clone();
+    let buyer = Peer::spawn_with(&chain, 1, move |url| EscrowConfig {
+        mailbox_url: Some(url),
+        vendors: [("Brook and Pine".to_string(), vendor)].into_iter().collect(),
+        ..EscrowConfig::default()
+    });
+    let (status, follows) = request(&buyer.node, "POST", "/follows", &json!({ "url": seller.url }).to_string());
+    assert!(status.contains("200"), "{status} {follows}");
+
+    let body = json!({
+        "shipTo": ship_to(),
+        "packages": [{ "settlement": "escrow", "lines": [{ "listingHash": listing["hash"], "quantity": 1 }] }],
+    });
+    let (status, value) = request(&buyer.node, "POST", "/checkout", &body.to_string());
+    assert!(status.contains("200"), "{status} {value}");
+    let placed = &value["orders"][0];
+    let id = placed["orderId"].as_str().unwrap();
+    assert_eq!(placed["settlement"], "escrow");
+    assert_eq!(placed["status"], AWAITING_TERMS);
+    assert!(placed["escrow"].get("error").is_none(), "{}", placed["escrow"]);
+    assert!(placed["escrow"]["address"].is_null(), "no address before the vendor's terms");
+
+    let mut delivered = 0usize;
+    loop {
+        buyer.node.flush_escrow_outbox(true);
+        seller.node.flush_escrow_outbox(true);
+        let handled = buyer.node.process_escrow_mail() + seller.node.process_escrow_mail();
+        if handled == 0 {
+            break;
+        }
+        delivered += handled;
+    }
+    assert_eq!(delivered, 2, "request to the vendor, offer back to the buyer");
+
+    let offered = order(&buyer.node, id);
+    assert_eq!(offered["status"], AWAITING_FUNDING, "{offered}");
+    assert_eq!(offered["escrow"]["stage"], "offered");
+    assert!(offered["escrow"]["address"].as_str().unwrap().starts_with("tb1p"));
+    let (status, sales) = request(&seller.node, "GET", "/escrow/sales", "");
+    assert!(status.contains("200"), "{status} {sales}");
+    assert_eq!(sales["sales"].as_array().unwrap().len(), 1, "{sales}");
+    assert_eq!(sales["sales"][0]["stage"], "offered");
 }
 
 #[test]

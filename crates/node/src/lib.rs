@@ -529,11 +529,16 @@ impl Node {
         self.buyer_wallet.lock().unwrap_or_else(|err| err.into_inner())
     }
 
+    /// Wallet that holds `seller`'s escrow keys: a demo store wallet, or this
+    /// node's wallet when `seller` is the own store.
     pub(crate) fn store_wallet(&self, seller: &str) -> Result<MutexGuard<'_, NodeWallet>, OrderError> {
-        self.store_wallets
-            .get(seller)
-            .map(|wallet| wallet.lock().unwrap_or_else(|err| err.into_inner()))
-            .ok_or(OrderError::Invalid("That seller has no wallet on this node."))
+        if let Some(wallet) = self.store_wallets.get(seller) {
+            return Ok(wallet.lock().unwrap_or_else(|err| err.into_inner()));
+        }
+        if self.own_record().is_some_and(|store| store.name == seller) {
+            return Ok(self.buyer_wallet());
+        }
+        Err(OrderError::Invalid("That seller has no wallet on this node."))
     }
 
     pub(crate) fn orders(&self) -> MutexGuard<'_, BuyerOrders> {

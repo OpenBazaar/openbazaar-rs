@@ -57,7 +57,7 @@ impl Node {
         // The moderator in the terms both parties signed, at the address its profile gives.
         let (moderator, moderator_key) = self.moderator_mailbox(&record, None).map_err(PayError::Invalid)?;
         let mail_key = self
-            .seller_mail_secret(&seller)
+            .vendor_mail_secret(&seller)
             .map(|secret| secret.public_key())
             .ok_or_else(|| PayError::Invalid("That seller has no mailbox key.".into()))?;
         let letter = self
