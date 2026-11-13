@@ -56,9 +56,10 @@ pub fn set_home_mode(app_data_dir: &Path, on: bool) -> io::Result<()> {
 
 impl Sidecar {
     /// Start the node on `port` (the saved one, else a free one, when `None`).
-    /// In home mode it also publishes its onion service and the LAN channel
-    /// for paired devices. `file_vault` keeps the node's keys in a file in the
-    /// data folder instead of the OS keychain (for a disposable profile).
+    /// Always `--remote` so order and escrow mail get a store onion. Home mode
+    /// also opens the LAN channel for paired devices. `file_vault` keeps the
+    /// node's keys in a file in the data folder instead of the OS keychain
+    /// (for a disposable profile).
     pub fn start(app_data_dir: &Path, port: Option<u16>, file_vault: bool, shop: Option<&Path>) -> Result<Self, String> {
         create_private_dir(app_data_dir)
             .map_err(|err| format!("Could not create {}: {err}", app_data_dir.display()))?;
@@ -150,8 +151,9 @@ fn sidecar_args(port: u16, app_data_dir: &Path, file_vault: bool, shop: Option<&
         app_data_dir.display().to_string(),
         "--no-pair-codes".into(),
     ];
+    args.push("--remote".into());
     if home_mode(app_data_dir) {
-        args.extend(["--remote".into(), "--lan".into()]);
+        args.push("--lan".into());
     }
     args.extend(["--onion".into(), "--proxy".into(), TOR_PROXY.into()]);
     if file_vault {
@@ -405,7 +407,8 @@ mod tests {
         assert!(has_flag(&args, "--proxy", TOR_PROXY), "{args:?}");
         assert!(has_flag(&args, "--zec-indexer", DEFAULT_ZEC_INDEXER), "{args:?}");
         assert!(!args.iter().any(|arg| arg == "--xmr-daemon"), "{args:?}");
-        assert!(!args.iter().any(|arg| arg == "--remote"), "onion mail waits for home-node mode: {args:?}");
+        assert!(args.iter().any(|arg| arg == "--remote"), "escrow and order mail use the store onion: {args:?}");
+        assert!(!args.iter().any(|arg| arg == "--lan"), "{args:?}");
         fs::write(dir.join(ZEC_INDEXER_FILE), "# local Zaino\nhttp://127.0.0.1:8137\n").unwrap();
         fs::write(dir.join(XMR_DAEMON_FILE), "http://127.0.0.1:38081\n").unwrap();
         let args = sidecar_args(18787, &dir, true, None);
