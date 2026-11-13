@@ -94,9 +94,9 @@ impl Node {
             "contentRating": crate::rating_name(record.as_ref().and_then(|store| store.rating)),
             "acceptsXmr": details.is_some_and(|d| d.accepts_xmr),
             "acceptsLightning": details.is_some_and(|d| d.accepts_lightning),
-            // Monero and escrow sales need the seller's node to run those
-            // rails for its own store; it does not yet.
-            "xmrAvailable": false,
+            "xmrAvailable": self.xmr.chain().is_some(),
+            // Escrow sales need the seller's node to run that rail for its
+            // own store; it does not yet.
             "escrowAvailable": false,
             "published": record.is_some(),
             // The seller has saved the storefront once; until then it is the default.

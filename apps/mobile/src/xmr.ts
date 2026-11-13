@@ -30,7 +30,8 @@ export type XmrSubaddress = { network: XmrNetwork; index: number; address: strin
 export type XmrStores = {
   network: XmrNetwork
   enabled: boolean
-  stores: { seller: string; acceptsXmr: boolean }[]
+  /** `own` is this node's own store. `problem` is why a store with Monero on would decline an order now. */
+  stores: { seller: string; own: boolean; acceptsXmr: boolean; problem: string | null }[]
 }
 /** What one Monero spend is allowed to do, exactly as the node enforces it. */
 export type XmrTerms = {
@@ -140,7 +141,7 @@ export function parseXmrStores(value: unknown): XmrStores {
   return {
     network: parseNetwork(r.network),
     enabled: r.enabled === true,
-    stores: stores.map(store => ({ seller: text(store.seller), acceptsXmr: store.acceptsXmr === true }))
+    stores: stores.map(store => ({ seller: text(store.seller), own: store.own === true, acceptsXmr: store.acceptsXmr === true, problem: textOrNull(store.problem) }))
   }
 }
 export function parseXmrTerms(value: unknown): XmrTerms {

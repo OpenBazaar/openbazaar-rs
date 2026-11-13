@@ -129,6 +129,39 @@ test('Settings can mint a pairing code for another browser', async ({ page }) =>
   await expect(page.getByText(/pairing\.token/)).toHaveCount(0)
 })
 
+test('Monero settings say how to turn it on when the node has no daemon', async ({ page }) => {
+  await page.goto('/')
+  await page.getByRole('button', { name: 'Settings', exact: true }).click()
+  await page.getByRole('button', { name: 'Monero', exact: true }).click()
+  await expect(page.getByRole('heading', { name: 'Monero is off on this node', exact: true })).toBeVisible()
+  await expect(page.getByText('ob-node serve --proxy socks5h://127.0.0.1:9050 --xmr-daemon http://127.0.0.1:38081', { exact: true })).toBeVisible()
+  await expect(page.getByText('the proxy is only for the XMR price')).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Stores that take Monero', exact: true })).toHaveCount(0)
+  await expect(page.getByRole('switch', { name: 'Marlow Goods' })).toHaveCount(0)
+})
+
+test('Monero settings switch your own store on, and say why orders are declined', async ({ page }) => {
+  const network = await (await page.request.get('/network')).json()
+  await page.route('**/network', route => route.fulfill({ json: { ...network, xmrBackend: { ...network.xmrBackend, backend: 'own-node' } } }))
+  let on = false
+  await page.route('**/xmr/stores', route => {
+    if (route.request().method() === 'PUT') on = route.request().postDataJSON().accept
+    return route.fulfill({ json: { network: 'stagenet', enabled: true, stores: [{ seller: 'Brook and Pine', own: true, acceptsXmr: on, problem: on ? 'Monero is off on this node. Start it with --xmr-daemon.' : null }] } })
+  })
+  await page.goto('/')
+  await page.getByRole('button', { name: 'Settings', exact: true }).click()
+  await page.getByRole('button', { name: 'Monero', exact: true }).click()
+  const own = page.getByRole('switch', { name: /^Brook and Pine/ })
+  await expect(own).not.toBeChecked()
+  await expect(page.getByText('Your store.', { exact: true })).toBeVisible()
+  await expect(page.getByText('A buyer who chooses Monero gets a subaddress and an XMR amount.')).toBeVisible()
+  await expect(page.getByText(/Monero orders are declined for now/)).toHaveCount(0)
+  await own.click()
+  await expect(own).toBeChecked()
+  expect(on).toBe(true)
+  await expect(page.getByRole('alert').filter({ hasText: 'Monero orders are declined for now. Monero is off on this node' })).toBeVisible()
+})
+
 test('Settings has no Zcash page on a mainnet node', async ({ page }) => {
   const network = await (await page.request.get('/network')).json()
   await page.route('**/network', route => route.fulfill({ json: { ...network, network: 'mainnet' } }))
@@ -138,4 +171,5 @@ test('Settings has no Zcash page on a mainnet node', async ({ page }) => {
   const settings = page.getByRole('navigation', { name: 'Settings', exact: true })
   await expect(settings.getByRole('button', { name: 'Lightning', exact: true })).toBeVisible()
   await expect(settings.getByRole('button', { name: 'Zcash', exact: true })).toHaveCount(0)
+  await expect(settings.getByRole('button', { name: 'Monero', exact: true })).toHaveCount(0)
 })

@@ -7,6 +7,7 @@ import {
   parseXmrBackend,
   parseXmrPayment,
   parseXmrRate,
+  parseXmrStores,
   parseXmrTerms,
   parseXmrWallet,
   railFor,
@@ -78,6 +79,22 @@ test("terms, wallet, backend and rate keep the node's values", () => {
   assert.throws(() => parseXmrBackend({ ...off, backend: "light-wallet" }), "a light-wallet backend does not exist");
   assert.equal(parseXmrRate(null), null);
   assert.deepEqual(parseXmrRate({ base: "XMR", satsPerXmr: 300000, decimals: 12, currencies: { USD: 180.5, EUR: "x" } }), { satsPerXmr: 300000, currencies: { USD: 180.5 } });
+});
+
+test("the stores list says which stores take Monero, and which is the node's own", () => {
+  const stores = parseXmrStores({
+    network: "stagenet",
+    enabled: true,
+    stores: [
+      { seller: "Brook and Pine", own: true, acceptsXmr: false, problem: "Monero is off on this node. Start it with --xmr-daemon." },
+      { seller: "Marlow Goods", acceptsXmr: true },
+      { seller: "Hale Paper", acceptsXmr: false },
+    ],
+  });
+  assert.equal(stores.enabled, true);
+  assert.deepEqual(stores.stores.map((store) => [store.seller, store.own, store.acceptsXmr]), [["Brook and Pine", true, false], ["Marlow Goods", false, true], ["Hale Paper", false, false]]);
+  assert.deepEqual(stores.stores.map((store) => store.problem), ["Monero is off on this node. Start it with --xmr-daemon.", null, null], "why the own store would decline a Monero order now");
+  assert.throws(() => parseXmrStores({ network: "testnet4", stores: [] }), "testnet4 is not a Monero network");
 });
 
 test("Monero is only a rail for direct pay to a store that accepts it", () => {
