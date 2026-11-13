@@ -413,6 +413,46 @@ fn a_followed_testnet_store_can_be_checked_out_with_escrow() {
 }
 
 #[test]
+fn a_followed_escrow_checkout_does_not_hold_the_catalog_lock() {
+    let chain = MockChain::new();
+    let seller = Peer::spawn_with(&chain, 1, |url| EscrowConfig { mailbox_url: Some(url), ..EscrowConfig::default() });
+    let listing = open_store(&seller.node);
+    seller.node.publish_store_bond("Brook and Pine").expect("the own store posts a testnet bond");
+    let vendor = seller.url.clone();
+    let buyer = Peer::spawn_with(&chain, 1, move |url| EscrowConfig {
+        mailbox_url: Some(url),
+        vendors: [("Brook and Pine".to_string(), vendor)].into_iter().collect(),
+        ..EscrowConfig::default()
+    });
+    let (status, follows) = request(&buyer.node, "POST", "/follows", &json!({ "url": seller.url }).to_string());
+    assert!(status.contains("200"), "{status} {follows}");
+    let body = json!({
+        "shipTo": ship_to(),
+        "packages": [{ "settlement": "escrow", "lines": [{ "listingHash": listing["hash"], "quantity": 1 }] }],
+    }).to_string();
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let writer_node = std::sync::Arc::clone(&buyer.node);
+    let writer_stop = std::sync::Arc::clone(&stop);
+    let writer = std::thread::spawn(move || {
+        while !writer_stop.load(std::sync::atomic::Ordering::Relaxed) {
+            drop(writer_node.catalog_mut());
+        }
+    });
+    let checkout_node = std::sync::Arc::clone(&buyer.node);
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(request(&checkout_node, "POST", "/checkout", &body));
+    });
+    let (status, value) = rx
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("checkout held the catalog while a replica refresh waited");
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    writer.join().unwrap();
+    assert!(status.contains("200"), "{status} {value}");
+    assert_eq!(value["orders"][0]["settlement"], "escrow");
+}
+
+#[test]
 fn a_store_on_another_node_takes_no_zcash_yet() {
     let pair = Pair::new();
     let zec = std::sync::Arc::new(openbazaar_zec::mock::MockChain::new(crate::network::NetworkMode::Testnet4.zcash()));
