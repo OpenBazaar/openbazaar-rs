@@ -1,13 +1,13 @@
 /// Desktop shell. The shop screens live in the Expo web export, not here.
 ///
 /// Opening the app starts its own `ob-node` on a loopback port it keeps across
-/// launches, then opens the shop window with that origin and the node's pairing token injected
-/// before the page runs. The token is set only on the app's own origin, so a
-/// page the webview might navigate to never sees it, and the node itself
-/// gives the token to no request. A menu-bar icon stays up with the process:
-/// choosing Open shows this same shop window, Open in browser signs a browser
-/// on this machine into that same shop, and Quit stops the node. Closing
-/// the shop window hides it and leaves the node running. A second launch
+/// launches, with `--local-shop` pointing at the bundled web export, then opens
+/// the shop window on that loopback origin. The page is the node's local shop
+/// (`ob-local-shop`), so it offers Continue on this computer instead of a pairing
+/// code; the pairing token stays in this process. A menu-bar icon stays up with
+/// the process: choosing Open shows this same shop window, Open in browser signs
+/// a browser on this machine into that same shop, and Quit stops the node.
+/// Closing the shop window hides it and leaves the node running. A second launch
 /// focuses the first window.
 ///
 /// `OB_DESKTOP_DATA_DIR=<absolute path>` runs a separate, disposable instance
@@ -73,32 +73,32 @@ fn separate_profile() -> Option<PathBuf> {
 
 fn start(app: AppHandle) {
     let profile = separate_profile();
-    let shop = shop_dir(&app);
+    let Some(shop) = shop_dir(&app) else {
+        return fail(&app, "The shop files are missing from this app.".into());
+    };
     let started = app_data_dir(&app)
-        .and_then(|dir| node::Sidecar::start(&dir, None, profile.is_some(), shop.as_deref()));
+        .and_then(|dir| node::Sidecar::start(&dir, None, profile.is_some(), Some(&shop)));
     let sidecar = match started {
         Ok(sidecar) => sidecar,
         Err(message) => return fail(&app, message),
     };
     let origin = sidecar.origin.clone();
-    let token = sidecar.token.clone();
     *app.state::<NodeState>().0.lock().unwrap() = Some(sidecar);
     tray::set_running(&app, true, Some(&origin));
-    if let Err(err) = open_main_window(&app, &origin, &token, profile.as_deref()) {
+    if let Err(err) = open_main_window(&app, &origin, profile.as_deref()) {
         fail(&app, format!("Could not open the shop window: {err}"));
     }
 }
 
-const APP_ORIGINS: &str =
-    r#"["tauri://localhost","http://tauri.localhost","https://tauri.localhost"]"#;
-
 fn open_main_window(
     app: &AppHandle,
     origin: &str,
-    token: &str,
     profile: Option<&std::path::Path>,
-) -> tauri::Result<()> {
-    let mut window = WebviewWindowBuilder::new(app, MAIN_WINDOW, WebviewUrl::default());
+) -> Result<(), String> {
+    let url: tauri::Url = node::shop_page_url(origin)?
+        .parse()
+        .map_err(|_| "The shop address is not on this machine.".to_string())?;
+    let mut window = WebviewWindowBuilder::new(app, MAIN_WINDOW, WebviewUrl::External(url));
     if let Some(dir) = profile {
         window = separate_storage(window, dir);
     }
@@ -108,10 +108,11 @@ fn open_main_window(
         .resizable(true)
         .background_color(tauri::window::Color(0x0b, 0x17, 0x24, 0xff))
         .initialization_script(format!(
-            "window.__OB_NODE_ORIGIN__ = {origin:?}; if ({APP_ORIGINS}.includes(window.location.origin)) {{ window.__OB_PAIR_TOKEN__ = {token:?}; {} }}",
+            "window.__OB_NODE_ORIGIN__ = {origin:?}; {}",
             build::init_script()
         ))
-        .build()?;
+        .build()
+        .map_err(|err| err.to_string())?;
     Ok(())
 }
 
@@ -121,7 +122,7 @@ fn home_node_mode(app: AppHandle) -> Result<bool, String> {
 }
 
 /// Save the choice and restart the node on the same port, so the window keeps
-/// its origin and token. Remote access runs only while the app is open.
+/// its loopback origin. Remote access runs only while the app is open.
 #[tauri::command]
 fn set_home_node_mode(app: AppHandle, on: bool) -> Result<bool, String> {
     let dir = app_data_dir(&app)?;
@@ -133,8 +134,8 @@ fn set_home_node_mode(app: AppHandle, on: bool) -> Result<bool, String> {
     if let Some(mut old) = slot.take() {
         old.stop();
     }
-    let shop = shop_dir(&app);
-    let started = node::Sidecar::start(&dir, port, separate_profile().is_some(), shop.as_deref())?;
+    let shop = shop_dir(&app).ok_or_else(|| "The shop files are missing from this app.".to_string())?;
+    let started = node::Sidecar::start(&dir, port, separate_profile().is_some(), Some(&shop))?;
     let origin = started.origin.clone();
     *slot = Some(started);
     tray::set_running(&app, true, Some(&origin));

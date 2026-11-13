@@ -262,6 +262,14 @@ fn loopback_port(origin: &str) -> Result<u16, String> {
     rest.parse().map_err(|_| "The shop address is not on this machine.".to_string())
 }
 
+/// The node's `--local-shop` page, which the desktop window and a browser on
+/// this machine both load. Not the bundled Tauri origin: that page has no
+/// `ob-local-shop` marker and cannot Continue without a pairing code.
+pub fn shop_page_url(origin: &str) -> Result<String, String> {
+    let _port = loopback_port(origin)?;
+    Ok(format!("{origin}/"))
+}
+
 pub fn open_url(url: &str) -> Result<(), String> {
     browser_command()
         .arg(url)
@@ -342,5 +350,8 @@ mod tests {
         assert!(accept_browser_url(origin, "http://evil.example/browser/cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\n", &token).is_none());
         assert!(loopback_port("http://127.0.0.1:56562").is_ok());
         assert!(loopback_port("http://evil.example:56562").is_err());
+        assert_eq!(shop_page_url(origin).unwrap(), "http://127.0.0.1:56562/");
+        assert!(shop_page_url("https://tauri.localhost").is_err());
+        assert!(shop_page_url("http://localhost:56562").is_err());
     }
 }
