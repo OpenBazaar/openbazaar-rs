@@ -264,7 +264,13 @@ impl FilterIndex {
                 self.covered = generation;
                 self.in_flight = None;
             }
-            Some(_) => {}
+            Some((_, from, false)) => {
+                // BIP157 can report synced without re-emitting the rescan
+                // range: the client was still catching up, or it ignored
+                // rescan_from. Drop in_flight so take_rescan can ask again.
+                self.in_flight = None;
+                self.rescan_from = Some(self.rescan_from.map_or(from, |queued| queued.min(from)));
+            }
             None if self.rescan_from.is_none() => self.covered = self.generation,
             None => {}
         }

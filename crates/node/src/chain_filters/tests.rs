@@ -225,6 +225,25 @@ fn a_new_script_is_rescanned_before_it_is_reported() {
 }
 
 #[test]
+fn a_rescan_that_syncs_without_filters_is_asked_again() {
+    let mut chain = TestChain::new();
+    for height in 1..=10 {
+        chain.mine(if height == 6 { vec![pay(&script(2), 3_000, 4)] } else { vec![] });
+    }
+    let mut index = FilterIndex::new(Network::Regtest, genesis(&chain));
+    index.watch([script(1)]);
+    assert!(scan(&mut index, &chain, 0).is_empty());
+
+    assert!(index.watch([script(2)]));
+    let from = index.take_rescan().unwrap();
+    index.synced();
+    assert!(!index.is_ready(&script(2)), "no filter in the rescan range arrived");
+    assert_eq!(index.take_rescan(), Some(from), "the rescan is asked again");
+    assert_eq!(scan(&mut index, &chain, from), [6]);
+    assert!(index.is_ready(&script(2)));
+}
+
+#[test]
 fn an_escrow_script_is_followed_from_the_height_asked_not_the_lookback() {
     let mut chain = TestChain::new();
     let deep = NEW_SCRIPT_LOOKBACK + 20;
