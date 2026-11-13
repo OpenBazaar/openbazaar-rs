@@ -7,6 +7,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { resolve, dirname, extname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { createSalesPreview } from './sales-preview.mjs'
 const app = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const ports = {
   ui: Number(process.env.OB_E2E_UI_PORT || 48173),
@@ -92,8 +93,10 @@ const NODE_ROUTES =
   /^\/(catalog|rates|network|wallet|pair|orders|checkout|addresses|labelers|content-labels|vendor-labels|listings|directory|follow|lock|unlock|setup|spend-tickets|stores|media|store|sales|follows|home|remote|ln|offers|coupons|xmr|zec)(\/|$)/
 
 function startUi(uiPort, nodePort, data) {
+  const preview = process.env.OB_SALES_PREVIEW_COUNT ? createSalesPreview(Number(process.env.OB_SALES_PREVIEW_COUNT)) : null
   const server = createServer(async (req, res) => {
     const path = new URL(req.url, 'http://localhost').pathname
+    if (preview && await preview(req, res, path)) return
     if (path.startsWith('/chain')) {
       res.writeHead(503)
       res.end('Chain integration is outside this UI test')

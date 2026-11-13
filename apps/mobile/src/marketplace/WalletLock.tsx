@@ -424,7 +424,7 @@ export function WalletLockPanel({ lock, purpose = "wallet" }: { lock: LockResour
   )
 }
 
-export function Dialog({ label, onCancel, children }: { label: string; onCancel: () => void; children: ReactNode }) {
+export function Dialog({ label, onCancel, children, className = '' }: { label: string; onCancel: () => void; children: ReactNode; className?: string }) {
   const dialog = useRef<HTMLDialogElement>(null)
   useEffect(() => {
     const previous = document.activeElement as HTMLElement | null
@@ -439,7 +439,7 @@ export function Dialog({ label, onCancel, children }: { label: string; onCancel:
   return (
     <dialog
       ref={dialog}
-      className='ob-pay-confirm'
+      className={`ob-pay-confirm ${className}`}
       aria-label={label}
       onCancel={e => {
         e.preventDefault()

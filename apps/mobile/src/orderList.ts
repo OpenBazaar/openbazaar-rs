@@ -1,8 +1,10 @@
 export type OrderListRow = {
   id: string; title: string; subtitle: string; status: string; amount: number;
   created: number; attention: boolean; closed: boolean; hint: string;
+  awaitingPayment?: boolean; paymentStatus?: string; fulfillmentStatus?: string;
+  itemSummary?: string; deliveryKind?: 'physical' | 'digital';
 }
-export type OrderFilter = 'all' | 'attention' | 'progress' | 'closed'
+export type OrderFilter = 'all' | 'attention' | 'awaiting' | 'progress' | 'closed'
 export type OrderSort = 'priority' | 'newest' | 'oldest' | 'highest' | 'lowest'
 export type OrderRange = 'all' | '7' | '30' | '90' | 'custom'
 export type OrderQuery = { filter: OrderFilter; search: string; sort: OrderSort; range: OrderRange; from: string; to: string }
@@ -22,14 +24,16 @@ export function selectOrders(index: ReturnType<typeof indexOrders>, query: Order
   const search = query.search.trim().toLocaleLowerCase()
   const from = query.range === 'custom' ? (query.from ? calendarDate(query.from) : -Infinity) : query.range === 'all' ? -Infinity : now - Number(query.range) * 86400000
   const to = query.range === 'custom' && query.to ? calendarDate(query.to, true) : Infinity
-  const counts = { all: 0, attention: 0, progress: 0, closed: 0 }
+  const counts = { all: 0, attention: 0, awaiting: 0, progress: 0, closed: 0 }
   const matching = index.filter(item => {
     if (item.time < from || item.time >= to || !item.search.includes(search)) return false
     counts.all++
     if (item.row.attention) counts.attention++
     if (item.row.closed) counts.closed++
-    if (!item.row.closed && !item.row.attention) counts.progress++
-    return query.filter === 'all' || (query.filter === 'attention' ? item.row.attention : query.filter === 'closed' ? item.row.closed : !item.row.closed && !item.row.attention)
+    if (item.row.awaitingPayment) counts.awaiting++
+    const progress = !item.row.closed && !item.row.attention && !item.row.awaitingPayment
+    if (progress) counts.progress++
+    return query.filter === 'all' || (query.filter === 'attention' ? item.row.attention : query.filter === 'closed' ? item.row.closed : query.filter === 'awaiting' ? item.row.awaitingPayment : progress)
   })
   matching.sort((a, b) => {
     let difference = 0
