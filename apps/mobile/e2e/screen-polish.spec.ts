@@ -80,9 +80,10 @@ for (const [width, dark] of [[320, false], [768, true], [1280, false], [1920, tr
     await expect(page.getByRole('heading', { name: 'Offers', exact: true })).toBeVisible()
     await capture(page, info, 'offers')
     await page.getByRole('navigation', { name: 'Sales views', exact: true }).getByRole('button', { name: 'Orders', exact: true }).click()
-    await page.getByRole('button', { name: 'Sale Hand-thrown stoneware mug', exact: true }).click()
+    await page.getByRole('button', { name: 'Ship order: Hand-thrown stoneware mug', exact: true }).click()
     await expect(page.getByRole('heading', { name: 'Ship this order', exact: true })).toBeVisible()
     await capture(page, info, 'sale-details')
+    await page.getByRole('button', { name: 'Back to sales', exact: true }).click()
 
     for (const label of ['Content filters', 'Addresses', 'Store labels', 'Home node', 'Lightning', 'Followed stores']) {
       await setting(page, label)

@@ -3,13 +3,14 @@ import type { CurrencyCode, RateTable } from "../catalog";
 import { EXTERNAL_TX_NOTE } from "../nodeWallet";
 import { fetchSales, fulfillSale, type Sale } from "../seller";
 import { useNodeResource } from "../useNodeResource";
-import { sameOrderSnapshot, salesRefreshInterval } from "../orderList";
+import { sameOrderSnapshot, salesRefreshInterval, type OrderListRow } from "../orderList";
 import { Empty, Money } from "./Marketplace";
 import { OfferInbox } from "./OfferInbox";
 import { PageHeading } from "./PageHeading";
 import { OrderWorkspace } from "./OrderWorkspace";
 import { InfoTip } from "./InfoTip";
 import { CopyAddress, CopyButton } from "./CopyAddress";
+
 
 /** Sales, polled while the node is a store. Calls `onNew` once for each sale that appears. */
 export function useSales(enabled: boolean, onNew: (sale: Sale) => void, viewingSales = true) {
@@ -47,10 +48,15 @@ function deliverySummary(sale: Sale): string {
   return `${quantity} ${quantity === 1 ? "item" : "items"} · ${delivery}`;
 }
 
-function FulfillForm({ sale, onDone }: { sale: Sale; onDone: (sale: Sale) => void }) {
+type FulfillmentDraft = { carrier: string; tracking: string; note: string; content: string };
+type Drafts = Map<string, FulfillmentDraft>;
+
+function FulfillForm({ sale, onDone, drafts }: { sale: Sale; onDone: (sale: Sale) => void; drafts: Drafts }) {
   const digital = sale.lines.some(line => line.kind === "digital");
   const physical = sale.lines.some(line => line.kind === "physical");
-  const [carrier, setCarrier] = useState(""), [tracking, setTracking] = useState(""), [note, setNote] = useState(""), [content, setContent] = useState("");
+  const initial = drafts.get(sale.id);
+  const [carrier, setCarrier] = useState(initial?.carrier ?? ""), [tracking, setTracking] = useState(initial?.tracking ?? ""), [note, setNote] = useState(initial?.note ?? ""), [content, setContent] = useState(initial?.content ?? "");
+  useEffect(() => { drafts.set(sale.id, { carrier, tracking, note, content }); }, [drafts, sale.id, carrier, tracking, note, content]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   async function submit(e: FormEvent) {
@@ -63,7 +69,9 @@ function FulfillForm({ sale, onDone }: { sale: Sale; onDone: (sale: Sale) => voi
     setBusy(true);
     setError("");
     try {
-      onDone(await fulfillSale(sale.id, { carrier, tracking, note, content }));
+      const updated = await fulfillSale(sale.id, { carrier, tracking, note, content });
+      drafts.delete(sale.id);
+      onDone(updated);
     } catch (err) {
       setError(err instanceof Error ? err.message : "The order could not be marked as sent.");
     } finally {
@@ -83,18 +91,40 @@ function FulfillForm({ sale, onDone }: { sale: Sale; onDone: (sale: Sale) => voi
   </form>;
 }
 
-function SaleDetail({ sale, rates, currency, onChange }: { sale: Sale; rates: RateTable; currency: CurrencyCode; onChange: (sale: Sale) => void }) {
+function SaleDetail({ sale, rates, currency, onChange, drafts }: { sale: Sale; rates: RateTable; currency: CurrencyCode; onChange: (sale: Sale) => void; drafts: Drafts }) {
   const physical = sale.lines.some(line => line.kind === "physical");
+  const paid = sale.status === "Paid";
   const received = sale.zcash ? `${sale.zcash.receivedZec} / ${sale.zcash.amountZec} ZEC` : `${sale.receivedSats.toLocaleString("en-US")} / ${sale.totalSats.toLocaleString("en-US")} sats`;
-  const confirmations = sale.confirmations ? ` · ${sale.confirmations} confirmation${sale.confirmations === 1 ? "" : "s"}` : "";
+  const pending = ["Awaiting payment", "Payment seen"].includes(sale.status);
+  const title = paid ? physical ? "Ready to ship" : "Ready for digital delivery" : sale.status === "Shipped" ? "Awaiting buyer confirmation" : sale.status === "Completed" ? "Order complete" : pending ? "Awaiting confirmed payment" : sale.status;
+  const description = paid ? "Payment confirmed. Prepare the delivery below." : sale.status === "Shipped" ? "The buyer can confirm receipt from their order." : sale.status === "Completed" ? "The buyer confirmed receipt." : pending ? "Keep this order on hold until payment is confirmed." : "Review the current order status before taking action.";
+  const destination = <>{sale.shipTo && <><h3>Delivery address</h3><p className="ob-sale-address">{sale.shipTo}</p></>}{sale.deliveryNote && <><h3>Buyer’s note</h3><p>{sale.deliveryNote}</p></>}</>;
   return <div className="ob-order-expanded ob-sale-detail">
-    <div className="ob-order-next"><span>Next step</span><h2>{sale.status === "Paid" ? physical ? "Ready to ship" : "Ready for digital delivery" : sale.status === "Shipped" ? "Awaiting buyer confirmation" : sale.status === "Completed" ? "Order complete" : ["Awaiting payment", "Payment seen"].includes(sale.status) ? "Awaiting confirmed payment" : sale.status}</h2><p>{sale.status === "Paid" ? "Payment is confirmed. Prepare the delivery details below." : sale.status === "Shipped" ? "The buyer can confirm receipt from their order." : sale.status === "Completed" ? "The buyer confirmed receipt. Delivery records remain available here." : ["Awaiting payment", "Payment seen"].includes(sale.status) ? "Keep this order on hold until the node confirms payment." : "Review the current order status before taking action."}</p></div>
-    <div className="ob-order-detail-grid"><div className="ob-order-primary">
-      {sale.status === "Paid" && <FulfillForm sale={sale} onDone={onChange}/>}
-      {sale.fulfillment && <section className="ob-order-delivery"><h3>Delivery record</h3><p>{[sale.fulfillment.carrier, sale.fulfillment.tracking].filter(Boolean).join(" · ") || (physical ? "Shipment recorded" : "Delivered digitally")}</p>{sale.fulfillment.note && <p>{sale.fulfillment.note}</p>}{sale.fulfillment.content && <p className="ob-sale-content">{sale.fulfillment.content}</p>}</section>}
-      {sale.zcash?.expired ? <p className="ob-form-error" role="alert">The Zcash quote for this sale ran out before it was paid in full, so the sale stays unpaid. Do not ship it. What arrives at the address is still counted above.</p> : ["Awaiting payment", "Payment seen"].includes(sale.status) && !sale.fulfillment ? <p className="ob-page-intro">{paymentSent(sale) ? "Payment sent, waiting for confirmation. " : ""}Fulfill once the payment confirms.</p> : null}
-      <details className="ob-order-record"><summary>Payment & transaction records</summary><dl className="ob-sale-facts"><div><dt>Received</dt><dd>{received}{confirmations}</dd></div><div><dt>{sale.zcash ? "Zcash address" : "Payment address"}</dt><dd><CopyAddress value={sale.zcash?.address ?? sale.address} label={sale.zcash ? "Copy zcash address" : "Copy payment address"}/></dd></div>{sale.sentTxid && !sale.txids.includes(sale.sentTxid) && <div><dt>Buyer reported transaction</dt><dd><TxId txid={sale.sentTxid}/></dd></div>}{sale.txids.map(txid => <div key={txid}><dt>Transaction</dt><dd><TxId txid={txid}/></dd></div>)}</dl></details>
-    </div><aside className="ob-order-facts-panel"><h3>Order summary</h3><ul>{sale.lines.map((line, index) => <li key={`${line.listingHash}-${index}`}><span>{line.title}</span><span>× {line.quantity}</span></li>)}</ul><dl><div><dt>Items</dt><dd><Money sats={sale.itemsSats} rates={rates} currency={currency}/></dd></div><div><dt>Shipping</dt><dd><Money sats={sale.shippingSats} rates={rates} currency={currency}/></dd></div><div><dt>Total</dt><dd><Money sats={sale.totalSats} rates={rates} currency={currency}/></dd></div></dl>{sale.shipTo && <section><h3>Ship to</h3><p className="ob-sale-address">{sale.shipTo}</p></section>}{sale.deliveryNote && <section><h3>Buyer’s note</h3><p>{sale.deliveryNote}</p></section>}<details className="ob-order-record"><summary>Order reference</summary><code>{sale.id}</code></details></aside></div>
+    <div className="ob-order-next"><h2>{title}</h2><p>{description}</p></div>
+    <div className="ob-order-detail-grid">
+      <div className="ob-order-primary">
+        {paid && (sale.shipTo || sale.deliveryNote) && <section className="ob-sale-delivery-context">{destination}</section>}
+        {paid && <FulfillForm sale={sale} onDone={onChange} drafts={drafts}/>}
+        {sale.fulfillment && <section className="ob-order-delivery"><h3>Delivery record</h3><p>{[sale.fulfillment.carrier, sale.fulfillment.tracking].filter(Boolean).join(" · ") || (physical ? "Shipment recorded" : "Delivered digitally")}</p>{sale.fulfillment.note && <p>{sale.fulfillment.note}</p>}{sale.fulfillment.content && <p className="ob-sale-content">{sale.fulfillment.content}</p>}</section>}
+        {sale.zcash?.expired ? <p className="ob-form-error" role="alert">The Zcash quote for this sale ran out before it was paid in full, so the sale stays unpaid. Do not ship it. What arrives at the address is still counted in the payment records.</p> : pending && !sale.fulfillment && <div className="ob-sale-payment-hold"><strong>{sale.status === "Payment seen" ? "Payment detected" : sale.sentTxid ? "Buyer reported payment" : "Payment outstanding"}</strong><p>{paymentSent(sale) ? "Wait for confirmation before fulfilling this order." : "The buyer has not completed payment. No delivery action is needed yet."}</p></div>}
+        <details className="ob-order-record">
+          <summary>Payment & transaction records</summary>
+          <dl className="ob-sale-facts">
+            <div><dt>Received</dt><dd>{received} · {sale.confirmations} confirmations</dd></div>
+            <div><dt>{sale.zcash ? "Zcash address" : "Payment address"}</dt><dd><CopyAddress value={sale.zcash?.address ?? sale.address} label={sale.zcash ? "Copy zcash address" : "Copy payment address"}/></dd></div>
+            {sale.sentTxid && !sale.txids.includes(sale.sentTxid) && <div><dt>Buyer reported transaction</dt><dd><TxId txid={sale.sentTxid}/></dd></div>}
+            {sale.txids.map(txid => <div key={txid}><dt>Transaction</dt><dd><TxId txid={txid}/></dd></div>)}
+          </dl>
+        </details>
+      </div>
+      <aside className="ob-order-facts-panel">
+        <h3>Order summary</h3>
+        <ul>{sale.lines.map((line, index) => <li key={`${line.listingHash}-${index}`}><span>{line.title}</span><span>× {line.quantity}</span></li>)}</ul>
+        <dl><div><dt>Items</dt><dd><Money sats={sale.itemsSats} rates={rates} currency={currency}/></dd></div><div><dt>Shipping</dt><dd><Money sats={sale.shippingSats} rates={rates} currency={currency}/></dd></div><div><dt>Total</dt><dd><Money sats={sale.totalSats} rates={rates} currency={currency}/></dd></div></dl>
+        {!paid && (sale.shipTo || sale.deliveryNote) && <details className="ob-order-record"><summary>Delivery details</summary>{destination}</details>}
+        <details className="ob-order-record"><summary>Order reference</summary><code>{sale.id}</code></details>
+      </aside>
+    </div>
   </div>;
 }
 
@@ -104,10 +134,36 @@ export function Sales({ sales, rates, currency, onSeen }: { sales: SalesResource
   const seen = useRef(onSeen);
   seen.current = onSeen;
   useEffect(() => { if (sales.data) seen.current?.(sales.data); }, [sales.data]);
+  // Unsent fulfillment details stay in memory while the console is mounted.
+  const drafts = useRef<Drafts>(new Map()).current;
+  const latest = useRef(list);
+  latest.current = list;
+  const rows = list.map((sale): OrderListRow => {
+    const physical = sale.lines.some(line => line.kind === "physical");
+    const confirmed = ["Paid", "Shipped", "Completed"].includes(sale.status);
+    return {
+      id: sale.id, title: sale.lines.map(line => line.title).join(", "), subtitle: "", amount: sale.totalSats, created: sale.created,
+      itemSummary: sale.lines.map(line => `${line.quantity} × ${line.title}`).join(", "), deliveryKind: physical ? "physical" : "digital",
+      attention: sale.status === "Paid", awaitingPayment: ["Awaiting payment", "Payment seen"].includes(sale.status), closed: sale.status === "Completed",
+      status: sale.status,
+      paymentStatus: confirmed ? "Paid" : sale.status === "Payment seen" ? "Confirming" : sale.status === "Awaiting payment" ? (sale.zcash ? Number(sale.zcash.receivedZec) > 0 : sale.receivedSats > 0) ? "Partial" : sale.sentTxid ? "Reported" : "Unpaid" : "Review",
+      fulfillmentStatus: sale.status === "Paid" ? "Unfulfilled" : sale.status === "Shipped" ? physical ? "Shipped" : "Delivered" : sale.status === "Completed" ? "Completed" : "On hold",
+      hint: deliverySummary(sale)
+    };
+  });
   return <section className="ob-orders ob-sales ob-order-center">
-    <PageHeading title="Sales" description="Manage payments, fulfill orders and track completed deliveries." action={<button aria-label="Refresh sales" className="ob-secondary" disabled={sales.loading} onClick={() => void sales.refresh()}>Refresh</button>}/>
+    <PageHeading title="Sales" action={<button aria-label="Refresh sales" className="ob-secondary" disabled={sales.loading} onClick={() => void sales.refresh()}>Refresh</button>}/>
     <nav className="ob-sales-views" aria-label="Sales views"><button aria-current={view === "orders" ? "page" : undefined} onClick={() => setView("orders")}>Orders</button><button aria-current={view === "offers" ? "page" : undefined} onClick={() => setView("offers")}>Offers</button></nav>
     {sales.error && <p className="ob-form-error" role="alert">{sales.error}</p>}
-    {view === "offers" ? <><h2 className="ob-offers-title">Offers</h2><OfferInbox showEmpty/></> : sales.loading && !sales.data ? <p role="status">Loading sales…</p> : !list.length ? (sales.error ? null : <Empty icon="paper" title="No sales yet" text="Orders will appear here when buyers purchase from your store."/>) : <OrderWorkspace seller rates={rates} currency={currency} rows={list.map(sale => ({ id: sale.id, title: sale.lines.map(line => line.title).join(", "), subtitle: "", amount: sale.totalSats, created: sale.created, attention: sale.status === "Paid", closed: sale.status === "Completed", status: sale.status === "Paid" ? sale.lines.some(line => line.kind === "physical") ? "Ready to ship" : "Ready to deliver" : sale.status, hint: deliverySummary(sale) }))} renderDetail={id => <SaleDetail sale={list.find(sale => sale.id === id)!} rates={rates} currency={currency} onChange={() => void sales.refresh()}/>}/>}
+    {view === "offers" ? <><h2 className="ob-offers-title">Offers</h2><OfferInbox showEmpty/></>
+      : sales.loading && !sales.data ? <p role="status">Loading sales…</p>
+      : !list.length ? (sales.error ? null : <Empty icon="paper" title="No sales yet" text="Orders will appear here when buyers purchase from your store."/>)
+      : <OrderWorkspace seller rates={rates} currency={currency} rows={rows}
+          renderDetail={id => <SaleDetail sale={list.find(sale => sale.id === id)!}
+            rates={rates} currency={currency} drafts={drafts}
+            onChange={updated => {
+              sales.update(latest.current.map(item => item.id === updated.id ? updated : item));
+              void sales.refresh();
+            }}/>} />}
   </section>;
 }

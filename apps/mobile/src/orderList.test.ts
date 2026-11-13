@@ -9,7 +9,7 @@ const select = (change: Partial<OrderQuery> = {}) => selectOrders(indexOrders(ro
 
 test('1,000 orders produce bounded, complete pages without duplication', () => {
   const selected = select()
-  assert.deepEqual(selected.counts, { all: 1000, attention: 250, progress: 0, closed: 750 })
+  assert.deepEqual(selected.counts, { all: 1000, attention: 250, awaiting: 0, progress: 0, closed: 750 })
   const ids = []
   for (let page = 0; page < 40; page++) {
     const result = orderPage(selected.rows, page, 25, null)
@@ -27,6 +27,18 @@ test('search finds an order outside the first page and updates scoped counts', (
   assert.equal(select({ search: '00000999' }).counts.all, 1)
   assert.equal(select({ search: 'missing' }).rows.length, 0)
   assert.equal(select({ filter: 'attention' }).rows.length, 250)
+})
+
+test('merchant payment and fulfillment queues do not overlap', () => {
+  const index = indexOrders([
+    { ...rows[0], id: 'unpaid', attention: false, closed: false, awaitingPayment: true },
+    { ...rows[1], id: 'ready', attention: true, closed: false },
+    { ...rows[2], id: 'shipped', attention: false, closed: false },
+    { ...rows[3], id: 'done', attention: false, closed: true }
+  ])
+  const result = selectOrders(index, query, now)
+  assert.deepEqual(result.counts, { all: 4, attention: 1, awaiting: 1, progress: 1, closed: 1 })
+  assert.deepEqual(selectOrders(index, { ...query, filter: 'awaiting' }, now).rows.map(row => row.id), ['unpaid'])
 })
 
 test('priority puts the oldest actionable orders first; other sorts use date or total', () => {

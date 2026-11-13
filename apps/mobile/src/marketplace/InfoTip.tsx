@@ -30,7 +30,13 @@ export function InfoTip({ label, children }: { label: string; children: ReactNod
     function dismiss(event: PointerEvent) {
       if (!trigger.current?.contains(event.target as Node) && !tip.current?.contains(event.target as Node)) setOpen(false)
     }
-    function escape(event: KeyboardEvent) { if (event.key === 'Escape') setOpen(false) }
+    function escape(event: KeyboardEvent) {
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        event.stopPropagation()
+        setOpen(false)
+      }
+    }
     place()
     window.addEventListener('resize', place)
     window.addEventListener('scroll', place, true)
@@ -47,6 +53,6 @@ export function InfoTip({ label, children }: { label: string; children: ReactNod
     <button ref={trigger} type="button" className="ob-info-tip-trigger" aria-label={label} aria-describedby={open ? id : undefined} onPointerEnter={event => { if (event.pointerType !== 'touch') show() }} onPointerLeave={leave} onFocus={show} onBlur={() => setOpen(false)} onClick={show}>
       <svg viewBox="0 0 20 20" width="16" height="16" fill="none" stroke="currentColor" aria-hidden="true"><circle cx="10" cy="10" r="7.25" strokeWidth="1.4"/><path d="M10 9v5" strokeWidth="1.5"/><circle cx="10" cy="6.2" r=".9" fill="currentColor" stroke="none"/></svg>
     </button>
-    {open && createPortal(<div ref={tip} id={id} role="tooltip" className="ob-info-tip" style={position} onPointerEnter={show} onPointerLeave={leave}>{children}</div>, document.body)}
+    {open && createPortal(<div ref={tip} id={id} role="tooltip" className="ob-info-tip" style={position} onPointerEnter={show} onPointerLeave={leave}>{children}</div>, trigger.current?.closest('dialog') ?? document.body)}
   </>
 }
