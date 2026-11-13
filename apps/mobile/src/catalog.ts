@@ -1175,7 +1175,7 @@ function parseEscrow(value: unknown): EscrowReceipt | null {
   if (value == null) return null;
   const escrow = recordOf(value, "The shop sent unreadable escrow terms.");
   const moderator = escrow.moderator && typeof escrow.moderator === "object" ? (escrow.moderator as Record<string, unknown>) : null;
-  // Awaiting vendor terms has no funding address yet. It stays read-only.
+  // Awaiting vendor terms has no funding address yet. Once terms arrive, the shop shows QR and pay-from-node.
   return {
     ...(moderator && typeof moderator.id === "string" ? { moderator: { id: moderator.id, name: typeof moderator.name === "string" ? moderator.name : "", builtIn: moderator.builtIn === true } } : {}),
     fundingSats: typeof escrow.fundingSats === "number" ? requiredNumber(escrow.fundingSats) : 0,

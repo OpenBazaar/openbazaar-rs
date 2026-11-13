@@ -134,7 +134,7 @@ export function StoreSetup({ profile, onSaved, onViewStore }: { profile: SellerP
           <li className={profile.xmrAvailable ? "" : "is-off"}><strong className="ob-rail"><RailMark rail="monero" />Monero</strong><span>{profile.xmrAvailable ? "Your store can take Monero from Monero settings. Buyers pay a subaddress that your node watches." : "Start the node with --xmr-daemon, then turn it on in Monero settings."}</span></li>
           <li className={profile.acceptsLightning ? "is-on" : "is-off"}><strong className="ob-rail"><RailMark rail="lightning" />Lightning</strong><span>{profile.acceptsLightning ? "Buyers can pay a Lightning invoice. Direct pay only." : "Turn it on in Lightning settings. It stays off on mainnet until connections run over Tor."}</span></li>
           <li className="is-off"><strong className="ob-rail"><RailMark rail="zcash" />Zcash</strong><span>Your store can take Zcash from Zcash settings, on testnet4. Buyers on other nodes pay a shielded address that your node watches.</span></li>
-          <li className={profile.escrowAvailable ? "" : "is-off"}><strong>Moderated escrow</strong><span>{profile.escrowAvailable ? "Buyers can choose a moderator." : "Merchant escrow setup is not available in this client. New-seller orders that require escrow cannot be accepted yet."}</span></li>
+          <li className={profile.escrowAvailable ? "" : "is-off"}><strong>Moderated escrow</strong><span>{profile.escrowAvailable ? "Buyers can choose a moderator. Your listings take escrow on testnet4." : "Moderated escrow runs on the test network only."}</span></li>
         </ul>
       </fieldset>
       {profile.setUp ? <fieldset className="ob-store-section">

@@ -314,11 +314,15 @@ export function NativeOrderPayment({
   const order = resource.data ?? initial,
     net = network.data?.network,
     orderNet = order.network ?? order.payment?.network
-  const due = amountDue(order.totalSats, order.receivedSats),
-    kind = payKind(order),
+  const kind = payKind(order),
+    due =
+      kind === 'escrow' && order.escrow?.fundingSats
+        ? order.escrow.fundingSats
+        : amountDue(order.totalSats, order.receivedSats),
     monero = moneroDue(order.payment),
     zcash = zcashDue(order.payment),
     escrow = kind === 'escrow',
+    payAddress = escrow ? order.escrow?.address : order.payment?.address,
     offerBitcoinPay = canOfferBitcoinPay(order, kind, due),
     directWarning = directPayWarning(order, kind)
   const [busy, setBusy] = useState(false),
@@ -338,10 +342,10 @@ export function NativeOrderPayment({
     dueSats: due,
     sending: order.paying || busy,
     payTxid: order.payTxid,
-    wallet: kind === 'btc' ? wallet.data?.balance : null
+    wallet: kind === 'btc' || kind === 'escrow' ? wallet.data?.balance : null
   })
   const insufficient = !!view.balance
-  const mismatch = kind === 'btc' && !!net && (orderNet !== net || wallet.data?.network !== net)
+  const mismatch = (kind === 'btc' || kind === 'escrow') && !!net && (orderNet !== net || wallet.data?.network !== net)
   const disabled =
     !offerBitcoinPay ||
     busy ||
@@ -451,8 +455,12 @@ export function NativeOrderPayment({
         </Text>
       ) : null}
       {directWarning ? <Text style={s.error}>{directWarning}</Text> : null}
-      {escrow ? (
-        <Text style={s.body}>Escrow status is read-only in this client.</Text>
+      {escrow && !offerBitcoinPay ? (
+        <Text style={s.body}>
+          {order.status === ORDER_STATUS.awaitingTerms
+            ? 'Waiting for the seller to name the escrow address and amounts. You can pay from this node or another wallet once those terms arrive.'
+            : 'Track this escrow here. Fund it when the seller’s terms name an address.'}
+        </Text>
       ) : kind === 'xmr' ? (
         <>
           {view.progress ? <Text style={s.body}>{view.progress}</Text> : null}
@@ -575,11 +583,11 @@ export function NativeOrderPayment({
                 <Text style={s.body}>{view.balance.message}</Text>
               )}
               <Action label='Open node wallet' onPress={onWallet} />
-              {order.payment?.address && !mismatch && (
+              {payAddress && !mismatch && (
                 <>
                   <Text style={s.section}>Pay from another wallet</Text>
-                  <Qr value={bitcoinUri(order.payment.address, due)} />
-                  <Copy label='Payment address' value={order.payment.address} />
+                  <Qr value={bitcoinUri(payAddress, due)} />
+                  <Copy label='Payment address' value={payAddress} />
                   <Copy label='Amount in BTC' value={bitcoinAmount(due)} />
                 </>
               )}

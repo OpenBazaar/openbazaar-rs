@@ -97,7 +97,7 @@ for (const [width, height] of widths) {
     await page.setViewportSize({ width, height })
     let list = [builtIn]
     const calls: unknown[] = []
-    await page.route('**/store/profile', route => route.fulfill({ json: { storeKey: '34'.repeat(32), role: 'seller', name: 'Brook and Pine', region: 'Portland', setUp: true, published: true, network: 'testnet4', escrowAvailable: false, shipsTo: ['US'] } }))
+    await page.route('**/store/profile', route => route.fulfill({ json: { storeKey: '34'.repeat(32), role: 'seller', name: 'Brook and Pine', region: 'Portland', setUp: true, published: true, network: 'testnet4', escrowAvailable: true, shipsTo: ['US'] } }))
     await page.route('**/moderators', route => {
       if (route.request().method() === 'POST') {
         const body = route.request().postDataJSON()

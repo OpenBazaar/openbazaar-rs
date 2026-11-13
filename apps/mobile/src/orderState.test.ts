@@ -61,10 +61,12 @@ test('a direct order to a store on another node warns the buyer until it is paid
   }
 })
 
-test('escrow status never offers the bitcoin pay button', () => {
+test('escrow can be funded from the node wallet once terms name an address', () => {
   const escrow = { ...bitcoin, settlement: 'escrow', escrow: { stage: 'offered' }, status: ORDER_STATUS.awaitingFunding }
   assert.equal(payKind(escrow), 'escrow')
-  assert.equal(canOfferBitcoinPay(escrow, payKind(escrow), 1000), false)
+  assert.equal(canOfferBitcoinPay(escrow, payKind(escrow), 1000), true)
+  assert.equal(canOfferBitcoinPay({ ...escrow, payTxid: 'ab' }, payKind(escrow), 1000), false)
+  assert.equal(canOfferBitcoinPay({ ...escrow, status: ORDER_STATUS.awaitingTerms }, payKind({ ...escrow, status: ORDER_STATUS.awaitingTerms }), 1000), false)
   assert.equal(payKind({ ...bitcoin, status: ORDER_STATUS.awaitingTerms }), 'escrow')
 })
 

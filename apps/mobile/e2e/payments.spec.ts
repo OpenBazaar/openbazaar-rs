@@ -533,12 +533,48 @@ test('network mismatch and escrow are read-only', async ({ page }) => {
   await page.clock.fastForward(13000)
   await expect(
     page.getByText(
-      'Escrow payment is not available here yet. You can track this order’s status here.'
+      'Waiting for the seller to name the escrow address and amounts. You can pay from this node or another wallet once those terms arrive.'
     )
   ).toBeVisible()
   await expect(
     page.getByRole('button', { name: 'Pay from your node wallet', exact: true })
   ).toHaveCount(0)
+})
+
+test('escrow awaiting funding can be paid from the node or another wallet', async ({ page }) => {
+  const { id, order } = await checkout(page)
+  await fundedUi(page)
+  const state = {
+    ...order,
+    id,
+    created: 1,
+    network: 'testnet4',
+    settlement: 'escrow',
+    status: 'Awaiting funding',
+    receivedSats: 0,
+    confirmations: 0,
+    txids: [],
+    paying: false,
+    payment: null,
+    escrow: {
+      fundingSats: 18000,
+      timeoutHeight: 1,
+      address: 'tb1qtestescrow000000000000000000000000000',
+      outpoint: '',
+      signaturesRequired: 2
+    }
+  }
+  await page.route(`**/orders/${id}`, route => route.fulfill({ json: state }))
+  await page.route('**/orders', route => route.fulfill({ json: { orders: [state] } }))
+  await page.clock.install()
+  const walletLoaded = page.waitForResponse(r => r.url().endsWith('/wallet'))
+  await page.reload()
+  await (await walletLoaded).finished()
+  await page.getByRole('button', { name: 'Your orders', exact: true }).click()
+  await page.getByRole('button', { name: 'Order from Marlow Goods', exact: true }).click()
+  await expect(page.getByRole('button', { name: 'Pay from your node wallet', exact: true })).toBeVisible()
+  await page.getByText('Pay from another wallet', { exact: true }).click()
+  await expect(page.getByText('tb1qtestescrow000000000000000000000000000')).toBeVisible()
 })
 
 test('a multi-seller checkout submits one separate pay request per seller', async ({

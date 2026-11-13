@@ -95,9 +95,7 @@ impl Node {
             "acceptsXmr": details.is_some_and(|d| d.accepts_xmr),
             "acceptsLightning": details.is_some_and(|d| d.accepts_lightning),
             "xmrAvailable": self.xmr.chain().is_some(),
-            // Escrow sales need the seller's node to run that rail for its
-            // own store; it does not yet.
-            "escrowAvailable": false,
+            "escrowAvailable": self.network == crate::network::NetworkMode::Testnet4,
             "published": record.is_some(),
             // The seller has saved the storefront once; until then it is the default.
             "setUp": profile["setUp"] == true,

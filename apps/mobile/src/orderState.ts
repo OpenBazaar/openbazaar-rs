@@ -72,7 +72,10 @@ export function canOfferBitcoinPay(
   kind: PayKind,
   dueSats: number
 ): boolean {
-  return kind === 'btc' && order.status === ORDER_STATUS.awaitingPayment && dueSats > 0 && !order.payTxid
+  if (dueSats <= 0 || order.payTxid) return false
+  if (kind === 'btc') return order.status === ORDER_STATUS.awaitingPayment
+  if (kind === 'escrow') return order.status === ORDER_STATUS.awaitingFunding
+  return false
 }
 
 /** What a buyer is told before paying a store on another node directly. It is the same for every store: the node cannot check a seller's history. */
