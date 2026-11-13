@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
 import { networkInfo, networkStatus } from './networkInfo.ts'
-import { connectionRows, type ConnectionInfo } from './walletConnection.ts'
+import { connectionRows, privacyStatus, type ConnectionInfo } from './walletConnection.ts'
 
 const txid = 'a'.repeat(64)
 
@@ -130,4 +130,38 @@ test('connection rows name the source, the proxy result, and what a server sees'
   })).find(row => row.label === 'Proxy')
   assert.match(closed?.value ?? '', /did not answer/)
   assert.match(closed?.value ?? '', /Start Tor/)
+})
+
+test('the shop banner names Tor when the proxy did not answer', () => {
+  const failed = walletNetwork({
+    proxy: 'socks5h://127.0.0.1:9050',
+    proxyReachable: false,
+    chainBackend: {
+      backend: 'compact-filters',
+      privacy: 'private',
+      peers: null,
+      scannedHeight: null,
+      syncing: true,
+      error: 'Tor is not listening on 127.0.0.1:9050. Start Tor, then restart the node.',
+      fallbackActive: false
+    }
+  })
+  assert.equal(privacyStatus(failed), 'Tor is not running')
+  assert.equal(privacyStatus(walletNetwork({ proxy: 'socks5h://127.0.0.1:9050', proxyReachable: true })), '')
+  assert.equal(
+    privacyStatus(walletNetwork({
+      proxy: 'socks5h://127.0.0.1:9050',
+      proxyReachable: true,
+      chainBackend: {
+        backend: 'compact-filters',
+        privacy: 'private',
+        peers: null,
+        scannedHeight: null,
+        syncing: false,
+        error: 'peer timed out',
+        fallbackActive: false
+      }
+    })),
+    'Chain transport failed'
+  )
 })

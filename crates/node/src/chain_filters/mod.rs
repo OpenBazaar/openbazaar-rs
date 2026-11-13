@@ -17,7 +17,7 @@ pub(crate) mod store;
 #[cfg(test)]
 mod tests;
 
-use std::net::SocketAddr;
+use std::net::{SocketAddr, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -83,6 +83,13 @@ impl FilterConfig {
     }
 }
 
+/// Whether something accepts TCP on the proxy address. A closed port is Tor
+/// down; the filter client is not started, so the UI does not wait out a
+/// SOCKS handshake.
+fn proxy_listening(proxy: SocketAddr) -> bool {
+    TcpStream::connect_timeout(&proxy, Duration::from_millis(400)).is_ok()
+}
+
 /// A recent block on each network. A wallet that has never synced starts its scan after it.
 pub(crate) fn default_start(network: Network) -> BlockId {
     let (height, hash) = match network {
@@ -114,6 +121,9 @@ pub(crate) struct Shared {
     last_contact: Mutex<Option<Instant>>,
     /// A peer finished its handshake, and the client has not said since that it has no connection.
     peer_up: AtomicBool,
+    /// Tor was down at start, so the filter client was never spawned. Public
+    /// fallback must not retry the same dead proxy.
+    proxy_down: AtomicBool,
     last_error: Mutex<Option<String>>,
     fee: Mutex<Option<(f64, Instant)>>,
     wake: Notify,
@@ -251,6 +261,7 @@ impl FilterChain {
                 requester: Mutex::new(None),
                 last_contact: Mutex::new(None),
                 peer_up: AtomicBool::new(false),
+                proxy_down: AtomicBool::new(false),
                 last_error: Mutex::new(None),
                 fee: Mutex::new(None),
                 wake: Notify::new(),
@@ -280,6 +291,9 @@ impl FilterChain {
         let Some(started) = *self.started.lock().unwrap_or_else(|err| err.into_inner()) else {
             return false;
         };
+        if self.shared.proxy_down.load(Ordering::Relaxed) {
+            return false;
+        }
         let last = self
             .shared
             .last_contact
@@ -424,6 +438,16 @@ impl ChainSource for FilterChain {
             );
             *started = Some(Instant::now());
             return Ok(());
+        }
+        if let Some(proxy) = self.config.proxy {
+            if !proxy_listening(proxy) {
+                self.shared.set_error(format!(
+                    "Tor is not listening on {proxy}. Start Tor, then restart the node."
+                ));
+                self.shared.proxy_down.store(true, Ordering::Relaxed);
+                *started = Some(Instant::now());
+                return Ok(());
+            }
         }
         self.runtime
             .spawn(driver::run(self.shared.clone(), self.config.clone()));
