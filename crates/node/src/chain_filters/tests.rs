@@ -1,4 +1,4 @@
-use std::net::ToSocketAddrs;
+use std::net::{TcpListener, ToSocketAddrs};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -448,6 +448,28 @@ fn a_public_filter_peer_is_not_dialed_without_a_proxy() {
     let status = filters.status();
     assert!(status.reveals.contains("not contacted"), "{}", status.reveals);
     assert!(status.peers.is_none(), "the filter client started");
+}
+
+#[test]
+fn a_dead_tor_proxy_does_not_start_the_filter_client() {
+    let proxy = {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+        addr
+    };
+    let mut config = FilterConfig::public(Network::Testnet4);
+    config.proxy = Some(proxy);
+    let filters = FilterChain::new(config).unwrap();
+    let dir = TempDir::new();
+    let started = Instant::now();
+    filters.open(store(&dir.0)).unwrap();
+    assert!(started.elapsed() < Duration::from_millis(800), "the dead proxy was waited on");
+    let status = filters.status();
+    let err = status.error.as_deref().unwrap_or("");
+    assert!(err.contains("not listening"), "{err}");
+    assert!(status.peers.is_none(), "the filter client started");
+    assert!(!filters.unreachable_for(Duration::from_secs(0)));
 }
 
 #[test]

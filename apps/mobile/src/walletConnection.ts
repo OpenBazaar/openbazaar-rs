@@ -16,6 +16,16 @@ export type ConnectionInfo = {
 
 export type ConnectionRow = { label: string; value: string }
 
+/** Banner warning only. The connection card says what the proxy did and what to do next. */
+export function privacyStatus(info: ConnectionInfo & { privacyWarning?: string | null }): string {
+  const backend = info.chainBackend
+  if (info.proxyReachable === false) return 'Tor is not running'
+  if (backend?.fallbackActive) return 'Public fallback active'
+  if (backend?.error) return 'Chain transport failed'
+  if (info.privacyWarning && !info.proxy) return 'Private route unavailable'
+  return ''
+}
+
 function proxyHost(proxy: string): string {
   const host = proxy.replace(/^socks5h:\/\//, '').replace(/^socks5:\/\//, '')
   return /^[A-Za-z0-9.:[\]-]+$/.test(host) ? host : 'the configured proxy'

@@ -95,16 +95,7 @@ function chainBackend(value: unknown): ChainBackend | null {
     fallbackActive: backend.fallbackActive === true
   }
 }
-export { connectionRows, type ConnectionRow } from './walletConnection'
-
-/** Banner warning only. The connection card says what the proxy did and what to do next. */
-export function privacyStatus(info: NetworkInfo): string {
-  const backend = info.chainBackend
-  if (backend?.fallbackActive) return 'Public fallback active'
-  if (backend?.error) return 'Chain transport failed'
-  if (info.privacyWarning && !info.proxy) return 'Private route unavailable'
-  return ''
-}
+export { connectionRows, privacyStatus, type ConnectionRow } from './walletConnection'
 export async function fetchNetwork(): Promise<NetworkInfo> {
   const r = record(await openJson('/network'))
   return {

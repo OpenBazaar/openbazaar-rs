@@ -15,6 +15,17 @@ use std::time::{Duration, Instant};
 /// node keeps each network's keys in `<data dir>/<network>/`.
 pub const NETWORK: &str = "testnet4";
 
+/// Local Tor. Compact filters and public indexers go through this so they
+/// never see this machine's IP. 9150 is Tor Browser; the system daemon is 9050.
+pub const TOR_PROXY: &str = "socks5h://127.0.0.1:9050";
+/// Public Zcash testnet indexer from docs/zcash.md. Override with a
+/// `zec-indexer` file in the app data folder (one URL).
+const DEFAULT_ZEC_INDEXER: &str = "https://testnet.zec.rocks";
+const ZEC_INDEXER_FILE: &str = "zec-indexer";
+/// Optional monerod URL. There is no documented public stagenet default;
+/// write one URL to `xmr-daemon` in the app data folder to turn Monero on.
+const XMR_DAEMON_FILE: &str = "xmr-daemon";
+
 const READY_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// Present when the user chose "Run this computer as a home node".
@@ -45,9 +56,10 @@ pub fn set_home_mode(app_data_dir: &Path, on: bool) -> io::Result<()> {
 
 impl Sidecar {
     /// Start the node on `port` (the saved one, else a free one, when `None`).
-    /// In home mode it also publishes its onion service and the LAN channel
-    /// for paired devices. `file_vault` keeps the node's keys in a file in the
-    /// data folder instead of the OS keychain (for a disposable profile).
+    /// Always `--remote` so order and escrow mail get a store onion. Home mode
+    /// also opens the LAN channel for paired devices. `file_vault` keeps the
+    /// node's keys in a file in the data folder instead of the OS keychain
+    /// (for a disposable profile).
     pub fn start(app_data_dir: &Path, port: Option<u16>, file_vault: bool, shop: Option<&Path>) -> Result<Self, String> {
         create_private_dir(app_data_dir)
             .map_err(|err| format!("Could not create {}: {err}", app_data_dir.display()))?;
@@ -65,26 +77,12 @@ impl Sidecar {
 
         let mut command = Command::new(&binary);
         command
-            .arg("serve")
-            .arg(port.to_string())
-            .arg("--network")
-            .arg(NETWORK)
-            .arg("--data-dir")
-            .arg(app_data_dir)
-            .arg("--no-pair-codes")
-            .args(if home_mode(app_data_dir) { &["--remote", "--lan"][..] } else { &[] })
-            .arg("--onion")
+            .args(sidecar_args(port, app_data_dir, file_vault, shop))
             .current_dir(&data_dir)
             .env("OB_EXIT_ON_STDIN_EOF", "1")
             .stdin(Stdio::piped())
             .stdout(log.try_clone().map_err(|err| err.to_string())?)
             .stderr(log);
-        if file_vault {
-            command.arg("--vault").arg("file");
-        }
-        if let Some(shop) = shop {
-            command.arg("--local-shop").arg(shop);
-        }
         hide_console(&mut command);
         let child = command
             .spawn()
@@ -138,6 +136,49 @@ impl Drop for Sidecar {
     fn drop(&mut self) {
         self.stop();
     }
+}
+
+/// Arguments after the binary: `serve`, the loopback port, and the flags this
+/// packaged testnet app always wants. `zec-indexer` and `xmr-daemon` files in
+/// the app data folder override the Zcash default and turn Monero on.
+fn sidecar_args(port: u16, app_data_dir: &Path, file_vault: bool, shop: Option<&Path>) -> Vec<String> {
+    let mut args = vec![
+        "serve".into(),
+        port.to_string(),
+        "--network".into(),
+        NETWORK.into(),
+        "--data-dir".into(),
+        app_data_dir.display().to_string(),
+        "--no-pair-codes".into(),
+    ];
+    args.push("--remote".into());
+    if home_mode(app_data_dir) {
+        args.push("--lan".into());
+    }
+    args.extend(["--onion".into(), "--proxy".into(), TOR_PROXY.into()]);
+    if file_vault {
+        args.extend(["--vault".into(), "file".into()]);
+    }
+    if let Some(shop) = shop {
+        args.extend(["--local-shop".into(), shop.display().to_string()]);
+    }
+    args.extend([
+        "--zec-indexer".into(),
+        setting_line(app_data_dir, ZEC_INDEXER_FILE).unwrap_or_else(|| DEFAULT_ZEC_INDEXER.into()),
+    ]);
+    if let Some(xmr) = setting_line(app_data_dir, XMR_DAEMON_FILE) {
+        args.extend(["--xmr-daemon".into(), xmr]);
+    }
+    args
+}
+
+/// First non-empty, non-comment line of `name` in `dir`.
+fn setting_line(dir: &Path, name: &str) -> Option<String> {
+    let text = fs::read_to_string(dir.join(name)).ok()?;
+    text.lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty() && !line.starts_with('#'))
+        .map(str::to_string)
 }
 
 /// Tauri copies `externalBin` next to the app executable without the
@@ -353,5 +394,31 @@ mod tests {
         assert_eq!(shop_page_url(origin).unwrap(), "http://127.0.0.1:56562/");
         assert!(shop_page_url("https://tauri.localhost").is_err());
         assert!(shop_page_url("http://localhost:56562").is_err());
+    }
+
+    fn has_flag(args: &[String], name: &str, value: &str) -> bool {
+        args.windows(2).any(|pair| pair[0] == name && pair[1] == value)
+    }
+
+    #[test]
+    fn the_sidecar_goes_through_local_tor_and_the_testnet_zcash_indexer() {
+        let dir = temp_dir("sidecar-args");
+        let args = sidecar_args(18787, &dir, false, None);
+        assert!(has_flag(&args, "--proxy", TOR_PROXY), "{args:?}");
+        assert!(has_flag(&args, "--zec-indexer", DEFAULT_ZEC_INDEXER), "{args:?}");
+        assert!(!args.iter().any(|arg| arg == "--xmr-daemon"), "{args:?}");
+        assert!(args.iter().any(|arg| arg == "--remote"), "escrow and order mail use the store onion: {args:?}");
+        assert!(!args.iter().any(|arg| arg == "--lan"), "{args:?}");
+        fs::write(dir.join(ZEC_INDEXER_FILE), "# local Zaino\nhttp://127.0.0.1:8137\n").unwrap();
+        fs::write(dir.join(XMR_DAEMON_FILE), "http://127.0.0.1:38081\n").unwrap();
+        let args = sidecar_args(18787, &dir, true, None);
+        assert!(has_flag(&args, "--zec-indexer", "http://127.0.0.1:8137"), "{args:?}");
+        assert!(has_flag(&args, "--xmr-daemon", "http://127.0.0.1:38081"), "{args:?}");
+        assert!(has_flag(&args, "--vault", "file"), "{args:?}");
+        set_home_mode(&dir, true).unwrap();
+        let args = sidecar_args(18787, &dir, false, None);
+        assert!(args.iter().any(|arg| arg == "--remote"), "{args:?}");
+        assert!(args.iter().any(|arg| arg == "--lan"), "{args:?}");
+        fs::remove_dir_all(dir).unwrap();
     }
 }
