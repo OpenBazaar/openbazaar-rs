@@ -27,7 +27,9 @@ FROM debian:bookworm-slim AS base
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates libssl3 && rm -rf /var/lib/apt/lists/* \
   && useradd --system --uid 10001 --user-group --home-dir /data --shell /usr/sbin/nologin openbazaar \
   && install -d -m 700 -o openbazaar -g openbazaar /data
-VOLUME /data
+# Do not declare VOLUME: Railway rejects the keyword and asks for a Railway
+# Volume mounted at /data instead. packaging/docker/compose.yml still mounts
+# the named volume there; an image without VOLUME keeps that data.
 USER openbazaar
 ENTRYPOINT ["ob-node"]
 # The node and its gateway listen on loopback inside the container; remote
