@@ -11,6 +11,7 @@ import { BULK_PATH, bulkEditBody, type BulkChange } from "./bulkEdit.ts";
 import { draftPath } from "./listingDraft.ts";
 import { canShrink, shrinkImage } from "./imageShrink.ts";
 import { parseShipmentTracking, type ShipmentTracking } from "./shipment.ts";
+import { parseMessages, type OrderMessage } from "./messages.ts";
 
 export type Role = "buyer" | "seller";
 
@@ -114,6 +115,7 @@ export type Sale = {
   zcash: { address: string; amountZec: string; receivedZec: string; expired: boolean } | null;
   fulfillment: { carrier: string; tracking: string; note: string; content: string; at: number } | null;
   tracking: ShipmentTracking | null;
+  messages: OrderMessage[];
 };
 
 export type Fulfill = { carrier?: string; tracking?: string; note?: string; content?: string };
@@ -201,6 +203,7 @@ export function parseSale(value: unknown): Sale {
     zcash: pay.rail === "zec" ? { address: text(pay.zcashAddress), amountZec: zec(pay.amountZatoshi), receivedZec: zec(pay.receivedZatoshi), expired: pay.expired === true } : null,
     fulfillment: f ? { carrier: text(f.carrier), tracking: text(f.tracking), note: text(f.note), content: text(f.content), at: count(f.at) } : null,
     tracking: parseShipmentTracking(s.tracking),
+    messages: parseMessages(s.messages),
   };
 }
 
@@ -423,4 +426,14 @@ export async function fulfillSale(id: string, fulfill: Fulfill): Promise<Sale> {
 /// The buyer confirms an order to another node's store arrived.
 export async function completeOrder(id: string): Promise<BuyerOrder> {
   return parseBuyerOrder(await paired(`/orders/${id}/complete`, { method: "POST" }));
+}
+
+/// The seller writes to a sale's buyer.
+export async function sendSaleMessage(id: string, text: string): Promise<Sale> {
+  return parseSale(await paired(`/sales/${id}/message`, json("POST", { text })));
+}
+
+/// The buyer writes to an order's seller.
+export async function sendOrderMessage(id: string, text: string): Promise<BuyerOrder> {
+  return parseBuyerOrder(await paired(`/orders/${id}/message`, json("POST", { text })));
 }

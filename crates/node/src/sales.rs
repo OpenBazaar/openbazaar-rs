@@ -318,6 +318,16 @@ impl Node {
                 }
                 Ok(())
             }
+            Some("chat") => {
+                let (message_id, text) = crate::messages::received(&body).ok_or_else(|| refused("that message could not be read"))?;
+                let now = crate::escrow_outbox::now_secs();
+                self.sales()
+                    .update(id, |sale| {
+                        crate::messages::append(sale, "messages", &message_id, "buyer", &text, now);
+                    })
+                    .map_err(retry)?;
+                Ok(())
+            }
             Some("sent") => {
                 let txid = body["txid"].as_str().filter(|txid| txid.len() == 64 && txid.bytes().all(|byte| byte.is_ascii_hexdigit()));
                 let txid = txid.ok_or_else(|| refused("that payment note names no transaction"))?;

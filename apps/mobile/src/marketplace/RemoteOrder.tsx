@@ -1,8 +1,9 @@
 import { useState } from "react";
 import type { BuyerOrder } from "../catalog";
-import { completeOrder } from "../seller";
+import { completeOrder, sendOrderMessage } from "../seller";
 import { OrderReviewForm } from "./Reviews";
 import { TrackingTimeline } from "./TrackingTimeline";
+import { MessageThread } from "./MessageThread";
 
 /** Delivery and seller replies for an order to a store on another node. */
 export function RemoteOrderStatus({ order, onChange }: { order: BuyerOrder; onChange: () => void }) {
@@ -34,6 +35,7 @@ export function RemoteOrderStatus({ order, onChange }: { order: BuyerOrder; onCh
       {sent.note && <p>{sent.note}</p>}
       {sent.content && <p className="ob-sale-content">{sent.content}</p>}
     </div>}
+    <MessageThread messages={remote.messages} viewer="buyer" otherLabel={order.seller} onSend={async text => { await sendOrderMessage(order.id, text); onChange(); }}/>
     {order.status === "Shipped" && <button className="ob-primary" disabled={busy} onClick={() => void complete()}>{busy ? "Confirming…" : "Confirm it arrived"}</button>}
     {order.status === "Completed" && <p className="ob-page-intro">You confirmed this order arrived. It is complete.</p>}
     {error && <p className="ob-form-error" role="alert">{error}</p>}

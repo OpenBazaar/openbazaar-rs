@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import type { CurrencyCode, RateTable } from "../catalog";
 import { EXTERNAL_TX_NOTE } from "../nodeWallet";
-import { fetchSales, fulfillSale, type Sale } from "../seller";
+import { fetchSales, fulfillSale, sendSaleMessage, type Sale } from "../seller";
 import { useNodeResource } from "../useNodeResource";
 import { sameOrderSnapshot, salesRefreshInterval, type OrderListRow } from "../orderList";
 import { Empty, Money } from "./Marketplace";
@@ -12,6 +12,7 @@ import { InfoTip } from "./InfoTip";
 import { CopyAddress, CopyButton } from "./CopyAddress";
 import { CARRIER_OPTIONS } from "../shipment";
 import { TrackingTimeline } from "./TrackingTimeline";
+import { MessageThread } from "./MessageThread";
 
 
 /** Sales, polled while the node is a store. Calls `onNew` once for each sale that appears. */
@@ -113,6 +114,7 @@ function SaleDetail({ sale, rates, currency, onChange, drafts }: { sale: Sale; r
         {paid && (sale.shipTo || sale.deliveryNote) && <section className="ob-sale-delivery-context">{destination}</section>}
         {paid && <FulfillForm sale={sale} onDone={onChange} drafts={drafts}/>}
         {sale.fulfillment && <section className="ob-order-delivery"><h3>Delivery record</h3>{physical ? <TrackingTimeline tracking={sale.tracking} carrier={sale.fulfillment.carrier} trackingNumber={sale.fulfillment.tracking}/> : <p>Delivered digitally</p>}{sale.fulfillment.note && <p>{sale.fulfillment.note}</p>}{sale.fulfillment.content && <p className="ob-sale-content">{sale.fulfillment.content}</p>}</section>}
+        <MessageThread messages={sale.messages} viewer="seller" otherLabel="Buyer" onSend={async text => { onChange(await sendSaleMessage(sale.id, text)); }}/>
         {sale.zcash?.expired ? <p className="ob-form-error" role="alert">The Zcash quote for this sale ran out before it was paid in full, so the sale stays unpaid. Do not ship it. What arrives at the address is still counted in the payment records.</p> : pending && !sale.fulfillment && <div className="ob-sale-payment-hold"><strong>{sale.status === "Payment seen" ? "Payment detected" : sale.sentTxid ? "Buyer reported payment" : "Payment outstanding"}</strong><p>{paymentSent(sale) ? "Wait for confirmation before fulfilling this order." : "The buyer has not completed payment. No delivery action is needed yet."}</p></div>}
         <details className="ob-order-record">
           <summary>Payment & transaction records</summary>
