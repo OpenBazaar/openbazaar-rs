@@ -4,8 +4,9 @@
 //! path, the system browser opens that path, and the node sets a short-lived
 //! cookie then redirects to the shop. The cookie is not the pairing token
 //! and not a wallet key. It lives only in this process, and only a loopback
-//! request whose page is this listener may use it. A paired device on Tor
-//! or the LAN never sees the path or the cookie.
+//! request whose page is this listener or the configured shop origin may
+//! use it. A paired device on Tor or the LAN never sees the path or the
+//! cookie.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -86,17 +87,27 @@ fn cookie_ok(node: &Node, head: &str, port: u16) -> bool {
     let Some(value) = cookie_value(head, port) else {
         return false;
     };
-    if !origin_ok(head, port) {
+    if !origin_ok(node, head, port) {
         return false;
     }
     node.browser.session_ok(value)
 }
 
-fn origin_ok(head: &str, port: u16) -> bool {
+fn origin_ok(node: &Node, head: &str, port: u16) -> bool {
     match header(head, "Origin") {
         None => true,
-        Some(origin) => is_own_origin(origin, port),
+        Some(origin) => is_own_origin(origin, port) || is_shop_origin(node, origin),
     }
+}
+
+/// The one configured shop origin (`--shop-origin`, loopback-only). A page
+/// served there by a separate local server — the web dev server, a static
+/// preview — is this machine's shop just as much as a page this listener
+/// serves itself. Browsers cannot forge an `Origin`, and `respond` has
+/// already refused every origin but this one, the desktop webview, and
+/// (while serving the local shop) this listener's own before routing.
+pub(crate) fn is_shop_origin(node: &Node, origin: &str) -> bool {
+    origin.eq_ignore_ascii_case(&node.local.shop_origin)
 }
 
 /// The page served by this listener: `http://127.0.0.1:PORT` and the other
@@ -143,9 +154,13 @@ fn mint(node: &Node, client: &Client, head: &str, origin: Option<&str>) -> Vec<u
     }
     let paired = secret_eq(header(head, PAIR_HEADER), node.pairing_token());
     // A local-shop page on this machine may mint without the pairing token:
-    // anyone who can open loopback can already read the terminal code. A
-    // forwarded remote (SSH/Tor) is not loopback and still types a code.
-    if !paired && node.local.local_shop.is_none() {
+    // anyone who can open loopback can already read the terminal code. The
+    // shop page may be served by this listener (`--local-shop`) or, from the
+    // configured shop origin, by another server on this machine. A page from
+    // any other origin never reaches here, and a request with no page at all
+    // (no `Origin`) still needs the token unless this listener serves the shop.
+    let shop_page = header(head, "Origin").is_some_and(|origin| is_shop_origin(node, origin));
+    if !paired && node.local.local_shop.is_none() && !shop_page {
         return json_error(
             "403 Forbidden",
             "The shop is not paired with this node.",
@@ -435,11 +450,11 @@ mod tests {
             "another page cannot use the cookie"
         );
         let other_port = format!(
-            "GET /orders HTTP/1.1\r\nHost: 127.0.0.1:8787\r\nOrigin: http://127.0.0.1:4173\r\nCookie: ob_local_8787={id}\r\n\r\n"
+            "GET /orders HTTP/1.1\r\nHost: 127.0.0.1:8787\r\nOrigin: http://127.0.0.1:9999\r\nCookie: ob_local_8787={id}\r\n\r\n"
         );
         assert!(
             call(&node, &other_port, true).contains("403"),
-            "the dev shop origin is not this listener"
+            "a loopback origin that is neither this listener nor the shop origin cannot use the cookie"
         );
         assert!(
             call(&node, &orders, false).contains("403"),
@@ -562,6 +577,65 @@ mod tests {
         let ok = call(&node, &orders, true);
         assert!(ok.contains("200") && ok.contains("orders"), "{ok}");
         assert!(!ok.contains(&token));
+    }
+
+    #[test]
+    fn a_loopback_shop_origin_pairs_without_a_code() {
+        // No `--local-shop`: the shop page comes from the configured shop
+        // origin (default http://127.0.0.1:4173), served by another local
+        // server, and still needs no pairing code.
+        let (_dir, node) = node();
+        let token = node.pairing_token().to_string();
+        let shop = "http://127.0.0.1:4173";
+        let minted = call(
+            &node,
+            &format!(
+                "POST /browser-session HTTP/1.1\r\nHost: 127.0.0.1:8787\r\nOrigin: {shop}\r\nContent-Length: 0\r\n\r\n"
+            ),
+            true,
+        );
+        let ticket = ticket_from(&minted, &token);
+        let opened = call(
+            &node,
+            &format!("GET /browser/{ticket} HTTP/1.1\r\nHost: 127.0.0.1:8787\r\n\r\n"),
+            true,
+        );
+        assert!(opened.starts_with("HTTP/1.1 303"), "{opened}");
+        let cookie = opened
+            .split("\r\n")
+            .find_map(|line| line.strip_prefix("Set-Cookie: ob_local_8787="))
+            .unwrap();
+        let id = cookie.split(';').next().unwrap();
+        let orders = format!(
+            "GET /orders HTTP/1.1\r\nHost: 127.0.0.1:8787\r\nOrigin: {shop}\r\nCookie: ob_local_8787={id}\r\n\r\n"
+        );
+        let ok = call(&node, &orders, true);
+        assert!(ok.contains("200") && ok.contains("orders"), "{ok}");
+        assert!(!ok.contains(&token));
+
+        // Another loopback port is not the shop: it cannot mint, and the
+        // cookie does not work from it or from a foreign page.
+        let other = call(
+            &node,
+            "POST /browser-session HTTP/1.1\r\nHost: 127.0.0.1:8787\r\nOrigin: http://127.0.0.1:9999\r\nContent-Length: 0\r\n\r\n",
+            true,
+        );
+        assert!(other.contains("403"), "{other}");
+        assert!(!other.contains(&token), "{other}");
+        let wrong_page = format!(
+            "GET /orders HTTP/1.1\r\nHost: 127.0.0.1:8787\r\nOrigin: http://127.0.0.1:9999\r\nCookie: ob_local_8787={id}\r\n\r\n"
+        );
+        assert!(call(&node, &wrong_page, true).contains("403"));
+        // And the shop origin itself gets nothing from off this machine.
+        let forwarded = call(
+            &node,
+            &format!(
+                "POST /browser-session HTTP/1.1\r\nHost: 127.0.0.1:8787\r\nOrigin: {shop}\r\nContent-Length: 0\r\n\r\n"
+            ),
+            false,
+        );
+        assert!(forwarded.contains("403"), "{forwarded}");
+        assert!(call(&node, &orders, false).contains("403"));
     }
 
     #[test]

@@ -7,6 +7,7 @@ import {
   fetchOrders,
   mintBrowserPairingCode,
   onShopAwaitingCode,
+  onThisComputer,
   pairShop,
   placeCheckout,
   shopAwaitingCode,
@@ -22,6 +23,7 @@ const ASK = "Type the pairing code from your node.";
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status });
 const pairBodies: unknown[] = [];
 const sessions: string[] = [];
+let browserSession = false;
 
 if (typeof localStorage === "undefined") {
   const store = new Map<string, string>();
@@ -52,7 +54,14 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     sessions.push(path);
     return new Response(`http://127.0.0.1:8787/browser/${TICKET}\n`);
   }
-  if (new Headers(init?.headers).get("X-Ob-Pair") !== TOKEN) return json(403, { error: "The shop is not paired with this node." });
+  if (path === "/browser-session") {
+    return browserSession ? new Response(null, { status: 204 }) : json(401, { error: "This browser is not signed in on this machine." });
+  }
+  if (path.startsWith("/browser/")) {
+    browserSession = true;
+    return new Response("");
+  }
+  if (new Headers(init?.headers).get("X-Ob-Pair") !== TOKEN && !browserSession) return json(403, { error: "The shop is not paired with this node." });
   return json(200, { orders: [] });
 }) as typeof fetch;
 
@@ -157,6 +166,31 @@ test("a local shop on this computer pairs without a typed code", async () => {
     assert.equal(shop.assigned.url, `http://127.0.0.1:8787/browser/${TICKET}`);
   } finally {
     shop.restore();
+  }
+});
+
+test("a shop page served from another loopback server pairs without a code", async () => {
+  const previous = { document: (globalThis as { document?: unknown }).document, location: (globalThis as { location?: unknown }).location };
+  (globalThis as { document?: unknown }).document = { querySelector: () => null };
+  (globalThis as { location?: unknown }).location = {
+    hostname: "127.0.0.1",
+    origin: "http://127.0.0.1:4174",
+    protocol: "http:",
+    assign() {
+      throw new Error("a preview page must not be navigated to the node");
+    },
+  };
+  try {
+    assert.equal(onThisComputer(), true);
+    const beforeSessions = sessions.length;
+    const beforePair = pairBodies.length;
+    assert.deepEqual(await fetchOrders(), []);
+    assert.equal(sessions.length, beforeSessions + 1, "the node minted a localhost session");
+    assert.equal(pairBodies.length, beforePair, "no pairing code was asked for or traded");
+    assert.equal(localStorage.getItem("ob-pair:http://127.0.0.1:8787"), null, "the pairing token stayed out of the page");
+  } finally {
+    (globalThis as { document?: unknown }).document = previous.document;
+    (globalThis as { location?: unknown }).location = previous.location;
   }
 });
 
