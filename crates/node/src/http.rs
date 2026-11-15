@@ -57,8 +57,12 @@ pub(crate) fn http_response_headers(
     origin: Option<&str>,
     extra: &str,
 ) -> Vec<u8> {
+    // The allowed origin is always one exact page, never `*`, so the shop
+    // page may also send its localhost session cookie across ports.
     let allow = match origin {
-        Some(origin) => format!("Access-Control-Allow-Origin: {origin}\r\n"),
+        Some(origin) => format!(
+            "Access-Control-Allow-Origin: {origin}\r\nAccess-Control-Allow-Credentials: true\r\n"
+        ),
         None => String::new(),
     };
     let header = format!(

@@ -13,9 +13,10 @@ import { parseShipmentTracking, type ShipmentTracking } from "./shipment.ts";
 // signs in with a cookie from POST /browser-session.
 // A page served by a home node to a remote browser talks only to that origin
 // and signs each request with its device key (src/homeNode/transport.ts).
-// A page served by this machine's node (`ob-local-shop`) talks to that same
-// origin and relies on the short-lived localhost cookie. It does not receive
-// the pairing token.
+// A page served by this machine's node (`ob-local-shop`), or from the
+// node's configured shop origin by another server on this machine, relies
+// on the short-lived localhost cookie the node mints for loopback pages.
+// It does not receive the pairing token.
 const DESKTOP_NODE_ORIGIN = (globalThis as { __OB_NODE_ORIGIN__?: unknown }).__OB_NODE_ORIGIN__;
 export const NODE_ORIGIN = servedByHomeNode()
   ? location.origin
@@ -345,7 +346,7 @@ export async function ownNodeJson(path: string, init?: RequestInit): Promise<unk
   const token = await pairingToken(fromClick(init));
   let response: Response;
   try {
-    response = await fetch(`${NODE_ORIGIN}${path}`, { cache: "no-store", ...init, headers: { ...(init?.headers ?? {}), [PAIR_HEADER]: token } });
+    response = await fetch(`${NODE_ORIGIN}${path}`, { cache: "no-store", credentials: "include", ...init, headers: { ...(init?.headers ?? {}), [PAIR_HEADER]: token } });
   } catch {
     throw new NodeOfflineError();
   }
@@ -567,11 +568,26 @@ export function shopPairingMessage(message: string): boolean {
 
 const PAIR_CODE_PATTERN = /^[ABCDEFGHJKMNPQRSTVWXYZ23456789]{4}-[ABCDEFGHJKMNPQRSTVWXYZ23456789]{4}$/;
 
+function isLoopbackHost(host: string): boolean {
+  return host === "127.0.0.1" || host === "localhost" || host === "[::1]" || host === "::1";
+}
+
+/// This page was loaded from a loopback name, so it runs on the same machine
+/// as the node it calls. The page may be served by the node itself
+/// (`ob-local-shop`) or by another local server (the web dev server, a static
+/// preview). Only the node decides what that is worth: it mints a session
+/// solely for its configured shop origin on a loopback connection.
+export function onLoopbackPage(): boolean {
+  if (servedByHomeNode() || typeof location === "undefined") return false;
+  if (location.protocol && location.protocol !== "http:") return false;
+  return isLoopbackHost(location.hostname.toLowerCase());
+}
+
 /// The shop page is this machine's node, opened at a loopback name.
 export function onThisComputer(): boolean {
-  if (!servedByLocalShop() || typeof location === "undefined") return false;
-  const host = location.hostname.toLowerCase();
-  return host === "127.0.0.1" || host === "localhost" || host === "[::1]" || host === "::1";
+  if (typeof location === "undefined") return false;
+  if (servedByLocalShop()) return isLoopbackHost(location.hostname.toLowerCase());
+  return onLoopbackPage();
 }
 
 /// Same-origin `/browser/{ticket}` from a mint body. The node always names
@@ -602,12 +618,33 @@ export async function mintBrowserPairingCode(): Promise<string> {
 /// until that cookie is gone and the user types a new code.
 function localShopSignedIn(): Promise<boolean> {
   if (!localShopSession) {
-    const origin = typeof location === "undefined" ? "" : location.origin;
-    localShopSession = fetch(`${origin}/browser-session`, { cache: "no-store" })
+    localShopSession = fetch(`${NODE_ORIGIN}/browser-session`, { cache: "no-store", credentials: "include" })
       .then((response) => response.ok)
       .catch(() => false);
   }
   return localShopSession;
+}
+
+/// Sign this page in with the localhost cookie, minting one when the node
+/// offers it to this page's origin. A localhost shop should not have to
+/// pair, so this runs silently; it resolves false when the node refuses
+/// (another origin, a forwarded connection) and the pairing code remains.
+async function ensureLoopbackSession(): Promise<boolean> {
+  if (await localShopSignedIn()) return true;
+  try {
+    const minted = await fetch(`${NODE_ORIGIN}/browser-session`, { method: "POST", cache: "no-store", credentials: "include" });
+    if (!minted.ok) return false;
+    const origin = servedByLocalShop() && typeof location !== "undefined" ? location.origin : NODE_ORIGIN;
+    const path = browserTicketPath(await minted.text(), origin);
+    if (!path) return false;
+    // Opening the one-time path sets the cookie; there is no need to leave
+    // this page, whose server is not the node when a preview serves it.
+    await fetch(path, { cache: "no-store", credentials: "include" });
+  } catch {
+    return false;
+  }
+  resetLocalShopSession();
+  return localShopSignedIn();
 }
 
 function resetLocalShopSession(): void {
@@ -623,7 +660,7 @@ async function pairingToken(ask: boolean): Promise<string> {
   if (typeof DESKTOP_TOKEN === "string" && TOKEN_PATTERN.test(DESKTOP_TOKEN)) {
     return DESKTOP_TOKEN;
   }
-  if (servedByLocalShop() && (await localShopSignedIn())) {
+  if ((servedByLocalShop() || onLoopbackPage()) && (await ensureLoopbackSession())) {
     return "";
   }
   const stored = tokenStore()?.getItem(TOKEN_KEY);
@@ -698,6 +735,13 @@ async function pairHere(): Promise<string> {
 }
 
 async function openLoopbackSession(): Promise<void> {
+  // A page another local server serves signs in where it is; only a page
+  // the node itself served follows the one-time path back to `/`.
+  if (!servedByLocalShop()) {
+    resetLocalShopSession();
+    if (await ensureLoopbackSession()) return;
+    throw new Error("Type the pairing code from your node.");
+  }
   let response: Response;
   try {
     response = await fetch(`${NODE_ORIGIN}/browser-session`, { method: "POST", cache: "no-store" });
@@ -827,10 +871,12 @@ async function nodeFetch(path: string, init: RequestInit): Promise<Response> {
   const native = homeFetch();
   if (native) return native(path, init);
   const prefix = targetPrefix();
-  if (!prefix) return fetch(`${NODE_ORIGIN}${path}`, init);
+  // The localhost session cookie crosses ports (shop page to node), so it
+  // must be asked for; same-origin and token requests are unaffected.
+  if (!prefix) return fetch(`${NODE_ORIGIN}${path}`, { credentials: "include", ...init });
   const headers = new Headers(init.headers);
   headers.set(PAIR_HEADER, await pairingToken(fromClick(init)));
-  return fetch(`${NODE_ORIGIN}${prefix}${path}`, { ...init, headers });
+  return fetch(`${NODE_ORIGIN}${prefix}${path}`, { credentials: "include", ...init, headers });
 }
 
 async function request(path: string, init?: RequestInit, allowPair = true): Promise<Response> {
@@ -848,7 +894,7 @@ async function request(path: string, init?: RequestInit, allowPair = true): Prom
     resetLocalShopSession();
     // A restarted node drops the localhost cookie. A click asks for a code and
     // tries once more; a page that was only loading shows the banner.
-    if (allowPair && servedByLocalShop() && message === NOT_PAIRED) {
+    if (allowPair && (servedByLocalShop() || onLoopbackPage()) && message === NOT_PAIRED) {
       if (fromClick(init)) {
         const token = await pairOnce();
         const headers = new Headers(init?.headers);
