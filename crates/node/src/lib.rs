@@ -62,6 +62,7 @@ mod listing_drafts;
 mod live_stock;
 mod mail_drop;
 mod media;
+mod messages;
 mod moderator_http;
 mod moderator_identity;
 mod moderators;

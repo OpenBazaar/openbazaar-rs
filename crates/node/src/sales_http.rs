@@ -4,6 +4,8 @@
 //! - `POST /mail/reply`: seller replies to this node's orders.
 //! - `GET /sales`, `GET /sales/{id}`, `POST /sales/{id}/fulfill`: the seller's sales.
 //! - `POST /orders/{id}/complete`: the buyer confirms an order arrived.
+//! - `POST /sales/{id}/message`, `POST /orders/{id}/message`: the two sides
+//!   of an order write to each other (see [`crate::messages`]).
 //!
 //! The two mail routes take no token, like `POST /escrow/mail`, under the
 //! same limits ([`crate::mail_drop`]). The rest are for paired loopback callers.
@@ -39,10 +41,12 @@ pub(crate) fn response(
     }
     let fulfill = path.strip_prefix("/sales/").and_then(|rest| rest.strip_suffix("/fulfill"));
     let complete = path.strip_prefix("/orders/").and_then(|rest| rest.strip_suffix("/complete"));
+    let sale_message = path.strip_prefix("/sales/").and_then(|rest| rest.strip_suffix("/message"));
+    let order_message = path.strip_prefix("/orders/").and_then(|rest| rest.strip_suffix("/message"));
     let sale = path.strip_prefix("/sales/").filter(|rest| !rest.contains('/'));
     let known = match method {
         "GET" => path == "/sales" || sale.is_some(),
-        "POST" => fulfill.is_some() || complete.is_some(),
+        "POST" => fulfill.is_some() || complete.is_some() || sale_message.is_some() || order_message.is_some(),
         _ => false,
     };
     if !known {
@@ -50,6 +54,27 @@ pub(crate) fn response(
     }
     if let Err(response) = local_guard(node, client, head, origin) {
         return Some(response);
+    }
+    let message = |send: &dyn Fn(&str, &Value) -> Result<Value, String>| -> Option<Vec<u8>> {
+        let id = sale_message.or(order_message)?;
+        let parsed = if body.len() > 16 * 1024 { None } else { serde_json::from_slice::<Value>(body).ok() };
+        Some(match parsed {
+            Some(value) => match send(id, &value) {
+                Ok(value) => json_body("200 OK", &value, origin),
+                Err(message) => json_error("400 Bad Request", &message, origin),
+            },
+            None => json_error("400 Bad Request", "The message could not be read.", origin),
+        })
+    };
+    if method == "POST" && (sale_message.is_some() || order_message.is_some()) {
+        return if sale_message.is_some() {
+            message(&|id, value| node.send_sale_message(id, value))
+        } else {
+            message(&|id, value| node.send_order_message(id, value).map_err(|err| match err {
+                OrderError::Invalid(message) => message.to_string(),
+                err => err.to_string(),
+            }))
+        };
     }
     Some(match (method, fulfill, complete, sale) {
         ("GET", _, _, None) => json_body("200 OK", &node.own_sales_value(), origin),

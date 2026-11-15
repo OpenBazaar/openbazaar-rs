@@ -193,6 +193,54 @@ fn seller_tracking_progress_reaches_the_buyer_without_the_buyer_node_asking_a_pr
 }
 
 #[test]
+fn buyer_and_seller_message_each_other_inside_an_order() {
+    let pair = Pair::new();
+    let placed = pair.checkout(1);
+    let id = placed["orderId"].as_str().unwrap().to_string();
+    pair.deliver();
+    let sale_id = pair.sales()[0]["id"].as_str().unwrap().to_string();
+
+    let (status, answered) = request(
+        &pair.buyer.node,
+        "POST",
+        &format!("/orders/{id}/message"),
+        &json!({ "text": "Please leave it by the side door." }).to_string(),
+    );
+    assert!(status.contains("200"), "{status} {answered}");
+    assert_eq!(answered["remote"]["messages"][0]["text"], "Please leave it by the side door.");
+    pair.deliver();
+    let sales = pair.sales();
+    assert_eq!(sales[0]["messages"][0]["from"], "buyer", "{sales:?}");
+    assert_eq!(sales[0]["messages"][0]["text"], "Please leave it by the side door.");
+
+    let (status, answered) = request(
+        &pair.seller.node,
+        "POST",
+        &format!("/sales/{sale_id}/message"),
+        &json!({ "text": "Will do — shipping Monday." }).to_string(),
+    );
+    assert!(status.contains("200"), "{status} {answered}");
+    pair.deliver();
+    let received_order = order(&pair.buyer.node, &id);
+    let messages = received_order["remote"]["messages"].as_array().unwrap();
+    assert_eq!(messages.len(), 2, "{received_order}");
+    assert_eq!(messages[1]["from"], "seller");
+    assert_eq!(messages[1]["text"], "Will do — shipping Monday.");
+
+    // A redelivered letter changes nothing the second time: each side still
+    // holds exactly the buyer's message and the seller's reply.
+    pair.deliver();
+    assert_eq!(pair.sales()[0]["messages"].as_array().unwrap().len(), 2);
+    assert_eq!(order(&pair.buyer.node, &id)["remote"]["messages"].as_array().unwrap().len(), 2);
+
+    // Empty and oversized messages are refused before they travel.
+    let (status, _) = request(&pair.buyer.node, "POST", &format!("/orders/{id}/message"), &json!({ "text": "  " }).to_string());
+    assert!(status.contains("400"), "{status}");
+    let (status, _) = request(&pair.seller.node, "POST", &format!("/sales/{sale_id}/message"), &json!({ "text": "x".repeat(2001) }).to_string());
+    assert!(status.contains("400"), "{status}");
+}
+
+#[test]
 fn a_store_with_no_finished_escrow_sale_takes_a_direct_order() {
     let pair = Pair::new();
     assert_eq!(pair.seller.node.finished_escrow_sales(), 0, "the store is new");

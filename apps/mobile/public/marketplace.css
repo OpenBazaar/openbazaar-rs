@@ -4498,6 +4498,17 @@ button.ob-detail-seller:hover strong { color: var(--ob-link); }
 .ob-tracking-events li>div { display:grid; gap:2px; min-width:0; }
 .ob-tracking-dot { width:8px; height:8px; border-radius:50%; background:var(--ob-link); margin-top:5px; }
 .ob-tracking-privacy { border-top:1px solid var(--ob-line); padding-top:10px; }
+.ob-messages { display:grid; gap:12px; padding:18px; border:1px solid var(--ob-line); border-radius:8px; background:var(--ob-surface); min-width:0; }
+.ob-messages h3 { font-size:15px; font-weight:600; margin:0; }
+.ob-messages-empty { margin:0; color:var(--ob-secondary); font-size:14px; }
+.ob-message-list { list-style:none; margin:0; padding:0; display:grid; gap:10px; }
+.ob-message-list li { display:grid; gap:2px; padding:10px 12px; border:1px solid var(--ob-line); border-radius:8px; background:var(--ob-subtle); max-width:85%; }
+.ob-message-list li.is-mine { justify-self:end; background:var(--ob-surface); }
+.ob-message-list strong { font-size:13px; }
+.ob-message-list p { margin:0; font-size:14px; white-space:pre-wrap; overflow-wrap:anywhere; }
+.ob-message-list span { color:var(--ob-secondary); font-size:12px; }
+.ob-message-form { display:grid; gap:10px; }
+.ob-message-form textarea { width:100%; }
 .ob-order-center .ob-remote-order { display:grid; gap:12px; }
 .ob-order-center .ob-payment-progress { background:var(--ob-surface); padding:16px; border:1px solid var(--ob-line); border-radius:8px; }
 .ob-order-center .ob-payment-options { grid-template-columns:minmax(0,1fr); }

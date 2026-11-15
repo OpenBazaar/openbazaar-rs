@@ -148,6 +148,29 @@ impl Node {
         Ok(())
     }
 
+    /// `POST /orders/{id}/message`: the buyer writes to this order's seller.
+    pub(crate) fn send_order_message(&self, id: &str, body: &Value) -> Result<Value, OrderError> {
+        let order = self.orders().get(id).cloned().ok_or(OrderError::Invalid("That order is not on this node."))?;
+        let Some(remote) = &order.remote else {
+            return Err(OrderError::Invalid("Only an order to another node's store can take a message here."));
+        };
+        let text = crate::messages::clean_text(body).map_err(OrderError::Failed)?;
+        let message_id = crate::messages::message_id();
+        let (key, target, letter) = self.seller_letter(&order, remote, &json!({ "kind": "chat", "id": message_id, "text": text }))?;
+        self.order_outbox
+            .send(key, &target, &letter)
+            .map_err(|err| OrderError::Failed(format!("The seller's node refused the message. ({err})")))?;
+        let now = crate::escrow_outbox::now_secs();
+        self.orders()
+            .update(id, |order| {
+                if let Some(remote) = order.remote.as_mut() {
+                    crate::messages::append(remote, "messages", &message_id, "buyer", &text, now);
+                }
+            })
+            .map_err(OrderError::Failed)?;
+        Ok(self.orders().get_value(id).unwrap_or_default())
+    }
+
     /// `POST /orders/{id}/complete`: the goods arrived. Tells the seller.
     pub(crate) fn complete_order(&self, id: &str) -> Result<Value, OrderError> {
         let order = self.orders().get(id).cloned().ok_or(OrderError::Invalid("That order is not on this node."))?;
@@ -308,6 +331,13 @@ pub(crate) fn apply_reply(order: &mut crate::buyer_orders::BuyerOrder, body: &Va
         Some("completed") => {
             if let Some(remote) = order.remote.as_mut() {
                 remote["sellerCompleted"] = json!(true);
+            }
+        }
+        Some("chat") => {
+            if let Some(remote) = order.remote.as_mut() {
+                if let Some((message_id, text)) = crate::messages::received(body) {
+                    crate::messages::append(remote, "messages", &message_id, "seller", &text, crate::escrow_outbox::now_secs());
+                }
             }
         }
         _ => {}
