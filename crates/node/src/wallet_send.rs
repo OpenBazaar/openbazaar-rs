@@ -30,6 +30,9 @@ use crate::spend_tickets::{FEE_CAP_PERCENT, TICKET_TTL};
 use crate::Node;
 
 const MAX_BODY: usize = 4 * 1024;
+/// A quote that was used, expired, or never issued. Nothing was sent.
+pub(crate) const QUOTE_USED: &str =
+    "That quote is used or expired. Nothing was sent; review the send again.";
 /// 21 million bitcoin, in sats.
 const MAX_SATS: u64 = 2_100_000_000_000_000;
 
@@ -265,12 +268,7 @@ impl Node {
             .lock
             .send_quotes
             .take_quote(quote, self.lock.now())
-            .map_err(|_| {
-                PayError::Conflict(
-                    "That quote is used or expired. Nothing was sent; review the send again."
-                        .into(),
-                )
-            })?;
+            .map_err(|_| PayError::Conflict(QUOTE_USED.into()))?;
         let address = address_for(&terms.address, self.network).map_err(PayError::Invalid)?;
         let _spending = self.spending.lock().unwrap_or_else(|err| err.into_inner());
         let amount = (!terms.max).then_some(terms.amount_sats);
@@ -380,6 +378,18 @@ pub(crate) fn send_response(
     if let Err(response) = local_guard(node, client, head, origin) {
         return response;
     }
+    confirmed_response(node, body, origin, |quote| node.send_quoted(quote))
+}
+
+/// The second step of every send, after the caller's `local_guard`: read
+/// `{quote, passphrase, confirm: true}`, check the passphrase (a wrong one
+/// leaves the quote open), then hand the quote to `send`, which uses it up.
+pub(crate) fn confirmed_response(
+    node: &Node,
+    body: &[u8],
+    origin: Option<&str>,
+    send: impl FnOnce(&str) -> Result<Value, PayError>,
+) -> Vec<u8> {
     let parsed = match read(body, origin) {
         Ok(parsed) => parsed,
         Err(response) => return response,
@@ -391,14 +401,14 @@ pub(crate) fn send_response(
     if let Err(err) = node.lock.verify(passphrase) {
         return lock_error(err, origin);
     }
-    match node.send_quoted(quote) {
+    match send(quote) {
         Ok(value) => json_body("200 OK", &value, origin),
         Err(err) => send_failed(err, origin),
     }
 }
 
 /// The quote and passphrase of a send request that says `"confirm": true`.
-pub(crate) fn confirmed_send(body: &Value) -> Result<(&str, &str), PayError> {
+fn confirmed_send(body: &Value) -> Result<(&str, &str), PayError> {
     let invalid = |message: &str| PayError::Invalid(message.into());
     let map = body
         .as_object()
