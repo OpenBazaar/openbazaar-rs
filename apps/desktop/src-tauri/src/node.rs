@@ -22,8 +22,14 @@ pub const TOR_PROXY: &str = "socks5h://127.0.0.1:9050";
 /// `zec-indexer` file in the app data folder (one URL).
 const DEFAULT_ZEC_INDEXER: &str = "https://testnet.zec.rocks";
 const ZEC_INDEXER_FILE: &str = "zec-indexer";
-/// Optional monerod URL. There is no documented public stagenet default;
-/// write one URL to `xmr-daemon` in the app data folder to turn Monero on.
+/// Public Monero stagenet daemons, onion only, so no Tor exit relay sees or
+/// alters the RPC. The first two are plowsof's (monerodevs.org); the third is
+/// another operator, so a payment is broadcast through a different operator
+/// than the one that served its ring members. Override with an `xmr-daemon`
+/// file in the app data folder (one line, comma-separated URLs).
+const DEFAULT_XMR_DAEMONS: &str = "http://plowsoffjexmxalw73tkjmf422gq6575fc7vicuu4javzn2ynnte6tyd.onion:38089,\
+http://ct36dsbe3oubpbebpxmiqz4uqk6zb6nhmkhoekileo4fts23rvuse2qd.onion:38081,\
+http://plowsof3t5hogddwabaeiyrno25efmzfxyro2vligremt7sxpsclfaid.onion:38089";
 const XMR_DAEMON_FILE: &str = "xmr-daemon";
 
 const READY_TIMEOUT: Duration = Duration::from_secs(20);
@@ -140,7 +146,8 @@ impl Drop for Sidecar {
 
 /// Arguments after the binary: `serve`, the loopback port, and the flags this
 /// packaged testnet app always wants. `zec-indexer` and `xmr-daemon` files in
-/// the app data folder override the Zcash default and turn Monero on.
+/// the app data folder override the Zcash and Monero defaults. Lightning runs
+/// on Mutinynet signet through the node's default LSP, over the same proxy.
 fn sidecar_args(port: u16, app_data_dir: &Path, file_vault: bool, shop: Option<&Path>) -> Vec<String> {
     let mut args = vec![
         "serve".into(),
@@ -166,9 +173,11 @@ fn sidecar_args(port: u16, app_data_dir: &Path, file_vault: bool, shop: Option<&
         "--zec-indexer".into(),
         setting_line(app_data_dir, ZEC_INDEXER_FILE).unwrap_or_else(|| DEFAULT_ZEC_INDEXER.into()),
     ]);
-    if let Some(xmr) = setting_line(app_data_dir, XMR_DAEMON_FILE) {
-        args.extend(["--xmr-daemon".into(), xmr]);
-    }
+    args.extend([
+        "--xmr-daemon".into(),
+        setting_line(app_data_dir, XMR_DAEMON_FILE).unwrap_or_else(|| DEFAULT_XMR_DAEMONS.into()),
+        "--lightning".into(),
+    ]);
     args
 }
 
@@ -401,12 +410,14 @@ mod tests {
     }
 
     #[test]
-    fn the_sidecar_goes_through_local_tor_and_the_testnet_zcash_indexer() {
+    fn the_sidecar_goes_through_local_tor_with_zcash_monero_and_lightning_on() {
         let dir = temp_dir("sidecar-args");
         let args = sidecar_args(18787, &dir, false, None);
         assert!(has_flag(&args, "--proxy", TOR_PROXY), "{args:?}");
         assert!(has_flag(&args, "--zec-indexer", DEFAULT_ZEC_INDEXER), "{args:?}");
-        assert!(!args.iter().any(|arg| arg == "--xmr-daemon"), "{args:?}");
+        assert!(has_flag(&args, "--xmr-daemon", DEFAULT_XMR_DAEMONS), "{args:?}");
+        assert!(DEFAULT_XMR_DAEMONS.split(',').all(|url| url.starts_with("http://") && url.contains(".onion:")), "onion only");
+        assert!(args.iter().any(|arg| arg == "--lightning"), "{args:?}");
         assert!(args.iter().any(|arg| arg == "--remote"), "escrow and order mail use the store onion: {args:?}");
         assert!(!args.iter().any(|arg| arg == "--lan"), "{args:?}");
         fs::write(dir.join(ZEC_INDEXER_FILE), "# local Zaino\nhttp://127.0.0.1:8137\n").unwrap();

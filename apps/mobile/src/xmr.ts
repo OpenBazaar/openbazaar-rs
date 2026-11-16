@@ -110,6 +110,18 @@ function oneOf<T extends string>(value: unknown, allowed: readonly T[]): T {
   return value as T
 }
 
+/** What checkout says under Monero: which coins, and that there is no escrow. */
+export function xmrCheckoutNote(network: XmrNetwork | null | undefined): string {
+  const coins = network === 'stagenet' ? ' Monero stagenet test coins.' : ''
+  return `Pay a subaddress from any Monero wallet.${coins} Direct pay only, no escrow. Experimental.`
+}
+
+/** The `network` of the `xmr` object in `/catalog`, or `null`. */
+export function xmrCatalogNetwork(value: unknown): XmrNetwork | null {
+  const network = value && typeof value === 'object' ? (value as Record<string, unknown>).network : null
+  return network === 'stagenet' || network === 'mainnet' ? network : null
+}
+
 /** `1.5`, `0.000000000001`: exact, trailing zeros dropped. */
 export function formatXmr(piconero: bigint): string {
   const whole = piconero / PICONERO_PER_XMR

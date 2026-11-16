@@ -40,7 +40,8 @@ export function LightningSettings() {
     <div className='ob-settings-page'>
       <header className='ob-settings-heading'>
         <h1 className='ob-rail'><RailMark rail='lightning' /> Lightning</h1>
-        <p>Take Lightning payments for direct orders. Your node issues one invoice per order. Escrow stays on-chain.</p>
+        <p>Take Lightning payments for direct orders. Your node issues one invoice per order. Escrow stays on-chain. Experimental.</p>
+        {ln?.network === 'signet' && <p>Mutinynet signet is a test network of its own: its coins are not your testnet4 bitcoin and have no value. The Mutinynet faucet (faucet.mutinynet.com) can pay a test invoice.</p>}
       </header>
       {(status.error || stores.error) && <p className='ob-form-error' role='alert'>{status.error || stores.error}</p>}
       {!ln ? (

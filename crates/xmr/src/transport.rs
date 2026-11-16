@@ -28,6 +28,16 @@ pub const ROUTES: &[&str] = &[
 /// Every JSON-RPC method the wallet may call through `json_rpc`.
 pub const JSON_RPC_METHODS: &[&str] = &["on_get_block_hash", "get_block", "get_fee_estimate"];
 
+/// Routes that fetch the chain every wallet downloads: they share one Tor
+/// circuit per node, so a scan does not build a circuit for each request (an
+/// onion service took about 9 s per block that way). Decoy and broadcast
+/// routes still get a circuit of their own.
+const CHAIN_ROUTES: &[&str] = &["json_rpc", "get_height", "get_transactions", "get_blocks.bin", "get_o_indexes.bin"];
+
+fn shares_circuit(url: &reqwest::Url) -> bool {
+    url.path_segments().and_then(|mut segments| segments.next_back()).is_some_and(|route| CHAIN_ROUTES.contains(&route))
+}
+
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(180);
 
@@ -60,8 +70,9 @@ pub struct RpcTransport {
 }
 
 impl RpcTransport {
-    /// `proxy` is `socks5h://HOST:PORT`. Each connection gets its own SOCKS
-    /// username, so Tor puts it on its own circuit, and none is kept alive.
+    /// `proxy` is `socks5h://HOST:PORT`. Chain fetches share one SOCKS
+    /// username per transport ([`CHAIN_ROUTES`]); every other connection gets
+    /// its own, so Tor puts it on its own circuit. None is kept alive.
     pub fn new(url: &str, proxy: Option<&str>) -> Result<Self, String> {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let mut builder = reqwest::Client::builder()
@@ -73,8 +84,9 @@ impl RpcTransport {
             Some(proxy) => {
                 let authority = proxy.trim_start_matches("socks5h://").to_string();
                 let session = std::process::id();
-                builder.proxy(reqwest::Proxy::custom(move |_| {
-                    let stream = NEXT.fetch_add(1, Ordering::Relaxed);
+                let chain = NEXT.fetch_add(1, Ordering::Relaxed);
+                builder.proxy(reqwest::Proxy::custom(move |url| {
+                    let stream = if shares_circuit(url) { format!("chain{chain}") } else { NEXT.fetch_add(1, Ordering::Relaxed).to_string() };
                     Some(format!("socks5h://obx-{session}-{stream}:x@{authority}"))
                 }))
             }
@@ -133,5 +145,17 @@ mod tests {
         let fine = br#"[{"method":"on_get_block_hash","params":[0]},{"method":"get_block","params":{"height":1}}]"#;
         assert!(check_request("json_rpc", fine).is_ok());
         assert!(check_request("get_outs.bin", &[1, 2, 3]).is_ok());
+    }
+
+    #[test]
+    fn only_chain_fetches_share_a_circuit() {
+        let url = |route: &str| reqwest::Url::parse(&format!("http://abc.onion:38089/{route}")).unwrap();
+        for route in CHAIN_ROUTES {
+            assert!(shares_circuit(&url(route)), "{route}");
+        }
+        for route in ["get_outs.bin", "get_output_distribution.bin", "send_raw_transaction"] {
+            assert!(ROUTES.contains(&route));
+            assert!(!shares_circuit(&url(route)), "{route} reveals a spend and keeps its own circuit");
+        }
     }
 }

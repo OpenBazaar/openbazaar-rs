@@ -87,6 +87,7 @@ impl DaemonConfig {
     pub fn reveals(&self) -> &'static str {
         match self.privacy() {
             "own-node" => "Your own monerod serves every block and broadcasts your payments. No one else learns anything.",
+            "remote-tor" if self.nodes.iter().all(|node| node.kind != NodeKind::Public) => "The remote node is an onion service, so it sees neither your address nor a Tor exit. It sees every block being downloaded, the decoy rings fetched when you pay, and the transactions you broadcast. It never gets a key, so it cannot tell which outputs are yours.",
             "remote-tor" => "The remote node sees a Tor exit, not your address. It sees every block being downloaded, the decoy rings fetched when you pay, and the transactions you broadcast. It never gets a key, so it cannot tell which outputs are yours.",
             _ => "The remote node sees your IP address, every block being downloaded, the decoy rings fetched when you pay, and the transactions you broadcast. It never gets a key, so it cannot tell which outputs are yours. Start the node with --proxy to use Tor.",
         }
@@ -211,6 +212,10 @@ mod tests {
         assert!(tor.nodes.iter().all(|node| tor.proxied(node)));
         let stagenet = config(XmrNetwork::Stagenet, &["http://node.example.org:38081"], TOR).unwrap();
         assert_eq!(stagenet.privacy(), "remote-tor");
+        assert!(stagenet.reveals().contains("Tor exit, not your address"));
+        let onions = config(XmrNetwork::Stagenet, &["http://abc.onion:38089", "http://def.onion"], TOR).unwrap();
+        assert_eq!(onions.privacy(), "remote-tor");
+        assert!(onions.reveals().contains("onion service"), "{}", onions.reveals());
     }
 
     #[test]

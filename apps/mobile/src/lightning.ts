@@ -127,6 +127,26 @@ export function lnNetworkLabel(network: LnNetwork): string {
         : 'Mainnet'
 }
 
+/** What checkout says under Lightning: which coins, and that there is no escrow. */
+export function lnCheckoutNote(network: LnNetwork | null | undefined): string {
+  const coins =
+    network === 'signet'
+      ? ' Mutinynet signet test coins, a test network separate from testnet4 bitcoin.'
+      : network === 'testnet4'
+        ? ' Testnet4 test coins.'
+        : network === 'regtest'
+          ? ' Regtest test coins.'
+          : ''
+  return `Pay the seller's invoice from your node or any Lightning wallet.${coins} Direct pay only, no escrow. Experimental.`
+}
+
+/** The `network` of the `lightning` object in `/catalog`, or `null`. */
+export function lnCatalogNetwork(value: unknown): LnNetwork | null {
+  if (!value || typeof value !== 'object') return null
+  const network = (value as Record<string, unknown>).network
+  return NETWORKS.includes(network as LnNetwork) ? (network as LnNetwork) : null
+}
+
 export function parseLnStatus(value: unknown): LnStatus {
   const r = record(value)
   const blocked = lnBlockedReason(r)

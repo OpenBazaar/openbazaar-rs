@@ -45,7 +45,7 @@ The web shop hides the Lightning checkout option and the wallet card on mainnet 
 
 A new store has no inbound channel. With an LSP (LSPS2), the invoice carries a route hint through the LSP; when the first payment arrives the LSP opens a channel to the store and keeps a fee out of the payment. The node refuses a JIT fee above 5 % of the payment or 10,000 sats, whichever is higher (`--lsp-max-fee-sats`). Later payments use the channel without a fee while it has room.
 
-OpenBazaar runs no LSP. The default on test mode is the public Mutinynet one; testnet4 and regtest have none, and there is no mainnet default. With `--no-lsp` the seller opens channels by hand (`POST /ln/channels`) and needs inbound liquidity from somewhere else.
+OpenBazaar runs no LSP. The default on test mode is Megalith's public Mutinynet one (the one Alby Hub uses); testnet4 and regtest have none, and there is no mainnet default. With `--no-lsp` the seller opens channels by hand (`POST /ln/channels`) and needs inbound liquidity from somewhere else.
 
 | Party | Sees | Does not see |
 |---|---|---|
@@ -56,13 +56,13 @@ OpenBazaar runs no LSP. The default on test mode is the public Mutinynet one; te
 | Chain server (`--ln-chain`) | The Lightning wallet's addresses and channel outputs | Payments inside channels |
 | Gossip server (RGS) | The node's IP address | Payments |
 
-`ldk-node` has no SOCKS support, so `--proxy` does not cover Lightning peers, the chain server, or the gossip server. The Lightning node ID is separate from the store key. The Settings page shows this list and the one-time notice.
+With `--proxy` (the desktop app always sets it), the LSP, peers, Esplora, and the gossip server see a Tor exit instead of the node's IP; without it they are not contacted. The Lightning node ID is separate from the store key. The Settings page shows this list and the one-time notice.
 
 ## Networks
 
 | Mode | Lightning network | Chain view | LSP | Status |
 |---|---|---|---|---|
-| `--network testnet4` (default) | Mutinynet signet (`--ln-network signet`) | `mutinynet.com/api` | C= LSPS2 `0371d6fd…f5ef2b@44.219.111.31:39735`, token `JZWN9YLW` | Invoices with a JIT route issued from the live LSP. Its minimum JIT fee is 10,000 sats. |
+| `--network testnet4` (default) | Mutinynet signet (`--ln-network signet`) | `mutinynet.com/api` | Megalith LSPS2 `03e30fda…9d7579@64.23.192.68:9736`, no token | A JIT invoice was issued over Tor from the live LSP (November 2026). The C= LSP (`0371d6fd…f5ef2b`) no longer answered at either published address. |
 | `--network testnet4 --ln-network testnet4` | testnet4 | `mempool.space/testnet4/api` | none: pass `--lsp` or `--no-lsp` | No public testnet4 LSP was found (November 2026). |
 | `--network testnet4 --ln-network regtest` | regtest | `--ln-chain bitcoind:…` | `--lsp` or `--no-lsp` | Used by the integration tests. |
 | `--network mainnet` | none | — | — | Refused until Lightning runs over Tor. |
@@ -81,8 +81,8 @@ Check the LSP's current fees and channel sizes before choosing; they differ a lo
 ## Setup
 
 ```sh
-# Test mode, Mutinynet, public LSP:
-ob-node serve --lightning
+# Test mode, Mutinynet, public LSP (what the desktop app runs):
+ob-node serve --proxy socks5h://127.0.0.1:9050 --lightning
 
 # Your own LSP, or none:
 ob-node serve --lightning --lsp NODE_ID@HOST:PORT --lsp-token TOKEN

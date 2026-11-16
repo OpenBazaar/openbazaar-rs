@@ -29,9 +29,8 @@ use openbazaar_lightning::{ChainSource, GossipSource, LnConfig, LspConfig, PeerA
 
 use crate::network::NetworkMode;
 
-/// The public Mutinynet LSPS2 node and the token its operators publish for testing.
-pub(crate) const MUTINYNET_LSP: &str = "0371d6fd7d75de2d0372d03ea00e8bacdacb50c27d0eaea0a76a0622eff1f5ef2b@44.219.111.31:39735";
-const MUTINYNET_LSP_TOKEN: &str = "JZWN9YLW";
+/// Megalith's public Mutinynet LSPS2 node. It asks for no token.
+pub(crate) const MUTINYNET_LSP: &str = "03e30fda71887a916ef5548a4d02b06fe04aaa1a8de9e24134ce7f139cf79d7579@64.23.192.68:9736";
 const MUTINYNET_ESPLORA: &str = "https://mutinynet.com/api";
 const MUTINYNET_RGS: &str = "https://rgs.mutinynet.com/snapshot";
 const TESTNET4_ESPLORA: &str = "https://mempool.space/testnet4/api";
@@ -148,11 +147,7 @@ impl LnFlags {
                 return Err("Lightning on this network has no default LSP. Name one with --lsp NODE_ID@HOST:PORT, or --no-lsp to open channels by hand".into())
             }
         };
-        let token = match (&self.lsp_token, &self.lsp) {
-            (Some(token), _) => Some(token.clone()),
-            (None, None) if mutinynet && lsp.is_some() => Some(MUTINYNET_LSP_TOKEN.into()),
-            _ => None,
-        };
+        let token = self.lsp_token.clone();
         if token.is_some() && lsp.is_none() {
             return Err("--lsp-token needs an LSP".into());
         }
@@ -218,7 +213,7 @@ mod tests {
         assert!(flags(&["--no-lsp"]).unwrap().plan(NetworkMode::Testnet4, None).is_err(), "Lightning flags without --lightning");
         let public = flags(&["--lightning"]).unwrap().plan(NetworkMode::Testnet4, None).unwrap_err();
         assert!(public.contains("in the clear"), "{public}");
-        assert!(public.contains("mutinynet.com") || public.contains("44.219.111.31"), "{public}");
+        assert!(public.contains("mutinynet.com") || public.contains("64.23.192.68"), "{public}");
         let local = flags(&["--lightning", "--ln-chain", "bitcoind:u:p@127.0.0.1:18443", "--no-lsp", "--ln-p2p-gossip"])
             .unwrap()
             .plan(NetworkMode::Testnet4, None)

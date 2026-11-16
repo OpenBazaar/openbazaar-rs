@@ -1,7 +1,8 @@
 import { verifiedListings, verifiedStore, type StoreSummary } from "./records.ts";
 import type { LabelerLabel } from "./safety/filter";
 import { homeFetch, servedByHomeNode, servedByLocalShop, signedFetch, targetPrefix } from "./homeNode/transport.ts";
-import { lnBlockedReason, lnStoreKeys, parseLnInvoice, type LnInvoice } from "./lightning.ts";
+import { lnBlockedReason, lnCatalogNetwork, lnStoreKeys, parseLnInvoice, type LnInvoice, type LnNetwork } from "./lightning.ts";
+import { xmrCatalogNetwork, type XmrNetwork } from "./xmr.ts";
 import { parseShipmentTracking, type ShipmentTracking } from "./shipment.ts";
 import { parseMessages, type OrderMessage } from "./messages.ts";
 
@@ -105,6 +106,10 @@ export type ShopCatalog = {
   rejected: number;
   /** Why this node refuses Lightning (mainnet), or `null`. No listing takes it then. */
   lightningBlocked: string | null;
+  /** The network this node's Lightning runs on (Mutinynet `signet` on test builds). */
+  lightningNetwork?: LnNetwork | null;
+  /** The Monero network this node pays on (`stagenet` on test builds). */
+  xmrNetwork?: XmrNetwork | null;
 };
 
 export type ShipTo = {
@@ -972,6 +977,8 @@ export function parseCatalog(value: unknown): ShopCatalog {
     listings,
     rejected,
     lightningBlocked: lnBlockedReason(record.lightning),
+    lightningNetwork: lnCatalogNetwork(record.lightning),
+    xmrNetwork: xmrCatalogNetwork(record.xmr),
   };
 }
 

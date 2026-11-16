@@ -11,6 +11,8 @@ import {
   parseXmrTerms,
   parseXmrWallet,
   railFor,
+  xmrCatalogNetwork,
+  xmrCheckoutNote,
 } from "./xmr.ts";
 
 test("piconero stays exact past the float range", () => {
@@ -102,4 +104,15 @@ test("Monero is only a rail for direct pay to a store that accepts it", () => {
   assert.equal(railFor("escrow", "btc", false), "btc");
   assert.throws(() => railFor("escrow", "xmr", true), /Bitcoin-only/);
   assert.throws(() => railFor("direct", "xmr", false), /does not accept/);
+});
+
+test("checkout names Monero stagenet and says there is no escrow", () => {
+  assert.equal(xmrCatalogNetwork({ enabled: true, network: "stagenet" }), "stagenet");
+  assert.equal(xmrCatalogNetwork({ enabled: true, network: "testnet" }), null);
+  assert.equal(xmrCatalogNetwork(null), null);
+  const stagenet = xmrCheckoutNote("stagenet");
+  assert.match(stagenet, /stagenet test coins/);
+  assert.match(stagenet, /no escrow/);
+  assert.match(stagenet, /Experimental/);
+  assert.doesNotMatch(xmrCheckoutNote("mainnet"), /stagenet/);
 });
