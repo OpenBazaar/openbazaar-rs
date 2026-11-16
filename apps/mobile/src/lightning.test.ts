@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
-import { lnBlockedReason, lnStoreKeys, parseLnInvoice, parseLnStatus, parseLnStores, parseLnTerms } from './lightning.ts'
+import { lnBlockedReason, lnCatalogNetwork, lnCheckoutNote, lnStoreKeys, parseLnInvoice, parseLnStatus, parseLnStores, parseLnTerms } from './lightning.ts'
 
 const invoice = 'lntbs188u1p4w75evdp0facx2mjzv9axzctjy'
 
@@ -80,4 +80,17 @@ test('a mainnet node offers no Lightning at checkout, even to a store whose reco
   const list = parseLnStores({ enabled: false, blocked })
   assert.equal(list.blocked, blocked)
   assert.equal(list.enabled, false)
+})
+
+test('checkout names the Lightning test network and says there is no escrow', () => {
+  assert.equal(lnCatalogNetwork({ enabled: true, running: true, network: 'signet' }), 'signet')
+  assert.equal(lnCatalogNetwork({ enabled: false, running: false, network: null }), null)
+  assert.equal(lnCatalogNetwork({ network: 'litecoin' }), null)
+  assert.equal(lnCatalogNetwork(undefined), null)
+  const signet = lnCheckoutNote('signet')
+  assert.match(signet, /Mutinynet signet test coins/)
+  assert.match(signet, /separate from testnet4 bitcoin/)
+  assert.match(signet, /no escrow/)
+  assert.match(signet, /Experimental/)
+  assert.doesNotMatch(lnCheckoutNote(null), /Mutinynet/)
 })

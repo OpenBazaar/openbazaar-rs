@@ -24,7 +24,8 @@ export function MoneroSettings() {
     <div className='ob-settings-page'>
       <header className='ob-settings-heading'>
         <h1 className='ob-rail'><RailMark rail='monero' /> Monero</h1>
-        <p>Take Monero for direct orders. Each order gets its own subaddress. Escrow stays on bitcoin.</p>
+        <p>Take Monero for direct orders. Each order gets its own subaddress. Escrow stays on bitcoin. Experimental.</p>
+        {xmr?.network === 'stagenet' && <p>Monero stagenet is a test network: its coins have no value.</p>}
       </header>
       {(backend.error || stores.error) && <p className='ob-form-error' role='alert'>{backend.error || stores.error}</p>}
       {!xmr ? (

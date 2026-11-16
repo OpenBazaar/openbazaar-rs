@@ -102,6 +102,9 @@ pub(crate) struct LnNode {
     rail: OnceLock<Arc<dyn LightningRail>>,
     error: Mutex<Option<String>>,
     next_try: Mutex<Option<Instant>>,
+    /// The loopback socket the inbound onion forwards to, chosen once: the
+    /// onion keeps its first target, so a retry must bind the same one.
+    loopback: OnceLock<std::net::SocketAddr>,
 }
 
 fn guard<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -129,6 +132,7 @@ impl LnNode {
             rail: OnceLock::new(),
             error: Mutex::new(None),
             next_try: Mutex::new(None),
+            loopback: OnceLock::new(),
         })
     }
 
@@ -452,11 +456,10 @@ impl Node {
         if !self.remote.onion_configured() || config.announce.is_some() {
             return Ok(());
         }
-        let bind = config
-            .listen
-            .clone()
-            .unwrap_or_else(|| format!("127.0.0.1:{}", crate::remote::LIGHTNING_PORT));
-        let local = inbound_target(&bind)?;
+        let local = match &config.listen {
+            Some(bind) => inbound_target(bind)?,
+            None => *self.ln.loopback.get_or_init(|| loopback_listen(crate::remote::LIGHTNING_PORT)),
+        };
         let onion = self.remote.open_ln_onion(&self.data_dir, local)?;
         // Bind the address the onion forwards to, so LDK does not resolve a name.
         config.listen = Some(local.to_string());
@@ -523,6 +526,16 @@ impl Node {
     }
 }
 
+/// `127.0.0.1:preferred` when it is free, else a free loopback port, so
+/// another Lightning node on this machine does not stop this one. Peers dial
+/// the onion's virtual port, which stays `preferred`.
+fn loopback_listen(preferred: u16) -> std::net::SocketAddr {
+    let free = |port| std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port)).and_then(|listener| listener.local_addr());
+    free(preferred)
+        .or_else(|_| free(0))
+        .unwrap_or_else(|_| std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, preferred)))
+}
+
 /// The loopback or LAN socket an onion may forward to. A name that is only
 /// local (`localhost`, `*.local`) becomes `127.0.0.1` on that port.
 fn inbound_target(listen: &str) -> Result<std::net::SocketAddr, String> {
@@ -545,7 +558,19 @@ fn inbound_target(listen: &str) -> Result<std::net::SocketAddr, String> {
 
 #[cfg(test)]
 mod inbound_target_tests {
-    use super::inbound_target;
+    use super::{inbound_target, loopback_listen};
+
+    #[test]
+    fn a_taken_lightning_port_moves_to_a_free_loopback_one() {
+        let taken = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let busy = taken.local_addr().unwrap().port();
+        let chosen = loopback_listen(busy);
+        assert!(chosen.ip().is_loopback(), "{chosen}");
+        assert_ne!(chosen.port(), busy);
+        assert_ne!(chosen.port(), 0);
+        drop(taken);
+        assert_eq!(loopback_listen(busy).port(), busy, "a free preferred port is kept");
+    }
 
     #[test]
     fn a_public_listen_is_not_the_onion_target() {
