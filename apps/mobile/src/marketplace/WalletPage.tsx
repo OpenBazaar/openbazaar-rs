@@ -1,19 +1,20 @@
 import { useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
-import type { CurrencyCode, RateTable } from '../catalog'
+import type { CurrencyCode } from '../catalog'
 import { fetchLnStatus, lnNetworkLabel, type LnStatus } from '../lightning'
-import { fetchXmrRate, fetchXmrWallet, formatXmr, newXmrSubaddress, type XmrSubaddress, type XmrBackend, type XmrWallet } from '../xmr'
+import { fetchXmrWallet, formatXmr, newXmrSubaddress, type XmrSubaddress, type XmrBackend, type XmrWallet } from '../xmr'
+import type { CoinRate } from '../walletFiat'
 import type { ZecBackend } from '../zec'
 import { useNodeResource } from '../useNodeResource'
 import { torIndicator, waitingForTor } from '../torStatus'
 import { CopyAddress, CopyButton } from './CopyAddress'
 import { InfoTip } from './InfoTip'
 import { CopyPaymentValue, PaymentQr, usePairedNode, WalletAmount, WalletPanel } from './NodePayments'
+import { FiatEstimate } from './FiatEstimate'
 import { PageHeading } from './PageHeading'
 import { RailMark, type Rail } from './RailMark'
 import { Dialog, WalletLockPanel } from './WalletLock'
 
 type Props = {
-  rates: RateTable
   currency: CurrencyCode
   onOrders: () => void
   onSales?: () => void
@@ -23,13 +24,13 @@ type Props = {
 type WalletChoice = { rail: Rail; name: string; network: string; balance: string }
 
 /** One workspace per enabled wallet. Balances on different networks are never added together. */
-export function WalletPage({ rates, currency, onOrders, onSales, onManage, onTor }: Props) {
+export function WalletPage({ currency, onOrders, onSales, onManage, onTor }: Props) {
   const { wallet, network, lock } = usePairedNode()
   const waiting = waitingForTor(network.data?.tor)
   const lightning = useNodeResource(fetchLnStatus, 20000)
   const moneroEnabled = !!network.data?.xmrBackend && network.data.xmrBackend.backend !== 'none'
   const monero = useNodeResource(fetchXmrWallet, 20000, moneroEnabled)
-  const moneroRate = useNodeResource(fetchXmrRate, 60000, moneroEnabled && monero.data?.network === 'mainnet')
+  const { rates: fiatRates } = usePairedNode()
   const [selected, setSelected] = useState<Rail>('bitcoin')
   const [settings, setSettings] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
@@ -49,7 +50,7 @@ export function WalletPage({ rates, currency, onOrders, onSales, onManage, onTor
   async function refresh() {
     if (refreshing) return
     setRefreshing(true)
-    try { await Promise.all([wallet.refresh(), network.refresh(), lightning.refresh(), monero.refresh(), moneroRate.refresh()]) }
+    try { await Promise.all([wallet.refresh(), network.refresh(), lightning.refresh(), monero.refresh(), fiatRates.refresh()]) }
     finally { setRefreshing(false) }
   }
   return <section className='ob-wallet-page ob-wallet-overview ob-wallet-hub'>
@@ -65,12 +66,12 @@ export function WalletPage({ rates, currency, onOrders, onSales, onManage, onTor
     </div>}
     {waiting && <p className='ob-wallet-discovery-error' role='status'>Waiting for Tor: {torIndicator(network.data?.tor)?.label}. Balances and payments update once it connects. {onTor && <button type='button' className='ob-text-link' onClick={onTor}>Tor status</button>}</p>}
     {lightning.error && !lightning.data && <p className='ob-wallet-discovery-error' role='status'>Lightning status is unavailable. Refresh wallets to try again.</p>}
-    <div id='ob-wallet-panel-bitcoin' className='ob-wallet-tabpanel' role={choices.length > 1 ? 'tabpanel' : undefined} aria-labelledby={choices.length > 1 ? 'ob-wallet-tab-bitcoin' : undefined} hidden={active !== 'bitcoin'}><WalletPanel rates={rates} currency={currency} onOrders={onOrders} embedded/></div>
+    <div id='ob-wallet-panel-bitcoin' className='ob-wallet-tabpanel' role={choices.length > 1 ? 'tabpanel' : undefined} aria-labelledby={choices.length > 1 ? 'ob-wallet-tab-bitcoin' : undefined} hidden={active !== 'bitcoin'}><WalletPanel currency={currency} onOrders={onOrders} embedded/></div>
     {lightning.data?.enabled && <div id='ob-wallet-panel-lightning' className='ob-wallet-tabpanel' role='tabpanel' aria-labelledby='ob-wallet-tab-lightning' hidden={active !== 'lightning'}>
-      <LightningPanel ln={lightning.data} error={lightning.error} waiting={waiting} rates={rates} currency={currency} onManage={() => onManage('lightning')} onOrders={onOrders}/>
+      <LightningPanel ln={lightning.data} error={lightning.error} waiting={waiting} currency={currency} onManage={() => onManage('lightning')} onOrders={onOrders}/>
     </div>}
     {moneroEnabled && <div id='ob-wallet-panel-monero' className='ob-wallet-tabpanel' role='tabpanel' aria-labelledby='ob-wallet-tab-monero' hidden={active !== 'monero'}>
-      <MoneroPanel resource={monero} waiting={waiting} backend={network.data!.xmrBackend!} fiatRate={moneroRate.data?.currencies[currency]} currency={currency} onManage={() => onManage('monero')} onOrders={onOrders}/>
+      <MoneroPanel resource={monero} waiting={waiting} backend={network.data!.xmrBackend!} fiatRate={fiatRates.data?.xmr} currency={currency} onManage={() => onManage('monero')} onOrders={onOrders}/>
     </div>}
     {network.data?.zecBackend?.enabled && <div id='ob-wallet-panel-zcash' className='ob-wallet-tabpanel' role='tabpanel' aria-labelledby='ob-wallet-tab-zcash' hidden={active !== 'zcash'}>
       <ZcashPanel backend={network.data.zecBackend} waiting={waiting} onManage={() => onManage('zcash')} onSales={onSales}/>
@@ -86,14 +87,14 @@ function Metric({ title, children, note, help }: { title: string; children: Reac
   return <article className='ob-wallet-metric'><h3>{title}{help && <InfoTip label={`About ${title.toLowerCase()}`}>{help}</InfoTip>}</h3>{children}{note && <p>{note}</p>}</article>
 }
 
-function LightningPanel({ ln, error, waiting, rates, currency, onManage, onOrders }: { ln: LnStatus; error: string; waiting: boolean; rates: RateTable; currency: CurrencyCode; onManage: () => void; onOrders: () => void }) {
+function LightningPanel({ ln, error, waiting, currency, onManage, onOrders }: { ln: LnStatus; error: string; waiting: boolean; currency: CurrencyCode; onManage: () => void; onOrders: () => void }) {
   const usable = ln.channels.filter(channel => channel.usable).length
   return <div className='ob-wallet-detail'>
     <section className='ob-wallet-asset-summary' aria-label='Lightning balances'>
       <WalletHeader rail='lightning' title='Lightning' network={ln.network ? lnNetworkLabel(ln.network) : 'Network unavailable'} status={waiting && !ln.running ? 'Waiting for Tor' : error ? 'Last known balance' : ln.error ? 'Needs attention' : ln.running ? 'Running' : ln.keys === 'unlock-to-create' ? 'Setup required' : 'Starting'} attention={!!error || !!ln.error || !ln.running}/>
       <div className='ob-wallet-metrics'>
-        <Metric title='Available to spend' note='For purchases over Lightning.'>{ln.balances ? <WalletAmount sats={ln.balances.lightningSats} rates={rates} currency={currency} showFiat={ln.network === 'bitcoin'}/> : <p className='ob-wallet-unavailable'>Balance unavailable</p>}</Metric>
-        <Metric title='Receiving capacity' note='Room for incoming Lightning payments.' help='Receiving capacity is channel liquidity, not a wallet balance. Incoming payments use this capacity; opening or rebalancing channels can change it.'>{ln.balances ? <WalletAmount sats={ln.balances.inboundSats} rates={rates} currency={currency} showFiat={ln.network === 'bitcoin'}/> : <p className='ob-wallet-unavailable'>Capacity unavailable</p>}</Metric>
+        <Metric title='Available to spend' note='For purchases over Lightning.'>{ln.balances ? <WalletAmount sats={ln.balances.lightningSats} currency={currency} testCoins={ln.network !== 'bitcoin'}/> : <p className='ob-wallet-unavailable'>Balance unavailable</p>}</Metric>
+        <Metric title='Receiving capacity' note='Room for incoming Lightning payments.' help='Receiving capacity is channel liquidity, not a wallet balance. Incoming payments use this capacity; opening or rebalancing channels can change it.'>{ln.balances ? <WalletAmount sats={ln.balances.inboundSats} currency={currency} testCoins={ln.network !== 'bitcoin'}/> : <p className='ob-wallet-unavailable'>Capacity unavailable</p>}</Metric>
       </div>
       <div className='ob-wallet-asset-footer'><button type='button' className='ob-primary' onClick={onOrders}>Your orders</button><button type='button' className='ob-secondary' onClick={onManage}>Manage channels</button><span>Invoices are created for each order.</span></div>
       {!waiting && (error || ln.error) && <p className='ob-wallet-sync-error' role='alert'>{error || ln.error}{ln.balances ? ' Showing the last available balances.' : ''}</p>}
@@ -106,7 +107,7 @@ function LightningPanel({ ln, error, waiting, rates, currency, onManage, onOrder
   </div>
 }
 
-function MoneroPanel({ resource, waiting, backend, fiatRate, currency, onManage, onOrders }: { resource: ReturnType<typeof useNodeResource<XmrWallet>>; waiting: boolean; backend: XmrBackend; fiatRate?: number; currency: CurrencyCode; onManage: () => void; onOrders: () => void }) {
+function MoneroPanel({ resource, waiting, backend, fiatRate, currency, onManage, onOrders }: { resource: ReturnType<typeof useNodeResource<XmrWallet>>; waiting: boolean; backend: XmrBackend; fiatRate?: CoinRate | null; currency: CurrencyCode; onManage: () => void; onOrders: () => void }) {
   const current = resource.data
   const [fresh, setFresh] = useState<XmrSubaddress | null>(null)
   const [receive, setReceive] = useState(false)
@@ -129,7 +130,7 @@ function MoneroPanel({ resource, waiting, backend, fiatRate, currency, onManage,
     finally { setBusy(false) }
   }
   function amount(value: bigint) {
-    return <div className='ob-wallet-amount'><strong>{formatXmr(value)} <small>XMR</small></strong><span>{current?.network === 'stagenet' ? 'Test coins · no monetary value' : fiatRate ? `≈ ${new Intl.NumberFormat('en-US', { style: 'currency', currency }).format(Number(formatXmr(value)) * fiatRate)}` : 'Fiat estimate unavailable'}</span></div>
+    return <div className='ob-wallet-amount'><strong>{formatXmr(value)} <small>XMR</small></strong><FiatEstimate coins={Number(formatXmr(value))} rate={fiatRate} currency={currency} testCoins={current?.network !== 'mainnet'}/></div>
   }
   return <div className='ob-wallet-detail'>
     <section className='ob-wallet-asset-summary' aria-label='Monero balances'>

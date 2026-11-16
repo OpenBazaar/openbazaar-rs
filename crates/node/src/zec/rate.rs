@@ -91,17 +91,24 @@ impl ZecRate {
                 }
             }
         }
-        let source = if self
+        let fixed = self
             .fixed
             .lock()
             .unwrap_or_else(|err| err.into_inner())
-            .is_some()
-        {
-            "fixed"
-        } else {
-            "kraken"
-        };
-        json!({ "base": "ZEC", "satsPerZec": sats, "decimals": 8, "source": source, "currencies": currencies })
+            .is_some();
+        let source = if fixed { "fixed" } else { "kraken" };
+        let mut value = json!({ "base": "ZEC", "satsPerZec": sats, "decimals": 8, "source": source, "currencies": currencies });
+        if !fixed {
+            let own = self
+                .cache
+                .lock()
+                .unwrap_or_else(|err| err.into_inner())
+                .map(|(at, _)| at.elapsed());
+            if let Some(age) = crate::rates::combined_age(own, btc) {
+                value["ageSecs"] = json!(age);
+            }
+        }
+        value
     }
 
     #[cfg(test)]
@@ -248,9 +255,11 @@ mod tests {
             ..rate
         };
         assert_eq!(rate.sats_per_zec(Some(100_000.0)), Some(1_229_360));
-        let value = rate.value(&json!({"currencies": {"USD": 100_000.0, "EUR": 90_000.0}}));
+        let value =
+            rate.value(&json!({"currencies": {"USD": 100_000.0, "EUR": 90_000.0}, "ageSecs": 120}));
         assert_eq!(value["satsPerZec"], 1_229_360);
         assert_eq!(value["currencies"]["USD"], 1229.36);
         assert_eq!(value["currencies"]["EUR"], 1106.424);
+        assert_eq!(value["ageSecs"], 120);
     }
 }

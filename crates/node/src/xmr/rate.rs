@@ -74,7 +74,16 @@ impl XmrRate {
                 }
             }
         }
-        json!({ "base": "XMR", "satsPerXmr": sats, "decimals": 12, "source": "kraken", "currencies": currencies })
+        let mut value = json!({ "base": "XMR", "satsPerXmr": sats, "decimals": 12, "source": "kraken", "currencies": currencies });
+        let own = self
+            .cache
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .map(|(at, _)| at.elapsed());
+        if let Some(age) = crate::rates::combined_age(own, btc) {
+            value["ageSecs"] = json!(age);
+        }
+        value
     }
 
     #[cfg(test)]
@@ -191,8 +200,12 @@ mod tests {
     fn fiat_is_scaled_from_btc() {
         let rate = XmrRate::new(Egress::default());
         rate.set_for_tests(Some(1_000_000));
-        let value = rate.value(&json!({"currencies": {"USD": 100000.0}}));
+        let value = rate.value(&json!({"currencies": {"USD": 100000.0}, "ageSecs": 900}));
         assert_eq!(value["satsPerXmr"], 1_000_000);
         assert_eq!(value["currencies"]["USD"], 1000.0);
+        assert_eq!(
+            value["ageSecs"], 900,
+            "as old as the BTC answer it is scaled from"
+        );
     }
 }

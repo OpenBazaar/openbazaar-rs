@@ -89,7 +89,7 @@ impl Rates {
             .unwrap_or_else(|err| err.into_inner())
             .as_ref()
         {
-            let mut value = rates_json(fixed);
+            let mut value = rates_json(fixed, None);
             value["source"] = json!("fixed");
             return value;
         }
@@ -99,7 +99,7 @@ impl Rates {
         let mut guard = self.cache.lock().unwrap_or_else(|err| err.into_inner());
         if let Some(cached) = guard.as_ref() {
             if cached.at.elapsed() < FRESH {
-                return rates_json(&cached.currencies);
+                return rates_json(&cached.currencies, Some(cached.at.elapsed()));
             }
         }
         let mut retry = self.retry.lock().unwrap_or_else(|err| err.into_inner());
@@ -109,24 +109,39 @@ impl Rates {
                     at: Instant::now(),
                     currencies: currencies.clone(),
                 });
-                rates_json(&currencies)
+                rates_json(&currencies, Some(Duration::ZERO))
             }
             None => match guard.as_ref() {
-                Some(cached) => rates_json(&cached.currencies),
+                Some(cached) => rates_json(&cached.currencies, Some(cached.at.elapsed())),
                 None => json!({ "base": "BTC", "currencies": {} }),
             },
         }
     }
 }
 
-fn rates_json(currencies: &BTreeMap<String, f64>) -> Value {
+/// `age` is how long ago Coinbase gave this answer, so a page can say an old
+/// price is old. Fixed rates have no age.
+fn rates_json(currencies: &BTreeMap<String, f64>, age: Option<Duration>) -> Value {
     let mut map = serde_json::Map::new();
     for code in CODES {
         if let Some(price) = currencies.get(code) {
             map.insert((*code).to_string(), json!(price));
         }
     }
-    json!({ "base": "BTC", "currencies": map })
+    let mut value = json!({ "base": "BTC", "currencies": map });
+    if let Some(age) = age {
+        value["ageSecs"] = json!(age.as_secs());
+    }
+    value
+}
+
+/// The older of a coin's own answer and the BTC answer its fiat is scaled from.
+pub(crate) fn combined_age(own: Option<Duration>, btc: &Value) -> Option<u64> {
+    let btc = btc["ageSecs"].as_u64();
+    match (own.map(|age| age.as_secs()), btc) {
+        (Some(own), Some(btc)) => Some(own.max(btc)),
+        (own, btc) => own.or(btc),
+    }
 }
 
 /// The error is the wait Coinbase asked for, if it named or earned one.
@@ -297,6 +312,42 @@ mod tests {
             listener.accept().is_err(),
             "the node dialed the rates server"
         );
+    }
+
+    #[test]
+    fn an_old_answer_says_how_old_it_is_and_fixed_rates_have_no_age() {
+        let (proxy, _) = crate::egress::fake_socks::start_http(
+            "HTTP/1.1 500 No\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        );
+        let mut rates = Rates::new(Egress {
+            proxy: Some(proxy),
+            live_rates: true,
+        });
+        rates.source = "http://rates.test/".into();
+        rates.set_answer_for_tests(100_000.0, Duration::from_secs(2 * 3600));
+        let value = rates.value();
+        assert_eq!(
+            value["currencies"]["USD"], 100_000.0,
+            "Coinbase failed, so the old answer stands"
+        );
+        assert!(value["ageSecs"].as_u64().unwrap() >= 2 * 3600);
+
+        *rates.fixed.lock().unwrap() = Some(BTreeMap::from([("USD".to_string(), 50_000.0)]));
+        let fixed = rates.value();
+        assert_eq!(fixed["source"], "fixed");
+        assert!(fixed.get("ageSecs").is_none());
+    }
+
+    #[test]
+    fn a_coin_priced_through_btc_is_as_old_as_the_older_answer() {
+        let min = |m: u64| Some(Duration::from_secs(m * 60));
+        assert_eq!(combined_age(min(1), &json!({ "ageSecs": 600 })), Some(600));
+        assert_eq!(
+            combined_age(min(20), &json!({ "ageSecs": 600 })),
+            Some(1200)
+        );
+        assert_eq!(combined_age(min(1), &json!({})), Some(60));
+        assert_eq!(combined_age(None, &json!({})), None);
     }
 
     #[test]

@@ -4238,7 +4238,7 @@ button.ob-detail-seller:hover strong { color: var(--ob-link); }
 .ob-wallet-overview .ob-wallet-amount>span { font-size:14px; line-height:1.6; overflow-wrap:anywhere; }
 .ob-wallet-overview .ob-wallet-amount strong { font-variant-numeric:tabular-nums; overflow-wrap:anywhere; }
 .ob-wallet-overview .ob-wallet-pending .ob-wallet-amount strong { font-size:24px; line-height:1.5; }
-.ob-wallet-pending>p,.ob-wallet-test-note { font-size:13px; line-height:1.5; color:var(--ob-secondary); margin:8px 0 0; }
+.ob-wallet-pending>p { font-size:13px; line-height:1.5; color:var(--ob-secondary); margin:8px 0 0; }
 .ob-wallet-summary-footer { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px 24px; padding:16px 22px; border-top:1px solid var(--ob-line); }
 .ob-wallet-actions { display:flex; flex-wrap:wrap; gap:10px; }
 .ob-wallet-overview .ob-wallet-summary-footer .ob-wallet-sync { border:0; padding:0; display:flex; flex-flow:row wrap; align-items:center; gap:6px 10px; font-size:13px; line-height:1.5; }
