@@ -200,6 +200,13 @@ impl ChainSource for FallbackChain {
     fn status(&self) -> ChainStatus {
         let active = self.use_fallback();
         let mut status = if active { self.fallback.status() } else { self.primary.status() };
+        if active {
+            // Addresses stay on the filters, so their scan is the wallet's progress.
+            let primary = self.primary.status();
+            status.scanned_height = primary.scanned_height;
+            status.syncing = primary.syncing;
+            status.error = primary.error.or(status.error);
+        }
         status.fallback = Some("public-esplora");
         status.fallback_active = active;
         status
@@ -305,6 +312,9 @@ mod tests {
             thread::sleep(Duration::from_millis(50));
         }
         assert!(hits.load(Ordering::SeqCst) >= 1, "the tip query should still use the fallback");
+        let status = chain.status();
+        assert!(status.fallback_active);
+        assert_eq!((status.scanned_height, status.syncing), (Some(0), true), "the filter scan, not an empty height");
     }
 
     #[test]

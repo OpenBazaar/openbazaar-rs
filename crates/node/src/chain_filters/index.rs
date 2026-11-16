@@ -190,6 +190,28 @@ impl FilterIndex {
         }
     }
 
+    /// Scan again from `to`. The saved tip is not on any peer's chain, so
+    /// nothing above `to` is trusted. Matched transactions above it go back
+    /// to unconfirmed until the rescan finds them again.
+    pub(crate) fn rewind(&mut self, to: BlockId, now: u64) {
+        let above = to.height + 1;
+        for (_, block) in self.blocks.split_off(&above) {
+            for tx in block.txs {
+                self.mempool.entry(tx.compute_txid()).or_insert((tx, now));
+            }
+        }
+        self.commitments.split_off(&above);
+        self.headers.split_off(&above);
+        self.ahead.split_off(&above);
+        if to.height < self.start.height {
+            self.start = to;
+        }
+        self.processed = to;
+        self.caught_up = false;
+        self.in_flight = None;
+        self.rescan_from = self.rescan_from.filter(|from| *from < to.height);
+    }
+
     /// Check one block's filter against every followed script and record its commitment.
     pub(crate) fn check_filter(&mut self, height: u32, hash: BlockHash, content: &[u8]) -> FilterCheck {
         if let Some((_, from, seen)) = &mut self.in_flight {

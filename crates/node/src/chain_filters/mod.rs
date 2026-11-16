@@ -18,7 +18,7 @@ pub(crate) mod store;
 mod tests;
 
 use std::net::{SocketAddr, TcpStream};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -131,6 +131,10 @@ pub(crate) struct Shared {
     /// Restart the BIP157 client from this height instead of calling `rescan_from`.
     /// Kyoto's rescan wipes filter commitments and then errors with UnknownFilterHash.
     restart_from: Mutex<Option<u32>>,
+    /// Peer answers whose headers did not connect since a header last connected.
+    floating: AtomicU32,
+    /// Restart the client from [`default_start`]: the saved tip is not on the peers' chain.
+    rewind: AtomicBool,
 }
 
 impl Shared {
@@ -270,6 +274,8 @@ impl FilterChain {
                 wake: Notify::new(),
                 stop: AtomicBool::new(false),
                 restart_from: Mutex::new(None),
+                floating: AtomicU32::new(0),
+                rewind: AtomicBool::new(false),
             }),
             config,
             started: Mutex::new(None),
