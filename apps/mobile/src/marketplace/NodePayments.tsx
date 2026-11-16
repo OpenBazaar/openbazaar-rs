@@ -12,7 +12,6 @@ import {
   fetchOrders,
   type BuyerOrder,
   type CurrencyCode,
-  type RateTable,
   type SellerOrder
 } from '../catalog'
 import {
@@ -43,6 +42,8 @@ import {
   payKind
 } from '../orderState'
 import { useNodeResource } from '../useNodeResource'
+import { fetchWalletRates } from '../walletFiat'
+import { FiatEstimate } from './FiatEstimate'
 import { isLocked, lockWallet, quotePayment, type LockStatus, type Quote, type Ticket } from '../walletLock'
 import { RailMark } from './RailMark'
 import { Dialog, SpendConfirmDialog, UnlockDialog, WalletLockPanel, useLockState } from './WalletLock'
@@ -57,8 +58,9 @@ import { SpeedUpPayment } from './SpeedUpPayment'
 function usePaymentState(activeWallet: boolean, onWallet: () => void) {
   const network = useNodeResource(fetchNetwork, 30000)
   const wallet = useNodeResource(fetchWallet, 15000, activeWallet)
+  const rates = useNodeResource(fetchWalletRates, 60000, activeWallet)
   const lock = useLockState()
-  return { network, wallet, lock, onWallet }
+  return { network, wallet, rates, lock, onWallet }
 }
 type PaymentState = ReturnType<typeof usePaymentState>
 const NodeContext = createContext<PaymentState | null>(null)
@@ -131,29 +133,21 @@ function ConnectionCard({ info }: { info: NetworkInfo }) {
 }
 export function WalletAmount({
   sats,
-  rates,
   currency,
-  showFiat = true
+  testCoins
 }: {
   sats: number
-  rates: RateTable
   currency: CurrencyCode
-  showFiat?: boolean
+  testCoins: boolean
 }) {
-  const rate = showFiat ? rates[currency] : undefined
+  const { rates } = usePairedNode()
   return (
     <div className='ob-wallet-amount'>
       <strong>
         {sats.toLocaleString('en-US')} <small>sats</small>
       </strong>
-      <span>
-        {bitcoinAmount(sats)} BTC
-        {rate
-          ? ` ≈ ${new Intl.NumberFormat('en-US', { style: 'currency', currency }).format((sats / 1e8) * rate)}`
-          : showFiat
-            ? ' · fiat estimate unavailable'
-            : ''}
-      </span>
+      <span>{bitcoinAmount(sats)} BTC</span>
+      <FiatEstimate coins={sats / 1e8} rate={rates.data?.btc} currency={currency} testCoins={testCoins} />
     </div>
   )
 }
@@ -220,13 +214,12 @@ export function PaymentQr({ value, paper = false, label = 'Bitcoin payment QR co
     <p role='status'>Preparing QR code…</p>
   )
 }
-export function WalletPanel({ rates, currency, onOrders, embedded = false }: {
-  rates: RateTable
+export function WalletPanel({ currency, onOrders, embedded = false }: {
   currency: CurrencyCode
   onOrders?: () => void
   embedded?: boolean
 }) {
-  const { wallet, network, lock } = usePairedNode()
+  const { wallet, network, rates, lock } = usePairedNode()
   const orders = useNodeResource(fetchOrders, 15000, !!onOrders)
   const [busy, setBusy] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
@@ -242,14 +235,14 @@ export function WalletPanel({ rates, currency, onOrders, embedded = false }: {
   const pairing = [error, wallet.error, network.error, lock.error].some(message => !!message && shopPairingMessage(message))
   const pairingPrompt = pairingWalletPrompt(pairingKind(onThisComputer()))
   const address = current && freshAddress?.network === current.network ? freshAddress.address : current?.receiveAddress
-  const showFiat = current?.network === 'mainnet'
+  const testCoins = current?.network !== 'mainnet'
   const receiveBlocked = !address || mismatch || !!wallet.error || !!network.error || pairing
   const dueOrders = (orders.data ?? []).filter(order =>
     order.status === ORDER_STATUS.awaitingPayment && payKind(order) === 'btc' && !order.payTxid && !order.paying && amountDue(order.totalSats, order.receivedSats) > 0)
   async function refresh() {
     if (refreshing) return
     setRefreshing(true)
-    try { await Promise.all([wallet.refresh(), network.refresh(), lock.refresh(), orders.refresh()]) }
+    try { await Promise.all([wallet.refresh(), network.refresh(), rates.refresh(), lock.refresh(), orders.refresh()]) }
     finally { setRefreshing(false); setCheckedAt(Date.now()) }
   }
   async function nextAddress() {
@@ -299,13 +292,12 @@ export function WalletPanel({ rates, currency, onOrders, embedded = false }: {
         <div className='ob-wallet-balance-grid'>
           <article className='ob-wallet-spendable'>
             <h2>{stale && current ? 'Last known spendable balance' : 'Spendable balance'}</h2>
-            {current ? <WalletAmount sats={current.balance.spendableSats} rates={rates} currency={currency} showFiat={showFiat} />
+            {current ? <WalletAmount sats={current.balance.spendableSats} currency={currency} testCoins={testCoins} />
               : <p className='ob-wallet-loading' role='status'>{wallet.loading ? 'Loading balance…' : 'Balance unavailable'}</p>}
-            {current?.network === 'testnet4' && <p className='ob-wallet-test-note'>Test coins · no monetary value</p>}
           </article>
           <article className='ob-wallet-pending'>
             <h2>Pending confirmation</h2>
-            {current ? <WalletAmount sats={current.balance.pendingSats} rates={rates} currency={currency} showFiat={showFiat} /> : <span>—</span>}
+            {current ? <WalletAmount sats={current.balance.pendingSats} currency={currency} testCoins={testCoins} /> : <span>—</span>}
             <p>Available to spend after confirmation.</p>
           </article>
         </div>
@@ -316,7 +308,7 @@ export function WalletPanel({ rates, currency, onOrders, embedded = false }: {
           </div>
           <div className='ob-wallet-sync'>
             <span className={`ob-status-dot ${stale ? 'is-loading' : ''}`} aria-hidden='true' />
-            <span>{current?.lastSync ? `Last synced ${new Date(current.lastSync * 1000).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}` : 'Not synced yet'}</span>
+            <span>{current?.lastSync ? `Last synced ${new Date(current.lastSync * 1000).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })} · updates automatically` : 'Not synced yet'}</span>
             <button type='button' className='ob-text-link' disabled={refreshing || wallet.loading} onClick={() => void refresh()}>{refreshing ? 'Refreshing…' : 'Refresh wallet'}</button>
           </div>
         </div>

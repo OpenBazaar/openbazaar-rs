@@ -267,6 +267,3 @@ export async function fetchXmrPayment(id: string): Promise<XmrPayment | null> {
 export async function fetchXmrBackend(): Promise<XmrBackend> {
   return parseXmrBackend(record(await paired('/network')).xmrBackend)
 }
-export async function fetchXmrRate(): Promise<XmrRate | null> {
-  return parseXmrRate(record(await paired('/rates')).xmr)
-}
