@@ -508,15 +508,22 @@ impl ServeOptions {
 pub(crate) const MEMPOOL_ONION_HOST: &str =
     "mempoolhqx4isw62xs7abwphsq7ldayuidyx2v2oethdhhj6mlo2r6ad.onion";
 
-/// `--xmr-daemon default` on testnet4: public Monero stagenet daemons, onion
-/// only, so no Tor exit relay sees or alters the RPC. The first and third are
-/// plowsof's (monerodevs.org); the second is another operator, so a payment is
-/// broadcast through a different operator than the one that served its ring
-/// members. The desktop app and the home-node packages use this list.
-pub const DEFAULT_STAGENET_XMR_DAEMONS: [&str; 3] = [
+/// `--xmr-daemon default` on testnet4: public Monero stagenet daemons. The
+/// onions are tried first, so a Tor exit does not see the RPC while one of
+/// them answers. The first and third are plowsof's (monerodevs.org); the
+/// second is another operator, so a payment is broadcast through a different
+/// operator than the one that served its ring members. The last is that same
+/// operator's clearnet stagenet node, reached through the node's Tor SOCKS,
+/// and it is tried only after every onion in the attempt has failed. A live
+/// scan saw each onion accept `get_info` and then time out on the block
+/// fetch; this node returned `get_info` and a block in under a second over
+/// the same SOCKS proxy. The desktop app and the home-node packages use this
+/// list.
+pub const DEFAULT_STAGENET_XMR_DAEMONS: [&str; 4] = [
     "http://plowsoffjexmxalw73tkjmf422gq6575fc7vicuu4javzn2ynnte6tyd.onion:38089",
     "http://ct36dsbe3oubpbebpxmiqz4uqk6zb6nhmkhoekileo4fts23rvuse2qd.onion:38081",
     "http://plowsof3t5hogddwabaeiyrno25efmzfxyro2vligremt7sxpsclfaid.onion:38089",
+    "http://node.monerodevs.org:38089",
 ];
 
 /// Checks flags that need a proxy while `--tor` has not started one yet.
@@ -844,11 +851,14 @@ mod tests {
             options.xmr_daemons,
             DEFAULT_STAGENET_XMR_DAEMONS.map(String::from).to_vec()
         );
+        let onions = &DEFAULT_STAGENET_XMR_DAEMONS[..DEFAULT_STAGENET_XMR_DAEMONS.len() - 1];
         assert!(
-            DEFAULT_STAGENET_XMR_DAEMONS
-                .iter()
-                .all(|url| url.starts_with("http://") && url.contains(".onion:")),
-            "onion only"
+            onions.iter().all(|url| url.starts_with("http://") && url.contains(".onion:")),
+            "onions are tried before the clearnet fallback"
+        );
+        assert_eq!(
+            DEFAULT_STAGENET_XMR_DAEMONS[DEFAULT_STAGENET_XMR_DAEMONS.len() - 1],
+            "http://node.monerodevs.org:38089"
         );
         assert!(
             ServeOptions::parse(&args(&["--xmr-daemon", "default"])).is_err(),
@@ -863,7 +873,7 @@ mod tests {
             "http://127.0.0.1:38081,default",
         ]))
         .unwrap();
-        assert_eq!(mixed.xmr_daemons.len(), 4);
+        assert_eq!(mixed.xmr_daemons.len(), 5);
         assert_eq!(mixed.xmr_daemons[0], "http://127.0.0.1:38081");
         let mainnet = ServeOptions::parse(&args(&[
             "--network",

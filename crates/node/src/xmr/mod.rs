@@ -353,6 +353,10 @@ impl Node {
         self.xmr_fill_keys();
         let mut failed = None;
         for slot in self.xmr.slots() {
+            // A queued spend is one request, and it has to go out before the
+            // next wallet's scan. The scan used to hold this thread for the
+            // whole round, so a payment sat in memory until every wallet finished.
+            self.run_xmr_pay_job(Duration::ZERO);
             if let Err(err) = self.sync_slot(slot, chain.as_ref()) {
                 failed = Some(err);
             }
@@ -427,6 +431,17 @@ impl Node {
     pub(crate) fn run_xmr(&self, every: Duration, stop: &AtomicBool) {
         if self.xmr.chain().is_none() {
             return;
+        }
+        // A queued payment lives only in memory. After a restart nothing is
+        // sending it, so the order can be paid again.
+        let stuck: Vec<String> = self
+            .orders()
+            .on_network()
+            .filter(|order| order.paying && order.pay_txid.is_none())
+            .map(|order| order.id.clone())
+            .collect();
+        for id in stuck {
+            let _ = self.orders().update(&id, |order| order.paying = false);
         }
         let mut next_sync = Instant::now();
         while !stop.load(Ordering::Relaxed) {
