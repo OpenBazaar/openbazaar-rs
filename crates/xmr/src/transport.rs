@@ -87,10 +87,17 @@ impl RpcTransport {
     /// `proxy` is `socks5h://HOST:PORT`. Chain fetches share one SOCKS
     /// username per transport ([`CHAIN_ROUTES`]); every other connection gets
     /// its own, so Tor puts it on its own circuit. None is kept alive.
+    ///
+    /// `deadline` bounds the whole exchange. A node that accepts and then
+    /// stays silent has to be given up so the next daemon can be asked.
     pub fn new(url: &str, proxy: Option<&str>) -> Result<Self, String> {
         let (connect, request) =
             if proxy.is_some() { (TOR_CONNECT_TIMEOUT, TOR_REQUEST_TIMEOUT) } else { (CONNECT_TIMEOUT, REQUEST_TIMEOUT) };
-        Self::build(url, proxy, connect, request, request)
+        Self::bounded(url, proxy, connect, request)
+    }
+
+    pub(crate) fn bounded(url: &str, proxy: Option<&str>, connect: Duration, deadline: Duration) -> Result<Self, String> {
+        Self::build(url, proxy, connect, deadline, deadline)
     }
 
     /// `deadline` bounds the whole exchange, including a SOCKS connect or a body

@@ -364,6 +364,16 @@ impl Node {
         }
     }
 
+    /// Write a finished step back before the next request starts.
+    fn keep_height(&self, slot: &Mutex<Slot>, copy: &openbazaar_xmr::XmrWallet) -> Result<(), String> {
+        let mut slot = guard(slot);
+        let Some(wallet) = slot.wallet.as_mut() else { return Ok(()) };
+        if wallet.merge_sync(copy.clone()) {
+            slot.save(&self.xmr.vault).map_err(|err| err.to_string())?;
+        }
+        Ok(())
+    }
+
     /// Sync a copy of the wallet without holding its lock, then merge it back.
     fn sync_slot(&self, slot: &Mutex<Slot>, chain: &dyn XmrChain) -> Result<(), String> {
         let mut copy = {
@@ -386,9 +396,14 @@ impl Node {
         let started = Instant::now();
         for _ in 0..SYNC_STEPS {
             match copy.sync_step(chain, SYNC_BLOCKS) {
-                Ok(step) if step.caught_up() => break,
-                Ok(_) if started.elapsed() >= SYNC_ROUND => break,
-                Ok(_) => {}
+                Ok(step) => {
+                    // Save before the next request. A later daemon that never
+                    // answers must not throw away a height already scanned.
+                    self.keep_height(slot, &copy)?;
+                    if step.caught_up() || started.elapsed() >= SYNC_ROUND {
+                        break;
+                    }
+                }
                 Err(err) => {
                     result = Err(err);
                     break;
@@ -396,11 +411,6 @@ impl Node {
             }
         }
         let mut slot = guard(slot);
-        if let Some(wallet) = slot.wallet.as_mut() {
-            if wallet.merge_sync(copy) {
-                slot.save(&self.xmr.vault).map_err(|err| err.to_string())?;
-            }
-        }
         match &result {
             Ok(()) => {
                 slot.last_sync = Some(now_secs());
