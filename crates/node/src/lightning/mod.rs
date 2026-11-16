@@ -29,6 +29,9 @@ mod checkout;
 mod http;
 pub(crate) mod options;
 mod pay;
+mod sale;
+#[cfg(test)]
+mod sale_tests;
 #[cfg(test)]
 mod regtest_tests;
 #[cfg(test)]
@@ -54,6 +57,7 @@ use crate::{Error, Node};
 pub(crate) use checkout::{add_ln_flags, ln_rail_of};
 pub(crate) use http::response;
 pub(crate) use pay::LnTerms;
+pub(crate) use sale::{add_terms, payment_from_terms};
 pub use options::LnFlags;
 
 const KEYS_FILE: &str = "ln-keys.obv";
@@ -517,6 +521,7 @@ impl Node {
             self.ln_start();
             if self.ln.rail().is_some() {
                 self.ln_update_orders();
+                self.ln_update_sales();
             }
             std::thread::sleep(Duration::from_secs(2));
         }

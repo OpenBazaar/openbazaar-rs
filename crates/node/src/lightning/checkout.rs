@@ -49,21 +49,26 @@ pub(crate) fn add_ln_flags(node: &Node, value: &mut Value) {
 
 impl Node {
     /// Everything a Lightning package needs, checked before any letter is sealed.
+    ///
+    /// A store on this node needs this node's Lightning node, which issues the
+    /// invoice at checkout. A store on another node issues its own invoice and
+    /// mails it back, so this node does not have to be running Lightning yet.
     pub(crate) fn ln_ready(&self, seller: &str) -> Result<(), OrderError> {
         if self.ln_blocked() {
             return Err(OrderError::Invalid(super::MAINNET_BLOCKED));
         }
-        if self.ln.config().is_none() {
+        let local = self.ln_sellers().iter().any(|name| name == seller);
+        if local && self.ln.config().is_none() {
             return Err(OrderError::Invalid("Lightning is off on this node. Start it with --lightning to pay over Lightning."));
         }
         if !self.accepts_lightning(seller) {
             return Err(OrderError::Invalid("This store does not accept Lightning."));
         }
+        if !local {
+            return Ok(());
+        }
         if self.ln.rail().is_none() {
             return Err(OrderError::Invalid("The Lightning node is still starting. Try again in a minute."));
-        }
-        if !self.ln_sellers().iter().any(|name| name == seller) {
-            return Err(OrderError::Invalid("This store's Lightning invoices cannot be fetched yet."));
         }
         Ok(())
     }
@@ -90,6 +95,7 @@ impl Node {
             "expiresAt": invoice.expires_at,
             "jit": invoice.jit,
             "lspFeeCapMsat": invoice.lsp_fee_cap_msat,
+            "network": self.ln_network_name(),
             "issuer": "local",
             "watched": ["ln"],
         }))

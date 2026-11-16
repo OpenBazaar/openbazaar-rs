@@ -1,9 +1,10 @@
 //! [`XmrChain`] over monerod's RPC, through [`RpcTransport`].
 //!
-//! Nodes are tried in the order given; a node that fails is skipped until the
-//! others fail too. Each node must have this network's genesis block. When
-//! there are two or more nodes, a payment is broadcast through a different
-//! node than the one that supplied its ring members.
+//! Nodes are tried in the order given. A node that fails is left alone for a
+//! while, so one dead onion is not dialed again at the start of every scan.
+//! Each node must have this network's genesis block. When there are two or
+//! more nodes, a payment is broadcast through a different node than the one
+//! that supplied its ring members.
 
 use std::future::Future;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -28,6 +29,8 @@ const MAX_FEE_PER_WEIGHT: u64 = 1_000_000;
 /// How long every node may keep failing before it is reported as an error
 /// rather than as still connecting.
 const ERROR_GRACE: Duration = Duration::from_secs(300);
+/// After a node fails, leave it out of the rotation for this long.
+const SKIP_FOR: Duration = Duration::from_secs(90);
 /// Blocks per `get_blocks.bin` request through Tor. Stagenet onion nodes
 /// dropped 15-block requests partway through, while 4 at a time came through.
 const TOR_BLOCKS_PER_REQUEST: u64 = 4;
@@ -38,6 +41,9 @@ struct Slot {
     url: String,
     transport: RpcTransport,
     daemon: Mutex<Option<Daemon>>,
+    /// Do not dial this node again until then. A stall has to time out once;
+    /// after that the wallet uses the other nodes.
+    skip_until: Mutex<Option<Instant>>,
 }
 
 pub struct DaemonChain {
@@ -84,7 +90,12 @@ impl DaemonChain {
             .iter()
             .map(|node| {
                 let proxy = config.proxied(node).then(|| config.proxy.clone()).flatten();
-                Ok(Slot { url: node.url.clone(), transport: RpcTransport::new(&node.url, proxy.as_deref())?, daemon: Mutex::new(None) })
+                Ok(Slot {
+                    url: node.url.clone(),
+                    transport: RpcTransport::new(&node.url, proxy.as_deref())?,
+                    daemon: Mutex::new(None),
+                    skip_until: Mutex::new(None),
+                })
             })
             .collect::<Result<Vec<_>, String>>()?;
         Ok(Self { config, runtime, slots, current: AtomicUsize::new(0), status: Mutex::new(Seen::default()) })
@@ -107,22 +118,32 @@ impl DaemonChain {
         Ok(daemon)
     }
 
-    /// Run `call` against the current node, then the others in order.
-    /// `skip` starts that many nodes further on (for broadcasting elsewhere).
+    fn ready(&self, index: usize) -> bool {
+        self.slots[index].skip_until.lock().unwrap().is_none_or(|until| Instant::now() >= until)
+    }
+
+    /// Run `call` against the current node, then the others in order, skipping
+    /// any that failed recently. `skip` starts that many nodes further on (for
+    /// broadcasting elsewhere).
     fn call<R, F, Fut>(&self, skip: usize, call: F) -> Result<R, String>
     where
         F: Fn(Daemon) -> Fut,
         Fut: Future<Output = Result<R, Failure>>,
     {
         let count = self.slots.len();
-        let start = self.current.load(Ordering::Relaxed) + skip.min(count - 1);
+        let start = self.current.load(Ordering::Relaxed) + skip.min(count.saturating_sub(1));
+        let order = attempt_order(count, start, |index| self.ready(index));
+        if order.is_empty() {
+            let status = self.status.lock().unwrap();
+            return Err(status.error.clone().unwrap_or_else(|| "every Monero node failed recently; trying again shortly".into()));
+        }
         let mut last = String::new();
-        for offset in 0..count {
-            let index = (start + offset) % count;
+        for index in order {
             let slot = &self.slots[index];
             let result = self.connect(slot).map_err(Failure::Node).and_then(|daemon| self.runtime.block_on(call(daemon)));
             match result {
                 Ok(value) => {
+                    *slot.skip_until.lock().unwrap() = None;
                     if skip == 0 {
                         self.current.store(index, Ordering::Relaxed);
                     }
@@ -135,6 +156,10 @@ impl DaemonChain {
                 Err(Failure::Final(err)) => return Err(err),
                 Err(Failure::Node(err)) => {
                     *slot.daemon.lock().unwrap() = None;
+                    *slot.skip_until.lock().unwrap() = Some(Instant::now() + SKIP_FOR);
+                    if skip == 0 {
+                        self.current.store((index + 1) % count, Ordering::Relaxed);
+                    }
                     last = format!("{}: {err}", slot.url);
                 }
             }
@@ -144,6 +169,12 @@ impl DaemonChain {
         status.failing_since.get_or_insert_with(Instant::now);
         Err(last)
     }
+}
+
+/// Indexes to dial, starting at `start`, leaving out nodes `ready` rejects.
+/// Empty when every node is resting, so the caller does not dial the dead one again.
+fn attempt_order(count: usize, start: usize, ready: impl Fn(usize) -> bool) -> Vec<usize> {
+    (0..count).map(|offset| (start + offset) % count).filter(|index| ready(*index)).collect()
 }
 
 /// The error to show, and whether the nodes are still being reached.
@@ -248,6 +279,14 @@ mod tests {
         assert_eq!(reported(&failing, start + ERROR_GRACE), (Some("all three failed".into()), false));
         let answered = Seen { active: Some("http://a.onion".into()), ..Seen::default() };
         assert_eq!(reported(&answered, start), (None, false));
+    }
+
+    #[test]
+    fn a_failed_node_is_not_dialed_ahead_of_the_others() {
+        assert_eq!(attempt_order(3, 0, |index| index != 0), vec![1, 2]);
+        assert_eq!(attempt_order(3, 2, |index| index != 0), vec![2, 1]);
+        assert!(attempt_order(3, 0, |_| false).is_empty(), "all three are resting, so nothing is dialed");
+        assert_eq!(attempt_order(3, 1, |_| true), vec![1, 2, 0]);
     }
 
     #[test]

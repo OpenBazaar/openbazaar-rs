@@ -58,8 +58,10 @@ pub(crate) use sale::{add_terms, follow_seller, payment_from_terms};
 const WATCH_FILE: &str = "xmr-watch.obv";
 const STATE_FILE: &str = "xmr-state.obv";
 const STORES_FILE: &str = "xmr-stores.obv";
-/// Blocks fetched per request while syncing.
-const SYNC_BLOCKS: u64 = 100;
+/// Blocks per sync step. One step is one request over Tor (see the daemon's
+/// chunk size), and the wallet saves its height when the step returns, so a
+/// later failure does not throw away a scan that already finished.
+const SYNC_BLOCKS: u64 = 4;
 /// Requests per wallet per round, so one wallet far behind does not starve the others.
 const SYNC_STEPS: usize = 20;
 /// A round ends after the step that passes this, so progress over a slow
@@ -364,7 +366,22 @@ impl Node {
 
     /// Sync a copy of the wallet without holding its lock, then merge it back.
     fn sync_slot(&self, slot: &Mutex<Slot>, chain: &dyn XmrChain) -> Result<(), String> {
-        let Some(mut copy) = guard(slot).wallet.clone() else { return Ok(()) };
+        let mut copy = {
+            let slot = guard(slot);
+            let Some(mut copy) = slot.wallet.clone() else { return Ok(()) };
+            // A wallet that has never saved a height still has to cover payments
+            // that arrived while no daemon would answer. The watch file is written
+            // when the wallet is created; Monero's block time is about two minutes.
+            if copy.scanned().is_none() && copy.sync_from().is_none() {
+                let age = std::fs::metadata(slot.dir.join(WATCH_FILE))
+                    .and_then(|meta| meta.modified())
+                    .ok()
+                    .and_then(|time| time.elapsed().ok());
+                let blocks = age.map(|age| age.as_secs() / 120 + 30).unwrap_or(30);
+                copy.cover_unscanned(blocks);
+            }
+            copy
+        };
         let mut result = Ok(());
         let started = Instant::now();
         for _ in 0..SYNC_STEPS {

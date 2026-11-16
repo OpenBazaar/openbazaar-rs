@@ -72,6 +72,9 @@ pub fn check_request(route: &str, body: &[u8]) -> Result<(), String> {
 pub struct RpcTransport {
     url: String,
     client: reqwest::Client,
+    /// Bounds the whole exchange, including a body that stalls after the headers.
+    /// reqwest's own timeout ends when the headers arrive.
+    request_timeout: Duration,
 }
 
 impl RpcTransport {
@@ -79,12 +82,19 @@ impl RpcTransport {
     /// username per transport ([`CHAIN_ROUTES`]); every other connection gets
     /// its own, so Tor puts it on its own circuit. None is kept alive.
     pub fn new(url: &str, proxy: Option<&str>) -> Result<Self, String> {
-        static NEXT: AtomicU64 = AtomicU64::new(0);
         let (connect, request) =
             if proxy.is_some() { (TOR_CONNECT_TIMEOUT, TOR_REQUEST_TIMEOUT) } else { (CONNECT_TIMEOUT, REQUEST_TIMEOUT) };
+        Self::build(url, proxy, connect, request, request)
+    }
+
+    /// `deadline` bounds the whole exchange, including a SOCKS connect or a body
+    /// that stalls. `reqwest_timeout` is the client's own timer, which does not
+    /// cover every stall, so `deadline` is the one the wallet relies on.
+    fn build(url: &str, proxy: Option<&str>, connect: Duration, reqwest_timeout: Duration, deadline: Duration) -> Result<Self, String> {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
         let mut builder = reqwest::Client::builder()
             .connect_timeout(connect)
-            .timeout(request)
+            .timeout(reqwest_timeout)
             .redirect(reqwest::redirect::Policy::none())
             .pool_max_idle_per_host(0);
         builder = match proxy {
@@ -100,7 +110,7 @@ impl RpcTransport {
             None => builder.no_proxy(),
         };
         let client = builder.build().map_err(|err| err.to_string())?;
-        Ok(Self { url: url.trim_end_matches('/').to_string(), client })
+        Ok(Self { url: url.trim_end_matches('/').to_string(), client, request_timeout: deadline })
     }
 }
 
@@ -113,25 +123,32 @@ impl HttpTransport for RpcTransport {
     ) -> impl Send + std::future::Future<Output = Result<Vec<u8>, InterfaceError>> {
         let checked = check_request(route, &body);
         let request = self.client.post(format!("{}/{route}", self.url)).body(body);
+        let timeout = self.request_timeout;
         async move {
             checked.map_err(InterfaceError::InternalError)?;
-            let mut response = request
-                .send()
-                .await
-                .map_err(|err| InterfaceError::InterfaceError(format!("monerod: {}", err.without_url())))?;
-            if !response.status().is_success() {
-                return Err(InterfaceError::InterfaceError(format!("monerod answered {}", response.status())));
-            }
-            let mut out = Vec::new();
-            while let Some(chunk) =
-                response.chunk().await.map_err(|err| InterfaceError::InterfaceError(format!("monerod: {}", err.without_url())))?
-            {
-                out.extend_from_slice(&chunk);
-                if response_size_limit.is_some_and(|limit| out.len() > limit) {
-                    return Err(InterfaceError::InterfaceError("monerod sent more than was asked for".into()));
+            let fetch = async {
+                let mut response = request
+                    .send()
+                    .await
+                    .map_err(|err| InterfaceError::InterfaceError(format!("monerod: {}", err.without_url())))?;
+                if !response.status().is_success() {
+                    return Err(InterfaceError::InterfaceError(format!("monerod answered {}", response.status())));
                 }
+                let mut out = Vec::new();
+                while let Some(chunk) =
+                    response.chunk().await.map_err(|err| InterfaceError::InterfaceError(format!("monerod: {}", err.without_url())))?
+                {
+                    out.extend_from_slice(&chunk);
+                    if response_size_limit.is_some_and(|limit| out.len() > limit) {
+                        return Err(InterfaceError::InterfaceError("monerod sent more than was asked for".into()));
+                    }
+                }
+                Ok(out)
+            };
+            match tokio::time::timeout(timeout, fetch).await {
+                Ok(result) => result,
+                Err(_) => Err(InterfaceError::InterfaceError("monerod: timed out".into())),
             }
-            Ok(out)
         }
     }
 }
@@ -164,5 +181,43 @@ mod tests {
             assert!(ROUTES.contains(&route));
             assert!(!shares_circuit(&url(route)), "{route} reveals a spend and keeps its own circuit");
         }
+    }
+
+    #[test]
+    fn a_stalled_body_does_not_hold_the_client() {
+        use std::io::Read;
+        use monero_daemon_rpc::HttpTransport;
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            ready_tx.send(()).unwrap();
+            let Ok((mut stream, _)) = listener.accept() else { return };
+            let mut buf = [0u8; 2048];
+            // Read the request, then hold the socket open and send nothing.
+            // Reqwest's own timer is set long below, so only the wallet's
+            // deadline can unblock this.
+            let _ = stream.read(&mut buf);
+            let _ = stream.read(&mut buf);
+        });
+        ready_rx.recv().unwrap();
+        std::thread::sleep(Duration::from_millis(20));
+        let transport = RpcTransport::build(
+            &format!("http://{address}"),
+            None,
+            Duration::from_millis(200),
+            Duration::from_secs(30),
+            Duration::from_millis(400),
+        )
+        .unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let started = std::time::Instant::now();
+        let err = runtime
+            .block_on(async { HttpTransport::post(&transport, "get_height", Vec::new(), None).await })
+            .expect_err("the body never arrives");
+        let elapsed = started.elapsed();
+        assert!(format!("{err:?}").contains("timed out"), "{err:?} after {elapsed:?}");
+        assert!(elapsed < Duration::from_secs(2), "a stalled monerod held the client for {elapsed:?}");
     }
 }

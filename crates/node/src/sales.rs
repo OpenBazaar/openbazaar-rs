@@ -170,6 +170,7 @@ impl Node {
         let priced = match (match rail {
             Some("zec") => self.zec_sale_refusal(),
             Some("xmr") => self.xmr_sale_refusal(),
+            Some("ln") => self.ln_sale_refusal(),
             _ => None,
         }, order.terms.lines.is_empty()) {
             (Some(reason), _) => Err(reason.to_string()),
@@ -233,6 +234,7 @@ impl Node {
         let payment = match rail {
             Some("zec") => Some(self.zec_sale_payment(total).map_err(retry)?),
             Some("xmr") => Some(self.xmr_sale_payment(total).map_err(retry)?),
+            Some("ln") => Some(self.ln_sale_payment(total, &id).map_err(retry)?),
             _ => None,
         };
         let address = match payment {
@@ -280,6 +282,7 @@ impl Node {
             match payment["rail"].as_str() {
                 Some("zec") => crate::zec::add_terms(&mut terms, &payment),
                 Some("xmr") => crate::xmr::add_terms(&mut terms, &payment),
+                Some("ln") => crate::lightning::add_terms(&mut terms, &payment),
                 _ => {}
             }
             sale["payment"] = payment;

@@ -25,6 +25,32 @@ fn sync(wallet: &mut XmrWallet, chain: &dyn XmrChain) {
 }
 
 #[test]
+fn a_first_scan_keeps_its_start_and_can_see_an_older_payment() {
+    let chain = MockChain::new(NET);
+    let (_, payer) = wallet(21);
+    let address = payer.primary_address();
+    chain.mine_to(&address, XMR);
+    chain.mine(40);
+
+    let (_, mut narrow) = wallet(21);
+    sync(&mut narrow, &chain);
+    assert_eq!(narrow.balance().unlocked + narrow.balance().pending, 0, "twenty blocks back does not reach it");
+
+    let (_, mut wide) = wallet(21);
+    wide.cover_unscanned(80);
+    let tip = chain.tip().unwrap();
+    wide.sync_step(&chain, 1).unwrap();
+    let pinned = wide.sync_from();
+    assert_eq!(pinned, Some(tip - 80));
+    chain.mine(10);
+    sync(&mut wide, &chain);
+    assert_eq!(wide.sync_from(), pinned, "a later tip does not move the window");
+    assert_eq!(wide.balance().unlocked, XMR);
+    let restored = XmrWallet::decode(&wide.encode(), NET, wide.keys().clone()).unwrap();
+    assert_eq!(restored.sync_from(), pinned);
+}
+
+#[test]
 fn subaddresses_are_never_reused_across_restarts() {
     let (spend, mut wallet) = wallet(1);
     let mut seen = HashSet::new();
