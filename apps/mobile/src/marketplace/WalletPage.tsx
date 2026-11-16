@@ -10,6 +10,7 @@ import { CopyAddress, CopyButton } from './CopyAddress'
 import { InfoTip } from './InfoTip'
 import { CopyPaymentValue, PaymentQr, usePairedNode, WalletAmount, WalletPanel } from './NodePayments'
 import { FiatEstimate } from './FiatEstimate'
+import { MoneroSendButton } from './MoneroSend'
 import { PageHeading } from './PageHeading'
 import { RailMark, type Rail } from './RailMark'
 import { Dialog, WalletLockPanel } from './WalletLock'
@@ -136,7 +137,7 @@ function MoneroPanel({ resource, waiting, backend, fiatRate, currency, onManage,
     <section className='ob-wallet-asset-summary' aria-label='Monero balances'>
       <WalletHeader rail='monero' title='Monero' network={backend.network === 'stagenet' ? 'Stagenet · test coins, no value' : 'Mainnet'} status={mismatch ? 'Network mismatch' : waiting ? 'Waiting for Tor' : stale ? 'Needs attention' : current?.keys === 'unlock-to-create' ? 'Setup required' : connecting ? 'Connecting' : !current?.lastSync ? 'Syncing' : current.tip != null && current.scannedHeight != null && current.scannedHeight < current.tip ? 'Syncing' : 'Synced'} attention={mismatch || stale || !current?.lastSync}/>
       <div className='ob-wallet-metrics'><Metric title={stale ? 'Last known spendable balance' : 'Available to spend'}>{current?.balance ? amount(current.balance.unlocked) : <p className='ob-wallet-unavailable'>{resource.loading ? 'Loading balance…' : 'Balance unavailable'}</p>}</Metric><Metric title='Pending confirmation' note='Available after the Monero unlock period.'>{current?.balance ? amount(current.balance.pending) : <p className='ob-wallet-unavailable'>Balance unavailable</p>}</Metric></div>
-      <div className='ob-wallet-asset-footer'><button type='button' className='ob-primary' disabled={receiveBlocked} onClick={() => setReceive(true)}>Receive Monero</button><button type='button' className='ob-secondary' onClick={onOrders}>Your orders</button><span>{current?.lastSync ? `Last synced ${new Date(current.lastSync * 1000).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}` : connecting || 'Not synced yet'}</span></div>
+      <div className='ob-wallet-asset-footer'><button type='button' className='ob-primary' disabled={receiveBlocked} onClick={() => setReceive(true)}>Receive Monero</button>{current && <MoneroSendButton network={current.network} blocked={receiveBlocked || !current.balance?.unlocked} onSent={() => void resource.refresh()}/>}<button type='button' className='ob-secondary' onClick={onOrders}>Your orders</button><span>{current?.lastSync ? `Last synced ${new Date(current.lastSync * 1000).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}` : connecting || 'Not synced yet'}</span></div>
       {(mismatch || (!waiting && (resource.error || current?.syncError || backend.error))) && <p className='ob-wallet-sync-error' role='alert'>{mismatch ? 'Wallet and Monero networks do not match. Receiving is disabled.' : resource.error || current?.syncError || backend.error}{stale && current?.balance ? ' Showing the last available balance.' : ''}</p>}
     </section>
     <section className='ob-wallet-asset-receive'><header><div><h2>Receive Monero</h2><p>Use a fresh subaddress to keep deposits separate.</p></div><button type='button' className='ob-text-link' onClick={onManage}>Monero settings</button></header>

@@ -154,6 +154,11 @@ step-up folds into two requests:
    nothing. The node rebuilds the send at the quoted rate and refuses one
    that pays a different amount or a fee above the cap.
 
+Monero sends take the same two steps at `POST /xmr/wallet/send/quote
+{address, amountPiconero}` (a decimal string; no send max, since the fee
+depends on the inputs) and `POST /xmr/wallet/send`. The signed fee may rise
+to the quoted fee plus half, as for orders.
+
 Paired devices may call neither ([`home-node.md`](home-node.md)).
 
 Escrow release, dispute, and the moderator's ruling need an unlocked wallet
@@ -209,6 +214,8 @@ All routes need the loopback guard and the pairing token. Lock errors avoid
 | `POST /orders/{id}/pay` | unlocked | `{ticket, confirm?}` | `202`, the order |
 | `POST /wallet/send/quote` | unlocked | `{address, amountSats}` or `{address, max: true}`, `linkCoins?` | `{quote, ...terms}` |
 | `POST /wallet/send` | unlocked | `{quote, passphrase, confirm: true}` | `{txid, ...terms}` |
+| `POST /xmr/wallet/send/quote` | unlocked | `{address, amountPiconero}` | `{quote, ...terms}` |
+| `POST /xmr/wallet/send` | unlocked | `{quote, passphrase, confirm: true}` | `{txid, ...terms}` |
 
 Lock status: `state` (`setup`, `locked`, `unlocked`), `autoLockMinutes`,
 `autoLockRange`, `lockInSecs`, `failedAttempts`, `retryAfterSecs`,

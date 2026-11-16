@@ -77,7 +77,7 @@ fn ticket_error(err: TicketError) -> PayError {
     }
 }
 
-fn send_error(err: openbazaar_xmr::SendError) -> PayError {
+pub(super) fn send_error(err: openbazaar_xmr::SendError) -> PayError {
     match err {
         openbazaar_xmr::SendError::FeeAboveCap { .. } => PayError::Conflict(format!("{err} Nothing was sent.")),
         openbazaar_xmr::SendError::Library(_) | openbazaar_xmr::SendError::WrongKey => PayError::Failed(err.to_string()),
@@ -86,7 +86,7 @@ fn send_error(err: openbazaar_xmr::SendError) -> PayError {
 }
 
 impl Node {
-    fn xmr_chain_or_refuse(&self) -> Result<std::sync::Arc<dyn openbazaar_xmr::XmrChain>, PayError> {
+    pub(super) fn xmr_chain_or_refuse(&self) -> Result<std::sync::Arc<dyn openbazaar_xmr::XmrChain>, PayError> {
         self.xmr.chain().cloned().ok_or_else(|| PayError::Invalid("Monero is off on this node.".into()))
     }
 
@@ -222,6 +222,19 @@ impl Node {
         if terms.order_id != order.id || terms.destination != destination.to_string() || terms.amount != due {
             return Err(PayError::Conflict(TERMS_CHANGED.into()));
         }
+        Ok(self.xmr_spend(&chain, &destination, due, terms.fee_cap)?.0)
+    }
+
+    /// Sign and broadcast `amount` to `destination` from the node wallet,
+    /// refusing a fee above `fee_cap`. Returns the txid and the fee paid.
+    pub(super) fn xmr_spend(
+        &self,
+        chain: &std::sync::Arc<dyn openbazaar_xmr::XmrChain>,
+        destination: &MoneroAddress,
+        amount: u64,
+        fee_cap: u64,
+    ) -> Result<(String, u64), PayError> {
+        let _spending = guard(&self.xmr.spending);
         let spend = {
             let key = self.lock.spend_key()?;
             let dir = self.buyer_wallet().dir.clone();
@@ -230,10 +243,10 @@ impl Node {
         };
         let wallet = self.xmr.buyer().wallet.clone().ok_or(PayError::Locked(crate::wallet_lock::State::Locked.as_str()))?;
         let fee_rate = chain.fee_rate().map_err(PayError::Chain)?;
-        let quote = quote_payment(&wallet, &destination, due, fee_rate).map_err(send_error)?;
+        let quote = quote_payment(&wallet, destination, amount, fee_rate).map_err(send_error)?;
         let tip = chain.tip().map_err(PayError::Chain)?;
         let decoyed = chain.decoys(quote.inputs.clone(), tip).map_err(PayError::Chain)?;
-        let signed = sign_payment(&wallet, &quote, decoyed, &spend, terms.fee_cap).map_err(send_error)?;
+        let signed = sign_payment(&wallet, &quote, decoyed, &spend, fee_cap).map_err(send_error)?;
         drop(spend);
         chain.publish(&signed.tx).map_err(PayError::Chain)?;
         let txid = crate::vault_key::encode_hex(&signed.txid);
@@ -244,6 +257,6 @@ impl Node {
         if let Err(err) = slot.save(&self.xmr.vault) {
             eprintln!("ob-node: Monero wallet state after {txid}: {err}");
         }
-        Ok(txid)
+        Ok((txid, signed.fee))
     }
 }
