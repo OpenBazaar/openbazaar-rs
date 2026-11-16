@@ -1,9 +1,10 @@
 //! [`XmrChain`] over monerod's RPC, through [`RpcTransport`].
 //!
-//! Nodes are tried in the order given; a node that fails is skipped until the
-//! others fail too. Each node must have this network's genesis block. When
-//! there are two or more nodes, a payment is broadcast through a different
-//! node than the one that supplied its ring members.
+//! Nodes are tried in the order given. A node that fails is left alone for a
+//! while, so one dead onion is not dialed again at the start of every scan.
+//! Each node must have this network's genesis block. When there are two or
+//! more nodes, a payment is broadcast through a different node than the one
+//! that supplied its ring members.
 
 use std::future::Future;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -25,9 +26,13 @@ use crate::{BackendStatus, XmrChain, RING_LEN};
 
 /// Refuse fee rates above this many piconero per weight unit (about 50x today's normal rate).
 const MAX_FEE_PER_WEIGHT: u64 = 1_000_000;
-/// How long every node may keep failing before it is reported as an error
-/// rather than as still connecting.
-const ERROR_GRACE: Duration = Duration::from_secs(300);
+/// After a node fails, leave it out of the rotation for this long.
+const SKIP_FOR: Duration = Duration::from_secs(90);
+/// How long one node may sit on a request. A silent onion used to hold the
+/// only scan thread until the process was restarted, so the other daemons
+/// were never asked and no height was saved. A circuit that is going to
+/// answer usually does so inside a minute.
+const ATTEMPT: Duration = Duration::from_secs(60);
 /// Blocks per `get_blocks.bin` request through Tor. Stagenet onion nodes
 /// dropped 15-block requests partway through, while 4 at a time came through.
 const TOR_BLOCKS_PER_REQUEST: u64 = 4;
@@ -38,6 +43,9 @@ struct Slot {
     url: String,
     transport: RpcTransport,
     daemon: Mutex<Option<Daemon>>,
+    /// Do not dial this node again until then. A stall has to time out once;
+    /// after that the wallet uses the other nodes.
+    skip_until: Mutex<Option<Instant>>,
 }
 
 pub struct DaemonChain {
@@ -46,6 +54,9 @@ pub struct DaemonChain {
     slots: Vec<Slot>,
     current: AtomicUsize,
     status: Mutex<Seen>,
+    /// Caller-side cap on one node. Independent of the runtime's timer, so a
+    /// request that never gets polled still loses its turn.
+    attempt: Duration,
 }
 
 /// The tip, the node that last answered, the last error, and since when every node has failed.
@@ -73,6 +84,10 @@ impl DaemonChain {
                 ));
             }
         }
+        Self::open(config, ATTEMPT)
+    }
+
+    fn open(config: DaemonConfig, attempt: Duration) -> Result<Self, String> {
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(1)
             .thread_name("ob-xmr")
@@ -84,10 +99,32 @@ impl DaemonChain {
             .iter()
             .map(|node| {
                 let proxy = config.proxied(node).then(|| config.proxy.clone()).flatten();
-                Ok(Slot { url: node.url.clone(), transport: RpcTransport::new(&node.url, proxy.as_deref())?, daemon: Mutex::new(None) })
+                Ok(Slot {
+                    url: node.url.clone(),
+                    transport: RpcTransport::bounded(&node.url, proxy.as_deref(), attempt, attempt)?,
+                    daemon: Mutex::new(None),
+                    skip_until: Mutex::new(None),
+                })
             })
             .collect::<Result<Vec<_>, String>>()?;
-        Ok(Self { config, runtime, slots, current: AtomicUsize::new(0), status: Mutex::new(Seen::default()) })
+        Ok(Self { config, runtime, slots, current: AtomicUsize::new(0), status: Mutex::new(Seen::default()), attempt })
+    }
+
+    /// Run `fut` on the daemon runtime, and give the node up if it is still
+    /// going when `attempt` ends. Aborting the task frees the single worker
+    /// for the next daemon.
+    fn drive<T: Send + 'static>(&self, fut: impl Future<Output = T> + Send + 'static) -> Result<T, String> {
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+        let task = self.runtime.spawn(async move {
+            let _ = tx.send(fut.await);
+        });
+        match rx.recv_timeout(self.attempt) {
+            Ok(value) => Ok(value),
+            Err(_) => {
+                task.abort();
+                Err("monerod: timed out".into())
+            }
+        }
     }
 
     fn connect(&self, slot: &Slot) -> Result<Daemon, String> {
@@ -95,34 +132,50 @@ impl DaemonChain {
             return Ok(daemon);
         }
         let network = self.config.network;
-        let daemon = self.runtime.block_on(async {
-            let daemon = MoneroDaemon::new(slot.transport.clone()).await.map_err(|err| err.to_string())?;
+        let transport = slot.transport.clone();
+        let url = slot.url.clone();
+        let daemon = self.drive(async move {
+            let daemon = MoneroDaemon::new(transport).await.map_err(|err| err.to_string())?;
             let genesis = ProvidesBlockchain::block_hash(&daemon, 0).await.map_err(|err| err.to_string())?;
             if genesis != network.genesis_hash() {
-                return Err(format!("{} is not a Monero {network} node", slot.url));
+                return Err(format!("{url} is not a Monero {network} node"));
             }
             Ok::<_, String>(daemon)
-        })?;
+        })??;
         *slot.daemon.lock().unwrap() = Some(daemon.clone());
         Ok(daemon)
     }
 
-    /// Run `call` against the current node, then the others in order.
-    /// `skip` starts that many nodes further on (for broadcasting elsewhere).
+    fn ready(&self, index: usize) -> bool {
+        self.slots[index].skip_until.lock().unwrap().is_none_or(|until| Instant::now() >= until)
+    }
+
+    /// Run `call` against the current node, then the others in order, skipping
+    /// any that failed recently. `skip` starts that many nodes further on (for
+    /// broadcasting elsewhere).
     fn call<R, F, Fut>(&self, skip: usize, call: F) -> Result<R, String>
     where
+        R: Send + 'static,
         F: Fn(Daemon) -> Fut,
-        Fut: Future<Output = Result<R, Failure>>,
+        Fut: Future<Output = Result<R, Failure>> + Send + 'static,
     {
         let count = self.slots.len();
-        let start = self.current.load(Ordering::Relaxed) + skip.min(count - 1);
-        let mut last = String::new();
-        for offset in 0..count {
-            let index = (start + offset) % count;
+        let start = self.current.load(Ordering::Relaxed) + skip.min(count.saturating_sub(1));
+        let order = attempt_order(count, start, |index| self.ready(index));
+        if order.is_empty() {
+            let status = self.status.lock().unwrap();
+            return Err(status.error.clone().unwrap_or_else(|| "every Monero node failed recently; trying again shortly".into()));
+        }
+        let mut failed = Vec::new();
+        for index in order {
             let slot = &self.slots[index];
-            let result = self.connect(slot).map_err(Failure::Node).and_then(|daemon| self.runtime.block_on(call(daemon)));
+            let result = self.connect(slot).map_err(Failure::Node).and_then(|daemon| match self.drive(call(daemon)) {
+                Ok(result) => result,
+                Err(err) => Err(Failure::Node(err)),
+            });
             match result {
                 Ok(value) => {
+                    *slot.skip_until.lock().unwrap() = None;
                     if skip == 0 {
                         self.current.store(index, Ordering::Relaxed);
                     }
@@ -135,23 +188,42 @@ impl DaemonChain {
                 Err(Failure::Final(err)) => return Err(err),
                 Err(Failure::Node(err)) => {
                     *slot.daemon.lock().unwrap() = None;
-                    last = format!("{}: {err}", slot.url);
+                    // The circuit that just failed is not used again. A reused
+                    // SOCKS username keeps Tor on a stalled circuit.
+                    slot.transport.rotate_circuit();
+                    *slot.skip_until.lock().unwrap() = Some(Instant::now() + SKIP_FOR);
+                    if skip == 0 {
+                        self.current.store((index + 1) % count, Ordering::Relaxed);
+                    }
+                    failed.push(format!("{}: {err}", slot.url));
                 }
             }
         }
+        // One line, after every node in this attempt has failed. A single
+        // dead onion is not the error while another daemon can still answer.
+        let summary = format!("every Monero node failed ({})", failed.join("; "));
         let mut status = self.status.lock().unwrap();
-        status.error = Some(last.clone());
+        status.error = Some(summary.clone());
         status.failing_since.get_or_insert_with(Instant::now);
-        Err(last)
+        Err(summary)
     }
 }
 
+/// Indexes to dial, starting at `start`, leaving out nodes `ready` rejects.
+/// Empty when every node is resting, so the caller does not dial the dead one again.
+fn attempt_order(count: usize, start: usize, ready: impl Fn(usize) -> bool) -> Vec<usize> {
+    (0..count).map(|offset| (start + offset) % count).filter(|index| ready(*index)).collect()
+}
+
 /// The error to show, and whether the nodes are still being reached.
-fn reported(seen: &Seen, now: Instant) -> (Option<String>, bool) {
-    match seen.failing_since {
-        Some(since) if now.duration_since(since) >= ERROR_GRACE => (seen.error.clone(), false),
-        Some(_) => (None, true),
-        None => (None, seen.active.is_none()),
+///
+/// An error is stored only after every node in the attempt failed, and it is
+/// shown then. Before any node has answered, the backend is still connecting.
+fn reported(seen: &Seen, _now: Instant) -> (Option<String>, bool) {
+    match (&seen.error, &seen.active) {
+        (Some(err), _) => (Some(err.clone()), false),
+        (None, None) => (None, true),
+        (None, Some(_)) => (None, false),
     }
 }
 
@@ -221,13 +293,17 @@ impl XmrChain for DaemonChain {
     }
 
     fn publish(&self, tx: &Transaction) -> Result<(), String> {
-        self.call(1, |daemon| async move {
-            match daemon.publish_transaction(tx).await {
-                Ok(()) => Ok(()),
-                Err(PublishTransactionError::TransactionRejected(why)) => {
-                    Err(Failure::Final(format!("the Monero network refused the transaction: {why}")))
+        let tx = tx.clone();
+        self.call(1, move |daemon| {
+            let tx = tx.clone();
+            async move {
+                match daemon.publish_transaction(&tx).await {
+                    Ok(()) => Ok(()),
+                    Err(PublishTransactionError::TransactionRejected(why)) => {
+                        Err(Failure::Final(format!("the Monero network refused the transaction: {why}")))
+                    }
+                    Err(err) => Err(node(err)),
                 }
-                Err(err) => Err(node(err)),
             }
         })
     }
@@ -240,14 +316,21 @@ mod tests {
     use crate::{NodeKind, XmrNetwork};
 
     #[test]
-    fn failing_nodes_read_as_connecting_until_the_grace_runs_out() {
+    fn a_full_failure_is_shown_and_startup_stays_connecting() {
         let start = Instant::now();
         assert_eq!(reported(&Seen::default(), start), (None, true), "nothing answered yet");
-        let failing = Seen { error: Some("all three failed".into()), failing_since: Some(start), ..Seen::default() };
-        assert_eq!(reported(&failing, start + Duration::from_secs(60)), (None, true));
-        assert_eq!(reported(&failing, start + ERROR_GRACE), (Some("all three failed".into()), false));
+        let failing = Seen { error: Some("every Monero node failed".into()), failing_since: Some(start), ..Seen::default() };
+        assert_eq!(reported(&failing, start), (Some("every Monero node failed".into()), false));
         let answered = Seen { active: Some("http://a.onion".into()), ..Seen::default() };
         assert_eq!(reported(&answered, start), (None, false));
+    }
+
+    #[test]
+    fn a_failed_node_is_not_dialed_ahead_of_the_others() {
+        assert_eq!(attempt_order(3, 0, |index| index != 0), vec![1, 2]);
+        assert_eq!(attempt_order(3, 2, |index| index != 0), vec![2, 1]);
+        assert!(attempt_order(3, 0, |_| false).is_empty(), "all three are resting, so nothing is dialed");
+        assert_eq!(attempt_order(3, 1, |_| true), vec![1, 2, 0]);
     }
 
     #[test]
@@ -257,6 +340,98 @@ mod tests {
         assert_eq!(chunks(10, 20, u64::MAX).collect::<Vec<_>>(), [(10, 20)]);
         assert_eq!(chunks(u64::MAX - 1, u64::MAX, 4).collect::<Vec<_>>(), [(u64::MAX - 1, u64::MAX)]);
         assert_eq!(chunks(11, 10, 4).count(), 0);
+    }
+
+    fn local_chain(urls: &[String]) -> DaemonChain {
+        let nodes = urls.iter().map(|url| DaemonNode { url: url.clone(), kind: NodeKind::Own }).collect();
+        DaemonChain::open(DaemonConfig { network: XmrNetwork::Stagenet, nodes, proxy: None }, Duration::from_millis(400)).unwrap()
+    }
+
+    #[derive(Clone, Copy)]
+    enum Fake { Hang, Close, Answer }
+
+    fn fake_daemon(mode: Fake) -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = hits.clone();
+        std::thread::spawn(move || {
+            for conn in listener.incoming() {
+                let Ok(mut sock) = conn else { break };
+                seen.fetch_add(1, Ordering::SeqCst);
+                let _ = sock.set_read_timeout(Some(Duration::from_secs(2)));
+                let mut buf = Vec::new();
+                let mut tmp = [0u8; 2048];
+                loop {
+                    match sock.read(&mut tmp) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => {
+                            buf.extend_from_slice(&tmp[..n]);
+                            if buf.windows(4).any(|window| window == b"\r\n\r\n") {
+                                break;
+                            }
+                        }
+                    }
+                }
+                match mode {
+                    Fake::Hang => {
+                        let _ = sock.set_read_timeout(None);
+                        let _ = sock.read(&mut tmp);
+                    }
+                    Fake::Close => {}
+                    Fake::Answer => {
+                        let text = String::from_utf8_lossy(&buf);
+                        let body = if text.contains("get_height") {
+                            r#"{"height":11}"#.to_string()
+                        } else {
+                            r#"{"jsonrpc":"2.0","id":0,"result":"76ee3cc98646292206cd3e86f74d88b4dcc1d937088645e9b0cbca84b7ce74eb"}"#.to_string()
+                        };
+                        let resp = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                            body.len()
+                        );
+                        let _ = sock.write_all(resp.as_bytes());
+                    }
+                }
+            }
+        });
+        (format!("http://127.0.0.1:{port}"), hits)
+    }
+
+    #[test]
+    fn a_silent_daemon_does_not_block_the_next_one() {
+        let (dead, dead_hits) = fake_daemon(Fake::Hang);
+        let (live, live_hits) = fake_daemon(Fake::Answer);
+        let chain = local_chain(&[dead, live.clone()]);
+        let started = Instant::now();
+        let tip = chain.tip().expect("the second daemon answers");
+        assert!(started.elapsed() < Duration::from_secs(3), "the silent daemon held the scan for {:?}", started.elapsed());
+        assert_eq!(tip, 10, "height is the daemon's block number, one below the raw count");
+        assert!(dead_hits.load(Ordering::SeqCst) >= 1, "the silent daemon was not tried");
+        assert!(live_hits.load(Ordering::SeqCst) >= 1, "the live daemon was not tried");
+        let status = chain.status();
+        assert!(status.error.is_none(), "a later success still reports {:?}", status.error);
+        assert_eq!(status.tip, Some(10));
+        assert_eq!(status.active.as_deref(), Some(live.as_str()));
+    }
+
+    #[test]
+    fn one_error_is_reported_only_after_every_daemon_fails() {
+        let (first, first_hits) = fake_daemon(Fake::Close);
+        let (second, second_hits) = fake_daemon(Fake::Close);
+        let (third, third_hits) = fake_daemon(Fake::Close);
+        let chain = local_chain(&[first.clone(), second.clone(), third.clone()]);
+        let started = Instant::now();
+        let err = chain.tip().expect_err("no daemon answered");
+        assert!(started.elapsed() < Duration::from_secs(3), "{:?}", started.elapsed());
+        assert_eq!(err.matches("every Monero node failed").count(), 1, "{err}");
+        assert!(err.contains(&first) && err.contains(&second) && err.contains(&third), "{err}");
+        assert_eq!(chain.status().error.as_deref(), Some(err.as_str()));
+        assert!(chain.status().tip.is_none());
+        assert!(first_hits.load(Ordering::SeqCst) >= 1);
+        assert!(second_hits.load(Ordering::SeqCst) >= 1);
+        assert!(third_hits.load(Ordering::SeqCst) >= 1);
     }
 
     #[test]

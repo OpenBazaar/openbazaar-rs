@@ -254,9 +254,10 @@ impl Node {
                 &note,
                 reply_url.as_deref(),
                 plan.as_ref(),
-                match (remote.is_some(), package.zec, package.xmr) {
-                    (true, true, _) => Some("zec"),
-                    (true, false, true) => Some("xmr"),
+                match (remote.is_some(), package.zec, package.xmr, package.ln) {
+                    (true, true, _, _) => Some("zec"),
+                    (true, false, true, _) => Some("xmr"),
+                    (true, false, false, true) => Some("ln"),
                     _ => None,
                 },
             )?;
@@ -314,6 +315,8 @@ impl Node {
                         record["rail"] = json!("zec");
                     } else if package.xmr {
                         record["rail"] = json!("xmr");
+                    } else if package.ln {
+                        record["rail"] = json!("ln");
                     }
                     record
                 }),
@@ -689,7 +692,7 @@ fn seal_letter(
     if let Some(url) = reply_url {
         options.insert("replyUrl".to_string(), url.to_string());
     }
-    // Asks a store on another node for Zcash or Monero terms. A node from before those sales ignores it and answers in bitcoin.
+    // Asks a store on another node for Zcash, Monero, or Lightning terms. A node from before those sales ignores it and answers in bitcoin.
     if let Some(rail) = rail {
         options.insert("rail".to_string(), rail.to_string());
     }

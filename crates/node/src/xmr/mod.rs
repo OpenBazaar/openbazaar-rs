@@ -58,8 +58,10 @@ pub(crate) use sale::{add_terms, follow_seller, payment_from_terms};
 const WATCH_FILE: &str = "xmr-watch.obv";
 const STATE_FILE: &str = "xmr-state.obv";
 const STORES_FILE: &str = "xmr-stores.obv";
-/// Blocks fetched per request while syncing.
-const SYNC_BLOCKS: u64 = 100;
+/// Blocks per sync step. One step is one request over Tor (see the daemon's
+/// chunk size), and the wallet saves its height when the step returns, so a
+/// later failure does not throw away a scan that already finished.
+const SYNC_BLOCKS: u64 = 4;
 /// Requests per wallet per round, so one wallet far behind does not starve the others.
 const SYNC_STEPS: usize = 20;
 /// A round ends after the step that passes this, so progress over a slow
@@ -362,16 +364,46 @@ impl Node {
         }
     }
 
+    /// Write a finished step back before the next request starts.
+    fn keep_height(&self, slot: &Mutex<Slot>, copy: &openbazaar_xmr::XmrWallet) -> Result<(), String> {
+        let mut slot = guard(slot);
+        let Some(wallet) = slot.wallet.as_mut() else { return Ok(()) };
+        if wallet.merge_sync(copy.clone()) {
+            slot.save(&self.xmr.vault).map_err(|err| err.to_string())?;
+        }
+        Ok(())
+    }
+
     /// Sync a copy of the wallet without holding its lock, then merge it back.
     fn sync_slot(&self, slot: &Mutex<Slot>, chain: &dyn XmrChain) -> Result<(), String> {
-        let Some(mut copy) = guard(slot).wallet.clone() else { return Ok(()) };
+        let mut copy = {
+            let slot = guard(slot);
+            let Some(mut copy) = slot.wallet.clone() else { return Ok(()) };
+            // A wallet that has never saved a height still has to cover payments
+            // that arrived while no daemon would answer. The watch file is written
+            // when the wallet is created; Monero's block time is about two minutes.
+            if copy.scanned().is_none() && copy.sync_from().is_none() {
+                let age = std::fs::metadata(slot.dir.join(WATCH_FILE))
+                    .and_then(|meta| meta.modified())
+                    .ok()
+                    .and_then(|time| time.elapsed().ok());
+                let blocks = age.map(|age| age.as_secs() / 120 + 30).unwrap_or(30);
+                copy.cover_unscanned(blocks);
+            }
+            copy
+        };
         let mut result = Ok(());
         let started = Instant::now();
         for _ in 0..SYNC_STEPS {
             match copy.sync_step(chain, SYNC_BLOCKS) {
-                Ok(step) if step.caught_up() => break,
-                Ok(_) if started.elapsed() >= SYNC_ROUND => break,
-                Ok(_) => {}
+                Ok(step) => {
+                    // Save before the next request. A later daemon that never
+                    // answers must not throw away a height already scanned.
+                    self.keep_height(slot, &copy)?;
+                    if step.caught_up() || started.elapsed() >= SYNC_ROUND {
+                        break;
+                    }
+                }
                 Err(err) => {
                     result = Err(err);
                     break;
@@ -379,11 +411,6 @@ impl Node {
             }
         }
         let mut slot = guard(slot);
-        if let Some(wallet) = slot.wallet.as_mut() {
-            if wallet.merge_sync(copy) {
-                slot.save(&self.xmr.vault).map_err(|err| err.to_string())?;
-            }
-        }
         match &result {
             Ok(()) => {
                 slot.last_sync = Some(now_secs());

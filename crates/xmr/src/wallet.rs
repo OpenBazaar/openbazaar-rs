@@ -22,8 +22,10 @@ use crate::{ViewKeys, XmrChain, XmrNetwork};
 /// Confirmations before an order paid in Monero counts as paid, and before
 /// an output may be spent (Monero's own 10-block lock).
 pub const CONFIRMATIONS: u64 = 10;
-/// How far back the first sync starts.
+/// How far back the first sync starts when nothing asks for more.
 const FIRST_SYNC_BACK: u64 = 20;
+/// A clock error must not make the first scan walk the whole chain.
+const MAX_FIRST_LOOKBACK: u64 = 2_000;
 /// Block hashes kept to notice a reorg.
 const HASHES_KEPT: usize = 30;
 
@@ -41,6 +43,13 @@ pub struct XmrWallet {
     keys: ViewKeys,
     /// The newest block scanned.
     scanned: Option<u64>,
+    /// The first block a scan that has not finished yet must still cover.
+    /// Set when the tip is first known, and kept if that fetch fails, so a
+    /// later tip cannot move the window past a payment that already arrived.
+    sync_from: Option<u64>,
+    /// Blocks behind the tip for that first height. Raised while the wallet
+    /// has been waiting, then frozen into `sync_from`.
+    lookback: u64,
     /// The chain tip at the last sync.
     tip: Option<u64>,
     hashes: VecDeque<(u64, [u8; 32])>,
@@ -85,7 +94,17 @@ impl SyncStep {
 
 impl XmrWallet {
     pub fn new(network: XmrNetwork, keys: ViewKeys) -> Self {
-        Self { network, keys, scanned: None, tip: None, hashes: VecDeque::new(), next_subaddress: 1, outputs: Vec::new() }
+        Self {
+            network,
+            keys,
+            scanned: None,
+            sync_from: None,
+            lookback: FIRST_SYNC_BACK,
+            tip: None,
+            hashes: VecDeque::new(),
+            next_subaddress: 1,
+            outputs: Vec::new(),
+        }
     }
 
     pub fn network(&self) -> XmrNetwork {
@@ -102,6 +121,19 @@ impl XmrWallet {
 
     pub fn scanned(&self) -> Option<u64> {
         self.scanned
+    }
+
+    /// The height the first scan is committed to, once the tip has been seen.
+    pub fn sync_from(&self) -> Option<u64> {
+        self.sync_from
+    }
+
+    /// Scan at least `blocks` behind the tip on the first sync. Ignored once
+    /// a start height is saved or a block has been scanned.
+    pub fn cover_unscanned(&mut self, blocks: u64) {
+        if self.scanned.is_none() && self.sync_from.is_none() {
+            self.lookback = blocks.clamp(FIRST_SYNC_BACK, MAX_FIRST_LOOKBACK);
+        }
     }
 
     pub fn tip(&self) -> Option<u64> {
@@ -122,7 +154,11 @@ impl XmrWallet {
         let rolled_back = self.check_reorg(chain)?;
         let from = match self.scanned {
             Some(scanned) => scanned + 1,
-            None => tip.saturating_sub(FIRST_SYNC_BACK),
+            None => {
+                let from = self.sync_from.unwrap_or_else(|| tip.saturating_sub(self.lookback));
+                self.sync_from = Some(from);
+                from
+            }
         };
         let mut found = 0;
         if from <= tip {
@@ -244,6 +280,7 @@ impl XmrWallet {
             .filter_map(|owned| Some((owned.output.key().compress().to_bytes(), owned.spent_by?)))
             .collect();
         self.scanned = synced.scanned;
+        self.sync_from = synced.sync_from.or(self.sync_from);
         self.tip = synced.tip;
         self.hashes = synced.hashes;
         self.outputs = synced.outputs;
@@ -272,6 +309,7 @@ impl XmrWallet {
             "network": self.network.as_str(),
             "address": self.primary_address().to_string(),
             "scanned": self.scanned,
+            "syncFrom": self.sync_from,
             "tip": self.tip,
             "hashes": self.hashes.iter().map(|(number, hash)| json!([number, hex::encode(hash)])).collect::<Vec<_>>(),
             "nextSubaddress": self.next_subaddress,
@@ -294,6 +332,7 @@ impl XmrWallet {
             return Err("the Monero wallet file belongs to another wallet or network".into());
         }
         wallet.scanned = value["scanned"].as_u64();
+        wallet.sync_from = value["syncFrom"].as_u64();
         wallet.tip = value["tip"].as_u64();
         wallet.next_subaddress = value["nextSubaddress"].as_u64().and_then(|n| u32::try_from(n).ok()).filter(|n| *n >= 1).ok_or_else(bad)?;
         for entry in value["hashes"].as_array().ok_or_else(bad)? {

@@ -252,6 +252,7 @@ pub(crate) fn apply_reply(order: &mut crate::buyer_orders::BuyerOrder, body: &Va
             let payment = match remote["rail"].as_str() {
                 Some("zec") => crate::zec::payment_from_terms(body, network.zcash()),
                 Some("xmr") => crate::xmr::payment_from_terms(body, network.monero()),
+                Some("ln") => crate::lightning::payment_from_terms(body, network),
                 _ => crate::network::address_for(address, network).map_err(|_| "The seller's payment address is not valid here.".to_string()).map(|address| {
                     json!({
                         "network": network.as_str(),
