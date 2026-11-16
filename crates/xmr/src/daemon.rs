@@ -28,6 +28,9 @@ const MAX_FEE_PER_WEIGHT: u64 = 1_000_000;
 /// How long every node may keep failing before it is reported as an error
 /// rather than as still connecting.
 const ERROR_GRACE: Duration = Duration::from_secs(300);
+/// Blocks per `get_blocks.bin` request through Tor. Stagenet onion nodes
+/// dropped 15-block requests partway through, while 4 at a time came through.
+const TOR_BLOCKS_PER_REQUEST: u64 = 4;
 
 type Daemon = MoneroDaemon<RpcTransport>;
 
@@ -152,6 +155,15 @@ fn reported(seen: &Seen, now: Instant) -> (Option<String>, bool) {
     }
 }
 
+/// `from..=to` split into inclusive ranges of at most `per` blocks.
+fn chunks(from: u64, to: u64, per: u64) -> impl Iterator<Item = (u64, u64)> {
+    let per = per.max(1);
+    (from <= to).then_some(()).into_iter().flat_map(move |()| {
+        std::iter::successors(Some(from), move |start| start.checked_add(per).filter(|next| *next <= to))
+            .map(move |start| (start, to.min(start.saturating_add(per - 1))))
+    })
+}
+
 fn node<E: std::fmt::Display>(err: E) -> Failure {
     Failure::Node(err.to_string())
 }
@@ -175,11 +187,17 @@ impl XmrChain for DaemonChain {
     }
 
     fn blocks(&self, from: u64, to: u64) -> Result<Vec<ScannableBlock>, String> {
-        let range = usize::try_from(from).map_err(|err| err.to_string())?..=usize::try_from(to).map_err(|err| err.to_string())?;
-        self.call(0, |daemon| {
-            let range = range.clone();
-            async move { daemon.contiguous_scannable_blocks(range).await.map_err(node) }
-        })
+        let proxied = self.config.nodes.iter().any(|node| self.config.proxied(node));
+        let per_request = if proxied { TOR_BLOCKS_PER_REQUEST } else { u64::MAX };
+        let mut blocks = Vec::new();
+        for (start, end) in chunks(from, to, per_request) {
+            let range = usize::try_from(start).map_err(|err| err.to_string())?..=usize::try_from(end).map_err(|err| err.to_string())?;
+            blocks.extend(self.call(0, |daemon| {
+                let range = range.clone();
+                async move { daemon.contiguous_scannable_blocks(range).await.map_err(node) }
+            })?);
+        }
+        Ok(blocks)
     }
 
     fn fee_rate(&self) -> Result<FeeRate, String> {
@@ -230,6 +248,15 @@ mod tests {
         assert_eq!(reported(&failing, start + ERROR_GRACE), (Some("all three failed".into()), false));
         let answered = Seen { active: Some("http://a.onion".into()), ..Seen::default() };
         assert_eq!(reported(&answered, start), (None, false));
+    }
+
+    #[test]
+    fn block_ranges_are_split_into_small_requests() {
+        assert_eq!(chunks(10, 20, 4).collect::<Vec<_>>(), [(10, 13), (14, 17), (18, 20)]);
+        assert_eq!(chunks(10, 10, 4).collect::<Vec<_>>(), [(10, 10)]);
+        assert_eq!(chunks(10, 20, u64::MAX).collect::<Vec<_>>(), [(10, 20)]);
+        assert_eq!(chunks(u64::MAX - 1, u64::MAX, 4).collect::<Vec<_>>(), [(u64::MAX - 1, u64::MAX)]);
+        assert_eq!(chunks(11, 10, 4).count(), 0);
     }
 
     #[test]
