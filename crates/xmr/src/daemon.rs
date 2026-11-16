@@ -51,11 +51,13 @@ struct Slot {
 pub struct DaemonChain {
     config: DaemonConfig,
     runtime: tokio::runtime::Runtime,
+    /// One request at a time. The runtime is current-thread, so two `block_on`
+    /// calls would panic; the scan thread and a quote can both want a daemon.
+    turn: Mutex<()>,
     slots: Vec<Slot>,
     current: AtomicUsize,
     status: Mutex<Seen>,
-    /// Caller-side cap on one node. Independent of the runtime's timer, so a
-    /// request that never gets polled still loses its turn.
+    /// How long one node may sit on a request before the next daemon is asked.
     attempt: Duration,
 }
 
@@ -88,12 +90,10 @@ impl DaemonChain {
     }
 
     fn open(config: DaemonConfig, attempt: Duration) -> Result<Self, String> {
-        let runtime = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(1)
-            .thread_name("ob-xmr")
-            .enable_all()
-            .build()
-            .map_err(|err| err.to_string())?;
+        // The calling thread drives the request. One shared worker left the
+        // fetch parked and the scan waiting on it, so curl could finish the
+        // same onion in a few seconds while the wallet never recorded a height.
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|err| err.to_string())?;
         let slots = config
             .nodes
             .iter()
@@ -107,24 +107,28 @@ impl DaemonChain {
                 })
             })
             .collect::<Result<Vec<_>, String>>()?;
-        Ok(Self { config, runtime, slots, current: AtomicUsize::new(0), status: Mutex::new(Seen::default()), attempt })
+        Ok(Self {
+            config,
+            runtime,
+            turn: Mutex::new(()),
+            slots,
+            current: AtomicUsize::new(0),
+            status: Mutex::new(Seen::default()),
+            attempt,
+        })
     }
 
-    /// Run `fut` on the daemon runtime, and give the node up if it is still
-    /// going when `attempt` ends. Aborting the task frees the single worker
-    /// for the next daemon.
-    fn drive<T: Send + 'static>(&self, fut: impl Future<Output = T> + Send + 'static) -> Result<T, String> {
-        let (tx, rx) = std::sync::mpsc::sync_channel(1);
-        let task = self.runtime.spawn(async move {
-            let _ = tx.send(fut.await);
-        });
-        match rx.recv_timeout(self.attempt) {
-            Ok(value) => Ok(value),
-            Err(_) => {
-                task.abort();
-                Err("monerod: timed out".into())
+    /// Run `fut` on this thread's runtime, and give the node up when `attempt`
+    /// ends. The same thread polls the request and the timer, so a silent
+    /// daemon cannot pin the scan the way a worker that never polls the task did.
+    fn drive<T>(&self, fut: impl Future<Output = T>) -> Result<T, String> {
+        let _turn = self.turn.lock().unwrap();
+        self.runtime.block_on(async move {
+            match tokio::time::timeout(self.attempt, fut).await {
+                Ok(value) => Ok(value),
+                Err(_) => Err("monerod: timed out".into()),
             }
-        }
+        })
     }
 
     fn connect(&self, slot: &Slot) -> Result<Daemon, String> {
@@ -155,9 +159,8 @@ impl DaemonChain {
     /// broadcasting elsewhere).
     fn call<R, F, Fut>(&self, skip: usize, call: F) -> Result<R, String>
     where
-        R: Send + 'static,
         F: Fn(Daemon) -> Fut,
-        Fut: Future<Output = Result<R, Failure>> + Send + 'static,
+        Fut: Future<Output = Result<R, Failure>>,
     {
         let count = self.slots.len();
         let start = self.current.load(Ordering::Relaxed) + skip.min(count.saturating_sub(1));

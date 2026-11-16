@@ -353,6 +353,10 @@ impl Node {
         self.xmr_fill_keys();
         let mut failed = None;
         for slot in self.xmr.slots() {
+            // A queued spend is one request, and it has to go out before the
+            // next wallet's scan. The scan used to hold this thread for the
+            // whole round, so a payment sat in memory until every wallet finished.
+            self.run_xmr_pay_job(Duration::ZERO);
             if let Err(err) = self.sync_slot(slot, chain.as_ref()) {
                 failed = Some(err);
             }
