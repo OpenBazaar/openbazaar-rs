@@ -81,7 +81,10 @@ pub(crate) struct SpendTickets<T = SpendTerms> {
 
 impl<T> Default for SpendTickets<T> {
     fn default() -> Self {
-        Self { quotes: Mutex::default(), tickets: Mutex::default() }
+        Self {
+            quotes: Mutex::default(),
+            tickets: Mutex::default(),
+        }
     }
 }
 
@@ -93,12 +96,22 @@ fn insert<T>(map: &Mutex<HashMap<String, Open<T>>>, terms: T, now: Instant) -> S
     let mut map = guard(map);
     map.retain(|_, open| open.expires > now);
     if map.len() >= MAX_OPEN {
-        if let Some(oldest) = map.iter().min_by_key(|(_, open)| open.expires).map(|(id, _)| id.clone()) {
+        if let Some(oldest) = map
+            .iter()
+            .min_by_key(|(_, open)| open.expires)
+            .map(|(id, _)| id.clone())
+        {
             map.remove(&oldest);
         }
     }
     let id = encode_hex(&random_bytes::<32>());
-    map.insert(id.clone(), Open { terms, expires: now + TICKET_TTL });
+    map.insert(
+        id.clone(),
+        Open {
+            terms,
+            expires: now + TICKET_TTL,
+        },
+    );
     id
 }
 
@@ -121,12 +134,30 @@ impl<T: OrderTerms> SpendTickets<T> {
 
     /// Spend `ticket` on `order_id`. A ticket is gone after this call, even
     /// when it named another order.
-    pub(crate) fn redeem(&self, ticket: &str, order_id: &str, now: Instant) -> Result<T, TicketError> {
+    pub(crate) fn redeem(
+        &self,
+        ticket: &str,
+        order_id: &str,
+        now: Instant,
+    ) -> Result<T, TicketError> {
         let terms = take(&self.tickets, ticket, now).ok_or(TicketError::Unknown)?;
         if terms.order_id() != order_id {
             return Err(TicketError::OtherOrder);
         }
         Ok(terms)
+    }
+}
+
+/// A send to an address the user names has no order. Its request carries the
+/// passphrase with the quote, so the quote is the one-time token.
+impl<T> SpendTickets<T> {
+    pub(crate) fn offer(&self, terms: T, now: Instant) -> String {
+        insert(&self.quotes, terms, now)
+    }
+
+    /// Spend `quote` once. It is gone after this call whether or not the send goes ahead.
+    pub(crate) fn take_quote(&self, quote: &str, now: Instant) -> Result<T, TicketError> {
+        take(&self.quotes, quote, now).ok_or(TicketError::Unknown)
     }
 
     pub(crate) fn clear(&self) {

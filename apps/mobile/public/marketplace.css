@@ -3222,6 +3222,13 @@ svg {
 .ob-spend-terms { display: grid; grid-template-columns: max-content minmax(0,1fr); gap: 6px 18px; margin: 0 0 14px; }
 .ob-spend-terms dt { color: var(--ob-secondary); }
 .ob-spend-terms dd { margin: 0; min-width: 0; }
+.ob-send-dialog h2 { display: flex; align-items: center; gap: 10px; margin-bottom: 0; }
+.ob-send-dialog .ob-send-network { margin: 4px 0 18px; color: var(--ob-secondary); font-size: 14px; }
+.ob-send-form { display: flex; flex-direction: column; gap: 14px; }
+.ob-send-form textarea { font: 13px/1.6 ui-monospace, monospace; }
+.ob-send-amount { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px 18px; }
+.ob-send-amount .ob-field { flex: 1 1 220px; }
+.ob-send-amount .ob-checkbox { padding-bottom: 10px; }
 @container workspace (max-width:850px) { .ob-payment-options { grid-template-columns: 1fr; } .ob-wallet-receive { flex-wrap: wrap; } }
 @media(max-width:719px) { .ob-backup-phrase { grid-template-columns: repeat(2,minmax(0,1fr)); } .ob-network-badge { padding: 8px 20px; } .ob-wallet-balances { grid-template-columns: 1fr; margin-top: 24px; } .ob-wallet-balances article { padding: 20px; } .ob-wallet-balances article+article { border-left: 0; border-top: 1px solid var(--ob-line); padding-top: 16px; padding-bottom: 16px; } .ob-wallet-balances .is-pending { flex-direction: row; align-items: baseline; justify-content: space-between; gap: 12px; } .ob-wallet-balances .is-pending h2 { margin: 0; } .ob-wallet-balances .is-pending .ob-wallet-amount { align-items: flex-end; gap: 0; } .ob-wallet-balances .is-pending .ob-wallet-amount strong { font-size: 17px; line-height: 24px; } .ob-wallet-balances .is-pending .ob-wallet-amount small { font-size: 13px; } .ob-wallet-sync { padding: 12px 20px; } .ob-wallet-fund { padding: 20px; } .ob-wallet-receive { gap: 20px; } .ob-wallet-receive .ob-copy-value { flex-basis: 100%; } .ob-wallet-page .ob-section-heading { align-items: center; } .ob-wallet-page h1 { font-size: 27px; } .ob-wallet-amount strong { font-size: 32px; line-height: 40px; } .ob-payment-options { grid-template-columns: 1fr; } }
 

@@ -136,6 +136,26 @@ the phrase for that one operation and drops them.
 The client cannot name an amount, address, or fee in any of these bodies.
 Unknown keys are refused. Tickets live in memory only, at most 64 open.
 
+### Sending to an address the user names
+
+A send has no order, so the client names the address and amount, and the
+step-up folds into two requests:
+
+1. `POST /wallet/send/quote {address, amountSats}` (or `{address, max: true}`,
+   and `linkCoins` as for an order) checks the address is on the node's
+   network, the amount is above zero and above dust, syncs, and builds the
+   send. It answers `address`, `amountSats`, `feeSats`, `feeCapSats`,
+   `feeRateSatVb`, `totalSats`, `max`, `heldBackSats` (linked change left
+   out), and an opaque `quote`.
+2. `POST /wallet/send {quote, passphrase, confirm: true}` needs the
+   passphrase every time, even while unlocked, and `confirm` on every
+   network. A wrong passphrase leaves the quote open; otherwise the quote is
+   consumed whether or not the send goes through, so a second click sends
+   nothing. The node rebuilds the send at the quoted rate and refuses one
+   that pays a different amount or a fee above the cap.
+
+Paired devices may call neither ([`home-node.md`](home-node.md)).
+
 Escrow release, dispute, and the moderator's ruling need an unlocked wallet
 but no ticket: they move funds the user already committed to an escrow, to a
 destination fixed by the escrow terms.
@@ -187,6 +207,8 @@ All routes need the loopback guard and the pairing token. Lock errors avoid
 | `POST /orders/{id}/pay/quote` | unlocked | | `{quote, ...terms}` |
 | `POST /spend-tickets` | unlocked | `{quote, passphrase}` | `{ticket, ...terms}` |
 | `POST /orders/{id}/pay` | unlocked | `{ticket, confirm?}` | `202`, the order |
+| `POST /wallet/send/quote` | unlocked | `{address, amountSats}` or `{address, max: true}`, `linkCoins?` | `{quote, ...terms}` |
+| `POST /wallet/send` | unlocked | `{quote, passphrase, confirm: true}` | `{txid, ...terms}` |
 
 Lock status: `state` (`setup`, `locked`, `unlocked`), `autoLockMinutes`,
 `autoLockRange`, `lockInSecs`, `failedAttempts`, `retryAfterSecs`,

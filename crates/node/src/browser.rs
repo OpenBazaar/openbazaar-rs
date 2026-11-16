@@ -580,6 +580,61 @@ mod tests {
     }
 
     #[test]
+    fn a_tokenless_local_session_still_needs_the_passphrase_to_send() {
+        let (dir, mut node) = node();
+        let shop = dir.0.join("shop");
+        std::fs::create_dir(&shop).unwrap();
+        node.local.local_shop = Some(shop);
+        node.setup_wallet(crate::harness::PASSPHRASE).unwrap();
+        let token = node.pairing_token().to_string();
+        let minted = call(
+            &node,
+            "POST /browser-session HTTP/1.1\r\nHost: 127.0.0.1:8787\r\nContent-Length: 0\r\n\r\n",
+            true,
+        );
+        let ticket = ticket_from(&minted, &token);
+        let opened = call(
+            &node,
+            &format!("GET /browser/{ticket} HTTP/1.1\r\nHost: 127.0.0.1:8787\r\n\r\n"),
+            true,
+        );
+        let cookie = opened
+            .split("\r\n")
+            .find_map(|line| line.strip_prefix("Set-Cookie: ob_local_8787="))
+            .unwrap();
+        let id = cookie.split(';').next().unwrap();
+        let post = |origin: &str, body: &str| {
+            call(
+                &node,
+                &format!(
+                    "POST /wallet/send HTTP/1.1\r\nHost: 127.0.0.1:8787\r\nOrigin: {origin}\r\nCookie: ob_local_8787={id}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+                    body.len()
+                ),
+                true,
+            )
+        };
+        let page = "http://127.0.0.1:8787";
+        let no_passphrase = post(page, r#"{"quote":"00","confirm":true}"#);
+        assert!(
+            no_passphrase.starts_with("HTTP/1.1 400") && no_passphrase.contains("passphrase"),
+            "{no_passphrase}"
+        );
+        let wrong = post(
+            page,
+            r#"{"quote":"00","passphrase":"guess","confirm":true}"#,
+        );
+        assert!(
+            wrong.starts_with("HTTP/1.1 400") && wrong.contains("wrong_passphrase"),
+            "{wrong}"
+        );
+        let foreign = post(
+            "http://evil.example",
+            r#"{"quote":"00","passphrase":"guess","confirm":true}"#,
+        );
+        assert!(foreign.starts_with("HTTP/1.1 403"), "{foreign}");
+    }
+
+    #[test]
     fn a_loopback_shop_origin_pairs_without_a_code() {
         // No `--local-shop`: the shop page comes from the configured shop
         // origin (default http://127.0.0.1:4173), served by another local

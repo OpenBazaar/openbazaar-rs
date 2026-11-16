@@ -155,6 +155,7 @@ flowchart LR
 | `POST /escrow/mail` | Moderator and escrow mail keys stay with the node. |
 | `/unlock` with `remembered: true`, `PUT /lock/settings` with `rememberDevice: true` | "Remember this device" is a property of the machine's keystore, not of a phone. |
 | `/pair`, `/home*`, `POST /remote/lan-page` | The local pairing code, the node's own client mode, and the setup page are for the machine itself. |
+| `/wallet/send*`, `/xmr/wallet/send*`, `/ln/send*`, `/ln/withdraw*` (send to an address or invoice the caller names) | An order payment can only reach a seller the node holds terms from; a send can go anywhere. Until devices have an owner-approved send permission, sends stay on the node's machine, passphrase or not. |
 
 Everything else a local client can do, a device can do, including
 `POST /setup`: a headless node has no other screen to create its wallet on,
