@@ -7,6 +7,7 @@
 //! refused too.
 
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use monero_daemon_rpc::HttpTransport;
@@ -43,8 +44,10 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(180);
 /// Through Tor, connecting includes the SOCKS request, and a first circuit to
 /// an onion service (descriptor fetch, introduction, rendezvous) often takes
 /// 40-60 s. Later requests reuse the chain circuit and are fast.
-const TOR_CONNECT_TIMEOUT: Duration = Duration::from_secs(120);
-const TOR_REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
+const TOR_CONNECT_TIMEOUT: Duration = Duration::from_secs(75);
+/// Long enough for a first onion circuit (often 40-60 s) and four blocks.
+/// A stalled daemon must not hold the scan for five minutes.
+const TOR_REQUEST_TIMEOUT: Duration = Duration::from_secs(75);
 
 /// Refuse anything outside [`ROUTES`] and [`JSON_RPC_METHODS`].
 pub fn check_request(route: &str, body: &[u8]) -> Result<(), String> {
@@ -75,6 +78,9 @@ pub struct RpcTransport {
     /// Bounds the whole exchange, including a body that stalls after the headers.
     /// reqwest's own timeout ends when the headers arrive.
     request_timeout: Duration,
+    /// SOCKS isolation for chain fetches. Bumped after a failure so Tor builds
+    /// a new circuit instead of reusing the one that just stalled.
+    circuit: Arc<AtomicU64>,
 }
 
 impl RpcTransport {
@@ -92,6 +98,7 @@ impl RpcTransport {
     /// cover every stall, so `deadline` is the one the wallet relies on.
     fn build(url: &str, proxy: Option<&str>, connect: Duration, reqwest_timeout: Duration, deadline: Duration) -> Result<Self, String> {
         static NEXT: AtomicU64 = AtomicU64::new(0);
+        let circuit = Arc::new(AtomicU64::new(NEXT.fetch_add(1, Ordering::Relaxed)));
         let mut builder = reqwest::Client::builder()
             .connect_timeout(connect)
             .timeout(reqwest_timeout)
@@ -101,17 +108,40 @@ impl RpcTransport {
             Some(proxy) => {
                 let authority = proxy.trim_start_matches("socks5h://").to_string();
                 let session = std::process::id();
-                let chain = NEXT.fetch_add(1, Ordering::Relaxed);
+                let circuit = Arc::clone(&circuit);
                 builder.proxy(reqwest::Proxy::custom(move |url| {
-                    let stream = if shares_circuit(url) { format!("chain{chain}") } else { NEXT.fetch_add(1, Ordering::Relaxed).to_string() };
-                    Some(format!("socks5h://obx-{session}-{stream}:x@{authority}"))
+                    let stream = if shares_circuit(url) {
+                        chain_stream(circuit.load(Ordering::Relaxed))
+                    } else {
+                        NEXT.fetch_add(1, Ordering::Relaxed).to_string()
+                    };
+                    Some(socks_proxy(&authority, session, &stream))
                 }))
             }
             None => builder.no_proxy(),
         };
         let client = builder.build().map_err(|err| err.to_string())?;
-        Ok(Self { url: url.trim_end_matches('/').to_string(), client, request_timeout: deadline })
+        Ok(Self { url: url.trim_end_matches('/').to_string(), client, request_timeout: deadline, circuit })
     }
+
+    /// Drop the chain circuit. The next chain fetch uses a new SOCKS username,
+    /// which makes Tor build a new circuit to this daemon.
+    pub(crate) fn rotate_circuit(&self) {
+        self.circuit.fetch_add(1, Ordering::Relaxed);
+    }
+
+    #[cfg(test)]
+    fn chain_generation(&self) -> u64 {
+        self.circuit.load(Ordering::Relaxed)
+    }
+}
+
+fn chain_stream(generation: u64) -> String {
+    format!("chain{generation}")
+}
+
+fn socks_proxy(authority: &str, session: u32, stream: &str) -> String {
+    format!("socks5h://obx-{session}-{stream}:x@{authority}")
 }
 
 impl HttpTransport for RpcTransport {
@@ -181,6 +211,25 @@ mod tests {
             assert!(ROUTES.contains(&route));
             assert!(!shares_circuit(&url(route)), "{route} reveals a spend and keeps its own circuit");
         }
+    }
+
+    #[test]
+    fn a_failed_chain_circuit_gets_a_new_isolation_name() {
+        let transport = RpcTransport::build(
+            "http://node.onion:38089",
+            Some("socks5h://127.0.0.1:9"),
+            Duration::from_millis(50),
+            Duration::from_millis(50),
+            Duration::from_millis(50),
+        )
+        .unwrap();
+        let first = chain_stream(transport.chain_generation());
+        let before = socks_proxy("127.0.0.1:9", 7, &first);
+        transport.rotate_circuit();
+        let second = chain_stream(transport.chain_generation());
+        let after = socks_proxy("127.0.0.1:9", 7, &second);
+        assert_ne!(before, after);
+        assert!(before.contains("chain") && after.contains("chain"));
     }
 
     #[test]

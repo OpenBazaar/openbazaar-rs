@@ -156,6 +156,9 @@ impl DaemonChain {
                 Err(Failure::Final(err)) => return Err(err),
                 Err(Failure::Node(err)) => {
                     *slot.daemon.lock().unwrap() = None;
+                    // The circuit that just failed is not used again. A reused
+                    // SOCKS username keeps Tor on a stalled circuit.
+                    slot.transport.rotate_circuit();
                     *slot.skip_until.lock().unwrap() = Some(Instant::now() + SKIP_FOR);
                     if skip == 0 {
                         self.current.store((index + 1) % count, Ordering::Relaxed);
