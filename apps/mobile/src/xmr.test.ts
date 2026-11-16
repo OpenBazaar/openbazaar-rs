@@ -78,6 +78,8 @@ test("terms, wallet, backend and rate keep the node's values", () => {
 
   const off = parseXmrBackend({ backend: "none", network: "stagenet", privacy: "none", reveals: "Monero is off.", nodes: [], proxied: false, tip: null, error: null });
   assert.equal(off.backend, "none");
+  assert.equal(off.connecting, false);
+  assert.equal(parseXmrBackend({ ...off, backend: "remote-node", privacy: "remote-tor", proxied: true, connecting: true }).connecting, true);
   assert.throws(() => parseXmrBackend({ ...off, backend: "light-wallet" }), "a light-wallet backend does not exist");
   assert.equal(parseXmrRate(null), null);
   assert.deepEqual(parseXmrRate({ base: "XMR", satsPerXmr: 300000, decimals: 12, currencies: { USD: 180.5, EUR: "x" } }), { satsPerXmr: 300000, currencies: { USD: 180.5 } });

@@ -8,6 +8,7 @@ import {
 } from './catalog'
 import { parseXmrBackend, type XmrBackend } from './xmr'
 import { parseZecBackend, type ZecBackend } from './zec'
+import { parseTorStatus, torFeatures, type TorFeature, type TorStatus } from './torStatus'
 
 export type ChainBackend = {
   backend: string
@@ -36,6 +37,10 @@ export type NetworkInfo = {
   onion: string | null
   /** A SOCKS greeting to the configured proxy succeeded. Null when no proxy is set. */
   proxyReachable: boolean | null
+  /** Whether Tor works for this node, built-in or on this computer. */
+  tor: TorStatus | null
+  /** What waits on Tor, and how each is doing. */
+  torFeatures: TorFeature[]
 }
 export type WalletActivity = {
   txid: string
@@ -102,6 +107,7 @@ function chainBackend(value: unknown): ChainBackend | null {
 export { connectionRows, privacyStatus, type ConnectionRow } from './walletConnection'
 export async function fetchNetwork(): Promise<NetworkInfo> {
   const r = record(await openJson('/network'))
+  const tor = parseTorStatus(r.tor)
   return {
     xmrBackend: r.xmrBackend ? parseXmrBackend(r.xmrBackend) : null,
     zecBackend: r.zecBackend ? parseZecBackend(r.zecBackend) : null,
@@ -115,7 +121,9 @@ export async function fetchNetwork(): Promise<NetworkInfo> {
     privacyWarning: textOrNull(r.privacyWarning),
     chainBackend: chainBackend(r.chainBackend),
     onion: textOrNull(r.onion) ?? textOrNull(r.letterOnion),
-    proxyReachable: r.proxyReachable === true ? true : r.proxyReachable === false ? false : null
+    proxyReachable: r.proxyReachable === true ? true : r.proxyReachable === false ? false : null,
+    tor,
+    torFeatures: torFeatures(r, tor)
   }
 }
 export async function fetchWallet(): Promise<NodeWallet> {

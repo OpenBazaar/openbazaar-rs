@@ -43,7 +43,7 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 rpassword = "7.4"
 serde_json = "1"
 sha2 = "0.10"
-tokio = { version = "1", default-features = false, features = ["macros", "rt-multi-thread", "time", "net"] }
+tokio = { version = "1", default-features = false, features = ["macros", "rt-multi-thread", "time", "net", "io-util"] }
 tor-rtcompat = "0.48"
 tormail = { path = "../tormail" }
 tracing = "0.1"

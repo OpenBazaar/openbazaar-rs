@@ -8,6 +8,7 @@
 use std::future::Future;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use monero_daemon_rpc::MoneroDaemon;
 use monero_wallet::interface::{
@@ -24,6 +25,9 @@ use crate::{BackendStatus, XmrChain, RING_LEN};
 
 /// Refuse fee rates above this many piconero per weight unit (about 50x today's normal rate).
 const MAX_FEE_PER_WEIGHT: u64 = 1_000_000;
+/// How long every node may keep failing before it is reported as an error
+/// rather than as still connecting.
+const ERROR_GRACE: Duration = Duration::from_secs(300);
 
 type Daemon = MoneroDaemon<RpcTransport>;
 
@@ -38,7 +42,16 @@ pub struct DaemonChain {
     runtime: tokio::runtime::Runtime,
     slots: Vec<Slot>,
     current: AtomicUsize,
-    status: Mutex<(Option<u64>, Option<String>, Option<String>)>,
+    status: Mutex<Seen>,
+}
+
+/// The tip, the node that last answered, the last error, and since when every node has failed.
+#[derive(Default)]
+struct Seen {
+    tip: Option<u64>,
+    active: Option<String>,
+    error: Option<String>,
+    failing_since: Option<Instant>,
 }
 
 /// A node failed (try the next) or the request itself was refused (stop).
@@ -71,7 +84,7 @@ impl DaemonChain {
                 Ok(Slot { url: node.url.clone(), transport: RpcTransport::new(&node.url, proxy.as_deref())?, daemon: Mutex::new(None) })
             })
             .collect::<Result<Vec<_>, String>>()?;
-        Ok(Self { config, runtime, slots, current: AtomicUsize::new(0), status: Mutex::new((None, None, None)) })
+        Ok(Self { config, runtime, slots, current: AtomicUsize::new(0), status: Mutex::new(Seen::default()) })
     }
 
     fn connect(&self, slot: &Slot) -> Result<Daemon, String> {
@@ -111,8 +124,9 @@ impl DaemonChain {
                         self.current.store(index, Ordering::Relaxed);
                     }
                     let mut status = self.status.lock().unwrap();
-                    status.1 = Some(slot.url.clone());
-                    status.2 = None;
+                    status.active = Some(slot.url.clone());
+                    status.error = None;
+                    status.failing_since = None;
                     return Ok(value);
                 }
                 Err(Failure::Final(err)) => return Err(err),
@@ -122,8 +136,19 @@ impl DaemonChain {
                 }
             }
         }
-        self.status.lock().unwrap().2 = Some(last.clone());
+        let mut status = self.status.lock().unwrap();
+        status.error = Some(last.clone());
+        status.failing_since.get_or_insert_with(Instant::now);
         Err(last)
+    }
+}
+
+/// The error to show, and whether the nodes are still being reached.
+fn reported(seen: &Seen, now: Instant) -> (Option<String>, bool) {
+    match seen.failing_since {
+        Some(since) if now.duration_since(since) >= ERROR_GRACE => (seen.error.clone(), false),
+        Some(_) => (None, true),
+        None => (None, seen.active.is_none()),
     }
 }
 
@@ -133,13 +158,14 @@ fn node<E: std::fmt::Display>(err: E) -> Failure {
 
 impl XmrChain for DaemonChain {
     fn status(&self) -> BackendStatus {
-        let (tip, active, error) = self.status.lock().unwrap().clone();
-        BackendStatus { config: Some(self.config.clone()), network: self.config.network, tip, active, error }
+        let seen = self.status.lock().unwrap();
+        let (error, connecting) = reported(&seen, Instant::now());
+        BackendStatus { config: Some(self.config.clone()), network: self.config.network, tip: seen.tip, active: seen.active.clone(), error, connecting }
     }
 
     fn tip(&self) -> Result<u64, String> {
         let tip = self.call(0, |daemon| async move { daemon.latest_block_number().await.map_err(node) })? as u64;
-        self.status.lock().unwrap().0 = Some(tip);
+        self.status.lock().unwrap().tip = Some(tip);
         Ok(tip)
     }
 
@@ -194,6 +220,17 @@ mod tests {
     use super::*;
     use crate::backend::{DaemonConfig, DaemonNode};
     use crate::{NodeKind, XmrNetwork};
+
+    #[test]
+    fn failing_nodes_read_as_connecting_until_the_grace_runs_out() {
+        let start = Instant::now();
+        assert_eq!(reported(&Seen::default(), start), (None, true), "nothing answered yet");
+        let failing = Seen { error: Some("all three failed".into()), failing_since: Some(start), ..Seen::default() };
+        assert_eq!(reported(&failing, start + Duration::from_secs(60)), (None, true));
+        assert_eq!(reported(&failing, start + ERROR_GRACE), (Some("all three failed".into()), false));
+        let answered = Seen { active: Some("http://a.onion".into()), ..Seen::default() };
+        assert_eq!(reported(&answered, start), (None, false));
+    }
 
     #[test]
     fn a_public_stagenet_daemon_is_not_dialed_without_a_proxy() {

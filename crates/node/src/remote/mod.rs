@@ -40,7 +40,7 @@ mod sync;
 mod tor;
 mod tor_counts;
 mod tor_health;
-mod tor_log;
+pub(crate) mod tor_log;
 pub(crate) use tor::{Tor, LIGHTNING_PORT};
 mod web;
 mod web_origin;
@@ -239,16 +239,28 @@ impl Remote {
 
     /// Publish one reply onion on the Tor client `--remote` already started.
     /// Returns `http://….onion`.
-    pub(crate) fn publish_reply_onion(&self, _data_dir: &Path, seed: &[u8; 32]) -> Result<String, String> {
-        let tor = self.running_tor().ok_or_else(|| "Tor is not running".to_string())?;
+    pub(crate) fn publish_reply_onion(
+        &self,
+        _data_dir: &Path,
+        seed: &[u8; 32],
+    ) -> Result<String, String> {
+        let tor = self
+            .running_tor()
+            .ok_or_else(|| "Tor is not running".to_string())?;
         self.services.open_reply(&tor, seed)
     }
 
     /// Publish the Lightning onion on the existing Tor client. Virtual port
     /// [`tor::LIGHTNING_PORT`] forwards to `local`. Returns `host.onion:port`.
-    pub(crate) fn open_ln_onion(&self, data_dir: &Path, local: SocketAddr) -> Result<String, String> {
+    pub(crate) fn open_ln_onion(
+        &self,
+        data_dir: &Path,
+        local: SocketAddr,
+    ) -> Result<String, String> {
         if local.port() == 0 || !openbazaar_lightning::config::host_is_local(&local.to_string()) {
-            return Err(format!("Lightning will not bind {local}: that is a public clearnet address"));
+            return Err(format!(
+                "Lightning will not bind {local}: that is a public clearnet address"
+            ));
         }
         let tor = self.tor(data_dir)?;
         let onion = self.services.open_lightning(&tor, local)?;
@@ -257,14 +269,16 @@ impl Remote {
 
     fn tor(&self, data_dir: &Path) -> Result<Arc<tor::Tor>, String> {
         self.tor
-            .get_or_init(|| tor::Tor::start(data_dir).map(Arc::new))
+            .get_or_init(|| tor::Tor::start_with_retry(data_dir).map(Arc::new))
             .as_ref()
             .map(Arc::clone)
             .map_err(Clone::clone)
     }
 
     fn running_tor(&self) -> Option<Arc<tor::Tor>> {
-        self.tor.get().and_then(|tor| tor.as_ref().ok().map(Arc::clone))
+        self.tor
+            .get()
+            .and_then(|tor| tor.as_ref().ok().map(Arc::clone))
     }
 
     /// Look at Tor, and say so on the console when its health has changed.
@@ -315,14 +329,20 @@ impl Remote {
         let mut code = self.pairing().issue(by, Instant::now());
         if let (Some(tor), Some(target)) = (self.running_tor(), self.pairing_gateway.get()) {
             if let Some(reached) = self.services.open_pairing(&tor, &code, *target) {
-                code = self.pairing().watch_onion(&code.id, reached).unwrap_or(code);
+                code = self
+                    .pairing()
+                    .watch_onion(&code.id, reached)
+                    .unwrap_or(code);
             }
         }
         let onion = match code.onion(Instant::now()) {
             Some(_) => "its onion is starting",
             None => "it has no onion (Tor is off, or the onion could not start)",
         };
-        pair_log::line(format!("{} made by {maker}; {onion}", pair_log::label(&code)));
+        pair_log::line(format!(
+            "{} made by {maker}; {onion}",
+            pair_log::label(&code)
+        ));
         Some(code)
     }
 
@@ -451,11 +471,16 @@ pub(crate) fn run(node: &Node, main_port: u16, stop: &AtomicBool) {
         if let Some((addr, origin)) = &config.web {
             match TcpListener::bind(addr) {
                 Ok(listener) => {
-                    eprintln!("ob-node: web sign-in at {}/ (passkeys and access keys)", origin.as_str());
+                    eprintln!(
+                        "ob-node: web sign-in at {}/ (passkeys and access keys)",
+                        origin.as_str()
+                    );
                     if passkeys::claimable(node) {
                         eprintln!("ob-node: nobody owns this node yet: the first browser to open that address creates its passkey and owns it");
                     }
-                    scope.spawn(move || gateway::serve(node, listener, gateway::Entry::Web, main_port, stop));
+                    scope.spawn(move || {
+                        gateway::serve(node, listener, gateway::Entry::Web, main_port, stop)
+                    });
                 }
                 Err(err) => eprintln!("ob-node: the web gateway could not listen on {addr}: {err}"),
             }
@@ -465,7 +490,9 @@ pub(crate) fn run(node: &Node, main_port: u16, stop: &AtomicBool) {
         scope.spawn(move || upkeep(node, main_port, stop));
         if remote.devices().list().is_empty() {
             std::thread::sleep(Duration::from_millis(300));
-            if let Some(notice) = pair_cli::first_run_notice(remote, std::io::stderr().is_terminal()) {
+            if let Some(notice) =
+                pair_cli::first_run_notice(remote, std::io::stderr().is_terminal())
+            {
                 eprintln!("{notice}");
             }
         }

@@ -28,7 +28,7 @@ services:
     volumes:
       - ob-node-data:/data
     # network_mode: host
-    # command: ["serve", "8787", "--remote", "--lan", "--web-dir", "/usr/share/openbazaar/web", "--data-dir", "/data", "--vault", "passphrase"]
+    # command: ["serve", "8787", "--remote", "--lan", "--web-dir", "/usr/share/openbazaar/web", "--data-dir", "/data", "--vault", "passphrase", "--tor", "--xmr-daemon", "default", "--lightning"]
     read_only: true
     tmpfs:
       - /tmp

@@ -7,19 +7,23 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
 
-use ob_node::{resolve_vault_mode, LocalConfig, NetworkMode, NodeConfig, RemoteConfig, ServeOptions, VaultChoice, VaultMode};
+use ob_node::{
+    resolve_vault_mode, LocalConfig, NetworkMode, NodeConfig, RemoteConfig, ServeOptions,
+    VaultChoice, VaultMode,
+};
 
-const USAGE: &str = "ob-node [print | --version | pair [port] [--network N] [--data-dir DIR] [--lan-page] | devices [port] [--remove ID [--rotate] | --remove-all --rotate] | serve [port] [--remote] [--lan] [--lan-listen ADDR] [--remote-listen 127.0.0.1:PORT] [--web-dir DIR] [--web-listen ADDR --web-origin https://HOST] [--local-shop DIR] [--push-gateway http://ONION] [--network testnet4|mainnet] [--data-dir DIR] [--peer HOST:PORT[,...] | --esplora URL[,URL...]] [--public-fallback | --no-public-fallback] [--confirmations N] [--poll-secs S] [--escrow-vendor SELLER=URL] [--moderator URL] [--moderate] [--vault keystore|passphrase|file] [--shop-origin URL] [--no-pair-codes] [--proxy socks5h://HOST:PORT] [--no-rates] [--fixed-rates BTCUSD=N,ZECUSD=N] [--no-introductions] [--tracking aftership] [--xmr-daemon URL[,URL...]] [--zec-indexer URL[,URL...]] [--onion] [--lightning [--ln-network signet|testnet4|regtest] [--ln-chain esplora:URL|electrum:URL|bitcoind:USER:PASS@HOST:PORT] [--lsp NODE_ID@HOST:PORT [--lsp-token T] | --no-lsp] [--lsp-max-fee-sats N] [--ln-rgs URL | --ln-p2p-gossip] [--ln-listen HOST:PORT]] | send-letter --to ONION|http://127.0.0.1:PORT --file FILE [--data-dir DIR] [--network testnet4|mainnet] [--timeout SECS] | poll-mail [--data-dir DIR] [--network testnet4|mainnet] [--expect SHA256] | sign-seed --key FILE --sequence N [--introductions ONION,ONION] --out FILE | fetch-seed --data-dir DIR --from ONION [--from ONION...]]
+const USAGE: &str = "ob-node [print | --version | pair [port] [--network N] [--data-dir DIR] [--lan-page] | devices [port] [--remove ID [--rotate] | --remove-all --rotate] | serve [port] [--remote] [--lan] [--lan-listen ADDR] [--remote-listen 127.0.0.1:PORT] [--web-dir DIR] [--web-listen ADDR --web-origin https://HOST] [--local-shop DIR] [--push-gateway http://ONION] [--network testnet4|mainnet] [--data-dir DIR] [--peer HOST:PORT[,...] | --esplora URL[,URL...]] [--public-fallback | --no-public-fallback] [--confirmations N] [--poll-secs S] [--escrow-vendor SELLER=URL] [--moderator URL] [--moderate] [--vault keystore|passphrase|file] [--shop-origin URL] [--no-pair-codes] [--proxy socks5h://HOST:PORT | --tor] [--no-rates] [--fixed-rates BTCUSD=N,ZECUSD=N] [--no-introductions] [--tracking aftership] [--xmr-daemon URL[,URL...]|default] [--zec-indexer URL[,URL...]] [--onion] [--lightning [--ln-network signet|testnet4|regtest] [--ln-chain esplora:URL|electrum:URL|bitcoind:USER:PASS@HOST:PORT] [--lsp NODE_ID@HOST:PORT [--lsp-token T] | --no-lsp] [--lsp-max-fee-sats N] [--ln-rgs URL | --ln-p2p-gossip] [--ln-listen HOST:PORT]] | send-letter --to ONION|http://127.0.0.1:PORT --file FILE [--data-dir DIR] [--network testnet4|mainnet] [--timeout SECS] | poll-mail [--data-dir DIR] [--network testnet4|mainnet] [--expect SHA256] | sign-seed --key FILE --sequence N [--introductions ONION,ONION] --out FILE | fetch-seed --data-dir DIR --from ONION [--from ONION...]]
 
 Chain data comes from BIP 157/158 compact block filters by default.
 --peer uses only your own node (bitcoind with blockfilterindex=1 and peerblockfilters=1).
 --esplora uses exactly the Esplora servers you name.
 --public-fallback asks public Esplora servers for the tip, fees, and broadcasts while no filter peer answers (default on testnet4 only), and only through --proxy. Addresses are never sent. Without --proxy those servers are not contacted.
 --proxy carries filter peer connections, broadcasts, Esplora queries, exchange rates, and Lightning peers, chain sync, and gossip, and gives each Esplora query its own Tor circuit. Without it, public peers and rate servers are not contacted, and Lightning stays on this machine or the LAN.
+--tor runs Tor inside the node (Arti, with state in <data dir>/tor-socks) and uses it as --proxy on a free loopback port, so no Tor daemon is needed. It does not use a Tor already running on this machine.
 --fixed-rates prices orders from the dollar figures you give for 1 BTC and 1 ZEC, in whole dollars, and asks no rate server, as with --no-rates. Monero has no price. It is for tests on testnet4 and is refused on mainnet.
 --no-introductions does not ask the introductions for the directory, and does not open the Tor client that reaches them. The node learns no stores or listings from the directory, does not announce its own store there, and pays no directory fee. A store followed by its address still works.
 --tracking aftership lets a seller's node look up shipped tracking numbers with AfterShip. OB_TRACKING_API_KEY names the key (it is never taken from the command line, stored with a sale, sent to a buyer, or logged). Only the seller's node asks, only for carrier + tracking number, and only through --proxy: without --proxy the provider is not contacted at all. AfterShip therefore learns the seller's tracking numbers and that the seller uses OpenBazaar; buyers' nodes never contact it. Checkpoint street addresses, coordinates, and signer names are discarded before anything is stored or sent on.
---xmr-daemon turns on Monero direct pay through monerod RPC: your own node (loopback or LAN, direct), or a remote node through --proxy (required for .onion and for any public daemon). There is no default node. Testnet4 pays on Monero stagenet.
+--xmr-daemon turns on Monero direct pay through monerod RPC: your own node (loopback or LAN, direct), or a remote node through --proxy (required for .onion and for any public daemon). On testnet4, `default` names three public stagenet onion daemons; mainnet has no default node. Testnet4 pays on Monero stagenet.
 --zec-indexer turns on Zcash direct pay from compact blocks: your own Zebra and Zaino (loopback or LAN, direct), or a remote Zaino or lightwalletd through --proxy (required for .onion and for any public server). http:// is plaintext gRPC (port 9067 if none is given), https:// is gRPC over TLS. There is no default server. The server must speak lightwallet-protocol 0.5.0 or later, which carries Ironwood; an older one is refused. Testnet4 pays on Zcash testnet.
 --remote publishes the node's admin API as a Tor onion service that only paired devices can find (docs/home-node.md), and a separate public onion for the store. A buyer follows http://….onion; the catalog, order mail, reviews, and escrow mail go over Tor and a redirect off that onion is not followed. An order or escrow reply address is an onion for that one conversation, not the store onion. A follow of http://127.0.0.1 still works on this machine. --escrow-vendor and --moderator take that onion or a loopback URL. On testnet4, without --moderator, a dispute goes to the test network's moderator. `ob-node pair` prints a one-time pairing code and approves the device; `ob-node devices` lists and removes devices.
 --local-shop serves the web shop export on the loopback listener for a browser on this machine. It does not mark that page as a remote home-node client, and it does not change who can call the onion service.
@@ -90,13 +94,29 @@ fn serve(args: &[String]) -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    let options = match ServeOptions::parse(&args) {
+    let mut options = match ServeOptions::parse(&args) {
         Ok(options) => options,
         Err(err) => {
             eprintln!("ob-node: {err}");
             eprintln!("{USAGE}");
             return ExitCode::from(2);
         }
+    };
+    // Lives until serve returns; every client below reads `options.proxy`.
+    let _tor = if options.tor {
+        match ob_node::TorSocks::start(&options.data_dir().join("tor-socks")) {
+            Ok(tor) => {
+                eprintln!("ob-node: built-in Tor proxy on {}", tor.url());
+                options.proxy = Some(tor.url().to_string());
+                Some(tor)
+            }
+            Err(err) => {
+                eprintln!("ob-node: built-in Tor could not start: {err}");
+                return ExitCode::from(1);
+            }
+        }
+    } else {
+        None
     };
     let network = options.network;
     let banner = match network {
@@ -108,7 +128,10 @@ fn serve(args: &[String]) -> ExitCode {
     eprintln!("ob-node: data dir {}", options.data_dir().display());
     let plan = options.chain_plan();
     eprintln!("ob-node: chain data from {}", plan.describe());
-    eprintln!("ob-node: paid after {} confirmation(s)", options.confirmations);
+    eprintln!(
+        "ob-node: paid after {} confirmation(s)",
+        options.confirmations
+    );
     if options.uses_public_server() {
         eprintln!("ob-node: WARNING: a public Esplora server is not told which addresses this wallet follows, and it is not contacted without --proxy. Pass --proxy, or --peer with your own node.");
     }
@@ -125,7 +148,12 @@ fn serve(args: &[String]) -> ExitCode {
         Some(config) => eprintln!(
             "ob-node: Monero {} direct pay via {} ({}). {}",
             config.network,
-            config.nodes.iter().map(|node| node.url.as_str()).collect::<Vec<_>>().join(", "),
+            config
+                .nodes
+                .iter()
+                .map(|node| node.url.as_str())
+                .collect::<Vec<_>>()
+                .join(", "),
             config.privacy(),
             config.reveals()
         ),
@@ -136,13 +164,21 @@ fn serve(args: &[String]) -> ExitCode {
         Some(config) => eprintln!(
             "ob-node: Zcash {} direct pay via {} ({}). {}",
             config.network,
-            config.servers.iter().map(|server| server.url.as_str()).collect::<Vec<_>>().join(", "),
+            config
+                .servers
+                .iter()
+                .map(|server| server.url.as_str())
+                .collect::<Vec<_>>()
+                .join(", "),
             config.privacy(),
             config.reveals()
         ),
         None => eprintln!("ob-node: Zcash is off (no --zec-indexer)"),
     }
-    let lightning = options.lightning.plan(network, options.proxy.as_deref()).expect("parse already checked the Lightning flags");
+    let lightning = options
+        .lightning
+        .plan(network, options.proxy.as_deref())
+        .expect("parse already checked the Lightning flags");
     match &lightning {
         Some(config) => eprintln!(
             "ob-node: Lightning on {} via {}, LSP {}",
@@ -203,7 +239,10 @@ fn serve(args: &[String]) -> ExitCode {
         }
     }
     if options.tracking_aftership {
-        let Some(key) = env::var(TRACKING_KEY_ENV).ok().filter(|key| !key.trim().is_empty()) else {
+        let Some(key) = env::var(TRACKING_KEY_ENV)
+            .ok()
+            .filter(|key| !key.trim().is_empty())
+        else {
             eprintln!("ob-node: --tracking aftership needs {TRACKING_KEY_ENV}");
             return ExitCode::from(2);
         };
@@ -368,7 +407,13 @@ fn sign_seed(args: &[String]) -> ExitCode {
             "--key" => key_path = value.map(str::to_string),
             "--sequence" => sequence = value.and_then(|text| text.parse::<u64>().ok()),
             "--introductions" => {
-                introductions = value.unwrap_or("").split(',').map(str::trim).filter(|onion| !onion.is_empty()).map(str::to_string).collect();
+                introductions = value
+                    .unwrap_or("")
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|onion| !onion.is_empty())
+                    .map(str::to_string)
+                    .collect();
             }
             "--stores" | "--inbox" => {
                 eprintln!("ob-node: sign-seed signs a head. A store joins by paying the fee, not by being named here.");
@@ -445,14 +490,17 @@ fn vault_mode(options: &ServeOptions) -> Result<VaultMode, String> {
                     "ob-node: stdin is not a terminal; using --vault file. Set {PASSPHRASE_ENV} to keep passphrase mode."
                 );
             }
-            eprintln!("ob-node: WARNING: --vault file keeps the vault key beside the files it encrypts.");
+            eprintln!(
+                "ob-node: WARNING: --vault file keeps the vault key beside the files it encrypts."
+            );
             Ok(mode)
         }
         Some(mode) => Ok(mode),
         None => {
             let new = !options.data_dir().join("vault.lock").exists();
             let read = |prompt: &str| {
-                rpassword::prompt_password(prompt).map_err(|err| format!("the passphrase could not be read: {err}"))
+                rpassword::prompt_password(prompt)
+                    .map_err(|err| format!("the passphrase could not be read: {err}"))
             };
             let passphrase = read("Vault passphrase: ")?;
             if new && read("Again: ")? != passphrase {

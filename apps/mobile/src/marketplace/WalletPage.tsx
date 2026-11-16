@@ -4,6 +4,7 @@ import { fetchLnStatus, lnNetworkLabel, type LnStatus } from '../lightning'
 import { fetchXmrRate, fetchXmrWallet, formatXmr, newXmrSubaddress, type XmrSubaddress, type XmrBackend, type XmrWallet } from '../xmr'
 import type { ZecBackend } from '../zec'
 import { useNodeResource } from '../useNodeResource'
+import { torIndicator, waitingForTor } from '../torStatus'
 import { CopyAddress, CopyButton } from './CopyAddress'
 import { InfoTip } from './InfoTip'
 import { CopyPaymentValue, PaymentQr, usePairedNode, WalletAmount, WalletPanel } from './NodePayments'
@@ -17,12 +18,14 @@ type Props = {
   onOrders: () => void
   onSales?: () => void
   onManage: (rail: 'lightning' | 'monero' | 'zcash') => void
+  onTor?: () => void
 }
 type WalletChoice = { rail: Rail; name: string; network: string; balance: string }
 
 /** One workspace per enabled wallet. Balances on different networks are never added together. */
-export function WalletPage({ rates, currency, onOrders, onSales, onManage }: Props) {
+export function WalletPage({ rates, currency, onOrders, onSales, onManage, onTor }: Props) {
   const { wallet, network, lock } = usePairedNode()
+  const waiting = waitingForTor(network.data?.tor)
   const lightning = useNodeResource(fetchLnStatus, 20000)
   const moneroEnabled = !!network.data?.xmrBackend && network.data.xmrBackend.backend !== 'none'
   const monero = useNodeResource(fetchXmrWallet, 20000, moneroEnabled)
@@ -60,16 +63,17 @@ export function WalletPage({ rates, currency, onOrders, onSales, onManage }: Pro
         <strong title={choice.balance}>{choice.balance}</strong><span className='ob-wallet-choice-network'>{choice.network}</span>
       </button>)}
     </div>}
+    {waiting && <p className='ob-wallet-discovery-error' role='status'>Waiting for Tor: {torIndicator(network.data?.tor)?.label}. Balances and payments update once it connects. {onTor && <button type='button' className='ob-text-link' onClick={onTor}>Tor status</button>}</p>}
     {lightning.error && !lightning.data && <p className='ob-wallet-discovery-error' role='status'>Lightning status is unavailable. Refresh wallets to try again.</p>}
     <div id='ob-wallet-panel-bitcoin' className='ob-wallet-tabpanel' role={choices.length > 1 ? 'tabpanel' : undefined} aria-labelledby={choices.length > 1 ? 'ob-wallet-tab-bitcoin' : undefined} hidden={active !== 'bitcoin'}><WalletPanel rates={rates} currency={currency} onOrders={onOrders} embedded/></div>
     {lightning.data?.enabled && <div id='ob-wallet-panel-lightning' className='ob-wallet-tabpanel' role='tabpanel' aria-labelledby='ob-wallet-tab-lightning' hidden={active !== 'lightning'}>
-      <LightningPanel ln={lightning.data} error={lightning.error} rates={rates} currency={currency} onManage={() => onManage('lightning')} onOrders={onOrders}/>
+      <LightningPanel ln={lightning.data} error={lightning.error} waiting={waiting} rates={rates} currency={currency} onManage={() => onManage('lightning')} onOrders={onOrders}/>
     </div>}
     {moneroEnabled && <div id='ob-wallet-panel-monero' className='ob-wallet-tabpanel' role='tabpanel' aria-labelledby='ob-wallet-tab-monero' hidden={active !== 'monero'}>
-      <MoneroPanel resource={monero} backend={network.data!.xmrBackend!} fiatRate={moneroRate.data?.currencies[currency]} currency={currency} onManage={() => onManage('monero')} onOrders={onOrders}/>
+      <MoneroPanel resource={monero} waiting={waiting} backend={network.data!.xmrBackend!} fiatRate={moneroRate.data?.currencies[currency]} currency={currency} onManage={() => onManage('monero')} onOrders={onOrders}/>
     </div>}
     {network.data?.zecBackend?.enabled && <div id='ob-wallet-panel-zcash' className='ob-wallet-tabpanel' role='tabpanel' aria-labelledby='ob-wallet-tab-zcash' hidden={active !== 'zcash'}>
-      <ZcashPanel backend={network.data.zecBackend} onManage={() => onManage('zcash')} onSales={onSales}/>
+      <ZcashPanel backend={network.data.zecBackend} waiting={waiting} onManage={() => onManage('zcash')} onSales={onSales}/>
     </div>}
     {settings && <Dialog label='Wallet settings' onCancel={() => setSettings(false)}><h2>Wallet settings</h2><WalletLockPanel lock={lock}/><div className='ob-form-actions'><button type='button' className='ob-secondary' onClick={() => setSettings(false)}>Done</button></div></Dialog>}
   </section>
@@ -82,17 +86,17 @@ function Metric({ title, children, note, help }: { title: string; children: Reac
   return <article className='ob-wallet-metric'><h3>{title}{help && <InfoTip label={`About ${title.toLowerCase()}`}>{help}</InfoTip>}</h3>{children}{note && <p>{note}</p>}</article>
 }
 
-function LightningPanel({ ln, error, rates, currency, onManage, onOrders }: { ln: LnStatus; error: string; rates: RateTable; currency: CurrencyCode; onManage: () => void; onOrders: () => void }) {
+function LightningPanel({ ln, error, waiting, rates, currency, onManage, onOrders }: { ln: LnStatus; error: string; waiting: boolean; rates: RateTable; currency: CurrencyCode; onManage: () => void; onOrders: () => void }) {
   const usable = ln.channels.filter(channel => channel.usable).length
   return <div className='ob-wallet-detail'>
     <section className='ob-wallet-asset-summary' aria-label='Lightning balances'>
-      <WalletHeader rail='lightning' title='Lightning' network={ln.network ? lnNetworkLabel(ln.network) : 'Network unavailable'} status={error ? 'Last known balance' : ln.error ? 'Needs attention' : ln.running ? 'Running' : ln.keys === 'unlock-to-create' ? 'Setup required' : 'Starting'} attention={!!error || !!ln.error || !ln.running}/>
+      <WalletHeader rail='lightning' title='Lightning' network={ln.network ? lnNetworkLabel(ln.network) : 'Network unavailable'} status={waiting && !ln.running ? 'Waiting for Tor' : error ? 'Last known balance' : ln.error ? 'Needs attention' : ln.running ? 'Running' : ln.keys === 'unlock-to-create' ? 'Setup required' : 'Starting'} attention={!!error || !!ln.error || !ln.running}/>
       <div className='ob-wallet-metrics'>
         <Metric title='Available to spend' note='For purchases over Lightning.'>{ln.balances ? <WalletAmount sats={ln.balances.lightningSats} rates={rates} currency={currency} showFiat={ln.network === 'bitcoin'}/> : <p className='ob-wallet-unavailable'>Balance unavailable</p>}</Metric>
         <Metric title='Receiving capacity' note='Room for incoming Lightning payments.' help='Receiving capacity is channel liquidity, not a wallet balance. Incoming payments use this capacity; opening or rebalancing channels can change it.'>{ln.balances ? <WalletAmount sats={ln.balances.inboundSats} rates={rates} currency={currency} showFiat={ln.network === 'bitcoin'}/> : <p className='ob-wallet-unavailable'>Capacity unavailable</p>}</Metric>
       </div>
       <div className='ob-wallet-asset-footer'><button type='button' className='ob-primary' onClick={onOrders}>Your orders</button><button type='button' className='ob-secondary' onClick={onManage}>Manage channels</button><span>Invoices are created for each order.</span></div>
-      {(error || ln.error) && <p className='ob-wallet-sync-error' role='alert'>{error || ln.error}{ln.balances ? ' Showing the last available balances.' : ''}</p>}
+      {!waiting && (error || ln.error) && <p className='ob-wallet-sync-error' role='alert'>{error || ln.error}{ln.balances ? ' Showing the last available balances.' : ''}</p>}
     </section>
     <div className='ob-wallet-support-row'><div><span>Channel funds on chain <InfoTip label='About channel funds'>Bitcoin held by the Lightning node for channel funding or returned from closed channels. These funds are separate from your spendable Lightning balance and your Bitcoin wallet.</InfoTip></span><strong>{ln.balances ? `${ln.balances.onchainSats.toLocaleString('en-US')} sats` : 'Unavailable'}</strong></div><div><span>Channels</span><strong>{usable} usable <small>of {ln.channels.length}</small></strong></div></div>
     <section className='ob-wallet-channel-list' aria-labelledby='ob-wallet-channels'><header><h2 id='ob-wallet-channels'>Channels</h2><span>{ln.lsp?.connected ? 'LSP connected' : ln.lsp ? 'LSP disconnected' : 'Direct channels'}</span></header>
@@ -102,7 +106,7 @@ function LightningPanel({ ln, error, rates, currency, onManage, onOrders }: { ln
   </div>
 }
 
-function MoneroPanel({ resource, backend, fiatRate, currency, onManage, onOrders }: { resource: ReturnType<typeof useNodeResource<XmrWallet>>; backend: XmrBackend; fiatRate?: number; currency: CurrencyCode; onManage: () => void; onOrders: () => void }) {
+function MoneroPanel({ resource, waiting, backend, fiatRate, currency, onManage, onOrders }: { resource: ReturnType<typeof useNodeResource<XmrWallet>>; waiting: boolean; backend: XmrBackend; fiatRate?: number; currency: CurrencyCode; onManage: () => void; onOrders: () => void }) {
   const current = resource.data
   const [fresh, setFresh] = useState<XmrSubaddress | null>(null)
   const [receive, setReceive] = useState(false)
@@ -111,6 +115,7 @@ function MoneroPanel({ resource, backend, fiatRate, currency, onManage, onOrders
   const mismatch = !!current && current.network !== backend.network
   const address = fresh?.network === current?.network ? fresh?.address : current?.primaryAddress
   const stale = !!resource.error || !!current?.syncError || !!backend.error
+  const connecting = backend.connecting && !stale ? (backend.proxied ? 'Connecting to Monero over Tor…' : 'Connecting to Monero…') : ''
   const receiveBlocked = !address || stale || mismatch || !current?.enabled || current.keys !== 'ready'
   async function newAddress() {
     if (busy || mismatch || !current?.enabled || current.keys !== 'ready') return
@@ -128,10 +133,10 @@ function MoneroPanel({ resource, backend, fiatRate, currency, onManage, onOrders
   }
   return <div className='ob-wallet-detail'>
     <section className='ob-wallet-asset-summary' aria-label='Monero balances'>
-      <WalletHeader rail='monero' title='Monero' network={backend.network === 'stagenet' ? 'Stagenet · test coins, no value' : 'Mainnet'} status={mismatch ? 'Network mismatch' : stale ? 'Needs attention' : current?.keys === 'unlock-to-create' ? 'Setup required' : !current?.lastSync ? 'Syncing' : current.tip != null && current.scannedHeight != null && current.scannedHeight < current.tip ? 'Syncing' : 'Synced'} attention={mismatch || stale || !current?.lastSync}/>
+      <WalletHeader rail='monero' title='Monero' network={backend.network === 'stagenet' ? 'Stagenet · test coins, no value' : 'Mainnet'} status={mismatch ? 'Network mismatch' : waiting ? 'Waiting for Tor' : stale ? 'Needs attention' : current?.keys === 'unlock-to-create' ? 'Setup required' : connecting ? 'Connecting' : !current?.lastSync ? 'Syncing' : current.tip != null && current.scannedHeight != null && current.scannedHeight < current.tip ? 'Syncing' : 'Synced'} attention={mismatch || stale || !current?.lastSync}/>
       <div className='ob-wallet-metrics'><Metric title={stale ? 'Last known spendable balance' : 'Available to spend'}>{current?.balance ? amount(current.balance.unlocked) : <p className='ob-wallet-unavailable'>{resource.loading ? 'Loading balance…' : 'Balance unavailable'}</p>}</Metric><Metric title='Pending confirmation' note='Available after the Monero unlock period.'>{current?.balance ? amount(current.balance.pending) : <p className='ob-wallet-unavailable'>Balance unavailable</p>}</Metric></div>
-      <div className='ob-wallet-asset-footer'><button type='button' className='ob-primary' disabled={receiveBlocked} onClick={() => setReceive(true)}>Receive Monero</button><button type='button' className='ob-secondary' onClick={onOrders}>Your orders</button><span>{current?.lastSync ? `Last synced ${new Date(current.lastSync * 1000).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}` : 'Not synced yet'}</span></div>
-      {(resource.error || current?.syncError || backend.error || mismatch) && <p className='ob-wallet-sync-error' role='alert'>{mismatch ? 'Wallet and Monero networks do not match. Receiving is disabled.' : resource.error || current?.syncError || backend.error}{stale && current?.balance ? ' Showing the last available balance.' : ''}</p>}
+      <div className='ob-wallet-asset-footer'><button type='button' className='ob-primary' disabled={receiveBlocked} onClick={() => setReceive(true)}>Receive Monero</button><button type='button' className='ob-secondary' onClick={onOrders}>Your orders</button><span>{current?.lastSync ? `Last synced ${new Date(current.lastSync * 1000).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}` : connecting || 'Not synced yet'}</span></div>
+      {(mismatch || (!waiting && (resource.error || current?.syncError || backend.error))) && <p className='ob-wallet-sync-error' role='alert'>{mismatch ? 'Wallet and Monero networks do not match. Receiving is disabled.' : resource.error || current?.syncError || backend.error}{stale && current?.balance ? ' Showing the last available balance.' : ''}</p>}
     </section>
     <section className='ob-wallet-asset-receive'><header><div><h2>Receive Monero</h2><p>Use a fresh subaddress to keep deposits separate.</p></div><button type='button' className='ob-text-link' onClick={onManage}>Monero settings</button></header>
       {address && !mismatch ? <><CopyPaymentValue label='Receive address' value={address}/><div className='ob-wallet-receive-actions'><button type='button' className='ob-secondary' disabled={receiveBlocked} onClick={() => setReceive(true)}>Show QR code</button><button type='button' className='ob-secondary' disabled={busy || receiveBlocked} onClick={() => void newAddress()}>{busy ? 'Creating address…' : 'New subaddress'}</button></div></> : <p className='ob-wallet-empty'>{current?.keys === 'unlock-to-create' ? 'Unlock your wallet in Settings to create the Monero keys and receive address.' : 'A receive address will appear when this wallet is ready.'}</p>}
@@ -142,14 +147,14 @@ function MoneroPanel({ resource, backend, fiatRate, currency, onManage, onOrders
   </div>
 }
 
-function ZcashPanel({ backend, onManage, onSales }: { backend: ZecBackend; onManage: () => void; onSales?: () => void }) {
+function ZcashPanel({ backend, waiting, onManage, onSales }: { backend: ZecBackend; waiting: boolean; onManage: () => void; onSales?: () => void }) {
   const behind = backend.tip != null && backend.scannedHeight != null ? Math.max(0, backend.tip - backend.scannedHeight) : null
   return <div className='ob-wallet-detail'>
     <section className='ob-wallet-asset-summary' aria-label='Zcash receiving'>
-      <WalletHeader rail='zcash' title='Zcash' network={backend.network === 'testnet' ? 'Testnet · test coins, no value' : 'Mainnet'} status={backend.error ? 'Needs attention' : behind === 0 ? 'Synced' : 'Syncing'} attention={!!backend.error || behind !== 0}/>
+      <WalletHeader rail='zcash' title='Zcash' network={backend.network === 'testnet' ? 'Testnet · test coins, no value' : 'Mainnet'} status={waiting ? 'Waiting for Tor' : backend.error ? 'Needs attention' : behind === 0 ? 'Synced' : 'Syncing'} attention={!!backend.error || behind !== 0}/>
       <div className='ob-wallet-receiving-state'><div><span className='ob-wallet-capability'>Shielded order payments</span><h3>Receive through your store</h3><p>Each order gets its own shielded address. Track received amounts and confirmations in Sales.</p><p className='ob-wallet-capability-note'>A wallet balance and general receive address aren’t available here yet. Pay for Zcash purchases from another wallet.</p></div><dl><div><dt>Scanned block</dt><dd>{backend.scannedHeight?.toLocaleString() ?? 'Not synced yet'}</dd></div><div><dt>Chain tip</dt><dd>{backend.tip?.toLocaleString() ?? 'Unavailable'}</dd></div></dl></div>
       <div className='ob-wallet-asset-footer'>{onSales && <button type='button' className='ob-primary' onClick={onSales}>View sales</button>}<button type='button' className='ob-secondary' onClick={onManage}>Zcash settings</button></div>
-      {backend.error && <p className='ob-wallet-sync-error' role='alert'>{backend.error}</p>}
+      {!waiting && backend.error && <p className='ob-wallet-sync-error' role='alert'>{backend.error}</p>}
     </section>
     <details className='ob-wallet-connection'><summary>Connection and privacy<span>Zcash details</span></summary><div className='ob-wallet-detail-disclosure'><p>{backend.reveals}</p></div></details>
   </div>

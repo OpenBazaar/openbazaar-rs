@@ -103,11 +103,14 @@ pub struct BackendStatus {
     /// The node currently asked, if one has answered.
     pub active: Option<String>,
     pub error: Option<String>,
+    /// No node has answered yet, or every node has failed for too short a
+    /// time to call it an error (a first onion circuit can take a minute).
+    pub connecting: bool,
 }
 
 impl BackendStatus {
     pub fn off(network: XmrNetwork) -> Self {
-        Self { config: None, network, tip: None, active: None, error: None }
+        Self { config: None, network, tip: None, active: None, error: None, connecting: false }
     }
 
     pub fn value(&self) -> Value {
@@ -134,6 +137,7 @@ impl BackendStatus {
             "proxied": config.nodes.iter().any(|node| config.proxied(node)),
             "tip": self.tip,
             "error": self.error,
+            "connecting": self.connecting,
         })
     }
 }

@@ -213,7 +213,9 @@ Does not protect against:
   the rest of a 10-minute window. Paired devices are unaffected.
 - **Traffic analysis of Tor itself**, and a global adversary watching both the
   home connection and the device. The node's other traffic (rates, chain
-  peers) is not on Tor unless `--proxy` is set; see [STATUS.md](STATUS.md).
+  peers, Monero, Lightning) is not on Tor unless `--tor` or `--proxy` is set.
+  The packaged units and the Docker image pass `--tor`, which runs Tor inside
+  the node, so no Tor needs installing; see [STATUS.md](STATUS.md).
 
 ## Push notifications and their privacy cost
 

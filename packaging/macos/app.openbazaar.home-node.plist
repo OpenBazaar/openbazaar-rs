@@ -16,6 +16,10 @@
   (allow incoming connections if the macOS firewall asks). Delete the "lan"
   argument below to use Tor only.
 
+  "tor" runs Tor inside ob-node, so nothing else needs installing and a Tor
+  you already run is left alone. Monero (the node's stagenet onion daemons)
+  and Lightning (Mutinynet) go through it, as in the desktop app.
+
   See docs/home-node.md.
 -->
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -36,6 +40,10 @@
     <string>/Users/USER/OpenBazaarHome/data</string>
     <string>--vault</string>
     <string>keystore</string>
+    <string>--tor</string>
+    <string>--xmr-daemon</string>
+    <string>default</string>
+    <string>--lightning</string>
   </array>
   <key>RunAtLoad</key>
   <true/>

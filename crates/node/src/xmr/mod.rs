@@ -384,6 +384,8 @@ impl Node {
                 slot.last_sync = Some(now_secs());
                 slot.error = None;
             }
+            // The backend reports itself as connecting; a chain error here is not news yet.
+            Err(_) if chain.status().connecting => slot.error = None,
             Err(err) => slot.error = Some(err.clone()),
         }
         result

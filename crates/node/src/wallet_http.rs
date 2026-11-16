@@ -25,18 +25,35 @@ pub(crate) fn network_response(node: &Node, origin: Option<&str>) -> Vec<u8> {
         "onion": node.advertised_onion(),
         "moderates": node.escrow.config.moderates,
     });
-    if let (Some(map), Value::Object(mut egress)) =
-        (value.as_object_mut(), node.local.egress.value(chain.public_server()))
-    {
-        if let Some(proxy) = node.local.egress.proxy.as_deref() {
-            egress.insert("proxyReachable".into(), json!(crate::egress::Egress::proxy_reachable(proxy)));
+    if let (Some(map), Value::Object(mut egress)) = (
+        value.as_object_mut(),
+        node.local.egress.value(chain.public_server()),
+    ) {
+        let built_in = crate::tor_socks::status();
+        let proxy = node.local.egress.proxy.as_deref().map(|proxy| {
+            // Built-in Tor answers SOCKS at once but carries nothing until it is ready.
+            let reachable = match &built_in {
+                Some(tor) => tor.ready,
+                None => crate::egress::Egress::proxy_reachable(proxy),
+            };
+            (proxy, reachable)
+        });
+        if let Some((_, reachable)) = proxy {
+            egress.insert("proxyReachable".into(), json!(reachable));
         }
         map.extend(egress);
+        let health = node.remote.tor_health();
+        map.insert("tor".into(), crate::tor_status::value(built_in.as_ref(), proxy, health.as_ref()));
     }
     json_body("200 OK", &value, origin)
 }
 
-pub(crate) fn wallet_response(node: &Node, client: &Client, head: &str, origin: Option<&str>) -> Vec<u8> {
+pub(crate) fn wallet_response(
+    node: &Node,
+    client: &Client,
+    head: &str,
+    origin: Option<&str>,
+) -> Vec<u8> {
     if let Err(response) = local_guard(node, client, head, origin) {
         return response;
     }
@@ -46,7 +63,11 @@ pub(crate) fn wallet_response(node: &Node, client: &Client, head: &str, origin: 
         Ok(address) => address,
         Err(err) => {
             eprintln!("ob-node: {err}");
-            return json_error("500 Internal Server Error", "The wallet could not be read.", origin);
+            return json_error(
+                "500 Internal Server Error",
+                "The wallet could not be read.",
+                origin,
+            );
         }
     };
     json_body(
@@ -75,12 +96,19 @@ fn payment_labels(node: &Node) -> HashMap<String, String> {
         }
     }
     if let Some(txid) = node.directory_fee_txid() {
-        labels.entry(txid).or_insert_with(|| "Directory fee".to_string());
+        labels
+            .entry(txid)
+            .or_insert_with(|| "Directory fee".to_string());
     }
     labels
 }
 
-pub(crate) fn wallet_address_response(node: &Node, client: &Client, head: &str, origin: Option<&str>) -> Vec<u8> {
+pub(crate) fn wallet_address_response(
+    node: &Node,
+    client: &Client,
+    head: &str,
+    origin: Option<&str>,
+) -> Vec<u8> {
     if let Err(response) = local_guard(node, client, head, origin) {
         return response;
     }
@@ -92,7 +120,11 @@ pub(crate) fn wallet_address_response(node: &Node, client: &Client, head: &str, 
         ),
         Err(err) => {
             eprintln!("ob-node: {err}");
-            json_error("500 Internal Server Error", "A new address could not be saved.", origin)
+            json_error(
+                "500 Internal Server Error",
+                "A new address could not be saved.",
+                origin,
+            )
         }
     }
 }
@@ -105,7 +137,16 @@ pub(crate) fn pay_response(
     body: &[u8],
     origin: Option<&str>,
 ) -> Vec<u8> {
-    order_action(node, client, head, id, body, origin, "202 Accepted", Node::queue_payment)
+    order_action(
+        node,
+        client,
+        head,
+        id,
+        body,
+        origin,
+        "202 Accepted",
+        Node::queue_payment,
+    )
 }
 
 /// `POST /orders/{id}/pay/bump` ([`crate::pay_bump`]).
@@ -117,7 +158,16 @@ pub(crate) fn bump_response(
     body: &[u8],
     origin: Option<&str>,
 ) -> Vec<u8> {
-    order_action(node, client, head, id, body, origin, "200 OK", Node::bump_payment)
+    order_action(
+        node,
+        client,
+        head,
+        id,
+        body,
+        origin,
+        "200 OK",
+        Node::bump_payment,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -142,19 +192,27 @@ fn order_action(
     } else {
         match serde_json::from_slice(body) {
             Ok(value) => value,
-            Err(_) => return json_error("400 Bad Request", "The request could not be read.", origin),
+            Err(_) => {
+                return json_error("400 Bad Request", "The request could not be read.", origin)
+            }
         }
     };
     match action(node, id, &parsed) {
         Ok(value) => json_body(ok, &value, origin),
-        Err(PayError::NotFound) => json_error("404 Not Found", "That order is not on this node.", origin),
+        Err(PayError::NotFound) => {
+            json_error("404 Not Found", "That order is not on this node.", origin)
+        }
         Err(PayError::Invalid(message)) => json_error("400 Bad Request", &message, origin),
         Err(PayError::Conflict(message)) => json_error("409 Conflict", &message, origin),
         Err(PayError::Chain(message)) => json_error("502 Bad Gateway", &message, origin),
         Err(PayError::Locked(state)) => crate::lock_http::locked_response(state, origin),
         Err(PayError::Failed(detail)) => {
             eprintln!("ob-node: pay {id}: {detail}");
-            json_error("500 Internal Server Error", "The payment failed. Details are in the node log.", origin)
+            json_error(
+                "500 Internal Server Error",
+                "The payment failed. Details are in the node log.",
+                origin,
+            )
         }
     }
 }
