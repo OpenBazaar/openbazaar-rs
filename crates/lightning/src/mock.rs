@@ -34,6 +34,8 @@ struct State {
     running: bool,
     fail_pay: Option<LnError>,
     channels: Vec<Channel>,
+    onchain_sats: u64,
+    onchain_sends: Vec<(String, Option<u64>)>,
 }
 
 pub struct MockRail {
@@ -83,6 +85,8 @@ impl MockRail {
                 running: true,
                 fail_pay: None,
                 channels: Vec::new(),
+                onchain_sats: 0,
+                onchain_sends: Vec::new(),
             }),
         }
     }
@@ -97,6 +101,15 @@ impl MockRail {
 
     pub fn set_lsp(&self, on: bool) {
         guard(&self.state).lsp = on;
+    }
+
+    pub fn set_onchain_sats(&self, sats: u64) {
+        guard(&self.state).onchain_sats = sats;
+    }
+
+    /// Each on-chain send so far: the address, and the amount (`None` for a sweep).
+    pub fn onchain_sends(&self) -> Vec<(String, Option<u64>)> {
+        guard(&self.state).onchain_sends.clone()
     }
 
     pub fn fail_next_pay(&self, err: LnError) {
@@ -141,7 +154,8 @@ impl LightningRail for MockRail {
     }
 
     fn balances(&self) -> Balances {
-        Balances { lightning_sats: guard(&self.state).lightning_sats, ..Balances::default() }
+        let state = guard(&self.state);
+        Balances { lightning_sats: state.lightning_sats, onchain_total_sats: state.onchain_sats, onchain_spendable_sats: state.onchain_sats, ..Balances::default() }
     }
 
     fn channels(&self) -> Vec<Channel> {
@@ -216,8 +230,21 @@ impl LightningRail for MockRail {
         Ok("bcrt1qmockaddress".into())
     }
 
-    fn sweep_onchain(&self, _address: &str) -> Result<String, LnError> {
+    fn sweep_onchain(&self, address: &str) -> Result<String, LnError> {
+        let mut state = guard(&self.state);
+        state.onchain_sats = 0;
+        state.onchain_sends.push((address.to_string(), None));
         Ok("00".repeat(32))
+    }
+
+    fn send_onchain(&self, address: &str, sats: u64) -> Result<String, LnError> {
+        let mut state = guard(&self.state);
+        if state.onchain_sats < sats {
+            return Err(LnError::Insufficient("Not enough on-chain funds for that.".into()));
+        }
+        state.onchain_sats -= sats;
+        state.onchain_sends.push((address.to_string(), Some(sats)));
+        Ok("11".repeat(32))
     }
 
     fn open_channel(&self, peer: &PeerAddress, sats: u64) -> Result<String, LnError> {

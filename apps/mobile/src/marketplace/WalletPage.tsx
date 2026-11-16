@@ -10,6 +10,7 @@ import { CopyAddress, CopyButton } from './CopyAddress'
 import { InfoTip } from './InfoTip'
 import { CopyPaymentValue, PaymentQr, usePairedNode, WalletAmount, WalletPanel } from './NodePayments'
 import { FiatEstimate } from './FiatEstimate'
+import { LightningSendButtons } from './LightningSend'
 import { MoneroSendButton } from './MoneroSend'
 import { PageHeading } from './PageHeading'
 import { RailMark, type Rail } from './RailMark'
@@ -97,7 +98,7 @@ function LightningPanel({ ln, error, waiting, currency, onManage, onOrders }: { 
         <Metric title='Available to spend' note='For purchases over Lightning.'>{ln.balances ? <WalletAmount sats={ln.balances.lightningSats} currency={currency} testCoins={ln.network !== 'bitcoin'}/> : <p className='ob-wallet-unavailable'>Balance unavailable</p>}</Metric>
         <Metric title='Receiving capacity' note='Room for incoming Lightning payments.' help='Receiving capacity is channel liquidity, not a wallet balance. Incoming payments use this capacity; opening or rebalancing channels can change it.'>{ln.balances ? <WalletAmount sats={ln.balances.inboundSats} currency={currency} testCoins={ln.network !== 'bitcoin'}/> : <p className='ob-wallet-unavailable'>Capacity unavailable</p>}</Metric>
       </div>
-      <div className='ob-wallet-asset-footer'><button type='button' className='ob-primary' onClick={onOrders}>Your orders</button><button type='button' className='ob-secondary' onClick={onManage}>Manage channels</button><span>Invoices are created for each order.</span></div>
+      <div className='ob-wallet-asset-footer'><button type='button' className='ob-primary' onClick={onOrders}>Your orders</button><button type='button' className='ob-secondary' onClick={onManage}>Manage channels</button><LightningSendButtons ln={ln}/><span>Invoices are created for each order.</span></div>
       {!waiting && (error || ln.error) && <p className='ob-wallet-sync-error' role='alert'>{error || ln.error}{ln.balances ? ' Showing the last available balances.' : ''}</p>}
     </section>
     <div className='ob-wallet-support-row'><div><span>Channel funds on chain <InfoTip label='About channel funds'>Bitcoin held by the Lightning node for channel funding or returned from closed channels. These funds are separate from your spendable Lightning balance and your Bitcoin wallet.</InfoTip></span><strong>{ln.balances ? `${ln.balances.onchainSats.toLocaleString('en-US')} sats` : 'Unavailable'}</strong></div><div><span>Channels</span><strong>{usable} usable <small>of {ln.channels.length}</small></strong></div></div>

@@ -12,6 +12,8 @@
 //! | `POST /ln/orders/{id}/pay/quote` | unlocked | | `{quote, ...terms}` |
 //! | `POST /ln/spend-tickets` | unlocked | `{quote, passphrase}` | `{ticket, ...terms}` |
 //! | `POST /ln/orders/{id}/pay` | unlocked | `{ticket, confirm?}` | 202, the order with `paying` |
+//! | `POST /ln/send/quote`, `POST /ln/send` | unlocked | see `send.rs` | pay an invoice the user pastes |
+//! | `POST /ln/withdraw/quote`, `POST /ln/withdraw` | unlocked | see `send.rs` | LDK's on-chain funds to an address the user names |
 //!
 //! Errors follow the bitcoin routes: 423 locked, 400 wrong passphrase or
 //! bad request, 429 backoff, 409 stale ticket. On mainnet every route but
@@ -95,6 +97,22 @@ pub(crate) fn response(node: &Node, client: &Client, head: &str, method: &str, p
             },
             Err(response) => response,
         },
+        ("POST", "/send/quote") => match read_body(body, &["invoice"], origin) {
+            Ok(map) => match node.ln_send_quote(&map) {
+                Ok(value) => json_body("200 OK", &value, origin),
+                Err(err) => pay_error(err, origin),
+            },
+            Err(response) => response,
+        },
+        ("POST", "/withdraw/quote") => match read_body(body, &["address", "amountSats", "max"], origin) {
+            Ok(map) => match node.ln_withdraw_quote(&map) {
+                Ok(value) => json_body("200 OK", &value, origin),
+                Err(err) => pay_error(err, origin),
+            },
+            Err(response) => response,
+        },
+        ("POST", "/send") => crate::wallet_send::confirmed_response(node, body, origin, |quote| node.ln_send_quoted(quote, false)),
+        ("POST", "/withdraw") => crate::wallet_send::confirmed_response(node, body, origin, |quote| node.ln_send_quoted(quote, true)),
         ("POST", "/spend-tickets") => match read_body(body, &["quote", "passphrase"], origin) {
             Ok(map) => match node.ln_ticket(text(&map, "quote"), text(&map, "passphrase")) {
                 Ok(value) => json_body("200 OK", &value, origin),

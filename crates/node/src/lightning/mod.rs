@@ -32,6 +32,9 @@ mod pay;
 mod sale;
 #[cfg(test)]
 mod sale_tests;
+mod send;
+#[cfg(test)]
+mod send_tests;
 #[cfg(test)]
 mod regtest_tests;
 #[cfg(test)]
@@ -58,6 +61,7 @@ pub(crate) use checkout::{add_ln_flags, ln_rail_of};
 pub(crate) use http::response;
 pub(crate) use pay::LnTerms;
 pub(crate) use sale::{add_terms, payment_from_terms};
+pub(crate) use send::LnSendTerms;
 pub use options::LnFlags;
 
 const KEYS_FILE: &str = "ln-keys.obv";

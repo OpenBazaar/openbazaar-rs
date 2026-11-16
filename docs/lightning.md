@@ -24,7 +24,7 @@ The code is in `crates/lightning` (the `LightningRail` trait, the LDK implementa
 4. The node follows LDK's payment events every 2 seconds. A settled payment marks the order Paid with `receivedMsat` and `lspFeeMsat`; an expired unpaid invoice shows `expired`.
 5. The buyer pays from any Lightning wallet, or from its node: `POST /ln/orders/{id}/pay/quote`, then a spend ticket with the passphrase, then `POST /ln/orders/{id}/pay` (202). An order the same node issued (a demo store or the own store) is refused: pay it from another wallet.
 
-Routes: `GET /ln/status`, `GET|PUT /ln/stores`, `POST /ln/address`, `POST /ln/channels`, `POST /ln/channels/{id}/close`, `POST /ln/sweep`, `POST /ln/spend-tickets`, `POST /ln/orders/{id}/pay/quote`, `POST /ln/orders/{id}/pay`. `GET /network` reports `lightning` (balances, channels) and `lightningBackend` (LSP, chain, gossip, what each reveals).
+Routes: `GET /ln/status`, `GET|PUT /ln/stores`, `POST /ln/address`, `POST /ln/channels`, `POST /ln/channels/{id}/close`, `POST /ln/sweep`, `POST /ln/send/quote`, `POST /ln/send`, `POST /ln/withdraw/quote`, `POST /ln/withdraw`, `POST /ln/spend-tickets`, `POST /ln/orders/{id}/pay/quote`, `POST /ln/orders/{id}/pay`. `GET /network` reports `lightning` (balances, channels) and `lightningBackend` (LSP, chain, gossip, what each reveals).
 
 ## Mainnet is blocked until Tor
 
@@ -67,7 +67,7 @@ With `--proxy` (the desktop app always sets it), the LSP, peers, Esplora, and th
 | `--network testnet4 --ln-network regtest` | regtest | `--ln-chain bitcoind:…` | `--lsp` or `--no-lsp` | Used by the integration tests. |
 | `--network mainnet` | none | — | — | Refused until Lightning runs over Tor. |
 
-Mutinynet coins and the on-chain Lightning wallet are separate from the node's testnet4 wallet, so `POST /ln/sweep` refuses to send them to it.
+Mutinynet coins and the on-chain Lightning wallet are separate from the node's testnet4 wallet, so `POST /ln/sweep` refuses to send them to it. `POST /ln/withdraw/quote {address, amountSats}` (or `{address, max: true}`) then `POST /ln/withdraw {quote, passphrase, confirm: true}` send them to a Mutinynet address the user names instead; close a channel first to bring its funds on chain. LDK picks the on-chain fee when it sends, so the quote cannot show it. `POST /ln/send/quote {invoice}` then `POST /ln/send` pay a pasted invoice with the order fee cap. Both use the bitcoin send's quote, passphrase and confirm steps ([`wallet-lock.md`](wallet-lock.md)) and are refused to paired devices.
 
 ### Mainnet LSP choices (for when mainnet opens)
 

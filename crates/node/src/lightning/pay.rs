@@ -76,7 +76,7 @@ impl Node {
         self.ln.config().map_or("off", |config| super::options::network_name(config.network))
     }
 
-    fn ln_rail_or_refuse(&self) -> Result<std::sync::Arc<dyn openbazaar_lightning::LightningRail>, PayError> {
+    pub(super) fn ln_rail_or_refuse(&self) -> Result<std::sync::Arc<dyn openbazaar_lightning::LightningRail>, PayError> {
         if self.ln_blocked() {
             return Err(PayError::Invalid(super::MAINNET_BLOCKED.into()));
         }
@@ -220,7 +220,7 @@ impl Node {
         self.ln_step_up(passphrase)?;
         let rail = self.ln_rail_or_refuse()?;
         if self.ln.config().is_some_and(|config| config.network != self.network.bitcoin()) {
-            return Err(PayError::Invalid("Lightning runs on another network than this node's wallet; there is no wallet address to sweep to.".into()));
+            return Err(PayError::Invalid("Lightning runs on another network than this node's wallet, so there is no wallet address to sweep to. Withdraw to an address on the Lightning network instead (POST /ln/withdraw/quote).".into()));
         }
         let address = self.buyer_wallet().fresh_address().map_err(|err| PayError::Failed(err.to_string()))?.to_string();
         let txid = rail.sweep_onchain(&address).map_err(|err| PayError::Chain(err.to_string()))?;

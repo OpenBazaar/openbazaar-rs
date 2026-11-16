@@ -192,6 +192,7 @@ pub(crate) struct WalletLock {
     pub(crate) xmr_tickets: SpendTickets<crate::xmr::XmrTerms>,
     pub(crate) xmr_send_quotes: SpendTickets<crate::xmr::XmrSendTerms>,
     pub(crate) ln_tickets: SpendTickets<crate::lightning::LnTerms>,
+    pub(crate) ln_send_quotes: SpendTickets<crate::lightning::LnSendTerms>,
     /// Quotes for sends to an address the user names ([`crate::wallet_send`]).
     pub(crate) send_quotes: SpendTickets<crate::wallet_send::SendTerms>,
 }
@@ -230,6 +231,7 @@ impl WalletLock {
             xmr_tickets: SpendTickets::default(),
             xmr_send_quotes: SpendTickets::default(),
             ln_tickets: SpendTickets::default(),
+            ln_send_quotes: SpendTickets::default(),
             send_quotes: SpendTickets::default(),
         })
     }
@@ -272,6 +274,7 @@ impl WalletLock {
         self.xmr_tickets.clear();
         self.xmr_send_quotes.clear();
         self.ln_tickets.clear();
+        self.ln_send_quotes.clear();
         self.send_quotes.clear();
     }
 

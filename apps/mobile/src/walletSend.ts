@@ -55,17 +55,23 @@ export function bitcoinAddressOf(input: string): string {
 export function bitcoinAddressProblem(address: string, network: NetworkName): string | null {
   const value = bitcoinAddressOf(address)
   if (!value) return 'Enter the address to send to.'
-  const lower = value.toLowerCase()
-  const kind = /^bcrt1/.test(lower) ? 'regtest'
-    : /^bc1/.test(lower) || /^[13]/.test(value) ? 'mainnet'
-    : /^tb1/.test(lower) || /^[mn2]/.test(value) ? 'testnet4'
-    : null
-  if (!kind || !/^[a-zA-Z0-9]{26,90}$/.test(value)) return 'That is not a bitcoin address.'
+  const kind = bitcoinAddressKind(value)
+  if (!kind) return 'That is not a bitcoin address.'
   if (kind !== network)
     return network === 'testnet4'
       ? `That is a ${kind} address. This wallet holds testnet4 coins; send only to a testnet4 address.`
       : `That is a ${kind} address. This wallet holds real bitcoin; send only to a mainnet address.`
   return null
+}
+
+/** Which chain a bitcoin address belongs to by its prefix (`testnet4` covers signet too), or `null`. */
+export function bitcoinAddressKind(value: string): 'mainnet' | 'testnet4' | 'regtest' | null {
+  const lower = value.toLowerCase()
+  const kind = /^bcrt1/.test(lower) ? 'regtest'
+    : /^bc1/.test(lower) || /^[13]/.test(value) ? 'mainnet'
+    : /^tb1/.test(lower) || /^[mn2]/.test(value) ? 'testnet4'
+    : null
+  return kind && /^[a-zA-Z0-9]{26,90}$/.test(value) ? kind : null
 }
 
 export function parseBitcoinQuote(value: unknown): BitcoinSendQuote {
