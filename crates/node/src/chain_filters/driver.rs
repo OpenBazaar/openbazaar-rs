@@ -20,7 +20,7 @@ use bitcoin::{Network, OutPoint, ScriptBuf, Transaction};
 use tokio::sync::mpsc::{Receiver, UnboundedReceiver};
 
 use super::index::FilterCheck;
-use super::{stale_tip, FilterConfig, Shared, STALE_TIP};
+use super::{default_start, stale_tip, FilterConfig, Shared, STALE_TIP};
 use crate::buyer_orders::now_secs;
 
 const BLOCK_TIMEOUT: Duration = Duration::from_secs(60);
@@ -43,6 +43,11 @@ const TESTNET4_FILTER_SEEDS: &[&str] = &[
     "x49.seed.testnet4.wiz.biz",
     "x49.seed.testnet4.bitcoin.sprovoost.nl",
 ];
+/// Kyoto's `HeaderSyncError::FloatingHeaders` text. A peer that does not know
+/// the newest saved block answers from genesis, and the client bans it.
+const FLOATING_HEADERS: &str = "does not connect to any header of ours";
+/// Peers in a row whose headers floated before the saved tip is given up on.
+const FLOATING_LIMIT: u32 = 2;
 
 /// What [`builder`] dials, and how long it waits when the connections go through Tor.
 pub(super) struct DialPlan {
@@ -89,6 +94,7 @@ pub(super) async fn run(shared: Arc<Shared>, config: FilterConfig) {
     let mut pause = RESTART_MIN;
     loop {
         let started = Instant::now();
+        rewind_if_asked(&shared);
         let state = chain_state(&shared);
         let (node, client) = builder(&config, state).build();
         let Client {
@@ -121,7 +127,7 @@ pub(super) async fn run(shared: Arc<Shared>, config: FilterConfig) {
             .lock()
             .unwrap_or_else(|err| err.into_inner())
             .is_some();
-        if !rescan_restart {
+        if !rescan_restart && !shared.rewind.load(Ordering::Relaxed) {
             shared.set_error(outcome);
         }
         shared.save();
@@ -163,6 +169,33 @@ fn builder(config: &FilterConfig, state: ChainState) -> Builder {
         builder = builder.response_timeout(timeout);
     }
     builder
+}
+
+/// Peers keep answering with headers that float above the saved tip: no peer
+/// has that block (it was reorganized away), and the client bans every peer
+/// that answers. Scan again from the built-in checkpoint.
+fn rewind_if_asked(shared: &Shared) {
+    if !shared.rewind.swap(false, Ordering::Relaxed) {
+        return;
+    }
+    {
+        shared.floating.store(0, Ordering::Relaxed);
+        let mut index = shared.index();
+        let to = default_start(index.network);
+        let from = index.processed.height;
+        index.rewind(to, now_secs());
+        eprintln!("ob-node: filter scan: block {from} is not on the peers' chain; rescanning from block {}", to.height);
+    }
+    shared.save();
+}
+
+/// Whether another floating-header answer should give up on the saved tip.
+/// The built-in checkpoint is never given up on: a peer that floats above it
+/// is on another chain, not this node.
+fn floated(shared: &Shared) -> bool {
+    let count = shared.floating.fetch_add(1, Ordering::Relaxed) + 1;
+    let index = shared.index();
+    count >= FLOATING_LIMIT && index.processed.height > default_start(index.network).height
 }
 
 fn chain_state(shared: &Shared) -> ChainState {
@@ -360,6 +393,7 @@ async fn next_gossip(gossip: &mut Option<Receiver<Transaction>>) -> Option<Trans
 fn header_change(shared: &Shared, change: BlockHeaderChanges) -> bool {
     match change {
         BlockHeaderChanges::Connected(header) => {
+            shared.floating.store(0, Ordering::Relaxed);
             shared.index().connect(header.height, header.header);
             false
         }
@@ -367,6 +401,7 @@ fn header_change(shared: &Shared, change: BlockHeaderChanges) -> bool {
             accepted,
             reorganized,
         } => {
+            shared.floating.store(0, Ordering::Relaxed);
             let pairs = |list: Vec<IndexedHeader>| {
                 list.into_iter()
                     .map(|h| (h.height, h.header))
@@ -440,6 +475,15 @@ async fn log(shared: Arc<Shared>, mut info: Receiver<Info>, mut warnings: Receiv
                 // NeedConnections { connected: 0 } is sent every 10ms while a peer is still
                 // dialing, so leftover warnings after the handshake would clear peer_up.
                 Some(Warning::NeedConnections { .. }) => {}
+                Some(Warning::UnexpectedSyncError { warning }) if warning.contains(FLOATING_HEADERS) => {
+                    eprintln!("ob-node: filter peer: {warning}");
+                    if floated(&shared) {
+                        shared.rewind.store(true, Ordering::Relaxed);
+                        if let Ok(requester) = shared.requester() {
+                            let _ = requester.shutdown();
+                        }
+                    }
+                }
                 Some(warning) => eprintln!("ob-node: filter peer: {warning}"),
                 None => return,
             },

@@ -230,6 +230,7 @@ export function WalletPanel({ rates, currency, onOrders, embedded = false }: {
   const orders = useNodeResource(fetchOrders, 15000, !!onOrders)
   const [busy, setBusy] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
+  const [checkedAt, setCheckedAt] = useState<number | null>(null)
   const [error, setError] = useState('')
   const [settings, setSettings] = useState(false)
   const [receive, setReceive] = useState(false)
@@ -249,7 +250,7 @@ export function WalletPanel({ rates, currency, onOrders, embedded = false }: {
     if (refreshing) return
     setRefreshing(true)
     try { await Promise.all([wallet.refresh(), network.refresh(), lock.refresh(), orders.refresh()]) }
-    finally { setRefreshing(false) }
+    finally { setRefreshing(false); setCheckedAt(Date.now()) }
   }
   async function nextAddress() {
     if (busy || receiveBlocked) return
@@ -319,7 +320,7 @@ export function WalletPanel({ rates, currency, onOrders, embedded = false }: {
             <button type='button' className='ob-text-link' disabled={refreshing || wallet.loading} onClick={() => void refresh()}>{refreshing ? 'Refreshing…' : 'Refresh wallet'}</button>
           </div>
         </div>
-        {current?.syncError && <p className='ob-wallet-sync-error' role='alert'>Balance may be out of date. {current.syncError}</p>}
+        {current?.syncError && <p className='ob-wallet-sync-error' role='alert'>Balance may be out of date. {current.syncError}{checkedAt ? ` Checked again at ${new Date(checkedAt).toLocaleTimeString(undefined, { timeStyle: 'short' })}.` : ''}</p>}
       </section>
       {status && (status.state === 'setup' || !status.backupConfirmed) && <div className='ob-wallet-alert' role='status'>
         <p>{status.state === 'setup' ? 'Protect your wallet before making a payment.' : 'Your wallet backup has not been confirmed.'}</p>

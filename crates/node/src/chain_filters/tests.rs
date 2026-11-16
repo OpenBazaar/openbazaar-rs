@@ -444,6 +444,36 @@ fn a_reorg_at_the_peer_moves_a_payment_back_to_unconfirmed() {
 }
 
 #[test]
+fn a_saved_tip_the_peers_never_had_is_rewound_and_rescanned() {
+    let mut wallet = wallet();
+    let spks = wallet_spks(&wallet, 2);
+    let mut chain = TestChain::new();
+    for height in 1..=10 {
+        chain.mine(if height == 2 { vec![pay(&spks[0].1, 6_000, 6)] } else { vec![] });
+    }
+    // The wallet last synced to a block 6 that was reorganized away. A peer
+    // does not know it, answers from genesis, and those headers float.
+    let stale = BlockId { height: 6, hash: bitcoin::BlockHash::from_byte_array([7; 32]) };
+    let stale_chain = bdk_wallet::chain::CheckPoint::from_block_ids([genesis(&chain), stale]).unwrap();
+    wallet.apply_update(bdk_wallet::Update { chain: Some(stale_chain), ..Default::default() }).unwrap();
+
+    let peer = MockPeer::start(chain.clone());
+    let dir = TempDir::new();
+    let mut saved = store(&dir.0);
+    saved.wallet_tip = Some(stale);
+    let filters = FilterChain::new(own_node(&peer)).unwrap();
+    filters.open(saved).unwrap();
+    wait_for("the scan past the stale tip", || (filters.tip_height().ok() == Some(10)).then_some(()));
+
+    let update = wait_for("a wallet update", || {
+        filters.wallet_update(WalletRequest::Full(wallet.start_full_scan().build())).ok()
+    });
+    wallet.apply_update(update).expect("the rescanned chain replaces the stale tip");
+    assert_eq!(wallet.latest_checkpoint().block_id(), BlockId { height: 10, hash: chain.hash(10) });
+    assert_eq!(wallet.balance().confirmed.to_sat(), 6_000, "a payment below the stale tip is still found");
+}
+
+#[test]
 fn own_node_mode_never_contacts_anyone_else() {
     let mut chain = TestChain::new();
     chain.mine(vec![pay(&script(4), 2_000, 5)]);
