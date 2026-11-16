@@ -16,25 +16,21 @@
 #![forbid(unsafe_code)]
 
 mod addresses;
+mod admission;
 mod backoff;
 mod browser;
 mod build_info;
 mod buyer_orders;
 mod chain;
-mod checkout_terms;
 mod chain_backend;
 mod chain_filters;
-mod admission;
-mod directory;
+mod checkout_terms;
 mod coin_locks;
 mod coin_provenance;
 mod commerce_draft;
 mod commerce_http;
 mod coupons;
-mod offers;
-mod review_publish;
-mod reviews;
-mod reviews_http;
+mod directory;
 mod egress;
 mod escrow_bump;
 mod escrow_buyer;
@@ -57,9 +53,11 @@ mod image_sanitize;
 mod instructions;
 mod labelers;
 mod letter_auth;
+mod lightning;
 mod listing_bulk;
 mod listing_drafts;
 mod live_stock;
+mod lock_http;
 mod mail_drop;
 mod media;
 mod messages;
@@ -67,6 +65,7 @@ mod moderator_http;
 mod moderator_identity;
 mod moderators;
 mod network;
+mod offers;
 mod onion_mail;
 mod order_mail;
 mod order_terms;
@@ -75,29 +74,33 @@ mod own_listings;
 mod own_store;
 mod pairing;
 mod pay_bump;
-mod peer_http;
 mod pay_order;
+mod peer_http;
 mod public_http;
 mod rates;
 mod remote;
 mod remote_orders;
-mod reputation;
 mod replicas;
-mod seeds;
-mod test_network;
-mod lock_http;
+mod reputation;
+mod review_publish;
+mod reviews;
+mod reviews_http;
 mod sale_gate;
 mod sale_terms;
 mod sales;
 mod sales_http;
 mod seed;
+mod seeds;
 mod spend_tickets;
 mod stock;
 mod store_http;
 mod store_profile;
-mod vacation;
 mod stores;
+mod test_network;
+mod tor_socks;
+mod tor_status;
 mod tracking;
+mod vacation;
 mod vault;
 mod vault_key;
 mod vendor_labels;
@@ -109,30 +112,31 @@ mod wallet_session;
 mod watch;
 mod xmr;
 mod zec;
-mod lightning;
 
 #[cfg(test)]
 mod checkout_tests;
 #[cfg(test)]
 mod harness;
 #[cfg(test)]
-mod lock_tests;
-#[cfg(test)]
 mod lock_receive_tests;
 #[cfg(test)]
-mod multinode_moderator_tests;
-#[cfg(test)]
-mod multinode_tests;
+mod lock_tests;
 #[cfg(test)]
 mod multinode_durable_tests;
 #[cfg(test)]
+mod multinode_moderator_tests;
+#[cfg(test)]
 mod multinode_payment_tests;
+#[cfg(test)]
+mod multinode_review_tests;
 #[cfg(test)]
 mod multinode_seller_tests;
 #[cfg(test)]
+mod multinode_tests;
+#[cfg(test)]
 mod multinode_variant_tests;
 #[cfg(test)]
-mod multinode_review_tests;
+mod offers_tests;
 #[cfg(test)]
 mod own_store_tests;
 #[cfg(test)]
@@ -142,13 +146,11 @@ mod payment_tests;
 #[cfg(test)]
 mod seller_store_tests;
 #[cfg(test)]
-mod vacation_tests;
-#[cfg(test)]
-mod offers_tests;
-#[cfg(test)]
 mod stores_tests;
 #[cfg(test)]
 mod surface_tests;
+#[cfg(test)]
+mod vacation_tests;
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -163,7 +165,8 @@ use rand::rngs::StdRng;
 use rand::{RngCore, SeedableRng};
 
 use openbazaar_protocol::{
-    fixture_catalog, fixture_keys, fixture_store_keys, Catalog, ContentRating, Error as ProtocolError, Listing, Moderator, StoreId,
+    fixture_catalog, fixture_keys, fixture_store_keys, Catalog, ContentRating,
+    Error as ProtocolError, Listing, Moderator, StoreId,
 };
 use serde_json::{json, Value};
 use tormail::Mailbox;
@@ -182,12 +185,15 @@ pub use chain_backend::ChainPlan;
 pub use chain_filters::{ChainStore, FilterChain, FilterConfig};
 pub use egress::Egress;
 pub use escrow_fixture::MODERATOR_FEE_SATS;
-pub use media::MAX_MEDIA;
 pub use http::{http_response, serve_on};
 pub use lightning::LnFlags;
+pub use media::MAX_MEDIA;
 pub use network::{resolve_vault_mode, NetworkMode, ServeOptions, VaultChoice};
-pub use onion_mail::{deliver_letter, letter_digest, poll_mailbox, PollMail, SendLetter, StoredLetter};
+pub use onion_mail::{
+    deliver_letter, letter_digest, poll_mailbox, PollMail, SendLetter, StoredLetter,
+};
 pub use seeds::sign_document;
+pub use tor_socks::TorSocks;
 
 /// Fetch the seed document from `onions` into `data_dir` and return the sequence kept.
 pub fn pull_seed(data_dir: &std::path::Path, onions: &[String]) -> Result<u64, String> {
@@ -198,8 +204,8 @@ pub use pay_order::PayError;
 pub use remote::{devices_command, pair_command, RemoteConfig};
 pub use vault_key::VaultMode;
 pub use watch::{
-    AWAITING_FUNDING, AWAITING_PAYMENT, AWAITING_TERMS, DISPUTED, FUNDED, FUNDED_WITHOUT_REFUND, FUNDING_SEEN, PAID,
-    PAYMENT_SEEN, RELEASED, SETTLED,
+    AWAITING_FUNDING, AWAITING_PAYMENT, AWAITING_TERMS, DISPUTED, FUNDED, FUNDED_WITHOUT_REFUND,
+    FUNDING_SEEN, PAID, PAYMENT_SEEN, RELEASED, SETTLED,
 };
 
 /// How the node reaches the chain and when it calls a payment settled.
@@ -380,7 +386,11 @@ impl Node {
     /// The catalog must carry payment codes for `config.network`. The
     /// mailbox lives in `mailbox/`, wallets in `wallets/`, and the vault key,
     /// pairing token, address book, and orders at the top of `dir`.
-    pub fn open_with(dir: impl Into<PathBuf>, catalog: Catalog, config: NodeConfig) -> Result<Self, Error> {
+    pub fn open_with(
+        dir: impl Into<PathBuf>,
+        catalog: Catalog,
+        config: NodeConfig,
+    ) -> Result<Self, Error> {
         Self::open_local(dir, catalog, config, LocalConfig::headless())
     }
 
@@ -410,12 +420,23 @@ impl Node {
         catalog.stores.retain(|store| store.id != own_store);
         catalog.stores.extend(own.record);
         let mut seed_replica = directory::Replica::open(&dir)?;
-        let live = admission::live_admissions(config.chain.as_ref(), network, seed_replica.head().as_ref(), &seed_replica.admissions());
+        let live = admission::live_admissions(
+            config.chain.as_ref(),
+            network,
+            seed_replica.head().as_ref(),
+            &seed_replica.admissions(),
+        );
         seed_replica.set_live(live);
         // Nothing replicated is in the catalog yet: every store in it is one
         // this node serves itself, and a pull never removes those.
-        seed_replica.apply(&mut catalog, own_store, |_| true, |admission| seed_replica.is_live(admission));
-        let own_secret = wallet_keys::vault_tier_seed(&buyer_wallet.dir, &vault, network)?.map(|seed| seed.store_signing_key());
+        seed_replica.apply(
+            &mut catalog,
+            own_store,
+            |_| true,
+            |admission| seed_replica.is_live(admission),
+        );
+        let own_secret = wallet_keys::vault_tier_seed(&buyer_wallet.dir, &vault, network)?
+            .map(|seed| seed.store_signing_key());
         let secrets: Vec<_> = catalog
             .stores
             .iter()
@@ -431,8 +452,10 @@ impl Node {
         if let Some(record) = catalog.store(&own_store) {
             own_store::write_cached(&dir, &vault, record)?;
         }
-        let mailbox = Mailbox::open(dir.join("mailbox")).map_err(|err| Error::Detail(err.to_string()))?;
-        let escrow_inbox = Mailbox::open(dir.join("escrow-mail")).map_err(|err| Error::Detail(err.to_string()))?;
+        let mailbox =
+            Mailbox::open(dir.join("mailbox")).map_err(|err| Error::Detail(err.to_string()))?;
+        let escrow_inbox =
+            Mailbox::open(dir.join("escrow-mail")).map_err(|err| Error::Detail(err.to_string()))?;
         let (pairing_token, pairing_fresh) = load_pairing(&dir)?;
         let addresses = AddressBook::open(&dir, vault.clone())?;
         let buyer_orders = BuyerOrders::open(&dir, vault.clone(), network.as_str())?;
@@ -456,14 +479,20 @@ impl Node {
         let peers = Arc::new(peer_http::PeerLink::default());
         let escrow_peers = Arc::clone(&peers);
         let lock = wallet_lock::WalletLock::open(&dir, vault.clone(), &local.vault)?;
-        let demo_wallets: Vec<(String, String)> =
-            store_wallets.keys().map(|seller| (seller.clone(), format!("store-{}", slug(seller)))).collect();
+        let demo_wallets: Vec<(String, String)> = store_wallets
+            .keys()
+            .map(|seller| (seller.clone(), format!("store-{}", slug(seller))))
+            .collect();
         let xmr = xmr::XmrNode::open(&dir, &vault, network, &demo_wallets, local.egress.clone())?;
         let zec = zec::ZecNode::open(&dir, &vault, network, &demo_wallets, local.egress.clone())?;
         let wallet_tip = buyer_wallet.wallet.latest_checkpoint().block_id();
         config
             .chain
-            .open(ChainStore { dir: dir.join("filters"), vault: vault.clone(), wallet_tip: Some(wallet_tip) })
+            .open(ChainStore {
+                dir: dir.join("filters"),
+                vault: vault.clone(),
+                wallet_tip: Some(wallet_tip),
+            })
             .map_err(Error::Detail)?;
         let node = Self {
             catalog: RwLock::new(catalog),
@@ -490,7 +519,13 @@ impl Node {
             onion_shop: Mutex::new(None),
             advertised_onion: Mutex::new(None),
             seed_replica: Mutex::new(seed_replica),
-            escrow: escrow_mail::Escrow::open(config.escrow, escrow_inbox, &dir, &vault, escrow_peers)?,
+            escrow: escrow_mail::Escrow::open(
+                config.escrow,
+                escrow_inbox,
+                &dir,
+                &vault,
+                escrow_peers,
+            )?,
             pairing_token,
             pairing_fresh,
             pairing_codes: pairing::PairingCodes::new(local.pair_codes),
@@ -532,23 +567,32 @@ impl Node {
     }
 
     pub(crate) fn buyer_wallet(&self) -> MutexGuard<'_, NodeWallet> {
-        self.buyer_wallet.lock().unwrap_or_else(|err| err.into_inner())
+        self.buyer_wallet
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
     }
 
     /// Wallet that holds `seller`'s escrow keys: a demo store wallet, or this
     /// node's wallet when `seller` is the own store.
-    pub(crate) fn store_wallet(&self, seller: &str) -> Result<MutexGuard<'_, NodeWallet>, OrderError> {
+    pub(crate) fn store_wallet(
+        &self,
+        seller: &str,
+    ) -> Result<MutexGuard<'_, NodeWallet>, OrderError> {
         if let Some(wallet) = self.store_wallets.get(seller) {
             return Ok(wallet.lock().unwrap_or_else(|err| err.into_inner()));
         }
         if self.own_record().is_some_and(|store| store.name == seller) {
             return Ok(self.buyer_wallet());
         }
-        Err(OrderError::Invalid("That seller has no wallet on this node."))
+        Err(OrderError::Invalid(
+            "That seller has no wallet on this node.",
+        ))
     }
 
     pub(crate) fn orders(&self) -> MutexGuard<'_, BuyerOrders> {
-        self.buyer_orders.lock().unwrap_or_else(|err| err.into_inner())
+        self.buyer_orders
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
     }
 
     /// `--fixed-rates`: price orders from these dollar figures for 1 BTC and
@@ -558,16 +602,29 @@ impl Node {
             return Err("fixed rates are for testnet4 only".to_string());
         }
         *self.rates.fixed.lock().unwrap() = Some([("USD".to_string(), f64::from(btc_usd))].into());
-        *self.zec.rate.fixed.lock().unwrap() = openbazaar_zec::amount::sats_per_zec(f64::from(zec_usd), f64::from(btc_usd));
+        *self.zec.rate.fixed.lock().unwrap() =
+            openbazaar_zec::amount::sats_per_zec(f64::from(zec_usd), f64::from(btc_usd));
         Ok(())
     }
 
     pub(crate) fn rates_value(&self) -> Value {
         let mut value = self.rates.value();
         // A coin this node cannot take is not priced, so its price server is not asked.
-        value["xmr"] = if self.xmr.chain().is_some() { self.xmr.rate.value(&value) } else { Value::Null };
-        let btc = if self.rates.answered_within(zec::rate::USABLE) { &value } else { &Value::Null };
-        value["zec"] = if self.zec.chain().is_some() { self.zec.rate.value(btc) } else { Value::Null };
+        value["xmr"] = if self.xmr.chain().is_some() {
+            self.xmr.rate.value(&value)
+        } else {
+            Value::Null
+        };
+        let btc = if self.rates.answered_within(zec::rate::USABLE) {
+            &value
+        } else {
+            &Value::Null
+        };
+        value["zec"] = if self.zec.chain().is_some() {
+            self.zec.rate.value(btc)
+        } else {
+            Value::Null
+        };
         value
     }
 
@@ -613,11 +670,19 @@ impl Node {
             if self.local.introductions {
                 scope.spawn(|| self.run_introductions(&stop));
             }
-            if self.onion_dir.lock().unwrap_or_else(|err| err.into_inner()).is_some() {
+            if self
+                .onion_dir
+                .lock()
+                .unwrap_or_else(|err| err.into_inner())
+                .is_some()
+            {
                 match crate::sale_gate::bind() {
                     Ok(listener) => match listener.local_addr() {
                         Ok(addr) => {
-                            *self.onion_shop.lock().unwrap_or_else(|err| err.into_inner()) = Some(addr);
+                            *self
+                                .onion_shop
+                                .lock()
+                                .unwrap_or_else(|err| err.into_inner()) = Some(addr);
                             scope.spawn(|| crate::sale_gate::serve(listener, port, &stop));
                         }
                         Err(err) => eprintln!("ob-node: store onion: {err}"),
@@ -635,7 +700,13 @@ impl Node {
 
 fn slug(name: &str) -> String {
     name.chars()
-        .map(|ch| if ch.is_ascii_alphanumeric() { ch.to_ascii_lowercase() } else { '-' })
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() {
+                ch.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
         .collect()
 }
 
@@ -667,7 +738,10 @@ pub fn load_catalog(network: NetworkMode) -> Result<Catalog, Error> {
         }
         NetworkMode::Mainnet => Catalog {
             stores: Vec::new(),
-            moderator: Moderator { name: String::new(), id: [0; 32] },
+            moderator: Moderator {
+                name: String::new(),
+                id: [0; 32],
+            },
             listings: Vec::new(),
         },
     };
@@ -676,22 +750,39 @@ pub fn load_catalog(network: NetworkMode) -> Result<Catalog, Error> {
 }
 
 /// The secret of `store` if it is a demo store, whose key is a public fixture.
-pub(crate) fn demo_secret(store: &openbazaar_protocol::Store) -> Option<bitcoin::secp256k1::SecretKey> {
+pub(crate) fn demo_secret(
+    store: &openbazaar_protocol::Store,
+) -> Option<bitcoin::secp256k1::SecretKey> {
     let secret = fixture_store_keys(&store.name)?.store;
-    let id = secret.x_only_public_key(&bitcoin::secp256k1::Secp256k1::new()).0.serialize();
+    let id = secret
+        .x_only_public_key(&bitcoin::secp256k1::Secp256k1::new())
+        .0
+        .serialize();
     (id == *store.id.as_bytes()).then_some(secret)
 }
 
 /// The demo store secret for `store`, on testnet4 only.
-fn fixture_secret(store: &openbazaar_protocol::Store, network: NetworkMode) -> Option<bitcoin::secp256k1::SecretKey> {
-    (network == NetworkMode::Testnet4).then(|| demo_secret(store)).flatten()
+fn fixture_secret(
+    store: &openbazaar_protocol::Store,
+    network: NetworkMode,
+) -> Option<bitcoin::secp256k1::SecretKey> {
+    (network == NetworkMode::Testnet4)
+        .then(|| demo_secret(store))
+        .flatten()
 }
 
 /// Refuse a catalog whose store payment codes belong to another network,
 /// or demo stores on mainnet.
 fn check_catalog_network(catalog: &Catalog, network: NetworkMode) -> Result<(), Error> {
-    if network == NetworkMode::Mainnet && catalog.stores.iter().any(|store| demo_secret(store).is_some()) {
-        return Err(Error::Detail("The demo stores are testnet4 data; a mainnet node does not serve them.".into()));
+    if network == NetworkMode::Mainnet
+        && catalog
+            .stores
+            .iter()
+            .any(|store| demo_secret(store).is_some())
+    {
+        return Err(Error::Detail(
+            "The demo stores are testnet4 data; a mainnet node does not serve them.".into(),
+        ));
     }
     for store in &catalog.stores {
         let pay = &store.direct_pay;
@@ -708,9 +799,10 @@ fn prepare_fixture_stores(catalog: &mut Catalog, network: NetworkMode) -> Result
     let record = escrow_fixture::moderator_record(network).map_err(Error::Detail)?;
     let moderator: [u8; 32] = record.signing_key[1..].try_into().expect("compressed key");
     catalog.moderator.id = moderator;
-    let code = openbazaar_pay::SilentPaymentCode::from_keys(&keys.scan, &keys.spend, network.bitcoin())
-        .map_err(|err| Error::Detail(err.to_string()))?
-        .to_string();
+    let code =
+        openbazaar_pay::SilentPaymentCode::from_keys(&keys.scan, &keys.spend, network.bitcoin())
+            .map_err(|err| Error::Detail(err.to_string()))?
+            .to_string();
     let secp = bitcoin::secp256k1::Secp256k1::new();
     for store in &mut catalog.stores {
         let secret = fixture_store_keys(&store.name)
@@ -772,7 +864,11 @@ pub(crate) fn listing_value(catalog: &Catalog, listing: &Listing) -> Result<Valu
     });
     if let Some(details) = &listing.details {
         value["listingId"] = json!(details.id.to_hex());
-        value["images"] = json!(details.images.iter().map(|hash| escrow_mail::hex(hash)).collect::<Vec<_>>());
+        value["images"] = json!(details
+            .images
+            .iter()
+            .map(|hash| escrow_mail::hex(hash))
+            .collect::<Vec<_>>());
         value["price"] = details.price.as_ref().map_or(Value::Null, |price| {
             json!({ "currency": price.currency, "amount": price.amount, "shipping": price.shipping })
         });
@@ -904,7 +1000,11 @@ mod tests {
     fn testnet4_serves_three_demo_stores_each_signing_its_own_listings() {
         use openbazaar_pay::{Bolt12Offer, SilentPaymentCode};
         let catalog = load_catalog(NetworkMode::Testnet4).unwrap();
-        let names: Vec<&str> = catalog.stores.iter().map(|store| store.name.as_str()).collect();
+        let names: Vec<&str> = catalog
+            .stores
+            .iter()
+            .map(|store| store.name.as_str())
+            .collect();
         assert_eq!(names, ["Marlow Goods", "Hale Paper", "North Kitchen"]);
         assert_eq!(catalog.moderator.name, "June Pell");
         let record = escrow_fixture::moderator_record(NetworkMode::Testnet4).unwrap();
@@ -912,19 +1012,38 @@ mod tests {
         for store in &catalog.stores {
             store.verify().unwrap();
             assert_eq!(store.version(), 3);
-            assert_eq!(store.details.as_ref().unwrap().moderators, [catalog.moderator.id]);
-            assert!(network::offer_for(&store.direct_pay.bolt12_offer, NetworkMode::Testnet4).is_ok());
-            assert!(network::offer_for(&store.direct_pay.bolt12_offer, NetworkMode::Mainnet).is_err());
+            assert_eq!(
+                store.details.as_ref().unwrap().moderators,
+                [catalog.moderator.id]
+            );
+            assert!(
+                network::offer_for(&store.direct_pay.bolt12_offer, NetworkMode::Testnet4).is_ok()
+            );
+            assert!(
+                network::offer_for(&store.direct_pay.bolt12_offer, NetworkMode::Mainnet).is_err()
+            );
             assert!(store.direct_pay.silent_payment_code.starts_with("tsp1"));
             assert!(Bolt12Offer::parse(&store.direct_pay.bolt12_offer).is_ok());
             assert!(SilentPaymentCode::parse(&store.direct_pay.silent_payment_code).is_ok());
-            let own = catalog.listings.iter().filter(|listing| listing.store_id == store.id);
+            let own = catalog
+                .listings
+                .iter()
+                .filter(|listing| listing.store_id == store.id);
             assert!(own.clone().count() > 0, "{}", store.name);
             assert!(own.clone().all(|listing| listing.seller == store.name));
         }
-        assert!(catalog.listings.iter().any(|listing| listing.kind.as_str() == "physical"));
-        assert!(catalog.listings.iter().any(|listing| listing.kind.as_str() == "digital"));
-        assert!(catalog.listings.iter().all(|listing| accepts_moderator(&catalog, listing) == listing.moderated));
+        assert!(catalog
+            .listings
+            .iter()
+            .any(|listing| listing.kind.as_str() == "physical"));
+        assert!(catalog
+            .listings
+            .iter()
+            .any(|listing| listing.kind.as_str() == "digital"));
+        assert!(catalog
+            .listings
+            .iter()
+            .all(|listing| accepts_moderator(&catalog, listing) == listing.moderated));
     }
 
     #[test]

@@ -64,7 +64,10 @@ impl NetworkMode {
     /// [`esplora_base`] swaps mempool.space for its onion when a proxy is set.
     pub fn default_esplora(self) -> &'static [&'static str] {
         match self {
-            NetworkMode::Testnet4 => &["https://mempool.space/testnet4/api", "https://blockstream.info/testnet4/api"],
+            NetworkMode::Testnet4 => &[
+                "https://mempool.space/testnet4/api",
+                "https://blockstream.info/testnet4/api",
+            ],
             NetworkMode::Mainnet => &["https://mempool.space/api"],
         }
     }
@@ -164,6 +167,9 @@ pub struct ServeOptions {
     pub pair_codes: bool,
     /// `--proxy socks5h://HOST:PORT` for rates and chain queries.
     pub proxy: Option<String>,
+    /// `--tor`: run built-in Tor ([`crate::TorSocks`]) and set `proxy` to it
+    /// before anything else starts.
+    pub tor: bool,
     /// False with `--no-rates` or `--fixed-rates`.
     pub live_rates: bool,
     /// `--fixed-rates BTCUSD=N,ZECUSD=N`: testnet4 prices in whole dollars, with no rate server asked.
@@ -209,6 +215,7 @@ impl ServeOptions {
         let mut shop_origin = crate::http_guard::DEFAULT_SHOP_ORIGIN.to_string();
         let mut pair_codes = true;
         let mut proxy = None;
+        let mut tor = false;
         let mut live_rates = true;
         let mut fixed_rates = None;
         let mut tracking_aftership = false;
@@ -236,14 +243,24 @@ impl ServeOptions {
                 "--esplora" => {
                     let text = value("--esplora")?;
                     let before = esplora.len();
-                    esplora.extend(text.split(',').map(str::trim).filter(|url| !url.is_empty()).map(String::from));
+                    esplora.extend(
+                        text.split(',')
+                            .map(str::trim)
+                            .filter(|url| !url.is_empty())
+                            .map(String::from),
+                    );
                     if esplora.len() == before {
                         return Err("--esplora needs a URL".to_string());
                     }
                 }
                 "--peer" => {
                     let text = value("--peer")?;
-                    peers.extend(text.split(',').map(str::trim).filter(|peer| !peer.is_empty()).map(String::from));
+                    peers.extend(
+                        text.split(',')
+                            .map(str::trim)
+                            .filter(|peer| !peer.is_empty())
+                            .map(String::from),
+                    );
                 }
                 "--public-fallback" => public_fallback = Some(true),
                 "--no-public-fallback" => public_fallback = Some(false),
@@ -283,35 +300,56 @@ impl ServeOptions {
                         "keystore" => VaultChoice::Keystore,
                         "passphrase" => VaultChoice::Passphrase,
                         "file" => VaultChoice::File,
-                        other => return Err(format!("--vault must be keystore, passphrase, or file, not {other:?}")),
+                        other => {
+                            return Err(format!(
+                                "--vault must be keystore, passphrase, or file, not {other:?}"
+                            ))
+                        }
                     }
                 }
-                "--shop-origin" => shop_origin = crate::http_guard::parse_shop_origin(&value("--shop-origin")?)?,
+                "--shop-origin" => {
+                    shop_origin = crate::http_guard::parse_shop_origin(&value("--shop-origin")?)?
+                }
                 "--no-pair-codes" => pair_codes = false,
                 "--proxy" => proxy = Some(crate::egress::Egress::parse_proxy(&value("--proxy")?)?),
+                "--tor" => tor = true,
                 "--no-rates" => live_rates = false,
                 "--fixed-rates" => fixed_rates = Some(parse_fixed_rates(&value("--fixed-rates")?)?),
                 "--no-introductions" => introductions = false,
                 "--tracking" => {
                     tracking_aftership = match value("--tracking")?.as_str() {
                         "aftership" => true,
-                        other => return Err(format!("--tracking must be aftership, not {other:?}")),
+                        other => {
+                            return Err(format!("--tracking must be aftership, not {other:?}"))
+                        }
                     }
                 }
                 "--xmr-daemon" => {
                     let text = value("--xmr-daemon")?;
-                    xmr_daemons.extend(text.split(',').map(str::trim).filter(|url| !url.is_empty()).map(String::from));
+                    xmr_daemons.extend(
+                        text.split(',')
+                            .map(str::trim)
+                            .filter(|url| !url.is_empty())
+                            .map(String::from),
+                    );
                 }
                 "--zec-indexer" => {
                     let text = value("--zec-indexer")?;
-                    zec_indexers.extend(text.split(',').map(str::trim).filter(|url| !url.is_empty()).map(String::from));
+                    zec_indexers.extend(
+                        text.split(',')
+                            .map(str::trim)
+                            .filter(|url| !url.is_empty())
+                            .map(String::from),
+                    );
                 }
                 "--follow" => follows.push(crate::replicas::normalize(&value("--follow")?)?),
                 "--onion" => onion = true,
                 "--local-shop" => {
                     let path = PathBuf::from(value("--local-shop")?);
                     if !path.join("index.html").is_file() {
-                        return Err("--local-shop needs a directory that contains index.html".to_string());
+                        return Err(
+                            "--local-shop needs a directory that contains index.html".to_string()
+                        );
                     }
                     local_shop = Some(path);
                 }
@@ -325,7 +363,10 @@ impl ServeOptions {
         }
         let network = network.unwrap_or(NetworkMode::Testnet4);
         if fixed_rates.is_some() && network != NetworkMode::Testnet4 {
-            return Err("--fixed-rates is for testnet4 only. Mainnet prices come from the rate servers".to_string());
+            return Err(
+                "--fixed-rates is for testnet4 only. Mainnet prices come from the rate servers"
+                    .to_string(),
+            );
         }
         let peers = peers
             .iter()
@@ -336,13 +377,23 @@ impl ServeOptions {
             None => network == NetworkMode::Testnet4 && peers.is_empty(),
         };
         crate::chain_backend::ChainPlan::choose(network, &peers, &esplora, public_fallback)?;
+        if tor && proxy.is_some() {
+            return Err("--tor runs its own proxy; drop --proxy or --tor".to_string());
+        }
+        let xmr_daemons = expand_default_xmr_daemons(xmr_daemons, network)?;
+        // The real built-in proxy address is known only once it listens.
+        let reach = if tor {
+            Some(BUILT_IN_TOR_STAND_IN.to_string())
+        } else {
+            proxy.clone()
+        };
         if !xmr_daemons.is_empty() {
-            openbazaar_xmr::DaemonConfig::new(network.monero(), &xmr_daemons, proxy.clone())?;
+            openbazaar_xmr::DaemonConfig::new(network.monero(), &xmr_daemons, reach.clone())?;
         }
         if !zec_indexers.is_empty() {
-            openbazaar_zec::IndexerConfig::new(network.zcash(), &zec_indexers, proxy.clone())?;
+            openbazaar_zec::IndexerConfig::new(network.zcash(), &zec_indexers, reach.clone())?;
         }
-        lightning.plan(network, proxy.as_deref())?;
+        lightning.plan(network, reach.as_deref())?;
         Ok(Self {
             port,
             network,
@@ -359,6 +410,7 @@ impl ServeOptions {
             shop_origin,
             pair_codes,
             proxy,
+            tor,
             live_rates: live_rates && fixed_rates.is_none(),
             fixed_rates,
             tracking_aftership,
@@ -375,16 +427,24 @@ impl ServeOptions {
     /// The Monero daemons these flags select, or `None` when Monero is off.
     pub fn xmr_config(&self) -> Option<openbazaar_xmr::DaemonConfig> {
         (!self.xmr_daemons.is_empty()).then(|| {
-            openbazaar_xmr::DaemonConfig::new(self.network.monero(), &self.xmr_daemons, self.proxy.clone())
-                .expect("parse already checked --xmr-daemon")
+            openbazaar_xmr::DaemonConfig::new(
+                self.network.monero(),
+                &self.xmr_daemons,
+                self.proxy.clone(),
+            )
+            .expect("parse already checked --xmr-daemon")
         })
     }
 
     /// The Zcash indexers these flags select, or `None` when Zcash is off.
     pub fn zec_config(&self) -> Option<openbazaar_zec::IndexerConfig> {
         (!self.zec_indexers.is_empty()).then(|| {
-            openbazaar_zec::IndexerConfig::new(self.network.zcash(), &self.zec_indexers, self.proxy.clone())
-                .expect("parse already checked --zec-indexer")
+            openbazaar_zec::IndexerConfig::new(
+                self.network.zcash(),
+                &self.zec_indexers,
+                self.proxy.clone(),
+            )
+            .expect("parse already checked --zec-indexer")
         })
     }
 
@@ -418,8 +478,13 @@ impl ServeOptions {
     /// With `--proxy`, mempool.space's clearnet host is its onion. Blockstream
     /// stays on clearnet: that host already answers through Tor.
     pub fn chain_plan(&self) -> crate::ChainPlan {
-        let plan = crate::ChainPlan::choose(self.network, &self.peers, &self.esplora_urls, self.public_fallback)
-            .expect("parse already checked the chain flags");
+        let plan = crate::ChainPlan::choose(
+            self.network,
+            &self.peers,
+            &self.esplora_urls,
+            self.public_fallback,
+        )
+        .expect("parse already checked the chain flags");
         if self.proxy.is_some() {
             plan.through_proxy()
         } else {
@@ -429,7 +494,10 @@ impl ServeOptions {
 
     /// True when chain queries may go to a server that is not on this machine or LAN.
     pub fn uses_public_server(&self) -> bool {
-        self.chain_plan().esplora_servers().iter().any(|url| !is_private_url(url))
+        self.chain_plan()
+            .esplora_servers()
+            .iter()
+            .any(|url| !is_private_url(url))
     }
 }
 
@@ -437,12 +505,61 @@ impl ServeOptions {
 /// `https://mempool.space`. One host serves every network. The path selects
 /// it: `/api` (mainnet), `/testnet4/api`, `/testnet/api`, `/signet/api`.
 /// Onion services are not the clearnet TLS name, so the scheme is `http`.
-pub(crate) const MEMPOOL_ONION_HOST: &str = "mempoolhqx4isw62xs7abwphsq7ldayuidyx2v2oethdhhj6mlo2r6ad.onion";
+pub(crate) const MEMPOOL_ONION_HOST: &str =
+    "mempoolhqx4isw62xs7abwphsq7ldayuidyx2v2oethdhhj6mlo2r6ad.onion";
+
+/// `--xmr-daemon default` on testnet4: public Monero stagenet daemons, onion
+/// only, so no Tor exit relay sees or alters the RPC. The first and third are
+/// plowsof's (monerodevs.org); the second is another operator, so a payment is
+/// broadcast through a different operator than the one that served its ring
+/// members. The desktop app and the home-node packages use this list.
+pub const DEFAULT_STAGENET_XMR_DAEMONS: [&str; 3] = [
+    "http://plowsoffjexmxalw73tkjmf422gq6575fc7vicuu4javzn2ynnte6tyd.onion:38089",
+    "http://ct36dsbe3oubpbebpxmiqz4uqk6zb6nhmkhoekileo4fts23rvuse2qd.onion:38081",
+    "http://plowsof3t5hogddwabaeiyrno25efmzfxyro2vligremt7sxpsclfaid.onion:38089",
+];
+
+/// Checks flags that need a proxy while `--tor` has not started one yet.
+const BUILT_IN_TOR_STAND_IN: &str = "socks5h://127.0.0.1:9";
+
+/// Replace `default` with [`DEFAULT_STAGENET_XMR_DAEMONS`]. Mainnet has no default.
+fn expand_default_xmr_daemons(
+    urls: Vec<String>,
+    network: NetworkMode,
+) -> Result<Vec<String>, String> {
+    if !urls.iter().any(|url| url == "default") {
+        return Ok(urls);
+    }
+    if network != NetworkMode::Testnet4 {
+        return Err(
+            "--xmr-daemon default is for testnet4 only. On mainnet, name the daemon".to_string(),
+        );
+    }
+    let mut expanded = Vec::new();
+    for url in urls {
+        if url == "default" {
+            expanded.extend(
+                DEFAULT_STAGENET_XMR_DAEMONS
+                    .iter()
+                    .map(|url| url.to_string()),
+            );
+        } else {
+            expanded.push(url);
+        }
+    }
+    Ok(expanded)
+}
 
 /// `BTCUSD=N,ZECUSD=N`, each a whole number of dollars above zero.
 fn parse_fixed_rates(text: &str) -> Result<(u32, u32), String> {
-    let refused = || format!("--fixed-rates must be BTCUSD=N,ZECUSD=N in whole dollars, not {text:?}");
-    let dollars = |pair: &str, name: &str| pair.strip_prefix(name).and_then(|n| n.parse().ok()).filter(|n| *n > 0).ok_or_else(refused);
+    let refused =
+        || format!("--fixed-rates must be BTCUSD=N,ZECUSD=N in whole dollars, not {text:?}");
+    let dollars = |pair: &str, name: &str| {
+        pair.strip_prefix(name)
+            .and_then(|n| n.parse().ok())
+            .filter(|n| *n > 0)
+            .ok_or_else(refused)
+    };
     let (btc, zec) = text.split_once(',').ok_or_else(refused)?;
     Ok((dollars(btc, "BTCUSD=")?, dollars(zec, "ZECUSD=")?))
 }
@@ -461,7 +578,10 @@ pub(crate) fn esplora_base(url: &str, proxied: bool) -> String {
     let Ok(parsed) = url::Url::parse(url) else {
         return url.to_string();
     };
-    if !parsed.host_str().is_some_and(|host| host.eq_ignore_ascii_case("mempool.space")) {
+    if !parsed
+        .host_str()
+        .is_some_and(|host| host.eq_ignore_ascii_case("mempool.space"))
+    {
         return url.to_string();
     }
     let path = parsed.path().trim_end_matches('/');
@@ -474,11 +594,15 @@ pub(crate) fn is_private_url(url: &str) -> bool {
     if url.contains('\\') {
         return false;
     }
-    let Ok(parsed) = url::Url::parse(url.trim()) else { return false };
+    let Ok(parsed) = url::Url::parse(url.trim()) else {
+        return false;
+    };
     if parsed.scheme() != "http" && parsed.scheme() != "https" {
         return false;
     }
-    let Some(host) = parsed.host_str() else { return false };
+    let Some(host) = parsed.host_str() else {
+        return false;
+    };
     // mempool's onion is still a public server. Treating it as this node's
     // own onion would send it the wallet's addresses.
     if host.eq_ignore_ascii_case(MEMPOOL_ONION_HOST) {
@@ -496,7 +620,8 @@ pub(crate) fn is_private_url(url: &str) -> bool {
 
 /// Parse an address and require that it belongs to `network`.
 pub(crate) fn address_for(text: &str, network: NetworkMode) -> Result<Address, String> {
-    let unchecked = Address::from_str(text.trim()).map_err(|_| "That is not a bitcoin address.".to_string())?;
+    let unchecked =
+        Address::from_str(text.trim()).map_err(|_| "That is not a bitcoin address.".to_string())?;
     unchecked
         .require_network(network.bitcoin())
         .map_err(|_| format!("That address is not a {network} address."))
@@ -550,7 +675,10 @@ mod tests {
         assert!(options.esplora_urls.is_empty());
         assert_eq!(
             options.chain_plan().esplora_servers(),
-            ["https://mempool.space/testnet4/api", "https://blockstream.info/testnet4/api"],
+            [
+                "https://mempool.space/testnet4/api",
+                "https://blockstream.info/testnet4/api"
+            ],
             "testnet4 falls back to public Esplora only while no filter peer answers"
         );
 
@@ -558,7 +686,10 @@ mod tests {
         assert_eq!(main.network, NetworkMode::Mainnet);
         assert_eq!(main.port, 9100);
         assert_eq!(main.data_dir(), PathBuf::from("data/mainnet"));
-        assert!(!main.uses_public_server(), "mainnet uses compact filters and no public server by default");
+        assert!(
+            !main.uses_public_server(),
+            "mainnet uses compact filters and no public server by default"
+        );
 
         for bad in [
             &["--network"][..],
@@ -576,28 +707,75 @@ mod tests {
     fn onion_listen_keeps_the_shop_on_loopback() {
         let options = ServeOptions::parse(&args(&["9000", "--onion"])).unwrap();
         assert!(options.onion);
-        assert_eq!(options.escrow_config().mailbox_url.as_deref(), Some("http://127.0.0.1:9000"));
+        assert_eq!(
+            options.escrow_config().mailbox_url.as_deref(),
+            Some("http://127.0.0.1:9000")
+        );
         assert!(!ServeOptions::parse(&[]).unwrap().onion);
-        let moderator = |flags: &[&str]| ServeOptions::parse(&args(flags)).unwrap().escrow_config().moderator_url;
-        let railway = format!("http://{}", crate::test_network::TEST_NETWORK_MODERATOR_ONION);
-        assert_eq!(moderator(&[]), Some(railway), "testnet4 disputes go to the test network's moderator");
-        assert_eq!(moderator(&["--moderator", "http://127.0.0.1:9100"]).as_deref(), Some("http://127.0.0.1:9100"));
-        assert_eq!(moderator(&["--moderate"]), None, "the moderator does not write to itself");
-        assert_eq!(moderator(&["--network", "mainnet"]), None, "the fixture moderator is testnet4 only");
+        let moderator = |flags: &[&str]| {
+            ServeOptions::parse(&args(flags))
+                .unwrap()
+                .escrow_config()
+                .moderator_url
+        };
+        let railway = format!(
+            "http://{}",
+            crate::test_network::TEST_NETWORK_MODERATOR_ONION
+        );
+        assert_eq!(
+            moderator(&[]),
+            Some(railway),
+            "testnet4 disputes go to the test network's moderator"
+        );
+        assert_eq!(
+            moderator(&["--moderator", "http://127.0.0.1:9100"]).as_deref(),
+            Some("http://127.0.0.1:9100")
+        );
+        assert_eq!(
+            moderator(&["--moderate"]),
+            None,
+            "the moderator does not write to itself"
+        );
+        assert_eq!(
+            moderator(&["--network", "mainnet"]),
+            None,
+            "the fixture moderator is testnet4 only"
+        );
         let clearnet = "http://203.0.113.5:8787";
         assert!(ServeOptions::parse(&args(&["--moderator", clearnet])).is_err());
-        assert!(ServeOptions::parse(&args(&["--escrow-vendor", &format!("Shop={clearnet}")])).is_err());
+        assert!(
+            ServeOptions::parse(&args(&["--escrow-vendor", &format!("Shop={clearnet}")])).is_err()
+        );
     }
 
     #[test]
     fn local_surface_flags_parse() {
         let options = ServeOptions::parse(&[]).unwrap();
-        assert_eq!(options.vault, VaultChoice::Keystore, "the key goes to the OS keystore unless told otherwise");
+        assert_eq!(
+            options.vault,
+            VaultChoice::Keystore,
+            "the key goes to the OS keystore unless told otherwise"
+        );
         assert_eq!(options.shop_origin, "http://127.0.0.1:4173");
-        assert!(options.pair_codes && options.live_rates && options.introductions && options.proxy.is_none());
-        assert!(!options.tracking_aftership, "shipment tracking is off until the seller turns it on");
-        assert!(ServeOptions::parse(&args(&["--tracking", "aftership"])).unwrap().tracking_aftership);
-        assert!(ServeOptions::parse(&args(&["--tracking", "OB_TRACKING_API_KEY=secret"])).is_err(), "a tracking key is never a flag value");
+        assert!(
+            options.pair_codes
+                && options.live_rates
+                && options.introductions
+                && options.proxy.is_none()
+        );
+        assert!(
+            !options.tracking_aftership,
+            "shipment tracking is off until the seller turns it on"
+        );
+        assert!(
+            ServeOptions::parse(&args(&["--tracking", "aftership"]))
+                .unwrap()
+                .tracking_aftership
+        );
+        assert!(
+            ServeOptions::parse(&args(&["--tracking", "OB_TRACKING_API_KEY=secret"])).is_err(),
+            "a tracking key is never a flag value"
+        );
         let options = ServeOptions::parse(&args(&[
             "--vault",
             "passphrase",
@@ -631,7 +809,9 @@ mod tests {
             "an empty env is the same as unset"
         );
         assert!(
-            resolve_vault_mode(VaultChoice::Passphrase, None, true).unwrap().is_none(),
+            resolve_vault_mode(VaultChoice::Passphrase, None, true)
+                .unwrap()
+                .is_none(),
             "a terminal with no env means prompt"
         );
         assert!(matches!(
@@ -641,9 +821,59 @@ mod tests {
         assert_eq!(options.shop_origin, "http://localhost:19006");
         assert!(!options.pair_codes && !options.live_rates && !options.introductions);
         assert_eq!(options.proxy.as_deref(), Some("socks5h://127.0.0.1:9050"));
-        for bad in [&["--vault", "plain"][..], &["--shop-origin", "https://evil.example"], &["--proxy", "http://127.0.0.1:8080"]] {
+        for bad in [
+            &["--vault", "plain"][..],
+            &["--shop-origin", "https://evil.example"],
+            &["--proxy", "http://127.0.0.1:8080"],
+        ] {
             assert!(ServeOptions::parse(&args(bad)).is_err(), "{bad:?}");
         }
+    }
+
+    #[test]
+    fn built_in_tor_stands_in_for_a_proxy_and_monero_has_a_testnet4_default() {
+        let options =
+            ServeOptions::parse(&args(&["--tor", "--xmr-daemon", "default", "--lightning"]))
+                .unwrap();
+        assert!(options.tor);
+        assert_eq!(
+            options.proxy, None,
+            "serve sets the proxy once built-in Tor listens"
+        );
+        assert_eq!(
+            options.xmr_daemons,
+            DEFAULT_STAGENET_XMR_DAEMONS.map(String::from).to_vec()
+        );
+        assert!(
+            DEFAULT_STAGENET_XMR_DAEMONS
+                .iter()
+                .all(|url| url.starts_with("http://") && url.contains(".onion:")),
+            "onion only"
+        );
+        assert!(
+            ServeOptions::parse(&args(&["--xmr-daemon", "default"])).is_err(),
+            "an onion daemon needs a proxy or --tor"
+        );
+        assert!(
+            ServeOptions::parse(&args(&["--tor", "--proxy", "socks5h://127.0.0.1:9050"])).is_err()
+        );
+        let mixed = ServeOptions::parse(&args(&[
+            "--tor",
+            "--xmr-daemon",
+            "http://127.0.0.1:38081,default",
+        ]))
+        .unwrap();
+        assert_eq!(mixed.xmr_daemons.len(), 4);
+        assert_eq!(mixed.xmr_daemons[0], "http://127.0.0.1:38081");
+        let mainnet = ServeOptions::parse(&args(&[
+            "--network",
+            "mainnet",
+            "--tor",
+            "--xmr-daemon",
+            "default",
+        ]));
+        assert!(mainnet.unwrap_err().contains("testnet4 only"));
+        assert!(!ServeOptions::parse(&[]).unwrap().tor);
     }
 
     #[test]
@@ -651,16 +881,34 @@ mod tests {
         let fixed = &["--fixed-rates", "BTCUSD=100000,ZECUSD=50"][..];
         let options = ServeOptions::parse(&args(fixed)).unwrap();
         assert_eq!(options.fixed_rates, Some((100_000, 50)));
-        assert!(!options.live_rates && !options.egress().live_rates, "no rate server is asked");
+        assert!(
+            !options.live_rates && !options.egress().live_rates,
+            "no rate server is asked"
+        );
         let tor = &["--no-rates", "--proxy", "socks5h://127.0.0.1:9050"][..];
-        assert_eq!(ServeOptions::parse(&args(&[fixed, tor].concat())).unwrap().fixed_rates, Some((100_000, 50)));
+        assert_eq!(
+            ServeOptions::parse(&args(&[fixed, tor].concat()))
+                .unwrap()
+                .fixed_rates,
+            Some((100_000, 50))
+        );
         assert_eq!(ServeOptions::parse(&[]).unwrap().fixed_rates, None);
 
-        let err = ServeOptions::parse(&args(&[fixed, &["--network", "mainnet"]].concat())).unwrap_err();
+        let err =
+            ServeOptions::parse(&args(&[fixed, &["--network", "mainnet"]].concat())).unwrap_err();
         assert!(err.contains("--fixed-rates is for testnet4 only"), "{err}");
-        for bad in ["BTCUSD=100000", "ZECUSD=50,BTCUSD=100000", "BTCUSD=0,ZECUSD=50", "BTCUSD=100000,ZECUSD=49.5", "BTCUSD=100000,ZECUSD=50,EURUSD=1"] {
+        for bad in [
+            "BTCUSD=100000",
+            "ZECUSD=50,BTCUSD=100000",
+            "BTCUSD=0,ZECUSD=50",
+            "BTCUSD=100000,ZECUSD=49.5",
+            "BTCUSD=100000,ZECUSD=50,EURUSD=1",
+        ] {
             let err = ServeOptions::parse(&args(&["--fixed-rates", bad])).unwrap_err();
-            assert!(err.contains("--fixed-rates must be BTCUSD=N,ZECUSD=N"), "{bad}: {err}");
+            assert!(
+                err.contains("--fixed-rates must be BTCUSD=N,ZECUSD=N"),
+                "{bad}: {err}"
+            );
         }
         assert!(ServeOptions::parse(&args(&["--fixed-rates"])).is_err());
     }
@@ -677,15 +925,26 @@ mod tests {
             let options = ServeOptions::parse(&args(&["--esplora", url])).unwrap();
             assert!(!options.uses_public_server(), "{url}");
         }
-        let public = ServeOptions::parse(&args(&["--esplora", "https://blockstream.info/api"])).unwrap();
+        let public =
+            ServeOptions::parse(&args(&["--esplora", "https://blockstream.info/api"])).unwrap();
         assert!(public.uses_public_server());
-        assert!(is_private_url("http://mempool.space@127.0.0.1/api"), "the host is the loopback address");
-        assert!(!is_private_url("http://127.0.0.1@mempool.space/api"), "the host is mempool.space");
+        assert!(
+            is_private_url("http://mempool.space@127.0.0.1/api"),
+            "the host is the loopback address"
+        );
+        assert!(
+            !is_private_url("http://127.0.0.1@mempool.space/api"),
+            "the host is mempool.space"
+        );
         assert!(!is_private_url("http://127.0.0.1\\@127.0.0.1/"));
         assert!(!is_private_url("not a url"));
         assert!(is_private_url("http://10.1.2.3:3002"));
         assert!(is_private_url("http://[fd00::1]/api"));
-        let mixed = ServeOptions::parse(&args(&["--esplora", "http://127.0.0.1:3002, https://mempool.space/api"])).unwrap();
+        let mixed = ServeOptions::parse(&args(&[
+            "--esplora",
+            "http://127.0.0.1:3002, https://mempool.space/api",
+        ]))
+        .unwrap();
         assert!(mixed.uses_public_server());
     }
 
@@ -700,7 +959,11 @@ mod tests {
         .unwrap();
         assert_eq!(
             options.esplora_urls,
-            ["http://127.0.0.1:3002", "http://node.local/api", "http://192.168.1.20:3002"]
+            [
+                "http://127.0.0.1:3002",
+                "http://node.local/api",
+                "http://192.168.1.20:3002"
+            ]
         );
         assert!(!options.uses_public_server());
         assert!(ServeOptions::parse(&args(&["--esplora", " , "])).is_err());
@@ -712,24 +975,46 @@ mod tests {
     fn chain_backend_flags() {
         use crate::ChainPlan;
         let main = ServeOptions::parse(&args(&["--network", "mainnet"])).unwrap();
-        let ChainPlan::Filters { config, fallback } = main.chain_plan() else { panic!("filters are the default") };
+        let ChainPlan::Filters { config, fallback } = main.chain_plan() else {
+            panic!("filters are the default")
+        };
         assert!(!config.only_these_peers && fallback.is_empty());
 
-        let opted = ServeOptions::parse(&args(&["--network", "mainnet", "--public-fallback"])).unwrap();
-        assert_eq!(opted.chain_plan().esplora_servers(), ["https://mempool.space/api"]);
+        let opted =
+            ServeOptions::parse(&args(&["--network", "mainnet", "--public-fallback"])).unwrap();
+        assert_eq!(
+            opted.chain_plan().esplora_servers(),
+            ["https://mempool.space/api"]
+        );
         assert!(opted.uses_public_server());
         let quiet = ServeOptions::parse(&args(&["--no-public-fallback"])).unwrap();
         assert!(quiet.chain_plan().esplora_servers().is_empty() && !quiet.uses_public_server());
 
-        let own = ServeOptions::parse(&args(&["--peer", "192.168.1.5:48333,node.local", "--peer", "[::1]:18444"])).unwrap();
+        let own = ServeOptions::parse(&args(&[
+            "--peer",
+            "192.168.1.5:48333,node.local",
+            "--peer",
+            "[::1]:18444",
+        ]))
+        .unwrap();
         assert_eq!(
             own.peers,
-            [("192.168.1.5".to_string(), 48333), ("node.local".to_string(), 48333), ("::1".to_string(), 18444)]
+            [
+                ("192.168.1.5".to_string(), 48333),
+                ("node.local".to_string(), 48333),
+                ("::1".to_string(), 18444)
+            ]
         );
-        let ChainPlan::Filters { config, fallback } = own.chain_plan() else { panic!("--peer uses filters") };
-        assert!(config.only_these_peers && fallback.is_empty(), "own node: no seeds, no fallback");
+        let ChainPlan::Filters { config, fallback } = own.chain_plan() else {
+            panic!("--peer uses filters")
+        };
+        assert!(
+            config.only_these_peers && fallback.is_empty(),
+            "own node: no seeds, no fallback"
+        );
         assert!(!own.uses_public_server());
-        let main_peer = ServeOptions::parse(&args(&["--network", "mainnet", "--peer", "10.0.0.2"])).unwrap();
+        let main_peer =
+            ServeOptions::parse(&args(&["--network", "mainnet", "--peer", "10.0.0.2"])).unwrap();
         assert_eq!(main_peer.peers, [("10.0.0.2".to_string(), 8333)]);
 
         for bad in [
@@ -749,20 +1034,35 @@ mod tests {
         let clear = ServeOptions::parse(&[]).unwrap();
         assert_eq!(
             clear.chain_plan().esplora_servers(),
-            ["https://mempool.space/testnet4/api", "https://blockstream.info/testnet4/api"],
+            [
+                "https://mempool.space/testnet4/api",
+                "https://blockstream.info/testnet4/api"
+            ],
             "no proxy keeps the clearnet mempool host"
         );
 
         let tor = ServeOptions::parse(&args(&["--proxy", "socks5h://127.0.0.1:9050"])).unwrap();
         assert_eq!(
             tor.chain_plan().esplora_servers(),
-            [format!("{onion}/testnet4/api"), "https://blockstream.info/testnet4/api".to_string()]
+            [
+                format!("{onion}/testnet4/api"),
+                "https://blockstream.info/testnet4/api".to_string()
+            ]
         );
-        assert!(tor.uses_public_server(), "mempool's onion is still a public server");
-        assert!(is_private_url("http://abcdefghijklmnopqrstuvwxyz234567abcdefghijklmnopqrst.onion/api"));
+        assert!(
+            tor.uses_public_server(),
+            "mempool's onion is still a public server"
+        );
+        assert!(is_private_url(
+            "http://abcdefghijklmnopqrstuvwxyz234567abcdefghijklmnopqrst.onion/api"
+        ));
 
-        let main = ServeOptions::parse(&args(&["--network", "mainnet", "--public-fallback"])).unwrap();
-        assert_eq!(main.chain_plan().esplora_servers(), ["https://mempool.space/api"]);
+        let main =
+            ServeOptions::parse(&args(&["--network", "mainnet", "--public-fallback"])).unwrap();
+        assert_eq!(
+            main.chain_plan().esplora_servers(),
+            ["https://mempool.space/api"]
+        );
         let main_tor = ServeOptions::parse(&args(&[
             "--network",
             "mainnet",
@@ -771,11 +1071,18 @@ mod tests {
             "socks5h://127.0.0.1:9050",
         ]))
         .unwrap();
-        assert_eq!(main_tor.chain_plan().esplora_servers(), [format!("{onion}/api")]);
+        assert_eq!(
+            main_tor.chain_plan().esplora_servers(),
+            [format!("{onion}/api")]
+        );
         assert!(main_tor.uses_public_server());
 
-        let signet = ServeOptions::parse(&args(&["--esplora", "https://mempool.space/signet/api"])).unwrap();
-        assert_eq!(signet.chain_plan().esplora_servers(), ["https://mempool.space/signet/api"]);
+        let signet =
+            ServeOptions::parse(&args(&["--esplora", "https://mempool.space/signet/api"])).unwrap();
+        assert_eq!(
+            signet.chain_plan().esplora_servers(),
+            ["https://mempool.space/signet/api"]
+        );
         let signet_tor = ServeOptions::parse(&args(&[
             "--esplora",
             "https://mempool.space/signet/api",
@@ -783,8 +1090,14 @@ mod tests {
             "socks5h://127.0.0.1:9050",
         ]))
         .unwrap();
-        assert_eq!(signet_tor.chain_plan().esplora_servers(), [format!("{onion}/signet/api")]);
-        assert!(signet_tor.uses_public_server(), "the onion is not treated as this node's server");
+        assert_eq!(
+            signet_tor.chain_plan().esplora_servers(),
+            [format!("{onion}/signet/api")]
+        );
+        assert!(
+            signet_tor.uses_public_server(),
+            "the onion is not treated as this node's server"
+        );
     }
 
     #[test]
@@ -792,15 +1105,33 @@ mod tests {
         use openbazaar_xmr::XmrNetwork;
         assert_eq!(NetworkMode::Testnet4.monero(), XmrNetwork::Stagenet);
         assert_eq!(NetworkMode::Mainnet.monero(), XmrNetwork::Mainnet);
-        assert!(ServeOptions::parse(&[]).unwrap().xmr_config().is_none(), "no default Monero node");
+        assert!(
+            ServeOptions::parse(&[]).unwrap().xmr_config().is_none(),
+            "no default Monero node"
+        );
         let own = ServeOptions::parse(&args(&["--xmr-daemon", "http://127.0.0.1"])).unwrap();
         let config = own.xmr_config().unwrap();
-        assert_eq!((config.network, config.nodes[0].url.as_str()), (XmrNetwork::Stagenet, "http://127.0.0.1:38081"));
-        let main = ["--network", "mainnet", "--xmr-daemon", "http://node.example.org:18089"];
-        assert!(ServeOptions::parse(&args(&main)).unwrap_err().contains("Tor"));
+        assert_eq!(
+            (config.network, config.nodes[0].url.as_str()),
+            (XmrNetwork::Stagenet, "http://127.0.0.1:38081")
+        );
+        let main = [
+            "--network",
+            "mainnet",
+            "--xmr-daemon",
+            "http://node.example.org:18089",
+        ];
+        assert!(ServeOptions::parse(&args(&main))
+            .unwrap_err()
+            .contains("Tor"));
         let stagenet = ["--xmr-daemon", "http://node.example.org:38081"];
-        assert!(ServeOptions::parse(&args(&stagenet)).unwrap_err().contains("Tor"));
-        let tor = ServeOptions::parse(&args(&[&main[..], &["--proxy", "socks5h://127.0.0.1:9050"]].concat())).unwrap();
+        assert!(ServeOptions::parse(&args(&stagenet))
+            .unwrap_err()
+            .contains("Tor"));
+        let tor = ServeOptions::parse(&args(
+            &[&main[..], &["--proxy", "socks5h://127.0.0.1:9050"]].concat(),
+        ))
+        .unwrap();
         assert_eq!(tor.xmr_config().unwrap().privacy(), "remote-tor");
     }
 
@@ -809,16 +1140,43 @@ mod tests {
         use openbazaar_zec::ZecNetwork;
         assert_eq!(NetworkMode::Testnet4.zcash(), ZecNetwork::Testnet);
         assert_eq!(NetworkMode::Mainnet.zcash(), ZecNetwork::Mainnet);
-        assert!(ServeOptions::parse(&[]).unwrap().zec_config().is_none(), "no default Zcash indexer");
-        let own = ServeOptions::parse(&args(&["--zec-indexer", "http://127.0.0.1:8137,https://192.168.1.9"])).unwrap();
+        assert!(
+            ServeOptions::parse(&[]).unwrap().zec_config().is_none(),
+            "no default Zcash indexer"
+        );
+        let own = ServeOptions::parse(&args(&[
+            "--zec-indexer",
+            "http://127.0.0.1:8137,https://192.168.1.9",
+        ]))
+        .unwrap();
         let config = own.zec_config().unwrap();
         assert_eq!(config.network, ZecNetwork::Testnet);
-        assert_eq!(config.servers.iter().map(|server| server.url.as_str()).collect::<Vec<_>>(), ["http://127.0.0.1:8137", "https://192.168.1.9:443"]);
+        assert_eq!(
+            config
+                .servers
+                .iter()
+                .map(|server| server.url.as_str())
+                .collect::<Vec<_>>(),
+            ["http://127.0.0.1:8137", "https://192.168.1.9:443"]
+        );
         assert_eq!(config.privacy(), "own-node");
         for network in ["testnet4", "mainnet"] {
-            let remote = ["--network", network, "--zec-indexer", "https://zec.example.org"];
-            assert!(ServeOptions::parse(&args(&remote)).unwrap_err().contains("Tor"), "{network}");
-            let tor = ServeOptions::parse(&args(&[&remote[..], &["--proxy", "socks5h://127.0.0.1:9050"]].concat())).unwrap();
+            let remote = [
+                "--network",
+                network,
+                "--zec-indexer",
+                "https://zec.example.org",
+            ];
+            assert!(
+                ServeOptions::parse(&args(&remote))
+                    .unwrap_err()
+                    .contains("Tor"),
+                "{network}"
+            );
+            let tor = ServeOptions::parse(&args(
+                &[&remote[..], &["--proxy", "socks5h://127.0.0.1:9050"]].concat(),
+            ))
+            .unwrap();
             assert_eq!(tor.zec_config().unwrap().privacy(), "remote-tor");
         }
         assert!(ServeOptions::parse(&args(&["--zec-indexer", "zec.example.org:9067"])).is_err());
@@ -839,7 +1197,11 @@ mod tests {
 
     #[test]
     fn bip21_writes_the_amount_in_bitcoin() {
-        let address = address_for("tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx", NetworkMode::Testnet4).unwrap();
+        let address = address_for(
+            "tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx",
+            NetworkMode::Testnet4,
+        )
+        .unwrap();
         assert_eq!(
             bip21(&address, Amount::from_sat(36_000)),
             "bitcoin:tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx?amount=0.00036"

@@ -1,3 +1,5 @@
+import { waitingForTor, type TorStatus } from './torStatus.ts'
+
 export type ConnectionChain = {
   backend: string
   privacy: string
@@ -12,6 +14,7 @@ export type ConnectionInfo = {
   proxy: string | null
   proxyReachable: boolean | null
   chainBackend: ConnectionChain | null
+  tor?: TorStatus | null
 }
 
 export type ConnectionRow = { label: string; value: string }
@@ -19,6 +22,11 @@ export type ConnectionRow = { label: string; value: string }
 /** Banner warning only. The connection card says what the proxy did and what to do next. */
 export function privacyStatus(info: ConnectionInfo & { privacyWarning?: string | null }): string {
   const backend = info.chainBackend
+  const tor = info.tor
+  if (tor && waitingForTor(tor)) {
+    if (tor.state === 'connecting') return `Connecting to Tor…${tor.progress != null ? ` ${tor.progress}%` : ''}`
+    return `Tor not connected: ${tor.error ?? 'the node keeps trying'}`
+  }
   if (info.proxyReachable === false) return 'Tor is not running'
   if (backend?.fallbackActive) return 'Public fallback active'
   if (backend?.error) return 'Chain transport failed'
@@ -65,6 +73,14 @@ function chainSource(info: ConnectionInfo): string {
 }
 
 function proxyLine(info: ConnectionInfo): string {
+  const tor = info.tor
+  if (tor?.mode === 'builtin') {
+    if (tor.state === 'connected') return 'Built-in Tor, connected.'
+    if (tor.state === 'failed') {
+      return `Built-in Tor could not connect${tor.error ? `: ${tor.error}` : ''}. Check this computer's internet connection; the node keeps trying.`
+    }
+    return `Built-in Tor is connecting to the Tor network${tor.progress != null ? ` (${tor.progress}%)` : ''}. Payments and prices wait until it is ready.`
+  }
   if (!info.proxy) {
     return 'None. Public servers are not contacted from this computer. To send those requests through Tor, point the node at a local proxy such as 127.0.0.1:9050 and refresh.'
   }

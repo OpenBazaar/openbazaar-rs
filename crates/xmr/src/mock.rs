@@ -199,7 +199,7 @@ use crate::decoys::random_point;
 impl XmrChain for MockChain {
     fn status(&self) -> BackendStatus {
         let config = crate::DaemonConfig::new(self.network, &["http://127.0.0.1:18081".to_string()], None).ok();
-        BackendStatus { config, network: self.network, tip: Some(self.height()), active: None, error: None }
+        BackendStatus { config, network: self.network, tip: Some(self.height()), active: None, error: None, connecting: false }
     }
 
     fn tip(&self) -> Result<u64, String> {

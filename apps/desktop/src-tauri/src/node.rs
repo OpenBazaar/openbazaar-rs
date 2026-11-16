@@ -15,21 +15,13 @@ use std::time::{Duration, Instant};
 /// node keeps each network's keys in `<data dir>/<network>/`.
 pub const NETWORK: &str = "testnet4";
 
-/// Local Tor. Compact filters and public indexers go through this so they
-/// never see this machine's IP. 9150 is Tor Browser; the system daemon is 9050.
-pub const TOR_PROXY: &str = "socks5h://127.0.0.1:9050";
 /// Public Zcash testnet indexer from docs/zcash.md. Override with a
 /// `zec-indexer` file in the app data folder (one URL).
 const DEFAULT_ZEC_INDEXER: &str = "https://testnet.zec.rocks";
 const ZEC_INDEXER_FILE: &str = "zec-indexer";
-/// Public Monero stagenet daemons, onion only, so no Tor exit relay sees or
-/// alters the RPC. The first two are plowsof's (monerodevs.org); the third is
-/// another operator, so a payment is broadcast through a different operator
-/// than the one that served its ring members. Override with an `xmr-daemon`
-/// file in the app data folder (one line, comma-separated URLs).
-const DEFAULT_XMR_DAEMONS: &str = "http://plowsoffjexmxalw73tkjmf422gq6575fc7vicuu4javzn2ynnte6tyd.onion:38089,\
-http://ct36dsbe3oubpbebpxmiqz4uqk6zb6nhmkhoekileo4fts23rvuse2qd.onion:38081,\
-http://plowsof3t5hogddwabaeiyrno25efmzfxyro2vligremt7sxpsclfaid.onion:38089";
+/// The node's own list of public Monero stagenet onion daemons. Override with
+/// an `xmr-daemon` file in the app data folder (one line, comma-separated URLs).
+const DEFAULT_XMR_DAEMONS: &str = "default";
 const XMR_DAEMON_FILE: &str = "xmr-daemon";
 
 const READY_TIMEOUT: Duration = Duration::from_secs(20);
@@ -66,7 +58,12 @@ impl Sidecar {
     /// also opens the LAN channel for paired devices. `file_vault` keeps the
     /// node's keys in a file in the data folder instead of the OS keychain
     /// (for a disposable profile).
-    pub fn start(app_data_dir: &Path, port: Option<u16>, file_vault: bool, shop: Option<&Path>) -> Result<Self, String> {
+    pub fn start(
+        app_data_dir: &Path,
+        port: Option<u16>,
+        file_vault: bool,
+        shop: Option<&Path>,
+    ) -> Result<Self, String> {
         create_private_dir(app_data_dir)
             .map_err(|err| format!("Could not create {}: {err}", app_data_dir.display()))?;
         let data_dir = app_data_dir.join(NETWORK);
@@ -145,10 +142,17 @@ impl Drop for Sidecar {
 }
 
 /// Arguments after the binary: `serve`, the loopback port, and the flags this
-/// packaged testnet app always wants. `zec-indexer` and `xmr-daemon` files in
-/// the app data folder override the Zcash and Monero defaults. Lightning runs
-/// on Mutinynet signet through the node's default LSP, over the same proxy.
-fn sidecar_args(port: u16, app_data_dir: &Path, file_vault: bool, shop: Option<&Path>) -> Vec<String> {
+/// packaged testnet app always wants. `--tor` runs Tor inside the node on a
+/// free loopback port, so nothing needs to be installed and a Tor already on
+/// 9050 is left alone. `zec-indexer` and `xmr-daemon` files in the app data
+/// folder override the Zcash and Monero defaults. Lightning runs on Mutinynet
+/// signet through the node's default LSP, over the same Tor.
+fn sidecar_args(
+    port: u16,
+    app_data_dir: &Path,
+    file_vault: bool,
+    shop: Option<&Path>,
+) -> Vec<String> {
     let mut args = vec![
         "serve".into(),
         port.to_string(),
@@ -162,7 +166,7 @@ fn sidecar_args(port: u16, app_data_dir: &Path, file_vault: bool, shop: Option<&
     if home_mode(app_data_dir) {
         args.push("--lan".into());
     }
-    args.extend(["--onion".into(), "--proxy".into(), TOR_PROXY.into()]);
+    args.extend(["--onion".into(), "--tor".into()]);
     if file_vault {
         args.extend(["--vault".into(), "file".into()]);
     }
@@ -201,7 +205,10 @@ fn sidecar_path() -> io::Result<PathBuf> {
     if path.is_file() {
         Ok(path)
     } else {
-        Err(io::Error::new(io::ErrorKind::NotFound, path.display().to_string()))
+        Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            path.display().to_string(),
+        ))
     }
 }
 
@@ -211,7 +218,10 @@ fn read_token(path: &Path) -> io::Result<String> {
     if token.len() == 64 && token.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         Ok(token)
     } else {
-        Err(io::Error::new(io::ErrorKind::InvalidData, "not a pairing token"))
+        Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "not a pairing token",
+        ))
     }
 }
 
@@ -220,8 +230,12 @@ fn read_token(path: &Path) -> io::Result<String> {
 /// change between launches.
 fn node_port(data_dir: &Path) -> io::Result<u16> {
     let path = data_dir.join("node.port");
-    let saved = fs::read_to_string(&path).ok().and_then(|text| text.trim().parse::<u16>().ok());
-    if let Some(port) = saved.filter(|&port| port != 0 && TcpListener::bind((Ipv4Addr::LOCALHOST, port)).is_ok()) {
+    let saved = fs::read_to_string(&path)
+        .ok()
+        .and_then(|text| text.trim().parse::<u16>().ok());
+    if let Some(port) =
+        saved.filter(|&port| port != 0 && TcpListener::bind((Ipv4Addr::LOCALHOST, port)).is_ok())
+    {
         return Ok(port);
     }
     let port = free_loopback_port()?;
@@ -282,22 +296,30 @@ pub fn browser_url(origin: &str, token: &str) -> Result<String, String> {
         Duration::from_secs(2),
     )
     .map_err(|_| "The shop is not running on this machine.".to_string())?;
-    stream.set_read_timeout(Some(Duration::from_secs(2))).map_err(|err| err.to_string())?;
+    stream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .map_err(|err| err.to_string())?;
     let request = format!(
         "POST /browser-session HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nX-Ob-Pair: {token}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
     );
     std::io::Write::write_all(&mut stream, request.as_bytes()).map_err(|err| err.to_string())?;
     let mut raw = Vec::new();
     std::io::Read::read_to_end(&mut stream, &mut raw).map_err(|err| err.to_string())?;
-    let text = String::from_utf8(raw).map_err(|_| "The shop sent a session the app could not read.".to_string())?;
-    let body = text.split("\r\n\r\n").nth(1).ok_or_else(|| "The shop did not start a browser session.".to_string())?;
-    accept_browser_url(origin, body, token).ok_or_else(|| "The shop did not start a browser session.".to_string())
+    let text = String::from_utf8(raw)
+        .map_err(|_| "The shop sent a session the app could not read.".to_string())?;
+    let body = text
+        .split("\r\n\r\n")
+        .nth(1)
+        .ok_or_else(|| "The shop did not start a browser session.".to_string())?;
+    accept_browser_url(origin, body, token)
+        .ok_or_else(|| "The shop did not start a browser session.".to_string())
 }
 
 pub(crate) fn accept_browser_url(origin: &str, body: &str, token: &str) -> Option<String> {
     let url = body.trim();
     let ticket = url.strip_prefix(&format!("{origin}/browser/"))?;
-    if ticket.len() == 64 && ticket.bytes().all(|byte| byte.is_ascii_hexdigit()) && ticket != token {
+    if ticket.len() == 64 && ticket.bytes().all(|byte| byte.is_ascii_hexdigit()) && ticket != token
+    {
         Some(url.to_string())
     } else {
         None
@@ -305,11 +327,14 @@ pub(crate) fn accept_browser_url(origin: &str, body: &str, token: &str) -> Optio
 }
 
 fn loopback_port(origin: &str) -> Result<u16, String> {
-    let rest = origin.strip_prefix("http://127.0.0.1:").ok_or_else(|| "The shop address is not on this machine.".to_string())?;
+    let rest = origin
+        .strip_prefix("http://127.0.0.1:")
+        .ok_or_else(|| "The shop address is not on this machine.".to_string())?;
     if rest.is_empty() || !rest.bytes().all(|byte| byte.is_ascii_digit()) {
         return Err("The shop address is not on this machine.".to_string());
     }
-    rest.parse().map_err(|_| "The shop address is not on this machine.".to_string())
+    rest.parse()
+        .map_err(|_| "The shop address is not on this machine.".to_string())
 }
 
 /// The node's `--local-shop` page, which the desktop window and a browser on
@@ -370,7 +395,10 @@ mod tests {
     fn the_node_keeps_its_port_across_launches() {
         let dir = temp_dir("port-kept");
         let first = node_port(&dir).unwrap();
-        assert_eq!(fs::read_to_string(dir.join("node.port")).unwrap(), first.to_string());
+        assert_eq!(
+            fs::read_to_string(dir.join("node.port")).unwrap(),
+            first.to_string()
+        );
         assert_eq!(node_port(&dir).unwrap(), first);
         fs::remove_dir_all(dir).unwrap();
     }
@@ -383,7 +411,10 @@ mod tests {
         fs::write(dir.join("node.port"), busy.to_string()).unwrap();
         let port = node_port(&dir).unwrap();
         assert_ne!(port, busy);
-        assert_eq!(fs::read_to_string(dir.join("node.port")).unwrap(), port.to_string());
+        assert_eq!(
+            fs::read_to_string(dir.join("node.port")).unwrap(),
+            port.to_string()
+        );
         fs::write(dir.join("node.port"), "not a port").unwrap();
         assert_ne!(node_port(&dir).unwrap(), 0);
         fs::remove_dir_all(dir).unwrap();
@@ -394,9 +425,12 @@ mod tests {
         let origin = "http://127.0.0.1:56562";
         let token = "ab".repeat(32);
         let ticket = "cd".repeat(32);
-        let url = accept_browser_url(origin, &format!("{origin}/browser/{ticket}\n"), &token).unwrap();
+        let url =
+            accept_browser_url(origin, &format!("{origin}/browser/{ticket}\n"), &token).unwrap();
         assert_eq!(url, format!("{origin}/browser/{ticket}"));
-        assert!(accept_browser_url(origin, &format!("{origin}/browser/{token}\n"), &token).is_none());
+        assert!(
+            accept_browser_url(origin, &format!("{origin}/browser/{token}\n"), &token).is_none()
+        );
         assert!(accept_browser_url(origin, "http://evil.example/browser/cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\n", &token).is_none());
         assert!(loopback_port("http://127.0.0.1:56562").is_ok());
         assert!(loopback_port("http://evil.example:56562").is_err());
@@ -406,25 +440,45 @@ mod tests {
     }
 
     fn has_flag(args: &[String], name: &str, value: &str) -> bool {
-        args.windows(2).any(|pair| pair[0] == name && pair[1] == value)
+        args.windows(2)
+            .any(|pair| pair[0] == name && pair[1] == value)
     }
 
     #[test]
-    fn the_sidecar_goes_through_local_tor_with_zcash_monero_and_lightning_on() {
+    fn the_sidecar_runs_built_in_tor_with_zcash_monero_and_lightning_on() {
         let dir = temp_dir("sidecar-args");
         let args = sidecar_args(18787, &dir, false, None);
-        assert!(has_flag(&args, "--proxy", TOR_PROXY), "{args:?}");
-        assert!(has_flag(&args, "--zec-indexer", DEFAULT_ZEC_INDEXER), "{args:?}");
-        assert!(has_flag(&args, "--xmr-daemon", DEFAULT_XMR_DAEMONS), "{args:?}");
-        assert!(DEFAULT_XMR_DAEMONS.split(',').all(|url| url.starts_with("http://") && url.contains(".onion:")), "onion only");
+        assert!(args.iter().any(|arg| arg == "--tor"), "{args:?}");
+        assert!(
+            !args.iter().any(|arg| arg == "--proxy"),
+            "no system Tor is needed or used: {args:?}"
+        );
+        assert!(
+            has_flag(&args, "--zec-indexer", DEFAULT_ZEC_INDEXER),
+            "{args:?}"
+        );
+        assert!(has_flag(&args, "--xmr-daemon", "default"), "{args:?}");
         assert!(args.iter().any(|arg| arg == "--lightning"), "{args:?}");
-        assert!(args.iter().any(|arg| arg == "--remote"), "escrow and order mail use the store onion: {args:?}");
+        assert!(
+            args.iter().any(|arg| arg == "--remote"),
+            "escrow and order mail use the store onion: {args:?}"
+        );
         assert!(!args.iter().any(|arg| arg == "--lan"), "{args:?}");
-        fs::write(dir.join(ZEC_INDEXER_FILE), "# local Zaino\nhttp://127.0.0.1:8137\n").unwrap();
+        fs::write(
+            dir.join(ZEC_INDEXER_FILE),
+            "# local Zaino\nhttp://127.0.0.1:8137\n",
+        )
+        .unwrap();
         fs::write(dir.join(XMR_DAEMON_FILE), "http://127.0.0.1:38081\n").unwrap();
         let args = sidecar_args(18787, &dir, true, None);
-        assert!(has_flag(&args, "--zec-indexer", "http://127.0.0.1:8137"), "{args:?}");
-        assert!(has_flag(&args, "--xmr-daemon", "http://127.0.0.1:38081"), "{args:?}");
+        assert!(
+            has_flag(&args, "--zec-indexer", "http://127.0.0.1:8137"),
+            "{args:?}"
+        );
+        assert!(
+            has_flag(&args, "--xmr-daemon", "http://127.0.0.1:38081"),
+            "{args:?}"
+        );
         assert!(has_flag(&args, "--vault", "file"), "{args:?}");
         set_home_mode(&dir, true).unwrap();
         let args = sidecar_args(18787, &dir, false, None);

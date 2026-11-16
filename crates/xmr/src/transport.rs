@@ -40,6 +40,11 @@ fn shares_circuit(url: &reqwest::Url) -> bool {
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(180);
+/// Through Tor, connecting includes the SOCKS request, and a first circuit to
+/// an onion service (descriptor fetch, introduction, rendezvous) often takes
+/// 40-60 s. Later requests reuse the chain circuit and are fast.
+const TOR_CONNECT_TIMEOUT: Duration = Duration::from_secs(120);
+const TOR_REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// Refuse anything outside [`ROUTES`] and [`JSON_RPC_METHODS`].
 pub fn check_request(route: &str, body: &[u8]) -> Result<(), String> {
@@ -75,9 +80,11 @@ impl RpcTransport {
     /// its own, so Tor puts it on its own circuit. None is kept alive.
     pub fn new(url: &str, proxy: Option<&str>) -> Result<Self, String> {
         static NEXT: AtomicU64 = AtomicU64::new(0);
+        let (connect, request) =
+            if proxy.is_some() { (TOR_CONNECT_TIMEOUT, TOR_REQUEST_TIMEOUT) } else { (CONNECT_TIMEOUT, REQUEST_TIMEOUT) };
         let mut builder = reqwest::Client::builder()
-            .connect_timeout(CONNECT_TIMEOUT)
-            .timeout(REQUEST_TIMEOUT)
+            .connect_timeout(connect)
+            .timeout(request)
             .redirect(reqwest::redirect::Policy::none())
             .pool_max_idle_per_host(0);
         builder = match proxy {

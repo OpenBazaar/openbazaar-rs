@@ -27,6 +27,8 @@ pub(crate) const LIGHTNING_PORT: u16 = 9735;
 const EXCHANGE_TIMEOUT: Duration = Duration::from_secs(90);
 /// Pause before refetching a descriptor that refused our discovery key.
 const DESCRIPTOR_WAIT: Duration = Duration::from_secs(8);
+const START_ATTEMPTS: u32 = 4;
+const START_RETRY_WAIT: Duration = Duration::from_secs(2);
 
 pub(crate) struct Tor {
     runtime: tokio::runtime::Runtime,
@@ -34,6 +36,21 @@ pub(crate) struct Tor {
 }
 
 impl Tor {
+    /// [`Tor::start`], tried again a few times. The `--onion` listener opens
+    /// its own client on `{data}/tor` at the same moment, and on a fresh data
+    /// dir one of the two can find the directory cache locked until the other
+    /// has created it (`tormail::open_client` retries the same way).
+    pub(crate) fn start_with_retry(data_dir: &Path) -> Result<Self, String> {
+        let mut result = Self::start(data_dir);
+        for _ in 0..START_ATTEMPTS - 1 {
+            let Err(err) = &result else { break };
+            eprintln!("ob-node: tor: starting again after: {err}");
+            std::thread::sleep(START_RETRY_WAIT);
+            result = Self::start(data_dir);
+        }
+        result
+    }
+
     pub(crate) fn start(data_dir: &Path) -> Result<Self, String> {
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
@@ -41,10 +58,9 @@ impl Tor {
             .enable_all()
             .build()
             .map_err(|err| err.to_string())?;
-        let mut builder = TorClientConfigBuilder::from_directories(
-            data_dir.join("tor/state"),
-            data_dir.join("tor/cache"),
-        );
+        let (state, cache) =
+            tormail::private_dirs(&data_dir.join("tor")).map_err(|err| err.to_string())?;
+        let mut builder = TorClientConfigBuilder::from_directories(state, cache);
         if std::env::var_os("OB_TOR_TRUST_DATA_DIR").is_some() {
             builder.storage().permissions().dangerously_trust_everyone();
         }
@@ -62,7 +78,10 @@ impl Tor {
         let started = std::time::Instant::now();
         runtime.spawn(async move {
             match background.bootstrap().await {
-                Ok(()) => eprintln!("ob-node: tor: connected to the Tor network after {}s", started.elapsed().as_secs()),
+                Ok(()) => eprintln!(
+                    "ob-node: tor: connected to the Tor network after {}s",
+                    started.elapsed().as_secs()
+                ),
                 Err(err) => eprintln!("ob-node: Tor bootstrap: {err}"),
             }
         });
@@ -91,37 +110,54 @@ impl Tor {
         target: SocketAddr,
     ) -> Result<Service, String> {
         let _inside = self.runtime.enter();
-        let (forward, run) = tormail::start_onion_forward(
-            &self.client,
-            nickname,
-            identity,
-            discovery,
-            port,
-            target,
-        )
-        .map_err(|err| err.to_string())?;
+        let (forward, run) =
+            tormail::start_onion_forward(&self.client, nickname, identity, discovery, port, target)
+                .map_err(|err| err.to_string())?;
         let task = self.runtime.spawn(run);
-        Ok(Service { forward, task, watch: None, answered: Answered::default() })
+        Ok(Service {
+            forward,
+            task,
+            watch: None,
+            answered: Answered::default(),
+        })
     }
 
     /// Follow a new pairing onion and set `reached` once this client has
     /// dialed it and got an answer: see [`super::pair_ready`].
-    pub(crate) fn watch_pairing(&self, service: &mut Service, label: String, reached: Arc<AtomicBool>) {
-        let watch = super::pair_ready::watch(Arc::clone(&self.client), service.forward.clone(), label, reached);
+    pub(crate) fn watch_pairing(
+        &self,
+        service: &mut Service,
+        label: String,
+        reached: Arc<AtomicBool>,
+    ) {
+        let watch = super::pair_ready::watch(
+            Arc::clone(&self.client),
+            service.forward.clone(),
+            label,
+            reached,
+        );
         service.watch = Some(self.runtime.spawn(watch));
     }
 
     /// Dial the store onion from this client while Arti does not say it is
     /// published: see [`super::onion_check`].
     pub(crate) fn watch_store(&self, service: &mut Service) {
-        let watch = super::onion_check::watch(Arc::clone(&self.client), service.forward.clone(), service.answered.clone());
+        let watch = super::onion_check::watch(
+            Arc::clone(&self.client),
+            service.forward.clone(),
+            service.answered.clone(),
+        );
         service.watch = Some(self.runtime.spawn(watch));
     }
 
     /// What Arti says of its connection and its directory right now, with
     /// `onions` as the services report themselves and `store_answered` as
     /// the store's [`Service`] has it: see [`super::tor_health`].
-    pub(crate) fn reading(&self, onions: Vec<(&'static str, String, bool)>, store_answered: Option<u64>) -> Reading {
+    pub(crate) fn reading(
+        &self,
+        onions: Vec<(&'static str, String, bool)>,
+        store_answered: Option<u64>,
+    ) -> Reading {
         let status = self.client.bootstrap_status();
         let secs = |time: SystemTime| {
             time.duration_since(UNIX_EPOCH)
@@ -232,6 +268,56 @@ impl Drop for Service {
         self.task.abort();
         if let Some(watch) = &self.watch {
             watch.abort();
+        }
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::PathBuf;
+
+    use super::*;
+
+    /// Under `target/`, not the system temp dir, so Arti's permission check
+    /// sees the directories this code made rather than `/tmp`.
+    fn fresh_dir(name: &str) -> PathBuf {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/tor-dir-tests")
+            .join(format!("{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        dir
+    }
+
+    #[test]
+    fn remote_and_onion_clients_open_one_fresh_tor_dir_together() {
+        for round in 0..4 {
+            let dir = fresh_dir(&format!("race-{round}"));
+            let onion_dir = dir.join("tor");
+            let onion = std::thread::spawn(move || {
+                let runtime = tokio::runtime::Builder::new_multi_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap();
+                let _inside = runtime.enter();
+                tormail::open_client(&onion_dir)
+                    .map(|_| ())
+                    .map_err(|err| err.to_string())
+            });
+            let remote = Tor::start_with_retry(&dir).map(|_| ());
+            assert_eq!(remote, Ok(()), "round {round}");
+            assert_eq!(onion.join().unwrap(), Ok(()), "round {round}");
+            for sub in ["tor/state", "tor/cache"] {
+                let mode = std::fs::metadata(dir.join(sub))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777;
+                assert_eq!(mode, 0o700, "{sub}");
+            }
+            std::fs::remove_dir_all(dir).unwrap();
         }
     }
 }

@@ -14,6 +14,10 @@
 # http://openbazaar.local:8790/ until the first device is paired. Drop it to
 # use Tor only.
 #
+# --tor runs Tor inside ob-node, so no tor package is needed and a system Tor
+# is left alone. Monero (the node's stagenet onion daemons) and Lightning
+# (Mutinynet) go through it, as in the desktop app.
+#
 # See docs/home-node.md.
 
 [Unit]
@@ -27,7 +31,7 @@ Type=simple
 User=openbazaar
 Group=openbazaar
 EnvironmentFile=/etc/openbazaar/ob-node.env
-ExecStart=/opt/openbazaar/ob-node serve 8787 --remote --lan --web-dir /opt/openbazaar/web --data-dir /var/lib/openbazaar --vault passphrase
+ExecStart=/opt/openbazaar/ob-node serve 8787 --remote --lan --web-dir /opt/openbazaar/web --data-dir /var/lib/openbazaar --vault passphrase --tor --xmr-daemon default --lightning
 Restart=on-failure
 RestartSec=10
 StateDirectory=openbazaar

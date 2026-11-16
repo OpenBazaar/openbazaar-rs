@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
 import { networkInfo, networkStatus } from './networkInfo.ts'
+import type { TorStatus } from './torStatus.ts'
 import { connectionRows, privacyStatus, type ConnectionInfo } from './walletConnection.ts'
 
 const txid = 'a'.repeat(64)
@@ -164,4 +165,20 @@ test('the shop banner names Tor when the proxy did not answer', () => {
     })),
     'Chain transport failed'
   )
+})
+
+test('built-in Tor says when it is connecting, connected, or stuck', () => {
+  const proxyRow = (info: ConnectionInfo) => connectionRows(info).find(row => row.label === 'Proxy')?.value ?? ''
+  const proxy = 'socks5h://127.0.0.1:55826'
+  const tor = (state: TorStatus['state'], progress: number, error: string | null): TorStatus => ({ mode: 'builtin', state, progress, error, onionServices: [] })
+  const connecting = walletNetwork({ proxy, proxyReachable: false, tor: tor('connecting', 40, null) })
+  assert.equal(privacyStatus(connecting), 'Connecting to Tor… 40%')
+  assert.match(proxyRow(connecting), /connecting to the Tor network \(40%\)/)
+  const stuck = walletNetwork({ proxy, proxyReachable: false, tor: tor('failed', 5, 'Unable to connect to the internet') })
+  assert.equal(privacyStatus(stuck), 'Tor not connected: Unable to connect to the internet')
+  assert.match(proxyRow(stuck), /could not connect: Unable to connect to the internet/)
+  const ready = walletNetwork({ proxy, proxyReachable: true, tor: tor('connected', 100, null) })
+  assert.equal(privacyStatus(ready), '')
+  assert.equal(proxyRow(ready), 'Built-in Tor, connected.')
+  assert.equal(proxyRow(ready).includes('9050'), false)
 })

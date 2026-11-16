@@ -70,6 +70,8 @@ export type XmrBackend = {
   tip: number | null
   scannedHeight: number | null
   error: string | null
+  /** No node has answered yet, or they have all failed only briefly. */
+  connecting: boolean
 }
 export type XmrRate = { satsPerXmr: number; currencies: Record<string, number> }
 
@@ -199,7 +201,8 @@ export function parseXmrBackend(value: unknown): XmrBackend {
     proxied: r.proxied === true,
     tip: countOrNull(r.tip),
     scannedHeight: countOrNull(r.scannedHeight),
-    error: textOrNull(r.error)
+    error: textOrNull(r.error),
+    connecting: r.connecting === true
   }
 }
 /** `xmr` from `GET /rates`: `null` with `--no-rates` or no answer. Monero cannot be priced then. */

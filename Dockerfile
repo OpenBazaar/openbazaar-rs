@@ -37,7 +37,10 @@ COPY --chmod=755 packaging/railway/vendor.sh /usr/local/bin/vendor
 ENTRYPOINT ["vendor"]
 # The node and its gateway listen on loopback inside the container; remote
 # devices reach it only through its onion service, so no port is published.
-CMD ["serve", "8787", "--remote", "--web-dir", "/usr/share/openbazaar/web", "--data-dir", "/data", "--vault", "passphrase"]
+# --tor runs Tor inside the node (state in /data/<network>/tor-socks), so the
+# image needs no tor package; Monero (the node's stagenet onion daemons) and
+# Lightning (Mutinynet) go through it, as in the desktop app.
+CMD ["serve", "8787", "--remote", "--web-dir", "/usr/share/openbazaar/web", "--data-dir", "/data", "--vault", "passphrase", "--tor", "--xmr-daemon", "default", "--lightning"]
 
 FROM base AS release
 ARG TARGETARCH

@@ -62,6 +62,9 @@ const STORES_FILE: &str = "xmr-stores.obv";
 const SYNC_BLOCKS: u64 = 100;
 /// Requests per wallet per round, so one wallet far behind does not starve the others.
 const SYNC_STEPS: usize = 20;
+/// A round ends after the step that passes this, so progress over a slow
+/// (Tor) node is saved and shown every few minutes.
+const SYNC_ROUND: Duration = Duration::from_secs(120);
 
 /// One Monero wallet. `wallet` is `None` until its view keys are known.
 pub(crate) struct Slot {
@@ -363,9 +366,11 @@ impl Node {
     fn sync_slot(&self, slot: &Mutex<Slot>, chain: &dyn XmrChain) -> Result<(), String> {
         let Some(mut copy) = guard(slot).wallet.clone() else { return Ok(()) };
         let mut result = Ok(());
+        let started = Instant::now();
         for _ in 0..SYNC_STEPS {
             match copy.sync_step(chain, SYNC_BLOCKS) {
                 Ok(step) if step.caught_up() => break,
+                Ok(_) if started.elapsed() >= SYNC_ROUND => break,
                 Ok(_) => {}
                 Err(err) => {
                     result = Err(err);
@@ -384,6 +389,8 @@ impl Node {
                 slot.last_sync = Some(now_secs());
                 slot.error = None;
             }
+            // The backend reports itself as connecting; a chain error here is not news yet.
+            Err(_) if chain.status().connecting => slot.error = None,
             Err(err) => slot.error = Some(err.clone()),
         }
         result

@@ -237,6 +237,20 @@ svg {
   margin-top: 5px;
   box-shadow: 0 0 0 3px #779b7313;
 }
+.ob-node.ob-tor-status {
+  width: 100%;
+  margin-top: -14px;
+  padding-top: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.ob-node.ob-tor-status:hover strong {
+  text-decoration: underline;
+}
 .ob-status-dot.is-offline {
   background: #b97761;
 }

@@ -42,11 +42,15 @@ pub mod reply;
 mod seal;
 mod transport;
 
+pub use client::{open_client, private_dirs};
 pub use error::Error;
-pub use forward::{discovery_public, exchange, insert_discovery_key, onion_for_seed, start_onion_forward, Discovery, OnionForward};
-pub use listen::{is_shop_preface, start_onion_listener, Arrival, OnionListener, RunningMailbox};
+pub use forward::{
+    discovery_public, exchange, insert_discovery_key, onion_for_seed, start_onion_forward,
+    Discovery, OnionForward,
+};
 pub use guard::{ReplayGuard, SenderPins};
 pub use letter::{MessageId, Opened, SenderId, SenderKey};
+pub use listen::{is_shop_preface, start_onion_listener, Arrival, OnionListener, RunningMailbox};
 pub use mailbox::{LetterId, Mailbox};
 pub use onion::{HsIdParseError, OnionAddress, ORDER_PORT};
 pub use order::{ListingHash, Order, OrderTerms, PaymentRail, TermsLine, NO_SERVICE};
@@ -56,10 +60,10 @@ pub use seal::{
     ReplyPublic, ReplySecret, SealedLetter, SealedReply, StoreKey, StoreKeypair, StoreSecret,
     LETTER_BUCKETS, MAX_MESSAGE_LEN, MAX_REPLY_LEN, REPLY_BUCKETS,
 };
-pub use client::open_client;
 pub use transport::{
-    ask_directory, submit_directory, ArtiOrderTransport, MemoryTransport, OrderTransport, MAX_QUERY_LEN, QUERY_ADMISSIONS,
-    QUERY_INBOX, QUERY_LISTINGS, QUERY_SEED, QUERY_STORE, SUBMIT_ADMISSION, SUBMIT_DOCUMENT, SUBMIT_LISTING, SUBMIT_STORE,
+    ask_directory, submit_directory, ArtiOrderTransport, MemoryTransport, OrderTransport,
+    MAX_QUERY_LEN, QUERY_ADMISSIONS, QUERY_INBOX, QUERY_LISTINGS, QUERY_SEED, QUERY_STORE,
+    SUBMIT_ADMISSION, SUBMIT_DOCUMENT, SUBMIT_LISTING, SUBMIT_STORE,
 };
 
 pub use tor_hscrypto::pk::HsId;
