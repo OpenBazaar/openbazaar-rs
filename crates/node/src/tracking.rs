@@ -58,7 +58,7 @@ pub(crate) struct TrackingSnapshot {
 }
 
 impl TrackingSnapshot {
-    fn to_json(&self, provider: &str, checked_at: u64) -> Value {
+    pub(crate) fn to_json(&self, provider: &str, checked_at: u64) -> Value {
         json!({
             "provider": provider,
             "status": self.status,
@@ -279,7 +279,7 @@ fn status_label(status: &str) -> &'static str {
     }
 }
 
-fn bounded_text(value: Option<&str>, max: usize) -> String {
+pub(crate) fn bounded_text(value: Option<&str>, max: usize) -> String {
     value
         .unwrap_or("")
         .chars()

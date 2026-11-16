@@ -167,6 +167,89 @@ fn an_escrow_with_the_moderator_the_buyer_chose_is_disputed_and_ruled_by_it() {
     assert_eq!(sale(&market.vendor.node)["stage"], "funded", "the buyer disputed; the vendor's sale waits for the outcome");
 }
 
+/// The carrier's answer as the moderator's own lookup sees it: delivered in
+/// the city the test buyer ships to.
+struct DisputedShipment;
+
+impl crate::tracking::TrackingProvider for DisputedShipment {
+    fn name(&self) -> &'static str {
+        "aftership"
+    }
+
+    fn fetch(&self, slug: &str, tracking_number: &str) -> Result<crate::tracking::TrackingSnapshot, String> {
+        assert_eq!((slug, tracking_number), ("usps", "9400100000"));
+        Ok(crate::tracking::TrackingSnapshot {
+            status: "delivered".to_string(),
+            events: vec![crate::tracking::TrackingEvent {
+                at: "2026-11-13T15:04:05Z".to_string(),
+                status: "delivered".to_string(),
+                city: "Portland".to_string(),
+                state: "OR".to_string(),
+                country: "United States".to_string(),
+            }],
+            delivered_at: Some("2026-11-13T15:04:05Z".to_string()),
+        })
+    }
+}
+
+#[test]
+fn a_moderator_looks_a_disputed_shipment_up_first_hand_and_checks_the_locality() {
+    let mut market = Market::new();
+    let chain = market.chain.clone();
+    fund_node_wallet(&market.buyer.node, &chain, 100_000);
+    let chosen = publish(&market);
+    for node in [&market.vendor.node, &market.buyer.node] {
+        assert!(accept(node, &market.moderator.url).0.contains("200"));
+    }
+    let (status, placed) = place(&market.buyer.node, Some(&chosen));
+    assert!(status.contains("200"), "{status} {placed}");
+    let id = placed["orders"][0]["orderId"].as_str().unwrap().to_string();
+    market.deliver();
+    funded(&market, &id);
+    market.mine();
+
+    // The wallet stays locked throughout: looking up signs nothing.
+    market.moderator.restart(&chain, false);
+    let memo = r#"{"memo": "Never arrived. I shipped USPS 9400 1000 00 to Portland, Oregon."}"#;
+    let (status, body) = request(&market.buyer.node, "POST", &format!("/orders/{id}/dispute"), memo);
+    assert!(status.contains("200"), "{status} {body}");
+    assert_eq!(market.deliver(), 1);
+    let case_id = cases(&market)[0]["id"].as_str().unwrap().to_string();
+    let lookup = format!("/moderator/disputes/{case_id}/tracking");
+    let asks = json!({ "carrier": "USPS", "trackingNumber": "9400 1000 00", "shipTo": { "city": "Portland", "state": "Oregon" } }).to_string();
+
+    // Without a provider nothing is asked and the operator is told why.
+    let (status, refused) = request(&market.moderator.node, "POST", &lookup, &asks);
+    assert!(status.contains("400") && refused["error"].as_str().unwrap().contains("--tracking"), "{status} {refused}");
+    market.moderator.node.set_tracking_provider(std::sync::Arc::new(DisputedShipment));
+
+    let other = format!("/moderator/disputes/{}/tracking", "00".repeat(16));
+    assert!(request(&market.moderator.node, "POST", &other, &asks).0.contains("404"), "no case, no lookup");
+    let courier = json!({ "carrier": "Local courier", "trackingNumber": "9400 1000 00" }).to_string();
+    let (status, refused) = request(&market.moderator.node, "POST", &lookup, &courier);
+    assert!(status.contains("400") && refused["error"].as_str().unwrap().contains("USPS"), "{status} {refused}");
+
+    let (status, looked_up) = request(&market.moderator.node, "POST", &lookup, &asks);
+    assert!(status.contains("200"), "{status} {looked_up}");
+    assert_eq!(looked_up["status"], "delivered");
+    assert_eq!(looked_up["locationCheck"]["verdict"], "match", "'Oregon' matches the carrier's 'OR': {looked_up}");
+    assert_eq!(looked_up["events"][0]["city"], "Portland");
+
+    // The desk shows the evidence with the case, and it survives a restart.
+    assert_eq!(cases(&market)[0]["tracking"]["locationCheck"]["verdict"], "match");
+    market.moderator.restart(&chain, false);
+    let kept = cases(&market)[0]["tracking"].clone();
+    assert_eq!((&kept["status"], &kept["trackingNumber"]), (&json!("delivered"), &json!("9400100000")), "{kept}");
+
+    // A later lookup replaces the evidence: the buyer's letter named another city.
+    market.moderator.node.set_tracking_provider(std::sync::Arc::new(DisputedShipment));
+    let boise = json!({ "carrier": "USPS", "trackingNumber": "9400 1000 00", "shipTo": { "city": "Boise" } }).to_string();
+    let (status, looked_up) = request(&market.moderator.node, "POST", &lookup, &boise);
+    assert!(status.contains("200"), "{status} {looked_up}");
+    assert_eq!(looked_up["locationCheck"]["verdict"], "mismatch");
+    assert_eq!(cases(&market)[0]["tracking"]["locationCheck"]["verdict"], "mismatch");
+}
+
 #[test]
 fn a_buyer_cannot_use_a_moderator_the_store_did_not_accept() {
     let market = Market::new();

@@ -44,6 +44,7 @@ mod escrow_moderator;
 mod escrow_outbox;
 mod escrow_rulings;
 mod escrow_store;
+mod escrow_tracking;
 mod escrow_vendor;
 mod fiat;
 mod http;
