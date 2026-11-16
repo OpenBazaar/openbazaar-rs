@@ -307,6 +307,33 @@ fn the_own_store_opts_in_and_the_choice_is_signed_and_survives_a_restart() {
     assert!(!signs_xmr(&node));
 }
 
+#[test]
+fn a_restart_releases_a_monero_payment_that_never_left_this_node() {
+    use std::sync::atomic::AtomicBool;
+    use std::time::Duration;
+
+    let Setup { node, dir: _dir, .. } = setup();
+    let (id, _) = xmr_order(&node);
+    node.orders().update(&id, |order| order.paying = true).unwrap();
+    let (sent, _) = xmr_order(&node);
+    let txid = "aa".repeat(32);
+    node.orders()
+        .update(&sent, |order| {
+            order.paying = true;
+            order.pay_txid = Some(txid.clone());
+        })
+        .unwrap();
+
+    node.run_xmr(Duration::from_secs(60), &AtomicBool::new(true));
+
+    let open = order(&node, &id);
+    assert_eq!(open["paying"], false, "{open}");
+    assert!(open.get("payTxid").is_none(), "{open}");
+    let kept = order(&node, &sent);
+    assert_eq!(kept["paying"], true, "{kept}");
+    assert_eq!(kept["payTxid"], txid);
+}
+
 /// Live stagenet run. Opt in with:
 ///
 /// `OB_XMR_DAEMON=http://127.0.0.1:38081 OB_LIVE_DIR=/tmp/ob-live-xmr cargo test -p ob-node live_stagenet -- --ignored --nocapture`

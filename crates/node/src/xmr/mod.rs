@@ -428,6 +428,17 @@ impl Node {
         if self.xmr.chain().is_none() {
             return;
         }
+        // A queued payment lives only in memory. After a restart nothing is
+        // sending it, so the order can be paid again.
+        let stuck: Vec<String> = self
+            .orders()
+            .on_network()
+            .filter(|order| order.paying && order.pay_txid.is_none())
+            .map(|order| order.id.clone())
+            .collect();
+        for id in stuck {
+            let _ = self.orders().update(&id, |order| order.paying = false);
+        }
         let mut next_sync = Instant::now();
         while !stop.load(Ordering::Relaxed) {
             if Instant::now() >= next_sync {
