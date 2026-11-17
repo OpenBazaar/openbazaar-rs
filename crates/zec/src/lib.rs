@@ -7,12 +7,13 @@
 //! (scanned height, block hashes, received notes, the next address), matching
 //! payments to orders, reorg handling, and a mock chain for tests.
 //!
-//! Receiving only, for now. Ironwood is the pool: every per-order address
-//! carries one Orchard-protocol receiver (ZIP 316's only receiver type for
-//! that protocol), a payment to it lands in Ironwood since NU6.3, and only
+//! Ironwood is the pool that spends: every per-order address carries one
+//! Orchard-protocol receiver (ZIP 316's only receiver type for that
+//! protocol), a payment to it lands in Ironwood since NU6.3, and only
 //! Ironwood notes pay an order. Orchard is outbound only; the wallet still
 //! reads it, so notes from before NU6.3 restored with a phrase, and their
-//! spends, show.
+//! spends, show. Moving those notes into Ironwood is a pool migration, not
+//! a payment.
 //!
 //! What never happens here:
 //! - No server learns which outputs are ours. The chain source hands over
@@ -31,11 +32,15 @@ pub mod keys;
 #[cfg(feature = "mock")]
 pub mod mock;
 mod network;
+mod send;
+mod trees;
+mod tx;
 mod uri;
 mod wallet;
 
 pub use backend::{BackendStatus, IndexerConfig, Server, ServerKind};
-pub use chain::{SharedTip, ZecChain};
+pub use chain::{CommitmentTrees, SharedTip, ZecChain};
+pub use send::{quote_payment, sign_payment, PaymentQuote, SendError, SignedPayment, SpendKey};
 pub use indexer::IndexerChain;
 pub use keys::{is_order_address, ViewKey};
 pub use network::ZecNetwork;

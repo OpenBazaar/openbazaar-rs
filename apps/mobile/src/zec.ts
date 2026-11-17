@@ -37,6 +37,29 @@ export type ZecBackend = {
   error: string | null
 }
 export type ZecRate = { satsPerZec: number; currencies: Record<string, number> }
+export type ZecBalance = { confirmed: bigint; pending: bigint; orchard: bigint }
+export type ZecWallet = {
+  network: ZecNetwork
+  enabled: boolean
+  keys: 'ready' | 'unlock-to-create'
+  /** Index 0. Order addresses start at 1. */
+  receiveAddress: string | null
+  balance: ZecBalance | null
+  scannedHeight: number | null
+  tip: number | null
+  lastSync: number | null
+  syncError: string | null
+}
+export type ZecTerms = {
+  orderId: string
+  network: ZecNetwork
+  amount: bigint
+  feeCap: bigint
+  destination: string
+  expiresInSecs: number
+}
+export type ZecQuote = ZecTerms & { quote: string }
+export type ZecTicket = ZecTerms & { ticket: string }
 
 function record(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value))
@@ -134,4 +157,60 @@ export async function setStoreAcceptsZec(seller: string, accept: boolean): Promi
 }
 export async function fetchZecBackend(): Promise<ZecBackend> {
   return parseZecBackend(record(await paired('/network')).zecBackend)
+}
+
+export function parseZecWallet(value: unknown): ZecWallet {
+  const r = record(value)
+  const balance = r.balance == null ? null : record(r.balance)
+  return {
+    network: parseNetwork(r.network),
+    enabled: r.enabled === true,
+    keys: oneOf(r.keys, ['ready', 'unlock-to-create'] as const),
+    receiveAddress: textOrNull(r.receiveAddress),
+    balance: balance && {
+      confirmed: parseZatoshi(balance.confirmedZatoshi),
+      pending: parseZatoshi(balance.pendingZatoshi),
+      orchard: parseZatoshi(balance.orchardZatoshi)
+    },
+    scannedHeight: countOrNull(r.scannedHeight),
+    tip: countOrNull(r.tip),
+    lastSync: countOrNull(r.lastSync),
+    syncError: textOrNull(r.syncError)
+  }
+}
+
+function parseZecTerms(value: Record<string, unknown>): ZecTerms {
+  return {
+    orderId: text(value.orderId),
+    network: parseNetwork(value.network),
+    amount: parseZatoshi(value.amountZatoshi),
+    feeCap: parseZatoshi(value.feeCapZatoshi),
+    destination: text(value.destination),
+    expiresInSecs: count(value.expiresInSecs)
+  }
+}
+
+function send(path: string, body?: object) {
+  return paired(path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body ?? {})
+  })
+}
+const orderPath = (id: string, rest: string) => `/zec/orders/${encodeURIComponent(id)}${rest}`
+
+export async function fetchZecWallet(): Promise<ZecWallet> {
+  return parseZecWallet(await paired('/zec/wallet'))
+}
+export async function quoteZecPayment(id: string): Promise<ZecQuote> {
+  const r = record(await send(orderPath(id, '/pay/quote')))
+  return { ...parseZecTerms(r), quote: text(r.quote) }
+}
+export async function issueZecTicket(quote: string, passphrase: string): Promise<ZecTicket> {
+  const r = record(await send('/zec/spend-tickets', { quote, passphrase }))
+  return { ...parseZecTerms(r), ticket: text(r.ticket) }
+}
+/** Queue the payment (202). `confirm` is required on mainnet. */
+export async function payZecOrder(id: string, ticket: string, confirm = false): Promise<void> {
+  await send(orderPath(id, '/pay'), confirm ? { ticket, confirm } : { ticket })
 }

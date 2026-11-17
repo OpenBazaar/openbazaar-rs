@@ -27,10 +27,11 @@
 mod checkout;
 mod http;
 mod own;
-mod sale;
 #[cfg(test)]
 mod own_tests;
+mod pay;
 pub(crate) mod rate;
+mod sale;
 #[cfg(test)]
 mod sale_tests;
 #[cfg(test)]
@@ -57,6 +58,7 @@ use crate::{Egress, Error, Node};
 pub(crate) use checkout::{add_zec_flags, rail_of};
 pub(crate) use http::response;
 pub(crate) use own::own_store_allowed;
+pub(crate) use pay::ZecTerms;
 pub(crate) use sale::{add_terms, follow_seller, payment_from_terms};
 
 const WATCH_FILE: &str = "zec-watch.obv";
@@ -136,6 +138,7 @@ pub(crate) struct ZecNode {
     accepts: Mutex<BTreeSet<String>>,
     accepts_path: PathBuf,
     pub(crate) rate: rate::ZecRate,
+    jobs: pay::ZecJobs,
 }
 
 fn guard<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -170,6 +173,7 @@ impl ZecNode {
             accepts: Mutex::new(accepts),
             accepts_path,
             rate: rate::ZecRate::new(egress),
+            jobs: pay::ZecJobs::new(),
         })
     }
 
@@ -455,6 +459,9 @@ impl Node {
         }
         let mut next_sync = Instant::now();
         while !stop.load(Ordering::Relaxed) {
+            if self.run_zec_pay_job(Duration::ZERO) {
+                continue;
+            }
             let needs = self.zec_needs_sync();
             if Instant::now() >= next_sync {
                 match self.zec_sync_once() {

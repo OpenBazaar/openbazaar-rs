@@ -195,6 +195,8 @@ pub(crate) struct WalletLock {
     pub(crate) ln_send_quotes: SpendTickets<crate::lightning::LnSendTerms>,
     /// Quotes for sends to an address the user names ([`crate::wallet_send`]).
     pub(crate) send_quotes: SpendTickets<crate::wallet_send::SendTerms>,
+    /// Zcash spend tickets ([`crate::zec`]), dropped on lock with the rest.
+    pub(crate) zec_tickets: SpendTickets<crate::zec::ZecTerms>,
 }
 
 impl WalletLock {
@@ -233,6 +235,7 @@ impl WalletLock {
             ln_tickets: SpendTickets::default(),
             ln_send_quotes: SpendTickets::default(),
             send_quotes: SpendTickets::default(),
+            zec_tickets: SpendTickets::default(),
         })
     }
 
@@ -276,6 +279,7 @@ impl WalletLock {
         self.ln_tickets.clear();
         self.ln_send_quotes.clear();
         self.send_quotes.clear();
+        self.zec_tickets.clear();
     }
 
     fn state_of(inner: &Inner) -> State {

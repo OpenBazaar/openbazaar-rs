@@ -46,7 +46,11 @@ pub(crate) struct Seed {
 
 impl Seed {
     /// Load the phrase in `path`, or create one if the file does not exist.
-    pub(crate) fn load_or_create(path: &Path, vault: &Vault, network: NetworkMode) -> Result<Self, Error> {
+    pub(crate) fn load_or_create(
+        path: &Path,
+        vault: &Vault,
+        network: NetworkMode,
+    ) -> Result<Self, Error> {
         let phrase = match vault.read_sealed(path)? {
             Some(bytes) => String::from_utf8(bytes)
                 .map_err(|_| Error::Detail("the backup phrase could not be read".to_string()))?,
@@ -69,12 +73,22 @@ impl Seed {
         let bip39 = zeroize::Zeroizing::new(mnemonic.to_seed(""));
         let master = Xpriv::new_master(network.bitcoin(), &bip39[..])
             .map_err(|err| Error::Detail(err.to_string()))?;
-        Ok(Self { master, bip39, network })
+        Ok(Self {
+            master,
+            bip39,
+            network,
+        })
+    }
+
+    /// The BIP 39 seed ZIP 32 spends from. Not the phrase.
+    pub(crate) fn zip32_seed(&self) -> &[u8] {
+        &self.bip39[..]
     }
 
     /// The Zcash viewing key of this phrase: ZIP 32 account 0 of the BIP 39 seed.
     pub(crate) fn zcash_view_key(&self) -> Result<openbazaar_zec::ViewKey, Error> {
-        openbazaar_zec::ViewKey::from_seed(&self.bip39[..], self.network.zcash()).map_err(Error::Detail)
+        openbazaar_zec::ViewKey::from_seed(&self.bip39[..], self.network.zcash())
+            .map_err(Error::Detail)
     }
 
     /// External and change descriptors for the spend wallet, with private keys.
@@ -92,7 +106,10 @@ impl Seed {
     }
 
     pub(crate) fn escrow_key(&self, index: u32) -> SecretKey {
-        self.derive(&format!("m/1984'/{}'/1'/{index}'", self.network.coin_type()))
+        self.derive(&format!(
+            "m/1984'/{}'/1'/{index}'",
+            self.network.coin_type()
+        ))
     }
 
     /// Opens escrow messages sent to this node as buyer.
@@ -102,12 +119,18 @@ impl Seed {
 
     /// The secret the Monero spend and view keys are derived from (see `openbazaar_xmr::keys`).
     pub(crate) fn monero_secret(&self) -> zeroize::Zeroizing<[u8; 32]> {
-        zeroize::Zeroizing::new(self.derive(&format!("m/1984'/{}'/5'/0'", self.network.coin_type())).secret_bytes())
+        zeroize::Zeroizing::new(
+            self.derive(&format!("m/1984'/{}'/5'/0'", self.network.coin_type()))
+                .secret_bytes(),
+        )
     }
 
     /// The secret the LDK node's keys and its state key come from (see `openbazaar_lightning::keys`).
     pub(crate) fn lightning_secret(&self) -> zeroize::Zeroizing<[u8; 32]> {
-        zeroize::Zeroizing::new(self.derive(&format!("m/1984'/{}'/6'/0'", self.network.coin_type())).secret_bytes())
+        zeroize::Zeroizing::new(
+            self.derive(&format!("m/1984'/{}'/6'/0'", self.network.coin_type()))
+                .secret_bytes(),
+        )
     }
 
     /// The X25519 secret of the mailbox key published in this node's store
@@ -125,7 +148,10 @@ impl Seed {
 
     /// The seed of this node's moderator keys (`openbazaar_escrow::ModeratorKeys`).
     pub(crate) fn moderator_seed(&self) -> zeroize::Zeroizing<[u8; 32]> {
-        zeroize::Zeroizing::new(self.derive(&format!("m/1984'/{}'/7'/0'", self.network.coin_type())).secret_bytes())
+        zeroize::Zeroizing::new(
+            self.derive(&format!("m/1984'/{}'/7'/0'", self.network.coin_type()))
+                .secret_bytes(),
+        )
     }
 
     /// The X25519 secret of the mailbox key in this node's moderator profile.
@@ -198,10 +224,24 @@ mod tests {
                         9a5ac40b389cd370d086206dec8aa6c43daea6690f20ad3d8d48b2d2ce9e38e4";
         assert_eq!(crate::escrow_mail::hex(&test.bip39[..]), expected);
         let key = test.zcash_view_key().unwrap();
-        let wallet = openbazaar_zec::ViewKey::from_seed(&test.bip39[..], openbazaar_zec::ZecNetwork::Testnet).unwrap();
-        assert_eq!(*key.ufvk(), *wallet.ufvk(), "what a Zcash wallet restored from the phrase sees");
-        assert!(key.ufvk().starts_with("uviewtest1"), "testnet4 mode is Zcash testnet");
-        let main = Seed::from_phrase(PHRASE, NetworkMode::Mainnet).unwrap().zcash_view_key().unwrap();
+        let wallet = openbazaar_zec::ViewKey::from_seed(
+            &test.bip39[..],
+            openbazaar_zec::ZecNetwork::Testnet,
+        )
+        .unwrap();
+        assert_eq!(
+            *key.ufvk(),
+            *wallet.ufvk(),
+            "what a Zcash wallet restored from the phrase sees"
+        );
+        assert!(
+            key.ufvk().starts_with("uviewtest1"),
+            "testnet4 mode is Zcash testnet"
+        );
+        let main = Seed::from_phrase(PHRASE, NetworkMode::Mainnet)
+            .unwrap()
+            .zcash_view_key()
+            .unwrap();
         assert!(main.ufvk().starts_with("uview1"));
         assert_ne!(main.address(1), key.address(1));
     }

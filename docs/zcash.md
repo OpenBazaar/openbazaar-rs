@@ -51,7 +51,9 @@ Done. The buyer's node asks with the order option `rail` = `zec`. The seller's n
 
 ### Phase 3: pay from the node
 
-Spend tickets bound to order, address, amount, and fee cap, as for Monero. Fees follow ZIP 317 and do not float, so the cap is simple. Outputs and change go to Ironwood. Orchard notes from before NU6.3 move to Ironwood through librustzcash's ZIP 318 migration (`zcash_pool_migration`: canonical denominations, spaced out), not as one-off sends, since a distinctive crossing amount would mark the wallet. Needs note witnesses (a shard tree kept in the sealed state) and Halo 2 proofs (seconds of CPU, no parameter download for Orchard and Ironwood). PCZT lets the node build and prove while the spending key stays in the spend tier or on the phone. Also: a mempool stream from the indexer, so an order shows Payment seen before its first block.
+The order path is done, on the same step-up as Monero. `POST /zec/orders/{id}/pay/quote` prices one Ironwood payment plus change with ZIP 317, which does not float, and binds a spend ticket to the order, the address, the amount, and a fee cap. `POST /zec/orders/{id}/pay` takes that ticket and `confirm: true` on mainnet, answers 202, and the Zcash thread proves and broadcasts. The note-commitment frontier and one witness per note are kept in the sealed wallet. Orchard notes are not spent on this path.
+
+Still later: moving Orchard notes from before NU6.3 into Ironwood through ZIP 318 pool migration (canonical denominations, spaced out, not a one-off send), proving on the phone with PCZT so the spend key need not enter the node, and a mempool stream from the indexer so an order can show Payment seen before its first block.
 
 ## Tests
 
