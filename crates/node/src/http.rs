@@ -223,6 +223,8 @@ fn route(node: &Node, request: &Request<'_>, client: Client, origin: Option<&str
         ("GET", "/version") => crate::build_info::version_response(node, client, head, origin),
         ("GET", "/wallet") => wallet_http::wallet_response(node, client, head, origin),
         ("POST", "/wallet/address") => wallet_http::wallet_address_response(node, client, head, origin),
+        ("POST", "/wallet/send/quote") => crate::wallet_send::quote_response(node, client, head, body, origin),
+        ("POST", "/wallet/send") => crate::wallet_send::send_response(node, client, head, body, origin),
         ("GET", "/lock") => lock_http::response(node, client, head, Route::Status, body, origin),
         ("POST", "/lock") => lock_http::response(node, client, head, Route::Lock, body, origin),
         ("POST", "/lock/activity") => lock_http::response(node, client, head, Route::Activity, body, origin),

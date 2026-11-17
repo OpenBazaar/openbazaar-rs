@@ -109,6 +109,7 @@ mod wallet;
 mod wallet_http;
 mod wallet_keys;
 mod wallet_lock;
+mod wallet_send;
 mod wallet_session;
 mod watch;
 mod xmr;
@@ -146,6 +147,8 @@ mod pay_bump_tests;
 mod payment_tests;
 #[cfg(test)]
 mod seller_store_tests;
+#[cfg(test)]
+mod wallet_send_tests;
 #[cfg(test)]
 mod stores_tests;
 #[cfg(test)]
@@ -363,6 +366,9 @@ pub struct Node {
     /// One wallet per fixture store, keyed by seller name. The node plays these vendors.
     pub(crate) store_wallets: BTreeMap<String, Mutex<NodeWallet>>,
     pub(crate) pay_jobs: pay_order::PayJobs,
+    /// Held from building a direct payment or a send until the wallet has
+    /// recorded its broadcast, so two of them never pick the same coins.
+    pub(crate) spending: Mutex<()>,
     /// The spend tier: closed until `POST /unlock`, and again on lock.
     pub(crate) lock: wallet_lock::WalletLock,
     /// Monero direct pay, off until [`Node::set_xmr_chain`].
@@ -544,6 +550,7 @@ impl Node {
             buyer_wallet: Mutex::new(buyer_wallet),
             store_wallets,
             pay_jobs: pay_order::PayJobs::new(),
+            spending: Mutex::new(()),
             lock,
             xmr,
             zec,

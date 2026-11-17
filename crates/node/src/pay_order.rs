@@ -406,6 +406,7 @@ impl Node {
         check_terms(allowed, &address, due)?;
         self.sync_buyer_wallet().map_err(PayError::Chain)?;
         let fee_rate = self.pay_fee_rate()?;
+        let _spending = self.spending.lock().unwrap_or_else(|err| err.into_inner());
         let tx = self.sign_payment(&address, due, fee_rate, allowed, link_coins)?;
         self.chain.broadcast(&tx).map_err(PayError::Chain)?;
         let txid = tx.compute_txid().to_string();

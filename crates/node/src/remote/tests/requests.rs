@@ -319,6 +319,45 @@ fn a_device_session_never_spends_without_the_passphrase_and_a_ticket() {
 }
 
 #[test]
+fn a_device_cannot_send_coins_out_even_with_the_passphrase() {
+    let dir = TempDir::new();
+    let chain = MockChain::new();
+    let node = open_node(
+        &dir.0,
+        NetworkMode::Testnet4,
+        &chain,
+        1,
+        unreachable_escrow(),
+    );
+    node.remote.pretend_gateway(GATEWAY.parse().unwrap());
+    fund_node_wallet(&node, &chain, 100_000);
+    let device = first_device(&node);
+    let to = "tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx";
+    let (status_line, value) = device.call(
+        &node,
+        "POST",
+        "/wallet/send/quote",
+        &json!({ "address": to, "amountSats": 10_000 }).to_string(),
+    );
+    assert!(status_line.contains("403"), "{status_line} {value}");
+    assert_eq!(value["code"], "node_only");
+    // A quote made on the node's machine does not help the device either.
+    let (status_line, quote) = request(
+        &node,
+        "POST",
+        "/wallet/send/quote",
+        &json!({ "address": to, "amountSats": 10_000 }).to_string(),
+    );
+    assert!(status_line.contains("200"), "{status_line} {quote}");
+    let body =
+        json!({ "quote": quote["quote"], "passphrase": PASSPHRASE, "confirm": true }).to_string();
+    let (status_line, value) = device.call(&node, "POST", "/wallet/send", &body);
+    assert!(status_line.contains("403"), "{status_line} {value}");
+    assert_eq!(value["code"], "node_only");
+    assert!(chain.broadcasts().is_empty(), "nothing was sent");
+}
+
+#[test]
 fn the_gateway_answers_only_to_its_own_names_and_pages() {
     let (_dir, node) = home();
     let device = first_device(&node);

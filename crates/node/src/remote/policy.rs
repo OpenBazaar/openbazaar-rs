@@ -7,6 +7,13 @@
 //! passphrase and a one-time spend ticket, exactly as on the node's own
 //! machine.
 //!
+//! Sending coins to an address or invoice the caller names is refused
+//! outright for now, even with the passphrase. An order payment can only go
+//! to a seller the node already holds terms from; a send can go anywhere, so
+//! a stolen device and a phished passphrase would be enough to empty every
+//! wallet. Until devices have an owner-approved send permission, sends stay
+//! on the node's machine.
+//!
 //! The backup phrase is the one exception with a condition. A device may set
 //! the wallet up, and setup shows it the phrase. Until the owner confirms the
 //! backup, that phrase must stay readable (with the passphrase), or a node
@@ -15,9 +22,26 @@
 
 use serde_json::Value;
 
+/// Routes that send coins to an address or invoice the caller names.
+pub(crate) const SEND_ROUTES: &[&str] = &[
+    "/wallet/send/quote",
+    "/wallet/send",
+    "/xmr/wallet/send/quote",
+    "/xmr/wallet/send",
+    "/ln/send/quote",
+    "/ln/send",
+    "/ln/withdraw/quote",
+    "/ln/withdraw",
+];
+
 /// Why a device may not make this request, if it may not. `backup_confirmed`
 /// is the wallet lock's record of the owner having written the phrase down.
-pub(crate) fn refusal(method: &str, path: &str, body: &[u8], backup_confirmed: bool) -> Option<&'static str> {
+pub(crate) fn refusal(
+    method: &str,
+    path: &str,
+    body: &[u8],
+    backup_confirmed: bool,
+) -> Option<&'static str> {
     let path = path.split('?').next().unwrap_or(path);
     let flag = |name: &str| {
         serde_json::from_slice::<Value>(body)
@@ -34,6 +58,9 @@ pub(crate) fn refusal(method: &str, path: &str, body: &[u8], backup_confirmed: b
         }
         ("POST", "/wallet/phrase") if backup_confirmed => {
             Some("The backup phrase is shown only on the node's own machine.")
+        }
+        (_, path) if SEND_ROUTES.contains(&path) => {
+            Some("Sending coins out of the wallet works only on the node's own machine for now.")
         }
         ("POST", "/escrow/mail") => Some("Escrow mail comes from peer nodes, not from devices."),
         ("POST", "/remote/lan-page") => {
@@ -68,6 +95,35 @@ mod tests {
             ("POST", "/wallet/phrase", "{}"),
             ("POST", "/escrow/mail", ""),
             ("POST", "/remote/lan-page", "{}"),
+            (
+                "POST",
+                "/wallet/send/quote",
+                r#"{"address":"x","amountSats":1000}"#,
+            ),
+            (
+                "POST",
+                "/wallet/send",
+                r#"{"quote":"x","passphrase":"x","confirm":true}"#,
+            ),
+            ("POST", "/xmr/wallet/send/quote", "{}"),
+            (
+                "POST",
+                "/xmr/wallet/send",
+                r#"{"quote":"x","passphrase":"x","confirm":true}"#,
+            ),
+            ("POST", "/ln/send/quote", "{}"),
+            (
+                "POST",
+                "/ln/send",
+                r#"{"quote":"x","passphrase":"x","confirm":true}"#,
+            ),
+            ("POST", "/ln/withdraw/quote", "{}"),
+            (
+                "POST",
+                "/ln/withdraw",
+                r#"{"quote":"x","passphrase":"x","confirm":true}"#,
+            ),
+            ("POST", "/wallet/send?x=1", "{}"),
             ("POST", "/unlock", r#"{"remembered":true}"#),
             (
                 "PUT",
@@ -80,6 +136,8 @@ mod tests {
                 "{method} {path}"
             );
         }
+        // A send is refused before the backup is confirmed too.
+        assert!(refusal("POST", "/wallet/send", b"{}", false).is_some());
         // Before the backup is confirmed, the device that set the wallet up can see the phrase again.
         assert!(refusal("POST", "/wallet/phrase", b"{}", false).is_none());
         assert!(refusal("POST", "/pair", b"{}", false).is_some());
@@ -92,11 +150,22 @@ mod tests {
                 r#"{"passphrase":"x","autoLockMinutes":5}"#,
             ),
             ("POST", "/spend-tickets", "{}"),
+            // Paying an order and reading or funding the wallet stay open to a device.
+            ("POST", "/orders/00/pay", r#"{"ticket":"x"}"#),
+            ("GET", "/wallet", ""),
+            ("POST", "/wallet/address", ""),
+            ("GET", "/xmr/wallet", ""),
+            ("POST", "/xmr/spend-tickets", "{}"),
+            ("POST", "/ln/sweep", r#"{"passphrase":"x"}"#),
             // A hosted node has no screen: its phone sets the wallet lock and rules on disputes.
             ("POST", "/setup", r#"{"passphrase":"x"}"#),
             ("POST", "/setup/confirm", r#"{"words":[]}"#),
             ("GET", "/moderator/disputes", ""),
-            ("POST", "/moderator/disputes/00/rule", r#"{"favor":"buyer"}"#),
+            (
+                "POST",
+                "/moderator/disputes/00/rule",
+                r#"{"favor":"buyer"}"#,
+            ),
             // The same phone names the moderator and chooses the moderators its store accepts.
             ("GET", "/moderator/profile", ""),
             ("PUT", "/moderator/profile", r#"{"name":"x"}"#),

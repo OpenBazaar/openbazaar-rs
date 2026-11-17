@@ -54,6 +54,7 @@ import { InfoTip } from './InfoTip'
 import { CopyAddress, CopyButton } from './CopyAddress'
 import { pairingKind, pairingWalletPrompt } from '../pairingUi'
 import { SpeedUpPayment } from './SpeedUpPayment'
+import { BitcoinSendButton } from './BitcoinSend'
 
 function usePaymentState(activeWallet: boolean, onWallet: () => void) {
   const network = useNodeResource(fetchNetwork, 30000)
@@ -304,6 +305,7 @@ export function WalletPanel({ currency, onOrders, embedded = false }: {
         <div className='ob-wallet-summary-footer'>
           <div className='ob-wallet-actions'>
             <button type='button' className='ob-primary' disabled={receiveBlocked} onClick={() => setReceive(true)}>Receive bitcoin</button>
+            {!pairing && <BitcoinSendButton />}
             {onOrders && <button type='button' className='ob-secondary' onClick={onOrders}>Your orders{dueOrders.length ? ` · ${dueOrders.length} unpaid` : ''}</button>}
           </div>
           <div className='ob-wallet-sync'>
