@@ -4387,6 +4387,18 @@ button.ob-detail-seller:hover strong { color: var(--ob-link); }
 .ob-case-memo { padding:16px; font-size:15px; line-height:1.65; white-space:pre-wrap; overflow-wrap:anywhere; }
 .ob-case-letter footer { padding:0 16px 16px; }
 .ob-case-outcome { display:block; font-size:14px; font-weight:500; color:var(--ob-secondary); line-height:1.6; }
+.ob-case-shipment { margin-top:16px; border:1px solid var(--ob-line); border-radius:8px; padding:16px; display:grid; gap:12px; }
+.ob-case-shipment>header h3 { font-size:14px; font-weight:600; line-height:1.6; margin:0; }
+.ob-case-shipment>header span { font-size:13px; color:var(--ob-secondary); }
+.ob-case-shipment-form { display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:10px 12px; align-items:end; }
+.ob-case-shipment-form label { display:grid; gap:4px; font-size:13px; color:var(--ob-secondary); }
+.ob-case-shipment-form input,.ob-case-shipment-form select { font-size:14px; padding:8px 10px; border:1px solid var(--ob-line); border-radius:6px; background:var(--ob-bg,transparent); color:inherit; min-width:0; }
+.ob-case-shipment-result { display:grid; gap:10px; }
+.ob-case-shipment-result>p { margin:0; font-size:14px; line-height:1.6; overflow-wrap:anywhere; }
+.ob-shipment-verdict { padding:10px 12px; border-radius:6px; font-size:14px; line-height:1.6; border:1px solid var(--ob-line); }
+.ob-shipment-verdict.is-match { border-color:#3a7d44; background:rgba(58,125,68,.08); }
+.ob-shipment-verdict.is-mismatch { border-color:#b3422e; background:rgba(179,66,46,.08); }
+.ob-case-shipment-note { margin:0; border-top:1px solid var(--ob-line); padding-top:10px; font-size:13px; color:var(--ob-secondary); line-height:1.6; }
 .ob-case-final-note,.ob-moderator-inline-note { margin-top:16px!important; color:var(--ob-secondary); font-size:13px; line-height:1.6; }
 .ob-moderator-poll-note { margin-top:14px!important; font-size:13px; color:var(--ob-secondary); }
 .ob-moderator-access { padding-top:20px; }

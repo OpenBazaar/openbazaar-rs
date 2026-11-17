@@ -60,6 +60,7 @@ pub(crate) enum Action<'a> {
     Release(&'a str),
     Dispute(&'a str),
     Rule(&'a str),
+    DisputeTracking(&'a str),
     SaleDispute(&'a str),
     Bump,
 }
@@ -92,6 +93,7 @@ pub(crate) fn action_response(
         Action::Release(id) => node.release_escrow(id),
         Action::Dispute(id) => node.dispute_escrow(id, &parsed),
         Action::Rule(id) => node.rule_dispute(id, &parsed),
+        Action::DisputeTracking(id) => node.dispute_tracking_lookup(id, &parsed),
         Action::SaleDispute(id) => node.dispute_sale(id, &parsed),
         Action::Bump => node.bump_escrow(&parsed),
     };

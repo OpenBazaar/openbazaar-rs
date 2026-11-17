@@ -1,6 +1,7 @@
 import { useRef, useState } from "react";
 import { servedByHomeNode, signOut } from "../homeNode/transport";
 import { disputeState, fetchDisputes, partyName, ruleDispute, type Dispute } from "../moderator";
+import { DisputeShipment } from "./DisputeShipment";
 import { useNodeResource } from "../useNodeResource";
 import { isLocked, lockWallet } from "../walletLock";
 import { HomeDevicesCard } from "./HomeDevicesCard";
@@ -114,6 +115,7 @@ export function ModeratorDesk({ onShop }: { onShop: () => void }) {
                 <footer>{state === "open" ? <button className="ob-secondary" disabled={!unlocked || !!resource.error || ruling} onClick={() => { setError(""); setProposal(letter); }}>Review ruling for {partyName(letter.favors)}</button> : <strong className="ob-case-outcome">{state === "granted" ? `Ruled for the ${partyName(letter.favors)}` : "Closed by the ruling for the other party"}</strong>}</footer>
               </section>;
             })}</div>
+            <DisputeShipment key={selected.id} id={selected.id} tracking={selected.letters.map(letter => letter.tracking).find(Boolean) ?? null} onLooked={() => resource.refresh()}/>
             {!unlocked && !selected.resolved && <p className="ob-moderator-inline-note">Unlock the wallet using the control above before issuing a ruling.</p>}
             {!selected.resolved && <p className="ob-case-final-note">A final ruling applies to this escrow and closes both parties’ letters.</p>}
           </article>}

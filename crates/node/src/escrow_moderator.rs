@@ -73,6 +73,9 @@ struct Case {
     /// The record of this node's own identity the letter was reviewed
     /// under. `None`: the built-in test moderator's.
     record: Option<Vec<u8>>,
+    /// This node's own shipment lookup for the dispute
+    /// ([`crate::escrow_tracking`]). Coarse fields only.
+    tracking: Option<Value>,
 }
 
 impl Case {
@@ -90,6 +93,7 @@ impl Case {
             "storeSignature": self.citation.map(|citation| hex(&citation.store_signature)),
             "publicRuling": self.public_ruling.as_deref().map(hex),
             "record": self.record.as_deref().map(hex),
+            "tracking": self.tracking.clone(),
         })
     }
 
@@ -113,6 +117,10 @@ impl Case {
             record: match value["record"].as_str() {
                 Some(text) => Some(unhex(text).ok()?),
                 None => None,
+            },
+            tracking: match &value["tracking"] {
+                Value::Null => None,
+                found => Some(found.clone()),
             },
         })
     }
@@ -284,12 +292,41 @@ impl Node {
             citation,
             public_ruling: None,
             record,
+            tracking: None,
         };
         self.escrow
             .store
             .save(Role::Moderator, &case_name(&mail.escrow, party_of(key.1)), &case.to_record())?;
         desk.cases.insert(key, case);
         Ok(())
+    }
+
+    /// True when this desk holds a letter for the escrow, in either branch.
+    pub(crate) fn dispute_case_known(&self, id: &EscrowId) -> bool {
+        let desk = self.moderator_desk();
+        desk.cases.keys().any(|(case_id, _)| case_id == id)
+    }
+
+    /// Record this node's own shipment lookup on every letter of the escrow,
+    /// so the evidence survives a restart beside the case it informs.
+    pub(crate) fn dispute_tracking_store(&self, id: &EscrowId, tracking: &Value) -> Result<(), String> {
+        let mut desk = self.moderator_desk();
+        let mut found = false;
+        for ((case_id, branch), case) in desk.cases.iter_mut() {
+            if case_id != id {
+                continue;
+            }
+            case.tracking = Some(tracking.clone());
+            self.escrow
+                .store
+                .save(Role::Moderator, &case_name(case_id, party_of(*branch)), &case.to_record())?;
+            found = true;
+        }
+        if found {
+            Ok(())
+        } else {
+            Err("the case is gone".to_string())
+        }
     }
 
     pub(crate) fn disputes_value(&self) -> Value {
@@ -307,6 +344,7 @@ impl Node {
                     "receivedHeight": case.received,
                     "ruled": case.ruling.is_some(),
                     "builtIn": case.record.is_none(),
+                    "tracking": case.tracking.clone(),
                 })
             })
             .collect();
@@ -439,14 +477,19 @@ mod tests {
             citation: None,
             public_ruling: None,
             record: Some(vec![9; 40]),
+            tracking: Some(json!({ "status": "delivered" })),
         };
         let own = Case::from_record(&case.to_record()).unwrap();
         assert_eq!(own.record, Some(vec![9; 40]), "a case remembers the record it was reviewed under");
+        assert_eq!(own.tracking, Some(json!({ "status": "delivered" })), "a case remembers its shipment lookup");
         case.record = None;
+        case.tracking = None;
         let mut old = case.to_record();
         old.as_object_mut().unwrap().remove("record");
+        old.as_object_mut().unwrap().remove("tracking");
         let old = Case::from_record(&old).unwrap();
         assert_eq!((old.record, old.memo.as_str(), old.received), (None, "Never arrived.", 120));
+        assert_eq!(old.tracking, None, "a case stored before dispute lookups existed has none");
     }
 
     #[test]
