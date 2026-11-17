@@ -1,7 +1,8 @@
 # Shipment tracking
 
-Shipment tracking is optional and seller-side. It is off unless the seller's
-node is started with both a tracking provider and Tor:
+Shipment tracking is optional and seller-side, with one addition for
+moderators ([below](#moderator-dispute-lookups)). It is off unless the node
+is started with both a tracking provider and Tor:
 
 ```sh
 OB_TRACKING_API_KEY=… ob-node serve --tracking aftership --proxy socks5h://127.0.0.1:9050
@@ -64,3 +65,33 @@ Tracking evidence can also be wrong or misleading: carriers reuse numbers,
 mark parcels delivered early, or deliver to the wrong place. That is why this
 step only displays progress and records `deliveredAt`; it does not settle a
 sale or decide a dispute.
+
+## Moderator dispute lookups
+
+A moderator's node, started the same way (`--tracking aftership`,
+`OB_TRACKING_API_KEY`, `--proxy`), can look a disputed shipment up
+first-hand. A dispute memo is free text: a seller who wants its shipment
+considered names the carrier and tracking number there, and a buyer may name
+the ship-to locality. Neither claim is taken at its word. The operator copies
+them into `POST /moderator/disputes/{id}/tracking` (the desk has a form), and
+the moderator's node asks the provider itself, under exactly the rules above:
+only through Tor, only carrier and tracking number sent, street addresses,
+coordinates, and signer names discarded, answers bounded and checked. What
+comes back is evidence the moderator observed, not evidence a party relayed,
+so a fabricated timeline cannot survive it.
+
+When the operator also enters the expected ship-to city (and possibly state
+and country), the delivered checkpoint's coarse place is compared with it and
+the case records a verdict: `match`, `mismatch`, or `unverifiable`. A US
+state written out matches its postal abbreviation, so "Oregon" matches "OR"
+while "Portland, ME" against "Portland, OR" does not. The lookup and verdict
+are stored with the case, survive a restart, and are replaced by a later
+lookup. Looking up needs no moderator secret, so it works while the wallet is
+locked, like reviewing a letter.
+
+The verdict is advisory, for the same reasons as above and one more: no
+checkpoint shows what the parcel held, so "delivered where expected" cannot
+prove the goods arrived. It informs the operator's ruling and decides nothing
+itself. The provider learns the tracking numbers this moderator looks up and
+when, through Tor; a moderator who needs to avoid that disclosure leaves
+tracking off and rules from the statements alone, as before.
