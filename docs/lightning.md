@@ -1,6 +1,6 @@
 # Lightning direct pay
 
-`ob-node serve --lightning` runs an embedded Lightning node ([LDK](https://lightningdevkit.org/) through `ldk-node`) so a store can take direct orders over Lightning, on test networks only (Mutinynet signet, testnet4, regtest). A mainnet node refuses Lightning until its connections run over Tor (see [Mainnet](#mainnet-is-blocked-until-tor)). Escrow stays on-chain (MuSig2, [escrow review packet](escrow-review-packet.md)); `"rail": "ln"` with escrow is refused at checkout.
+`ob-node serve --lightning` runs an embedded Lightning node ([LDK](https://lightningdevkit.org/) through `ldk-node`) so a store can take direct orders over Lightning. Public peers, Esplora, and gossip go through `--proxy` or the built-in `--tor` client, so they do not see this machine. Mainnet Lightning requires that path and an LSP you name (see [Mainnet](#mainnet)). Escrow stays on-chain (MuSig2, [escrow review packet](escrow-review-packet.md)); `"rail": "ln"` with escrow is refused at checkout.
 
 The code is in `crates/lightning` (the `LightningRail` trait, the LDK implementation, a mock, and a regtest harness) and `crates/node/src/lightning` (routes, checkout, order status, wallet lock). Shared files only call into it.
 
@@ -14,7 +14,7 @@ The code is in `crates/lightning` (the `LightningRail` trait, the LDK implementa
 | Keys | `m/1984'/c'/6'/0'` from the wallet seed (`c` is 0 on mainnet and 1 on test networks), then HMAC-SHA512 with `"OpenBazaar Lightning seed v1"` for the LDK seed and `"OpenBazaar Lightning store v1"` for the state key. Restoring the seed restores the node key and on-chain Lightning funds; channels need LDK's state as well. |
 | State | `wallets/node/lightning/sealed`: every LDK record is encrypted with ChaCha20-Poly1305 under the state key, with the record's namespace and key as associated data. The Lightning secret is in `wallets/node/ln-keys.obv`, sealed under the vault key. |
 | Wallet lock | The secret is receive tier, so a locked node keeps issuing invoices and receiving. Paying needs a spend ticket from the passphrase (`POST /ln/spend-tickets`), bound to one order, hash, amount, and fee cap, cleared on lock. Opening and closing channels and sweeping take the passphrase in the request. LDK needs the key to stay running, so this is a policy gate on the node's routes, not a key the lock removes. |
-| Mainnet | Refused until LDK's connections run over Tor. There is no mainnet LSP default. |
+| Mainnet | Requires `--proxy` or `--tor`, and an LSP you name with `--lsp` (or `--no-lsp`). There is no mainnet LSP default. |
 
 ## Order flow
 
@@ -26,20 +26,20 @@ The code is in `crates/lightning` (the `LightningRail` trait, the LDK implementa
 
 Routes: `GET /ln/status`, `GET|PUT /ln/stores`, `POST /ln/address`, `POST /ln/channels`, `POST /ln/channels/{id}/close`, `POST /ln/sweep`, `POST /ln/send/quote`, `POST /ln/send`, `POST /ln/withdraw/quote`, `POST /ln/withdraw`, `POST /ln/spend-tickets`, `POST /ln/orders/{id}/pay/quote`, `POST /ln/orders/{id}/pay`. `GET /network` reports `lightning` (balances, channels) and `lightningBackend` (LSP, chain, gossip, what each reveals).
 
-## Mainnet is blocked until Tor
+## Mainnet
 
-`ldk-node` has no proxy support, so Lightning peers, the LSP, and the chain and gossip servers see the node's IP address. That breaks the rule that users are never locatable, so a `--network mainnet` node refuses Lightning everywhere with "Lightning on mainnet is disabled until its connections run over Tor; it would reveal this node's IP address.":
+Public Lightning peers, an Esplora chain source, and Rapid Gossip Sync are dialed through `--proxy` or the SOCKS port built-in `--tor` opens. The node refuses a public host that would be dialed in the clear. Electrum, bitcoind, and `--ln-listen` stay direct, so a public one of those is refused too. With `--remote`, inbound Lightning is an onion on the node's Tor client, forwarded to a loopback socket that is not announced.
 
-| Entry point | On mainnet |
-|---|---|
-| `--lightning` and every other Lightning flag (`--lsp`, `--no-lsp`, `--ln-chain`, …) | `ob-node serve` exits with the message |
-| `enable_lightning`, `set_lightning` | refused, even with a test-network config |
-| `GET /ln/status`, `GET /ln/stores`, `GET /network` `lightning` and `lightningBackend` | `{"enabled": false, "blocked": "…"}` |
-| Every other `/ln/*` route (store opt-in, channels, sweep, quote, ticket, pay) | `403` with the message |
-| The own store record | signed with the Lightning bit clear, whatever was set before |
-| Checkout | `acceptsLightning` is `false` on every listing even if a store record sets the bit, `GET /catalog` `lightning.blocked` names why, and `"rail": "ln"` is refused; no invoice is issued |
+A mainnet node with no proxy and no built-in Tor refuses Lightning with "Lightning on mainnet is disabled until its connections run over Tor; it would reveal this node's IP address." With `--proxy` or `--tor`, plus `--lsp` or `--no-lsp`, mainnet Lightning runs. There is no default mainnet LSP.
 
-The web shop hides the Lightning checkout option and the wallet card on mainnet and says why on the Lightning settings page and at checkout. It also drops Lightning if a node reports mainnet Lightning (`network: "bitcoin"`).
+| Entry point | Mainnet without a Tor path | Mainnet with `--proxy` or `--tor` |
+|---|---|---|
+| `--lightning` without `--lsp` or `--no-lsp` | exits: there is no default LSP | exits: name an LSP or pass `--no-lsp` |
+| `--lightning` and a public peer, Esplora, or gossip server | exits: that host would see this machine | dials that host through Tor |
+| `GET /ln/status` and checkout | `{"enabled": false, "blocked": "…"}`, no Lightning offered | Lightning is offered; `network` is `bitcoin` |
+| A public `--ln-listen`, Electrum, or bitcoind | refused | refused |
+
+The shop shows the node's `blocked` string and hides Lightning while it is set. It offers Lightning on mainnet when the node reports `network: "bitcoin"` and no `blocked` string.
 
 ## The LSP and what it sees
 
@@ -49,14 +49,14 @@ OpenBazaar runs no LSP. The default on test mode is Megalith's public Mutinynet 
 
 | Party | Sees | Does not see |
 |---|---|---|
-| LSP | Amount and time of every payment to the store, the channels it opens, the node's IP (clearnet) | What was bought, the buyer, the ship-to |
-| Lightning peers | The node's IP address | Order contents |
+| LSP | Amount and time of every payment to the store, the channels it opens, a Tor exit when `--proxy` or `--tor` is set | What was bought, the buyer, the ship-to |
+| Lightning peers | A Tor exit when `--proxy` or `--tor` is set | Order contents |
 | Routing hops | Forwarded amounts, timing, neighbors | Order contents |
 | Buyer (from the invoice) | The store's Lightning node ID and the LSP | The store's IP address |
 | Chain server (`--ln-chain`) | The Lightning wallet's addresses and channel outputs | Payments inside channels |
-| Gossip server (RGS) | The node's IP address | Payments |
+| Gossip server (RGS) | A Tor exit when `--proxy` or `--tor` is set | Payments |
 
-With `--proxy` (the desktop app always sets it), the LSP, peers, Esplora, and the gossip server see a Tor exit instead of the node's IP; without it they are not contacted. The Lightning node ID is separate from the store key. The Settings page shows this list and the one-time notice.
+The desktop app starts built-in `--tor` and does not pass a separate `--proxy`. That Tor client is the proxy Lightning, rates, and the other public clients use. Without either, public peers and servers are not contacted. The Lightning node ID is separate from the store key. The Settings page shows this list and the one-time notice.
 
 ## Networks
 
@@ -65,11 +65,11 @@ With `--proxy` (the desktop app always sets it), the LSP, peers, Esplora, and th
 | `--network testnet4` (default) | Mutinynet signet (`--ln-network signet`) | `mutinynet.com/api` | Megalith LSPS2 `03e30fda…9d7579@64.23.192.68:9736`, no token | A JIT invoice was issued over Tor from the live LSP (November 2026). The C= LSP (`0371d6fd…f5ef2b`) no longer answered at either published address. |
 | `--network testnet4 --ln-network testnet4` | testnet4 | `mempool.space/testnet4/api` | none: pass `--lsp` or `--no-lsp` | No public testnet4 LSP was found (November 2026). |
 | `--network testnet4 --ln-network regtest` | regtest | `--ln-chain bitcoind:…` | `--lsp` or `--no-lsp` | Used by the integration tests. |
-| `--network mainnet` | none | — | — | Refused until Lightning runs over Tor. |
+| `--network mainnet --tor --lsp …` or `--no-lsp` | bitcoin | an Esplora or your own node you name with `--ln-chain` | the LSP you name, or none | Runs. Public chain and gossip go through Tor. |
 
 Mutinynet coins and the on-chain Lightning wallet are separate from the node's testnet4 wallet, so `POST /ln/sweep` refuses to send them to it. `POST /ln/withdraw/quote {address, amountSats}` (or `{address, max: true}`) then `POST /ln/withdraw {quote, passphrase, confirm: true}` send them to a Mutinynet address the user names instead; close a channel first to bring its funds on chain. LDK picks the on-chain fee when it sends, so the quote cannot show it. `POST /ln/send/quote {invoice}` then `POST /ln/send` pay a pasted invoice with the order fee cap. Both use the bitcoin send's quote, passphrase and confirm steps ([`wallet-lock.md`](wallet-lock.md)) and are refused to paired devices.
 
-### Mainnet LSP choices (for when mainnet opens)
+### Mainnet LSP choices
 
 The operator will pick one; none is a default:
 
@@ -109,6 +109,5 @@ The LSP keeps a channel reserve, anchor outputs, and the commitment fee out of t
 
 ## Not done
 
-- Remote sellers: invoices come from a seller wallet on this node, as for Monero. A remote seller's terms reply has to carry the invoice.
 - Spliced or second channels from the LSP, LSPS1 channel purchase, and BOLT 12 offers.
-- Tor for Lightning peers, the LSP, and the chain and gossip servers. Mainnet Lightning stays off until then.
+- Electrum, bitcoind, and a public `--ln-listen` stay off Tor. Point those at this machine or the LAN, or use Esplora through the proxy.

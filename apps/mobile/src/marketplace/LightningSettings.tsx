@@ -48,8 +48,8 @@ export function LightningSettings() {
         <p className='ob-page-intro' role='status'>{status.loading ? 'Checking Lightning…' : 'Lightning status unavailable.'}</p>
       ) : ln.blocked ? (
         <section className='ob-settings-card'>
-          <h2>Lightning is off on mainnet</h2>
-          <p>Lightning connections do not run over Tor yet, so they would reveal your node's IP address to peers, the LSP, and chain and gossip servers. Mainnet Lightning stays off until they do. Use on-chain bitcoin, or try Lightning on testnet4.</p>
+          <h2>Lightning is off</h2>
+          <p>{ln.blocked}</p>
         </section>
       ) : !ln.enabled ? (
         <section className='ob-settings-card'>

@@ -100,14 +100,15 @@ const msatToSats = (value: unknown) => Math.ceil(count(value) / 1000)
 
 /**
  * Why the node refuses Lightning, from the `lightning` of `/catalog` or the
- * body of `/ln/status`; `null` when it may run. A node that names mainnet
- * Lightning is refused too: mainnet Lightning would show its IP address.
+ * body of `/ln/status`; `null` when it may run. The node sets `blocked` on
+ * mainnet until `--proxy` or built-in `--tor` carries peers, Esplora, and
+ * gossip. A mainnet node that has that path reports `network: "bitcoin"`
+ * and no `blocked` string, and Lightning is offered.
  */
 export function lnBlockedReason(value: unknown): string | null {
   if (!value || typeof value !== 'object') return null
   const r = value as Record<string, unknown>
-  if (typeof r.blocked === 'string' && r.blocked) return r.blocked
-  return r.network === 'bitcoin' ? 'Lightning on mainnet is disabled until its connections run over Tor.' : null
+  return typeof r.blocked === 'string' && r.blocked ? r.blocked : null
 }
 
 /** The stores buyers are offered Lightning for: none while the node refuses it. */
