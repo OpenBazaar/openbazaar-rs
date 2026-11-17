@@ -1,9 +1,9 @@
 import { useState, type FormEvent } from "react";
 import { displayNameError, setVacation, storeImageChange, updateProfile, type ProfileChanges, type SellerProfile, type StoreImageField } from "../seller";
 import { PageHeading } from "./PageHeading";
-import { RailMark } from "./RailMark";
 import { ImageUpload, MediaImage, useLockedAction } from "./SellerKit";
 import { StoreModerators } from "./StoreModerators";
+import { StorePayments } from "./StorePayments";
 
 type Fields = Required<Omit<ProfileChanges, "shipsTo">> & { shipsTo: string };
 
@@ -127,16 +127,7 @@ export function StoreSetup({ profile, onSaved, onViewStore }: { profile: SellerP
           <TextField label="Returns policy" value={fields.returnsPolicy} onChange={set("returnsPolicy")} max={500} multiline placeholder="Return window, eligibility, item condition, return postage, refunds and exclusions."/>
         </div>
       </fieldset>
-      <fieldset className="ob-store-section">
-        <legend>Payments</legend>
-        <ul className="ob-payment-rails">
-          <li className="is-on"><strong className="ob-rail"><RailMark rail="bitcoin" />Bitcoin</strong><span>{profile.network === "testnet4" ? "Testnet4 wallet. " : ""}Each accepted order receives a fresh payment address. New sellers must satisfy the node's escrow and reputation requirements before accepting orders.</span></li>
-          <li className={profile.xmrAvailable ? "" : "is-off"}><strong className="ob-rail"><RailMark rail="monero" />Monero</strong><span>{profile.network === "testnet4" ? "Stagenet test coins. " : ""}{profile.xmrAvailable ? "Your store can take Monero from Monero settings. Buyers pay a subaddress that your node watches." : "Monero is off on this node. See Monero settings."} Direct pay only, no escrow. Experimental.</span></li>
-          <li className={profile.acceptsLightning ? "is-on" : "is-off"}><strong className="ob-rail"><RailMark rail="lightning" />Lightning</strong><span>{profile.network === "testnet4" ? "Mutinynet signet test coins, a test network separate from your testnet4 bitcoin. " : ""}{profile.acceptsLightning ? "Buyers can pay a Lightning invoice." : "Turn it on in Lightning settings. It stays off on mainnet until connections run over Tor."} Direct pay only, no escrow. Experimental.</span></li>
-          <li className="is-off"><strong className="ob-rail"><RailMark rail="zcash" />Zcash</strong><span>Your store can take Zcash from Zcash settings, on testnet4. Buyers on other nodes pay a shielded address that your node watches.</span></li>
-          <li className={profile.escrowAvailable ? "" : "is-off"}><strong>Moderated escrow</strong><span>{profile.escrowAvailable ? "Buyers can choose a moderator. Your listings take escrow on testnet4." : "Moderated escrow runs on the test network only."}</span></li>
-        </ul>
-      </fieldset>
+      <StorePayments profile={profile} onChanged={(next, message) => onSaved(next, message, false)} />
       {profile.setUp ? <fieldset className="ob-store-section">
         <legend>Vacation</legend>
         <p className="ob-field-hint">Pause the store. Listings stay up with no stock, and new orders are refused. Buyers are not told where you are.</p>
