@@ -181,19 +181,12 @@ function BackupCheck({
   )
 }
 
-export function SetupWallet({ status, onStatus }: { status: LockStatus; onStatus: (s: LockStatus) => void }) {
+type NewBackup = Awaited<ReturnType<typeof setupWallet>>
+
+export function SetupWallet({ status, onCreated }: { status: LockStatus; onCreated: (backup: NewBackup) => void }) {
   const [passphrase, setPassphrase] = useState(''),
     [repeat, setRepeat] = useState('')
-  const [backup, setBackup] = useState<{ phrase: string[]; confirmWords: number[]; lock: LockStatus } | null>(null)
   const { busy, error, run } = useSubmit()
-  if (backup)
-    return (
-      <BackupCheck
-        phrase={backup.phrase}
-        positions={backup.confirmWords}
-        onDone={next => onStatus(next ?? backup.lock)}
-      />
-    )
   const short = passphrase.length < status.minPassphraseChars
   return (
     <form
@@ -205,7 +198,7 @@ export function SetupWallet({ status, onStatus }: { status: LockStatus; onStatus
           const created = await setupWallet(passphrase)
           setPassphrase('')
           setRepeat('')
-          setBackup(created)
+          onCreated(created)
         }, 'The wallet passphrase could not be set.')
       }}
     >
@@ -382,14 +375,38 @@ function LockSettings({ status, onStatus }: { status: LockStatus; onStatus: (s: 
 }
 
 /** The lock card on the wallet page. Settings stay collapsed until opened. */
-export function WalletLockPanel({ lock, purpose = "wallet" }: { lock: LockResource; purpose?: "wallet" | "moderator" }) {
+export function WalletLockPanel({
+  lock,
+  purpose = "wallet",
+  onBackupDone
+}: {
+  lock: LockResource
+  purpose?: "wallet" | "moderator"
+  onBackupDone?: () => void
+}) {
   const status = lock.data
   const [error, setError] = useState('')
+  // Kept here, not in SetupWallet: once the wallet is created the node no
+  // longer reports `setup`, and the next status poll would unmount the form
+  // and lose the phrase before the user could write it down.
+  const [backup, setBackup] = useState<NewBackup | null>(null)
+  if (backup)
+    return (
+      <BackupCheck
+        phrase={backup.phrase}
+        positions={backup.confirmWords}
+        onDone={next => {
+          setBackup(null)
+          lock.update(next ?? backup.lock)
+          onBackupDone?.()
+        }}
+      />
+    )
   if (!status) {
     if (lock.error && shopPairingMessage(lock.error)) return null
     return <p role='status'>{lock.error || 'Checking the wallet lock…'}</p>
   }
-  if (status.state === 'setup') return <SetupWallet status={status} onStatus={lock.update} />
+  if (status.state === 'setup') return <SetupWallet status={status} onCreated={setBackup} />
   if (status.state === 'locked') return <UnlockForm status={status} onStatus={lock.update} reason={purpose === "moderator" ? "Unlock this node’s wallet to sign a final escrow ruling. You can review disputes while it stays locked." : undefined} />
   const minutesLeft = status.lockInSecs == null ? null : Math.max(1, Math.ceil(status.lockInSecs / 60))
   return (

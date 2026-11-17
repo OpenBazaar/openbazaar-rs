@@ -1,4 +1,4 @@
-import { useContext, useState } from "react";
+import { useContext, useEffect, useState } from "react";
 import { setRole, type Role, type SellerProfile } from "../seller";
 import { ModeratorDeskLink } from "./HomeNodeGate";
 import { usePairedNode } from "./NodePayments";
@@ -15,6 +15,10 @@ export function Onboarding({ onChosen }: { onChosen: (profile: SellerProfile) =>
   const [busy, setBusy] = useState<Role | null>(null);
   const [error, setError] = useState("");
   const setup = lock.data?.state === "setup";
+  // Stay on step 1 until the backup phrase is written down: the node leaves
+  // `setup` as soon as the wallet exists, before the phrase has been shown.
+  const [settingUp, setSettingUp] = useState(false);
+  useEffect(() => { if (setup) setSettingUp(true); }, [setup]);
   async function choose(role: Role) {
     if (busy) return;
     setBusy(role);
@@ -29,8 +33,8 @@ export function Onboarding({ onChosen }: { onChosen: (profile: SellerProfile) =>
   return <main className="ob-onboarding" id="ob-content">
     <div className="ob-onboarding-inner">
       <header className="ob-onboarding-brand"><img src="brand/ob-market-logo-256.png" alt="" width={48} height={48}/><span>OpenBazaar</span>{openDesk && <button className="ob-text-link" onClick={openDesk}>Moderator desk</button>}</header>
-      <p className="ob-onboarding-step">Step {setup || !lock.data ? 1 : 2} of 2</p>
-      {setup || !lock.data ? <WalletLockPanel lock={lock}/> : <section className="ob-role-choice" aria-labelledby="ob-role-title">
+      <p className="ob-onboarding-step">Step {setup || settingUp || !lock.data ? 1 : 2} of 2</p>
+      {setup || settingUp || !lock.data ? <WalletLockPanel lock={lock} onBackupDone={() => setSettingUp(false)}/> : <section className="ob-role-choice" aria-labelledby="ob-role-title">
         <h1 id="ob-role-title">How will you use OpenBazaar?</h1>
         <p>Your node keeps your wallet either way. You can open a store later from Settings.</p>
         <div className="ob-role-options">
