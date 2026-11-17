@@ -1,7 +1,25 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { formatZec, parseZatoshi, parseZecBackend, parseZecRate, parseZecStores, ZEC_CONFIRMATIONS } from "./zec.ts";
+import { formatZec, parseZatoshi, parseZecBackend, parseZecRate, parseZecStores, parseZecWallet, ZEC_CONFIRMATIONS } from "./zec.ts";
+
+test("the wallet balance and receive address parse as exact amounts", () => {
+  const wallet = parseZecWallet({
+    network: "testnet",
+    enabled: true,
+    keys: "ready",
+    receiveAddress: "utest1example",
+    balance: { confirmedZatoshi: "100000000", pendingZatoshi: "1", orchardZatoshi: "0", confirmedZec: "1", pendingZec: "0.00000001", orchardZec: "0" },
+    scannedHeight: 12,
+    tip: 12,
+    lastSync: 1,
+    syncError: null,
+  });
+  assert.equal(wallet.receiveAddress, "utest1example");
+  assert.equal(wallet.balance?.confirmed, 100_000_000n);
+  assert.equal(wallet.balance?.pending, 1n);
+  assert.equal(parseZecWallet({ network: "testnet", enabled: false, keys: "unlock-to-create", balance: null }).balance, null);
+});
 
 test("zatoshi stay exact and format without float math", () => {
   assert.equal(parseZatoshi("18446744073709551615"), 18446744073709551615n);

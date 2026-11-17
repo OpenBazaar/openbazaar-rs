@@ -136,7 +136,7 @@ Labels: **tested** = code on main with automated tests; **demo** = code runs, bu
 | Web shop | tested | Settings → Zcash (indexer, demo store and own-store switches), the Zcash choice at checkout, the order screen's QR, address, amount owed, and confirmations; `acceptsZec` stands only with the store's signed bit. Unit tests and an e2e check of the settings page with Zcash off. |
 | Escrow | refused | `"rail": "zec"` with escrow is refused: shielded pools have no scripts or timelocks, and a refund cannot be built before the funding confirms. |
 | Remote sellers | tested | A buyer on another node asks with `rail` = `zec`; the seller prices, names a shielded address of the own-store wallet, and watches it. The buyer's node needs no indexer and follows the seller's replies. Testnet4 only. [zcash.md](zcash.md) |
-| Paying from the node | specified | Phase 3 in [zcash.md](zcash.md). |
+| Paying from the node | tested | Spend ticket bound to the order, address, amount, and ZIP 317 fee cap. One Ironwood output plus change, proved on the node from the sealed note witnesses. Orchard notes are not spent. Pool migration, phone-side PCZT, and a mempool stream are still later. [zcash.md](zcash.md). |
 
 ### Lightning (direct pay only)
 
@@ -148,7 +148,7 @@ Labels: **tested** = code on main with automated tests; **demo** = code runs, bu
 | Per-order invoice, status | tested | BOLT 11, 1 hour, fresh hash. Paid on settlement with `receivedMsat` and `lspFeeMsat`; works while locked. |
 | LSP (LSPS2 just-in-time channels) | tested | Regtest with real LDK nodes; on Mutinynet the public C= LSP issued JIT invoices through the node and the UI. No completed live payment: the Mutinynet faucet needs a GitHub login. `--lsp`, `--lsp-token`, `--no-lsp`; fee cap 5 % or 10,000 sats. No OpenBazaar LSP; no mainnet default. |
 | Pay from the node | tested | Quote, spend ticket bound to the order, hash, amount, and fee cap, then pay (202). Channel open, close, and sweep need the passphrase. Invoices this node issued are refused. |
-| Networks | partly | Test mode runs on Mutinynet signet with Megalith's public LSPS2 node (no public testnet4 LSP); testnet4 and regtest need `--lsp` or `--no-lsp`. Mainnet is blocked until Lightning runs over Tor: the flags, the `/ln` routes, the own store's Lightning bit, and Lightning at checkout are all refused, and the web shop hides it. No mainnet LSP default. |
+| Networks | partly | Test mode runs on Mutinynet signet with Megalith's public LSPS2 node (no public testnet4 LSP); testnet4 and regtest need `--lsp` or `--no-lsp`. Mainnet runs when peers, the LSP, Esplora, and gossip go through `--proxy` or `--tor`, and the operator names `--lsp` or `--no-lsp`. There is no mainnet LSP default. Electrum, bitcoind, and a public listen stay direct and are refused. The shop follows the node's `blocked` string. |
 | Escrow | refused | `"rail": "ln"` with escrow is refused. |
 | Tor | tested | The vendored `ldk-node` dials public peers, the LSP, Esplora, and RGS through `--proxy`; without it they are refused. Electrum and bitcoind stay direct. |
 | Remote sellers | specified | Invoices come from a seller wallet on this node, as for Monero. |

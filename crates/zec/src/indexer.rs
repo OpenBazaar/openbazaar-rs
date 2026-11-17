@@ -1,8 +1,10 @@
 //! [`ZecChain`] over the lightwalletd gRPC protocol, which Zaino serves too.
 //!
-//! Four calls only: `GetLightdInfo` on every new connection, `GetLatestBlock`,
-//! `GetBlock`, and `GetBlockRange` with no pool filter (Sapling, Orchard, and
-//! Ironwood). No address, transaction id, or key is ever sent. A server must
+//! `GetLightdInfo` on every new connection, `GetLatestBlock`, `GetBlock`,
+//! `GetBlockRange` with no pool filter (Sapling, Orchard, and Ironwood),
+//! `GetTreeState` for a note-commitment frontier, and `SendTransaction` to
+//! broadcast a transaction this wallet built. No address or key is ever sent,
+//! and a transaction is never fetched by id. A server must
 //! be on this network and speak lightwallet-protocol 0.5.0 or later: an older
 //! one leaves Ironwood actions out of its compact blocks, so every payment
 //! would be missing without an error.
@@ -31,12 +33,13 @@ use tokio_rustls::rustls::{self, ClientConfig, RootCertStore};
 use tokio_rustls::TlsConnector;
 use tonic::transport::{Channel, Endpoint};
 use zcash_client_backend::proto::service::compact_tx_streamer_client::CompactTxStreamerClient;
-use zcash_client_backend::proto::service::{BlockId, BlockRange, ChainSpec, Empty, LightdInfo};
+use zcash_client_backend::proto::service::{BlockId, BlockRange, ChainSpec, Empty, LightdInfo, RawTransaction};
 use zcash_protocol::consensus::{NetworkUpgrade, Parameters};
 
 use crate::backend::{IndexerConfig, Server, ServerKind};
 use crate::proto::CompactBlock;
-use crate::{BackendStatus, ZecChain, ZecNetwork};
+use crate::trees::{self, Tree};
+use crate::{BackendStatus, CommitmentTrees, ZecChain, ZecNetwork};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(180);
@@ -238,6 +241,41 @@ impl ZecChain for IndexerChain {
             Ok(blocks)
         })
     }
+
+    fn tree_state(&self, height: u64) -> Result<CommitmentTrees, String> {
+        let state = self.call(|mut client| async move { Ok(client.get_tree_state(BlockId { height, hash: Vec::new() }).await?.into_inner()) })?;
+        Ok(CommitmentTrees {
+            orchard: tree_bytes(&state.orchard_tree)?,
+            ironwood: tree_bytes(&state.ironwood_tree)?,
+        })
+    }
+
+    fn submit(&self, raw: &[u8]) -> Result<[u8; 32], String> {
+        let txid = crate::tx::txid_of(raw)?;
+        let raw = raw.to_vec();
+        let response = self.call(move |mut client| {
+            let raw = raw.clone();
+            async move { Ok(client.send_transaction(RawTransaction { data: raw, height: 0 }).await?.into_inner()) }
+        })?;
+        if response.error_code != 0 {
+            let message = if response.error_message.is_empty() {
+                format!("the Zcash indexer rejected the transaction ({})", response.error_code)
+            } else {
+                response.error_message
+            };
+            return Err(message);
+        }
+        Ok(txid)
+    }
+}
+
+fn tree_bytes(text: &str) -> Result<Vec<u8>, String> {
+    if text.is_empty() {
+        return Ok(trees::write_tree(&Tree::empty()));
+    }
+    let bytes = hex::decode(text).map_err(|_| "the Zcash indexer sent a commitment tree that is not hex".to_string())?;
+    trees::read_tree(&bytes)?;
+    Ok(bytes)
 }
 
 /// The server's network, Sapling activation height, and protocol version.

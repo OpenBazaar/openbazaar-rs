@@ -26,7 +26,8 @@ use zcash_note_encryption::Domain;
 use zcash_protocol::consensus::{BlockHeight, NetworkUpgrade, Parameters};
 
 use crate::proto::{ChainMetadata, CompactBlock, CompactOrchardAction, CompactTx};
-use crate::{BackendStatus, Pool, ZecChain, ZecNetwork};
+use crate::trees::{self, Tree};
+use crate::{BackendStatus, CommitmentTrees, Pool, ZecChain, ZecNetwork};
 
 /// Blocks before the first one a test mines, so the first sync has history to walk back over.
 pub const HISTORY: u64 = 200;
@@ -140,13 +141,17 @@ impl MockChain {
 
     fn queue(&self, actions: Vec<CompactOrchardAction>, pool: Pool) -> [u8; 32] {
         let txid = random32();
+        self.queue_txid(txid, actions, pool);
+        txid
+    }
+
+    fn queue_txid(&self, txid: [u8; 32], actions: Vec<CompactOrchardAction>, pool: Pool) {
         let mut tx = CompactTx { txid: txid.to_vec(), ..Default::default() };
         match pool {
             Pool::Orchard => tx.actions = actions,
             Pool::Ironwood => tx.ironwood_actions = actions,
         }
         self.state().pool.push(tx);
-        txid
     }
 
     /// Mine `count` blocks; the first takes every queued transaction.
@@ -268,5 +273,33 @@ impl ZecChain for MockChain {
             return Err("no such blocks".into());
         }
         Ok(state.blocks[first..=last].to_vec())
+    }
+
+    fn tree_state(&self, height: u64) -> Result<CommitmentTrees, String> {
+        let state = self.state();
+        self.online(&state)?;
+        let last = height.checked_sub(self.start).ok_or("before the mock chain")? as usize;
+        if last >= state.blocks.len() {
+            return Err("no such block".into());
+        }
+        let mut orchard = Tree::empty();
+        let mut ironwood = Tree::empty();
+        for block in &state.blocks[..=last] {
+            for tx in &block.vtx {
+                for action in &tx.actions {
+                    orchard.append(trees::node_from_cmx(&action.cmx).ok_or("a mock commitment is not a field element")?).map_err(|_| "the orchard tree is full")?;
+                }
+                for action in &tx.ironwood_actions {
+                    ironwood.append(trees::node_from_cmx(&action.cmx).ok_or("a mock commitment is not a field element")?).map_err(|_| "the ironwood tree is full")?;
+                }
+            }
+        }
+        Ok(CommitmentTrees { orchard: trees::write_tree(&orchard), ironwood: trees::write_tree(&ironwood) })
+    }
+
+    fn submit(&self, raw: &[u8]) -> Result<[u8; 32], String> {
+        let (txid, actions) = crate::tx::ironwood_compact(raw)?;
+        self.queue_txid(txid, actions, Pool::Ironwood);
+        Ok(txid)
     }
 }

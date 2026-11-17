@@ -4,7 +4,7 @@
 use std::collections::HashSet;
 
 use openbazaar_zec::mock::{MockChain, BEFORE_IRONWOOD};
-use openbazaar_zec::{Balance, Pool, Received, ViewKey, ZecChain, ZecNetwork, ZecWallet, CONFIRMATIONS};
+use openbazaar_zec::{quote_payment, sign_payment, Balance, Pool, Received, SpendKey, ViewKey, ZecChain, ZecNetwork, ZecWallet, CONFIRMATIONS};
 
 const NET: ZecNetwork = ZecNetwork::Testnet;
 const ZEC: u64 = 100_000_000;
@@ -285,4 +285,33 @@ fn the_first_sync_starts_a_little_before_the_tip() {
     assert_eq!(seller.scanned(), Some(chain.height()));
     assert_eq!(seller.received(recent).total, ZEC, "within the first sync's reach");
     assert_eq!(seller.received(old).total, 0, "older than a new wallet looks");
+}
+
+#[test]
+fn a_wallet_pays_another_from_its_ironwood_balance() {
+    let chain = MockChain::new(NET);
+    let (_, mut payer) = wallet(1);
+    let (_, mut payee) = wallet(2);
+    sync(&mut payer, &chain);
+    let txid = chain.pay(&payer.receive_address(), ZEC);
+    chain.mine(CONFIRMATIONS);
+    sync(&mut payer, &chain);
+    assert_eq!(payer.balance().confirmed, ZEC, "the receive address can be funded");
+    let _ = txid;
+
+    let amount = ZEC / 2;
+    let destination = payee.receive_address();
+    let quote = quote_payment(&payer, &destination, amount).expect("a synced wallet can quote");
+    let key = SpendKey::from_seed(&[1u8; 64]).unwrap();
+    let signed = sign_payment(&payer, &key, &destination, amount, quote.fee).expect("the quote can be signed");
+    assert_eq!(signed.fee, quote.fee);
+    assert_eq!(chain.submit(&signed.raw).unwrap(), signed.txid);
+    payer.reserve(&signed.nullifiers, signed.txid, signed.expiry_height);
+    assert_eq!(payer.balance().confirmed, 0, "a reserved note leaves the balance");
+
+    chain.mine(CONFIRMATIONS);
+    sync(&mut payer, &chain);
+    sync(&mut payee, &chain);
+    assert_eq!(payee.balance().confirmed, amount, "the recipient can spend what arrived");
+    assert_eq!(payer.balance().confirmed, ZEC - amount - signed.fee, "change comes back, the fee does not");
 }

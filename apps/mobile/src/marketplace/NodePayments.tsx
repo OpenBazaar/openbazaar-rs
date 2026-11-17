@@ -47,6 +47,7 @@ import { FiatEstimate } from './FiatEstimate'
 import { isLocked, lockWallet, quotePayment, type LockStatus, type Quote, type Ticket } from '../walletLock'
 import { RailMark } from './RailMark'
 import { Dialog, SpendConfirmDialog, UnlockDialog, WalletLockPanel, useLockState } from './WalletLock'
+import { ShieldedPay } from './ShieldedPay'
 import { PageHeading } from './PageHeading'
 import { onThisComputer, pairShop, shopPairingMessage } from '../catalog'
 import { copyValueLabel } from '../copyControl'
@@ -560,6 +561,7 @@ export function OrderPayment({
               <p className='ob-page-intro'>
                 Send only {monero.network} Monero to this subaddress. The QR code requests the remaining amount.
               </p>
+              <ShieldedPay id={id} seller={order.seller} rail='xmr' paying={order.paying} disabled={!!order.payTxid} onDone={() => void resource.refresh()} />
             </div>
           ) : monero ? null : (
             <p className='ob-page-intro'>This Monero payment could not be read.</p>
@@ -583,6 +585,7 @@ export function OrderPayment({
                 {zcash.expiresAt != null ? ` The quote expires ${new Date(zcash.expiresAt * 1000).toLocaleTimeString(undefined, { timeStyle: 'short' })}.` : ''}
               </p>
               {sellerZcashNote(order) && <p className='ob-page-intro'>{sellerZcashNote(order)}</p>}
+              <ShieldedPay id={id} seller={order.seller} rail='zec' paying={order.paying} disabled={!!order.payTxid || zcash.expired} onDone={() => void resource.refresh()} />
             </div>
           ) : zcash ? (
             zcash.overpaidZec && <p className='ob-page-intro'>{zcash.overpaidZec} ZEC more than the price arrived.</p>
