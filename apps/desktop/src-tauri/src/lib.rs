@@ -21,7 +21,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use tauri::{AppHandle, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder};
-use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
+use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 
 const MAIN_WINDOW: &str = "main";
 
@@ -76,8 +76,26 @@ fn start(app: AppHandle) {
     let Some(shop) = shop_dir(&app) else {
         return fail(&app, "The shop files are missing from this app.".into());
     };
-    let started = app_data_dir(&app)
-        .and_then(|dir| node::Sidecar::start(&dir, None, profile.is_some(), Some(&shop)));
+    let dir = match app_data_dir(&app) {
+        Ok(dir) => dir,
+        Err(message) => return fail(&app, message),
+    };
+    let mut started = node::Sidecar::start(&dir, None, profile.is_some(), Some(&shop));
+    // No Secret Service (plain Qubes templates, minimal Linux): offer to keep
+    // the vault key in a file in the data folder, remember the choice, and
+    // start again. Only for this error; a missing keystore entry, for one,
+    // would not be fixed by a new key file.
+    if let Err(message) = &started {
+        if message.contains(node::KEYSTORE_UNAVAILABLE)
+            && !node::file_vault_chosen(&dir)
+            && agree_to_file_vault(&app, message)
+        {
+            if let Err(err) = node::choose_file_vault(&dir) {
+                return fail(&app, format!("Could not save the vault choice: {err}"));
+            }
+            started = node::Sidecar::start(&dir, None, profile.is_some(), Some(&shop));
+        }
+    }
     let sidecar = match started {
         Ok(sidecar) => sidecar,
         Err(message) => return fail(&app, message),
@@ -206,6 +224,26 @@ fn stop_node(app: &AppHandle) {
     if let Some(mut sidecar) = app.state::<NodeState>().0.lock().unwrap().take() {
         sidecar.stop();
     }
+}
+
+/// The node could not reach an OS keyring. Ask, while quoting the node's own
+/// error, whether to keep the vault key in a file in the app's data folder.
+fn agree_to_file_vault(app: &AppHandle, message: &str) -> bool {
+    app.dialog()
+        .message(format!(
+            "This system has no keyring service to hold the key that \
+             encrypts the app's data, which is common on Qubes and minimal \
+             Linux setups.\n\n{message}\n\nKeep the key in a file in the \
+             app's data folder instead? The file is readable only by your \
+             user, but anyone who can read your files can read it."
+        ))
+        .title("No OS keyring was found")
+        .kind(MessageDialogKind::Warning)
+        .buttons(MessageDialogButtons::OkCancelCustom(
+            "Keep the key in a file".into(),
+            "Quit".into(),
+        ))
+        .blocking_show()
 }
 
 fn fail(app: &AppHandle, message: String) {
