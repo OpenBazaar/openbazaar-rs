@@ -133,8 +133,10 @@ pub trait LightningRail: Send + Sync {
 
     /// A fresh address of LDK's on-chain wallet (to fund a channel by hand).
     fn onchain_address(&self) -> Result<String, LnError>;
-    /// Send LDK's whole on-chain balance to `address` (the node wallet's own address).
+    /// Send LDK's whole on-chain balance, less its anchor reserve, to `address`.
     fn sweep_onchain(&self, address: &str) -> Result<String, LnError>;
+    /// Send `sats` of LDK's on-chain balance to `address`, the fee on top.
+    fn send_onchain(&self, address: &str, sats: u64) -> Result<String, LnError>;
     fn open_channel(&self, peer: &PeerAddress, sats: u64) -> Result<String, LnError>;
     /// Cooperative close, or a force close when the peer is gone.
     fn close_channel(&self, id: &str, force: bool) -> Result<(), LnError>;

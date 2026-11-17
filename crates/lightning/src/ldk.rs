@@ -208,6 +208,13 @@ impl LdkRail {
             .find(|channel| channel.user_channel_id == UserChannelId(wanted))
             .ok_or_else(|| LnError::Invalid("No channel with that id.".into()))
     }
+
+    fn address(&self, text: &str) -> Result<Address, LnError> {
+        Address::from_str(text)
+            .map_err(|_| LnError::Invalid("That is not a bitcoin address.".into()))?
+            .require_network(self.config.network)
+            .map_err(|_| LnError::Invalid("That address is for another network.".into()))
+    }
 }
 
 /// LDK queues events until they are handled. Payments and channels are read
@@ -364,11 +371,14 @@ impl LightningRail for LdkRail {
     }
 
     fn sweep_onchain(&self, address: &str) -> Result<String, LnError> {
-        let address = Address::from_str(address)
-            .map_err(|_| LnError::Invalid("That is not a bitcoin address.".into()))?
-            .require_network(self.config.network)
-            .map_err(|_| LnError::Invalid("That address is for another network.".into()))?;
+        let address = self.address(address)?;
         let txid = self.node.onchain_payment().send_all_to_address(&address, true, None).map_err(failed)?;
+        Ok(txid.to_string())
+    }
+
+    fn send_onchain(&self, address: &str, sats: u64) -> Result<String, LnError> {
+        let address = self.address(address)?;
+        let txid = self.node.onchain_payment().send_to_address(&address, sats, None).map_err(failed)?;
         Ok(txid.to_string())
     }
 

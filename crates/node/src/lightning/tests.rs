@@ -21,7 +21,7 @@ struct Setup {
     dir: TempDir,
 }
 
-fn open(dir: &Path, btc: &MockChain, rail: &Arc<MockRail>) -> Node {
+pub(super) fn open(dir: &Path, btc: &MockChain, rail: &Arc<MockRail>) -> Node {
     let node = open_node(dir, NetworkMode::Testnet4, btc, 1, unreachable_escrow());
     let mut flags = LnFlags::default();
     let args = [
@@ -293,6 +293,10 @@ fn mainnet_refuses_lightning_at_every_entry_point() {
         ("POST", "/ln/spend-tickets", json!({"quote": "q", "passphrase": PASSPHRASE})),
         ("POST", "/ln/orders/abc/pay/quote", json!({})),
         ("POST", "/ln/orders/abc/pay", json!({"ticket": "t", "confirm": true})),
+        ("POST", "/ln/send/quote", json!({"invoice": "lnbc1"})),
+        ("POST", "/ln/send", json!({"quote": "q", "passphrase": PASSPHRASE, "confirm": true})),
+        ("POST", "/ln/withdraw/quote", json!({"address": "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4", "max": true})),
+        ("POST", "/ln/withdraw", json!({"quote": "q", "passphrase": PASSPHRASE, "confirm": true})),
     ];
     for (method, path, body) in posts {
         let (status, value) = request(&node, method, path, &body.to_string());
