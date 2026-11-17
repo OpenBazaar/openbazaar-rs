@@ -29,6 +29,15 @@ const READY_TIMEOUT: Duration = Duration::from_secs(20);
 /// Present when the user chose "Run this computer as a home node".
 const HOME_MODE_FILE: &str = "home-node-mode";
 
+/// Present when the user agreed to keep the vault key in a file because this
+/// system has no OS keyring service (common on Qubes and minimal Linux).
+const FILE_VAULT_FILE: &str = "file-vault";
+
+/// How the node says the OS keyring cannot be reached (`vault_key.rs`). The
+/// shell offers the file vault only on this error: a different vault error,
+/// such as a missing entry, is not fixed by a new key file.
+pub const KEYSTORE_UNAVAILABLE: &str = "The OS keystore is not available";
+
 pub struct Sidecar {
     child: Child,
     pub port: u16,
@@ -52,6 +61,16 @@ pub fn set_home_mode(app_data_dir: &Path, on: bool) -> io::Result<()> {
     }
 }
 
+pub fn file_vault_chosen(app_data_dir: &Path) -> bool {
+    app_data_dir.join(FILE_VAULT_FILE).is_file()
+}
+
+/// Remember that the vault key lives in a file in the data folder, so every
+/// later launch passes `--vault file` without asking again.
+pub fn choose_file_vault(app_data_dir: &Path) -> io::Result<()> {
+    fs::write(app_data_dir.join(FILE_VAULT_FILE), b"")
+}
+
 impl Sidecar {
     /// Start the node on `port` (the saved one, else a free one, when `None`).
     /// Always `--remote` so order and escrow mail get a store onion. Home mode
@@ -72,6 +91,9 @@ impl Sidecar {
         let log_path = data_dir.join("node.log");
         let log = open_private_log(&log_path)
             .map_err(|err| format!("Could not open {}: {err}", log_path.display()))?;
+        // The log is appended across launches; only what this launch writes
+        // past here belongs in this launch's error message.
+        let log_from = fs::metadata(&log_path).map(|meta| meta.len()).unwrap_or(0);
         let port = match port {
             Some(port) => port,
             None => node_port(&data_dir).map_err(|err| format!("No free loopback port: {err}"))?,
@@ -97,7 +119,7 @@ impl Sidecar {
             origin: format!("http://127.0.0.1:{port}"),
             token: String::new(),
         };
-        sidecar.wait_until_listening(port, &log_path)?;
+        sidecar.wait_until_listening(port, &log_path, log_from)?;
         sidecar.token = read_token(&data_dir.join("pairing.token")).map_err(|err| {
             sidecar.stop();
             format!("Could not read the node's pairing token: {err}")
@@ -105,15 +127,18 @@ impl Sidecar {
         Ok(sidecar)
     }
 
-    fn wait_until_listening(&mut self, port: u16, log_path: &Path) -> Result<(), String> {
+    fn wait_until_listening(&mut self, port: u16, log_path: &Path, log_from: u64) -> Result<(), String> {
         let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
         let deadline = Instant::now() + READY_TIMEOUT;
         loop {
             if let Ok(Some(status)) = self.child.try_wait() {
-                return Err(format!(
-                    "The OpenBazaar node stopped during startup ({status}). Details are in {}.",
-                    log_path.display()
-                ));
+                return Err(match launch_error(log_path, log_from) {
+                    Some(error) => format!("The OpenBazaar node stopped during startup ({status}): {error}"),
+                    None => format!(
+                        "The OpenBazaar node stopped during startup ({status}). Details are in {}.",
+                        log_path.display()
+                    ),
+                });
             }
             if TcpStream::connect_timeout(&addr, Duration::from_millis(200)).is_ok() {
                 return Ok(());
@@ -183,6 +208,36 @@ fn sidecar_args(
         "--lightning".into(),
     ]);
     args
+}
+
+/// What the node said before it died, from the part of the log this launch
+/// wrote: its last `ob-node:` line when there is one, else its last line.
+/// One bounded line, so a startup dialog can carry the actual reason.
+fn launch_error(log_path: &Path, from: u64) -> Option<String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut file = File::open(log_path).ok()?;
+    file.seek(SeekFrom::Start(from)).ok()?;
+    let mut raw = Vec::new();
+    file.take(64 * 1024).read_to_end(&mut raw).ok()?;
+    let text = String::from_utf8_lossy(&raw);
+    let mut last = None;
+    let mut last_own = None;
+    for line in text.lines().map(str::trim).filter(|line| !line.is_empty()) {
+        if let Some(rest) = line.strip_prefix("ob-node: ") {
+            last_own = Some(rest);
+        }
+        last = Some(line);
+    }
+    let mut line = last_own.or(last)?.to_string();
+    if line.len() > 400 {
+        let mut end = 400;
+        while !line.is_char_boundary(end) {
+            end -= 1;
+        }
+        line.truncate(end);
+        line.push('…');
+    }
+    Some(line)
 }
 
 /// First non-empty, non-comment line of `name` in `dir`.
@@ -484,6 +539,36 @@ mod tests {
         let args = sidecar_args(18787, &dir, false, None);
         assert!(args.iter().any(|arg| arg == "--remote"), "{args:?}");
         assert!(args.iter().any(|arg| arg == "--lan"), "{args:?}");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_chosen_file_vault_is_remembered_across_launches() {
+        let dir = temp_dir("file-vault");
+        let args = sidecar_args(18787, &dir, false, None);
+        assert!(!args.iter().any(|arg| arg == "--vault"), "{args:?}");
+        assert!(!file_vault_chosen(&dir));
+        choose_file_vault(&dir).unwrap();
+        assert!(file_vault_chosen(&dir));
+        let args = sidecar_args(18787, &dir, false, None);
+        assert!(has_flag(&args, "--vault", "file"), "{args:?}");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn the_startup_error_is_the_nodes_own_last_line_of_this_launch() {
+        let dir = temp_dir("launch-error");
+        let log = dir.join("node.log");
+        fs::write(&log, "ob-node: an old launch failed\n").unwrap();
+        let from = fs::metadata(&log).unwrap().len();
+        assert_eq!(launch_error(&log, from), None, "an earlier launch's error is not this one's");
+        let mut text = fs::read_to_string(&log).unwrap();
+        text.push_str("some progress line\nob-node: The OS keystore is not available (no Secret Service). Use --vault passphrase, or --vault file on a headless machine.\n");
+        fs::write(&log, &text).unwrap();
+        let error = launch_error(&log, from).unwrap();
+        assert!(error.starts_with(KEYSTORE_UNAVAILABLE), "{error}");
+        fs::write(&log, "noise\npanicked at src/main.rs\n").unwrap();
+        assert_eq!(launch_error(&log, 0).unwrap(), "panicked at src/main.rs", "without an ob-node line the last line is used");
         fs::remove_dir_all(dir).unwrap();
     }
 }
