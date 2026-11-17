@@ -180,6 +180,8 @@ Labels: **tested** = code on main with automated tests; **demo** = code runs, bu
 |---|---|---|
 | On-device search | tested (client) | Substring filter. |
 | Seeds, pasted links, remembered peers | tested | Two introduction onions and a document key ship in the binary. The highest verifying head is stored, and its introductions are dialed on the next start. A pasted store address is followed as a replica and every record is checked before use. A directory copy does not replace the node's own store. |
+| Marketplace record | future | Design in [marketplace-record.md](marketplace-record.md): one signed record binding a directory, endorsed moderators, and endorsed labelers into a renderable marketplace, with no server and no traffic through the curator. |
+| Signed catalog index | future | Design in [catalog-index.md](catalog-index.md): a per-store signed listing index and a directory admission snapshot, so a replica cannot lie by omission or staleness and exclusion by a directory is visible. |
 | Eclipse resistance | specified | |
 | PIR search | future | |
 
