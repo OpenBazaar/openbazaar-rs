@@ -25,7 +25,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use openbazaar_escrow::{read_profile, VerifiedProfile};
-use openbazaar_protocol::{Catalog, ModeratorProfile, PublicRuling, Signed};
+use openbazaar_protocol::{Catalog, DisputeOutcome, ModeratorProfile, PublicRuling, Signed, FAVORED_BUYER, FAVORED_VENDOR};
 use serde_json::{json, Value};
 
 use crate::escrow_fixture::{moderator_keys, moderator_mail_key, moderator_record};
@@ -145,6 +145,26 @@ pub(crate) fn count_rulings(moderator: &[u8; 32], list: &[Value]) -> (u32, u32) 
         stores.insert(signed.terms.store_key);
     }
     (rulings.len() as u32, stores.len() as u32)
+}
+
+/// Distinct buyer and vendor wins among the signed outcomes in `list`,
+/// counted by ruling digest.
+pub(crate) fn count_outcomes(moderator: &[u8; 32], list: &[Value]) -> (u32, u32) {
+    let mut buyer = BTreeSet::new();
+    let mut vendor = BTreeSet::new();
+    for entry in list.iter().take(MAX_RULINGS) {
+        let signed =
+            entry.as_str().and_then(|text| unhex(text).ok()).and_then(|bytes| Signed::<DisputeOutcome>::decode(&bytes).ok());
+        let Some(signed) = signed.filter(|signed| signed.terms.moderator_key == *moderator && signed.verify().is_ok()) else {
+            continue;
+        };
+        match signed.terms.favored {
+            FAVORED_BUYER => buyer.insert(signed.terms.ruling_digest),
+            FAVORED_VENDOR => vendor.insert(signed.terms.ruling_digest),
+            _ => continue,
+        };
+    }
+    (buyer.len() as u32, vendor.len() as u32)
 }
 
 /// Sign the demo stores in `catalog` again with `accepted` as their

@@ -47,6 +47,60 @@ pub struct PublicRuling {
 
 pub type SignedPublicRuling = Signed<PublicRuling>;
 
+/// `favored` in a [`DisputeOutcome`]: the buyer was paid.
+pub const FAVORED_BUYER: u8 = 1;
+/// `favored` in a [`DisputeOutcome`]: the vendor was paid.
+pub const FAVORED_VENDOR: u8 = 2;
+
+/// The outcome beside a public ruling: which party the funds went to.
+///
+/// The moderator's signing key signs it. The digest ties it to one ruling
+/// without the ruling bytes, so anyone can tally a moderator's buyer and
+/// vendor wins; nothing in it names a party, a store, or a listing.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DisputeOutcome {
+    pub ruling_digest: [u8; 32],
+    /// [`FAVORED_BUYER`] or [`FAVORED_VENDOR`].
+    pub favored: u8,
+    pub moderator_key: [u8; PUBKEY_LEN],
+}
+
+pub type SignedDisputeOutcome = Signed<DisputeOutcome>;
+
+impl Terms for DisputeOutcome {
+    const TAG: &'static str = "ob/dispute-outcome/v1";
+    const MAGIC: [u8; 4] = *b"OBDO";
+    const VERSION: u8 = 1;
+
+    fn signer(&self) -> [u8; PUBKEY_LEN] {
+        self.moderator_key
+    }
+
+    fn check(&self) -> Result<(), Error> {
+        if self.favored != FAVORED_BUYER && self.favored != FAVORED_VENDOR {
+            return Err(Error::BadTerms("a dispute outcome favors the buyer or the vendor"));
+        }
+        refuse_private(&self.ruling_digest)?;
+        refuse_private(&self.moderator_key)?;
+        Ok(())
+    }
+
+    fn write(&self, writer: &mut Writer) -> Result<(), Error> {
+        writer.bytes(&self.ruling_digest);
+        writer.u8(self.favored);
+        writer.bytes(&self.moderator_key);
+        Ok(())
+    }
+
+    fn read(reader: &mut Reader<'_>) -> Result<Self, Error> {
+        Ok(Self {
+            ruling_digest: reader.array()?,
+            favored: reader.u8()?,
+            moderator_key: reader.array()?,
+        })
+    }
+}
+
 impl Terms for PublicRuling {
     const TAG: &'static str = "ob/public-ruling/v1";
     const MAGIC: [u8; 4] = *b"OBPR";
@@ -293,6 +347,33 @@ mod tests {
             &secret,
         );
         assert!(refused.is_err(), "a name in the record is refused");
+    }
+
+    #[test]
+    fn a_dispute_outcome_round_trips_and_names_only_the_winner() {
+        let (secret, _) = key("moderator");
+        let moderator_key = sign::xonly(&secret);
+        let signed = Signed::sign(
+            DisputeOutcome { ruling_digest: [7; 32], favored: FAVORED_BUYER, moderator_key },
+            &secret,
+        )
+        .unwrap();
+        let bytes = signed.encode().unwrap();
+        assert_eq!(bytes[..4], *b"OBDO");
+        let again = SignedDisputeOutcome::decode(&bytes).unwrap();
+        again.verify().unwrap();
+        assert_eq!(again.terms.favored, FAVORED_BUYER);
+        assert_eq!(again.terms.ruling_digest, [7; 32]);
+    }
+
+    #[test]
+    fn a_dispute_outcome_that_favors_no_party_is_refused() {
+        let (secret, _) = key("moderator");
+        let moderator_key = sign::xonly(&secret);
+        for favored in [0u8, 3, 255] {
+            let refused = Signed::sign(DisputeOutcome { ruling_digest: [7; 32], favored, moderator_key }, &secret);
+            assert!(refused.is_err(), "favored {favored} is refused");
+        }
     }
 
     #[test]

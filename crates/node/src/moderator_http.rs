@@ -13,8 +13,9 @@
 //!
 //! Other nodes, with no token, and never a browser page:
 //!
-//! - `GET /public/moderator`: this node's signed moderator profile and the
-//!   public rulings its identity signed.
+//! - `GET /public/moderator`: this node's signed moderator profile, the
+//!   public rulings its identity signed, and the signed outcomes saying
+//!   which party each ruling paid.
 //! - `GET /public/moderators`: the ids of the moderators this node's stores
 //!   accept, and the signed profiles it holds for them.
 

@@ -29,7 +29,7 @@ use crate::escrow_fixture::MODERATOR_FEE_SATS;
 use crate::escrow_mail::{hex, unhex};
 use crate::escrow_outbox::now_secs;
 use crate::instructions::ESCROW_MAINNET_REFUSAL;
-use crate::moderators::count_rulings;
+use crate::moderators::{count_outcomes, count_rulings};
 use crate::network::NetworkMode;
 use crate::own_listings::StoreError;
 use crate::vault::Vault;
@@ -309,6 +309,7 @@ impl Node {
             return Ok(json!({ "id": null, "published": false, "address": address, "builtIn": builtin }));
         };
         let (rulings, stores) = count_rulings(&id, &self.public_rulings_value());
+        let (buyer_wins, vendor_wins) = count_outcomes(&id, &self.dispute_outcomes_value());
         let slot = self.identity();
         let identity = slot.as_ref().ok_or(StoreError::NotFound)?;
         Ok(json!({
@@ -323,12 +324,13 @@ impl Node {
             // The address in the signed profile, and the one this node has now.
             "publishedAddress": identity.profile.as_ref().map(|profile| profile.profile.address.clone()),
             "address": address,
-            "trackRecord": { "rulings": rulings, "stores": stores },
+            "trackRecord": { "rulings": rulings, "stores": stores, "buyerWins": buyer_wins, "vendorWins": vendor_wins },
             "builtIn": builtin,
         }))
     }
 
-    /// `GET /public/moderator`: the signed profile and the public rulings.
+    /// `GET /public/moderator`: the signed profile, the public rulings, and
+    /// the signed outcomes saying which party each ruling paid.
     pub(crate) fn public_moderator_value(&self) -> Option<Value> {
         if !self.escrow.config.moderates || self.network != NetworkMode::Testnet4 {
             return None;
@@ -336,6 +338,7 @@ impl Node {
         Some(json!({
             "profile": self.own_moderator_profile().map(|profile| hex(&profile.bytes)),
             "rulings": self.public_rulings_value(),
+            "outcomes": self.dispute_outcomes_value(),
         }))
     }
 }

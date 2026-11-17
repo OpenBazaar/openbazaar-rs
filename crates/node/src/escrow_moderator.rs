@@ -70,6 +70,9 @@ struct Case {
     ruling: Option<Vec<u8>>,
     citation: Option<Citation>,
     public_ruling: Option<Vec<u8>>,
+    /// The signed outcome beside the ruling: which party was paid
+    /// ([`openbazaar_escrow::read_dispute_outcome`]). No store, no listing.
+    outcome: Option<Vec<u8>>,
     /// The record of this node's own identity the letter was reviewed
     /// under. `None`: the built-in test moderator's.
     record: Option<Vec<u8>>,
@@ -92,6 +95,7 @@ impl Case {
             "storeKey": self.citation.map(|citation| hex(&citation.store_key)),
             "storeSignature": self.citation.map(|citation| hex(&citation.store_signature)),
             "publicRuling": self.public_ruling.as_deref().map(hex),
+            "outcome": self.outcome.as_deref().map(hex),
             "record": self.record.as_deref().map(hex),
             "tracking": self.tracking.clone(),
         })
@@ -111,6 +115,10 @@ impl Case {
             },
             citation: citation_from(value),
             public_ruling: match value["publicRuling"].as_str() {
+                Some(text) => Some(unhex(text).ok()?),
+                None => None,
+            },
+            outcome: match value["outcome"].as_str() {
                 Some(text) => Some(unhex(text).ok()?),
                 None => None,
             },
@@ -291,6 +299,7 @@ impl Node {
             ruling: None,
             citation,
             public_ruling: None,
+            outcome: None,
             record,
             tracking: None,
         };
@@ -365,6 +374,20 @@ impl Node {
             .collect()
     }
 
+    /// The signed dispute outcomes this node's own identity signed, as hex.
+    /// The built-in moderator's are left out for the same reason as its
+    /// rulings: its keys are public, so they prove nothing about this node.
+    pub(crate) fn dispute_outcomes_value(&self) -> Vec<Value> {
+        let desk = self.moderator_desk();
+        desk.cases
+            .values()
+            .filter(|case| case.record.is_some())
+            .filter_map(|case| case.outcome.as_deref())
+            .take(crate::moderators::MAX_RULINGS)
+            .map(|outcome| json!(hex(outcome)))
+            .collect()
+    }
+
     /// Rule on a reviewed letter and send the ruling to the party that wrote it.
     pub fn rule_dispute(&self, id: &str, body: &Value) -> Result<Value, PayError> {
         self.lock.spend_key()?;
@@ -419,8 +442,9 @@ impl Node {
         let mut desk = self.moderator_desk();
         let case = desk.cases.get_mut(&(*id, favor as u8)).ok_or("the case is gone")?;
         case.ruling = Some(ruling.to_bytes());
+        let (keys, _) = self.case_identity(case.record.as_deref())?;
+        case.outcome = Some(keys.sign_dispute_outcome(&ruling.to_bytes()).map_err(|err| err.to_string())?);
         if let Some(citation) = case.citation {
-            let (keys, _) = self.case_identity(case.record.as_deref())?;
             case.public_ruling = Some(
                 keys.sign_public_ruling(&ruling.to_bytes(), citation.store_key, citation.listing_id)
                     .map_err(|err| err.to_string())?,
@@ -476,6 +500,7 @@ mod tests {
             ruling: None,
             citation: None,
             public_ruling: None,
+            outcome: None,
             record: Some(vec![9; 40]),
             tracking: Some(json!({ "status": "delivered" })),
         };
@@ -484,12 +509,15 @@ mod tests {
         assert_eq!(own.tracking, Some(json!({ "status": "delivered" })), "a case remembers its shipment lookup");
         case.record = None;
         case.tracking = None;
+        case.outcome = None;
         let mut old = case.to_record();
         old.as_object_mut().unwrap().remove("record");
         old.as_object_mut().unwrap().remove("tracking");
+        old.as_object_mut().unwrap().remove("outcome");
         let old = Case::from_record(&old).unwrap();
         assert_eq!((old.record, old.memo.as_str(), old.received), (None, "Never arrived.", 120));
         assert_eq!(old.tracking, None, "a case stored before dispute lookups existed has none");
+        assert_eq!(old.outcome, None, "a case stored before signed outcomes existed has none");
     }
 
     #[test]
