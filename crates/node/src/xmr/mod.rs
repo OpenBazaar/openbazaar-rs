@@ -29,6 +29,9 @@ mod rate;
 mod sale;
 #[cfg(test)]
 mod sale_tests;
+mod send;
+#[cfg(test)]
+mod send_tests;
 #[cfg(test)]
 mod tests;
 
@@ -54,6 +57,7 @@ pub(crate) use checkout::{add_xmr_flags, catalog_response, rail_of};
 pub(crate) use http::response;
 pub(crate) use pay::XmrTerms;
 pub(crate) use sale::{add_terms, follow_seller, payment_from_terms};
+pub(crate) use send::XmrSendTerms;
 
 const WATCH_FILE: &str = "xmr-watch.obv";
 const STATE_FILE: &str = "xmr-state.obv";
@@ -126,6 +130,9 @@ pub(crate) struct XmrNode {
     accepts_path: PathBuf,
     pub(crate) rate: rate::XmrRate,
     jobs: pay::XmrJobs,
+    /// Held while the node wallet signs and broadcasts, so an order payment
+    /// and a send never pick the same outputs.
+    spending: Mutex<()>,
 }
 
 fn guard<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -159,6 +166,7 @@ impl XmrNode {
             accepts_path,
             rate: rate::XmrRate::new(egress),
             jobs: pay::XmrJobs::new(),
+            spending: Mutex::new(()),
         })
     }
 

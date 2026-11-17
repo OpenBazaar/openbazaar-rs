@@ -9,6 +9,8 @@
 //! | `POST /xmr/orders/{id}/pay/quote` | unlocked | | `{quote, ...terms}` |
 //! | `POST /xmr/spend-tickets` | unlocked | `{quote, passphrase}` | `{ticket, ...terms}` |
 //! | `POST /xmr/orders/{id}/pay` | unlocked | `{ticket, confirm?}` | 202, the order with `paying: true` |
+//! | `POST /xmr/wallet/send/quote` | unlocked | `{address, amountPiconero}` | `{quote, ...terms}`, see `send.rs` |
+//! | `POST /xmr/wallet/send` | unlocked | `{quote, passphrase, confirm: true}` | the terms with `txid` |
 //!
 //! Amounts are piconero as decimal strings (`"amountPiconero"`), with the
 //! same amount in XMR alongside (`"amountXmr"`). Errors follow the bitcoin
@@ -48,6 +50,14 @@ pub(crate) fn response(node: &Node, client: &Client, head: &str, method: &str, p
     match (method, rest) {
         ("GET", "/wallet") => wallet(node, origin),
         ("POST", "/wallet/subaddress") => subaddress(node, origin),
+        ("POST", "/wallet/send/quote") => match read_body(body, &["address", "amountPiconero"], origin) {
+            Ok(map) => match node.xmr_send_quote(&map) {
+                Ok(value) => json_body("200 OK", &value, origin),
+                Err(err) => pay_error(err, origin),
+            },
+            Err(response) => response,
+        },
+        ("POST", "/wallet/send") => crate::wallet_send::confirmed_response(node, body, origin, |quote| node.xmr_send_quoted(quote)),
         ("GET", "/stores") => json_body("200 OK", &node.xmr_stores_value(), origin),
         ("PUT", "/stores") => match read_body(body, &["seller", "accept"], origin) {
             Ok(map) => {
