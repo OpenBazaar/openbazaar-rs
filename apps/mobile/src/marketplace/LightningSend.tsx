@@ -14,7 +14,7 @@ export function invoiceRail(network: LnNetwork): SendRail<LnInvoiceQuote> {
     rail: 'lightning',
     title: 'Pay a Lightning invoice',
     network: lnNetworkLabel(network),
-    destination: { label: 'Lightning invoice', placeholder: network === 'signet' ? 'lntbs1…' : 'ln…', multiline: true },
+    destination: { label: 'Lightning invoice', placeholder: network === 'signet' ? 'lntbs1…' : network === 'bitcoin' ? 'lnbc1…' : 'ln…', multiline: true },
     check: input => lnInvoiceProblem(input.destination, network),
     quote: input => quoteLnInvoice(input.destination),
     review: quote => ({
@@ -77,12 +77,12 @@ export function withdrawRail(network: LnNetwork): SendRail<LnWithdrawQuote> {
   }
 }
 
-/** The Lightning wallet's Pay invoice and Withdraw buttons, and their dialogs. Lightning never runs on mainnet. */
+/** The Lightning wallet's Pay invoice and Withdraw buttons, and their dialogs. */
 export function LightningSendButtons({ ln }: { ln: LnStatus }) {
   const { lock } = usePairedNode()
   const [open, setOpen] = useState<'pay' | 'withdraw' | null>(null)
   const network = ln.network
-  if (!network || network === 'bitcoin') return null
+  if (!network || !ln.enabled) return null
   const close = () => setOpen(null)
   return <>
     <button type='button' className='ob-secondary' disabled={!ln.running || !ln.balances?.lightningSats} onClick={() => setOpen('pay')}>Pay invoice</button>

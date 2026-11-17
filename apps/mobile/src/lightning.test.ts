@@ -62,7 +62,7 @@ test('stores and terms keep what the node said', () => {
   assert.throws(() => parseLnTerms({ orderId: 'a1', network: 'signet', amountSats: 1, feeCapSats: 1, expiresInSecs: 1 }))
 })
 
-test('a mainnet node offers no Lightning at checkout, even to a store whose record takes it', () => {
+test('mainnet Lightning is offered only when the node has not blocked it', () => {
   const blocked = 'Lightning on mainnet is disabled until its connections run over Tor; it would reveal this node’s IP address.'
   const stores = [
     { key: 'aa', acceptsLightning: true },
@@ -70,8 +70,10 @@ test('a mainnet node offers no Lightning at checkout, even to a store whose reco
   ]
   assert.deepEqual([...lnStoreKeys(stores, { enabled: true, running: true, network: 'signet' })], ['aa'])
   assert.deepEqual([...lnStoreKeys(stores, { enabled: false, running: false, network: null, blocked })], [])
-  assert.deepEqual([...lnStoreKeys(stores, { enabled: true, running: true, network: 'bitcoin' })], [], 'a node that names mainnet Lightning')
+  assert.deepEqual([...lnStoreKeys(stores, { enabled: true, running: true, network: 'bitcoin', blocked })], [], 'mainnet Lightning the node has refused')
+  assert.deepEqual([...lnStoreKeys(stores, { enabled: true, running: true, network: 'bitcoin' })], ['aa'], 'mainnet Lightning the node has enabled runs over Tor')
   assert.equal(lnBlockedReason(undefined), null)
+  assert.equal(lnBlockedReason({ enabled: true, network: 'bitcoin' }), null)
 
   const status = parseLnStatus({ enabled: false, blocked })
   assert.equal(status.enabled, false)

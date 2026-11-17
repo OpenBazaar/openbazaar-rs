@@ -165,7 +165,7 @@ Labels: **tested** = code on main with automated tests; **demo** = code runs, bu
 | Coin locking between funding rounds | tested | The funding PSBT's inputs are locked from `Open` (24 h, then the open is aborted and the order goes back to offered) and held from the buyer's signatures until broadcast; every payment and bump skips them. Sealed in `coin-locks.obv`. |
 | Vendor-initiated dispute in the node | tested | `POST /escrow/sales/{id}/dispute`; its own mail kind, so it is signed and pinned in the vendor's role. A vendor-won ruling settles on the vendor's node. |
 | Fee bump through the anchor | tested | `POST /escrow/bump` for the buyer's refund or outcome and the vendor's claim or outcome: a CPFP child from the node wallet reaches the asked package rate. Needs the passphrase again and a `maxFeeSats` cap, not a spend ticket (a child pays no recipient). |
-| Moderator and mailbox keys from real records | partly | Vendor mailbox keys and accepted moderators come from signed store records; the buyer refuses terms naming a moderator the store's record does not list. The moderator itself and its mailbox key are still fixtures. |
+| Moderator and mailbox keys from real records | tested | A moderating node's ruling key and mailbox come from its seed (`m/1984'/coin'/7'/0'` and `7'/1'`), sealed in `moderator.obv`, and are signed into a profile other nodes can accept by onion. The buyer still refuses terms naming a moderator the store's record does not list. The built-in testnet moderator stays a public fixture so a testnet store has a default. |
 | `DisputeEnvelope` without ship-to | specified | The protocol type still embeds the order; the node's dispute path does not use it. |
 | Moderator fee on every post-dispute path | tested | Option (a): the vendor claim pays exactly the vendor-wins outputs, moderator fee included. |
 | Presigned fee | tested | The buyer's chain-source estimate times the largest spend's vsize, clamped to the policy floor and cap, carried in the request and signed into the terms. |
@@ -178,7 +178,7 @@ Labels: **tested** = code on main with automated tests; **demo** = code runs, bu
 | Mechanism | Status | Notes |
 |---|---|---|
 | On-device search | tested (client) | Substring filter. |
-| Seeds, pasted links, remembered peers | specified | |
+| Seeds, pasted links, remembered peers | tested | Two introduction onions and a document key ship in the binary. The highest verifying head is stored, and its introductions are dialed on the next start. A pasted store address is followed as a replica and every record is checked before use. A directory copy does not replace the node's own store. |
 | Eclipse resistance | specified | |
 | PIR search | future | |
 
