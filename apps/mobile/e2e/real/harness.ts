@@ -135,6 +135,17 @@ export class TestNode {
     })
   }
 
+  /** The wallet balance the node reports (GET /wallet). */
+  async balance(): Promise<{ spendableSats: number; totalSats: number; confirmedSats: number }> {
+    return (await this.api('GET', '/wallet')).balance
+  }
+
+  /** A new receive address from the node's wallet. */
+  async receiveAddress(): Promise<string> {
+    const r = await this.api('POST', '/wallet/address')
+    return r.address
+  }
+
   follow(store: TestNode) {
     return this.api('POST', '/follows', { url: store.address })
   }
@@ -162,6 +173,17 @@ export async function protectWallet(page: Page, passphrase = PASSPHRASE) {
 
 type Spawn = (name: string, options?: { role?: 'buyer' | 'seller' | null; args?: string[]; bare?: boolean }) => Promise<TestNode>
 
+/** The simulated chain every node in a test shares (e2e/chain.mjs). */
+export type Chain = {
+  url: string
+  height(): number
+  fund(address: string, sats: number, options?: { confirm?: boolean }): string
+  mine(count?: number): number
+  mempool(): string[]
+  tx(txid: string): any
+  paymentsTo(address: string): any[]
+}
+
 export type Guard = {
   /** The node may answer `status` on paths matching `path` in this test. */
   allowStatus(status: number, path: RegExp): void
@@ -173,10 +195,7 @@ export type Guard = {
 
 // nodes.mjs is a plain ES module shared with server.mjs; tests compile to CommonJS.
 const nodes = import('../nodes.mjs') as Promise<any>
-// Same as nodes.mjs: paths the UI server forwards to the node.
-const NODE_ROUTES =
-  /^\/(catalog|rates|network|wallet|pair|orders|checkout|addresses|labelers|content-labels|vendor-labels|listings|directory|follow|lock|unlock|setup|spend-tickets|stores|media|store|sales|follows|home|remote|ln|offers|coupons|xmr|zec)(\/|$)/
-
+const chains = import('../chain.mjs') as Promise<any>
 // Fixed exchange rates and no seed introductions: no outside network calls.
 const DETERMINISTIC_ARGS = ['--fixed-rates', 'BTCUSD=100000,ZECUSD=50', '--no-introductions']
 
@@ -195,15 +214,24 @@ async function attachLogs(info: TestInfo, nodes: TestNode[]) {
   for (const node of nodes) await info.attach(`node-${node.name}.log`, { path: node.logFile, contentType: 'text/plain' }).catch(() => {})
 }
 
-export const test = base.extend<{ spawn: Spawn; guard: Guard; seller: TestNode; buyer: TestNode }>({
-  spawn: async ({}, use, info) => {
+export type Market = { moderator: TestNode; seller: TestNode; buyer: TestNode }
+
+
+export const test = base.extend<{ chain: Chain; spawn: Spawn; guard: Guard; seller: TestNode; buyer: TestNode; market: Market }>({
+  chain: async ({}, use) => {
+    const chain = await (await chains).startChain()
+    await use(chain)
+    await chain.close()
+  },
+
+  spawn: async ({ chain }, use, info) => {
     const started: { node: TestNode; stop: () => Promise<void>; servers: Server[] }[] = []
     await use(async (name, options = {}) => {
       const [port, uiPort] = [await freePort(), await freePort()]
       const logFile = join(info.outputDir, `node-${name}.log`)
       await mkdir(info.outputDir, { recursive: true })
       const { pairToken, startNode, startUi, waitForNode } = await nodes
-      const node = await startNode({ port, uiPort, role: options.role ?? null, logFile, extraArgs: [...DETERMINISTIC_ARGS, ...(options.args ?? [])], chainUrl: process.env.OB_E2E_CHAIN_URL })
+      const node = await startNode({ port, uiPort, role: options.role ?? null, logFile, extraArgs: [...DETERMINISTIC_ARGS, ...(options.args ?? [])], chainUrl: chain.url, pollSecs: 2 })
       const server = startUi({ uiPort, nodePort: port, data: node.data })
       await waitForNode(node)
       const token = await pairToken(node.data)
@@ -240,6 +268,20 @@ export const test = base.extend<{ spawn: Spawn; guard: Guard; seller: TestNode; 
     await use(node)
   },
 
+  // A moderator node (--moderate) that the seller and buyer send disputes to.
+  market: async ({ spawn }, use) => {
+    const moderator = await spawn('moderator', { args: ['--moderate'] })
+    await moderator.setupWallet()
+    const args = ['--moderator', moderator.address]
+    const seller = await spawn('seller', { args })
+    await seller.setupWallet()
+    const store = await seller.openStore('Brook and Pine')
+    const vendor = (key: string) => ['--escrow-vendor', `${key}=${seller.address}`]
+    const buyer = await spawn('buyer', { role: 'buyer', args: [...args, ...vendor(store.name), ...vendor(store.storeKey)] })
+    await buyer.setupWallet()
+    await use({ moderator, seller, buyer })
+  },
+
   guard: [
     // Depends on spawn so its checks run before the nodes stop.
     async ({ page, spawn: _spawn }, use, info) => {
@@ -248,6 +290,7 @@ export const test = base.extend<{ spawn: Spawn; guard: Guard; seller: TestNode; 
       }
       page.route = refuse as Page['route']
       page.context().route = refuse as never
+      const { NODE_ROUTES } = await nodes
       const problems: string[] = []
       const allowed: { status: number; path: RegExp }[] = []
       let dialogOk = false
@@ -279,7 +322,7 @@ export const test = base.extend<{ spawn: Spawn; guard: Guard; seller: TestNode; 
       })
       page.on('response', r => {
         const url = new URL(r.url())
-        if (r.status() < 400 || !NODE_ROUTES.test(url.pathname)) return
+        if (r.status() < 400 || !(NODE_ROUTES as RegExp).test(url.pathname)) return
         if (allowed.some(a => a.status === r.status() && a.path.test(url.pathname))) return
         problems.push(`Node answered ${r.status()} to ${r.request().method()} ${url.pathname}`)
       })

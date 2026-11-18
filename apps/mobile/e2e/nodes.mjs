@@ -12,7 +12,7 @@ export const app = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 export const binary = process.env.OB_NODE_BIN || resolve(app, '../../target/debug/ob-node')
 
 export const NODE_ROUTES =
-  /^\/(catalog|rates|network|wallet|pair|orders|checkout|addresses|labelers|content-labels|vendor-labels|listings|directory|follow|lock|unlock|setup|spend-tickets|stores|media|store|sales|follows|home|remote|ln|offers|coupons|xmr|zec)(\/|$)/
+  /^\/(catalog|rates|network|wallet|pair|orders|checkout|addresses|labelers|content-labels|vendor-labels|listings|directory|follow|lock|unlock|setup|spend-tickets|stores|media|store|sales|follows|home|remote|ln|offers|coupons|xmr|zec|moderator|moderators|reviews|web|version|browser-session|escrow)(\/|$)/
 
 const redact = text => text.replace(/pairing token:[^\n]*/gi, 'pairing token: [redacted]')
 
@@ -21,7 +21,7 @@ const redact = text => text.replace(/pairing token:[^\n]*/gi, 'pairing token: [r
  * the file vault so the OS keychain is never touched. `chainUrl` defaults to
  * the UI server's `/chain`. Resolves once the node answers `/network`.
  */
-export async function startNode({ port, uiPort, role = null, chainUrl, logFile, extraArgs = [], onExit }) {
+export async function startNode({ port, uiPort, role = null, chainUrl, pollSecs, logFile, extraArgs = [], onExit }) {
   const data = await mkdtemp(join(tmpdir(), 'ob-ui-e2e-'))
   if (role) {
     await mkdir(join(data, 'testnet4'), { recursive: true })
@@ -34,7 +34,7 @@ export async function startNode({ port, uiPort, role = null, chainUrl, logFile, 
       '--network', 'testnet4',
       '--data-dir', data,
       '--esplora', chainUrl || `http://127.0.0.1:${uiPort}/chain`,
-      '--poll-secs', process.env.OB_E2E_POLL_SECS || '60',
+      '--poll-secs', String(pollSecs ?? 60),
       '--vault', 'file',
       ...extraArgs
     ],

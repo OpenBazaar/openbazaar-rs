@@ -18,7 +18,14 @@ npm run test:ui   # builds ob-node and the web export when stale, then runs the 
 
 Set `OB_NODE_BIN` to use an existing binary. Seed state through `TestNode` in
 `e2e/real/harness.ts` (`setupWallet`, `openStore`, `addListing`, `follow`, `lock`,
-`unlock`) and keep the UI for what the test is about.
+`unlock`, `receiveAddress`, `balance`) and keep the UI for what the test is about.
+
+The nodes in a test share a simulated testnet4 chain (`e2e/chain.mjs`): an
+Esplora API over real serialized transactions, so wallets sync, sign and
+broadcast as they do against a real server. `chain.fund(address, sats)` pays an
+address, `chain.mine(n)` confirms what was broadcast, and `chain.mempool()` and
+`chain.tx(id)` show what the nodes sent. The `market` fixture adds a `--moderate`
+node and points the seller and buyer at it for escrow and disputes.
 
 **`mocked`** (`playwright.config.ts`, the rest of `e2e/`): checks of UI states with
 some node answers intercepted, described below. Run with `npm run test:e2e`.
