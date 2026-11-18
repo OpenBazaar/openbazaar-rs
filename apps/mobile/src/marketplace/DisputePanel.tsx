@@ -64,7 +64,7 @@ function FeeProof({ fee, moderator }: { fee: DisputeFee; moderator?: string }) {
       ? <p className='ob-page-intro'>Receipt signed by the moderator’s key: {receipt.receivedSats.toLocaleString()} sats received at block {receipt.paidHeight.toLocaleString()}, decision due by block {receipt.dueHeight.toLocaleString()}.</p>
       : <p className='ob-form-error' role='alert'>The receipt this node holds is not signed by the moderator in the escrow terms.</p>
   }
-  if (fee.denial && !verifiedDenial(fee, moderator)) return <p className='ob-form-error' role='alert'>The denial this node holds is not signed by the moderator in the escrow terms.</p>
+  if (fee.denial && !verifiedDenial(fee, moderator, 'buyer')) return <p className='ob-form-error' role='alert'>The denial this node holds is not signed by the moderator in the escrow terms.</p>
   return null
 }
 

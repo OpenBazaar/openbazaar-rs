@@ -39,8 +39,9 @@ test('a fee quote names its rail, and an incomplete one is an error', () => {
 test('the receipt and the denial count only when the moderator in the terms signed them', () => {
   assert.equal(verifiedReceipt(fee({ state: 'paid', receipt: RECEIPT }), MODERATOR)?.receivedSats, 2500)
   assert.equal(verifiedReceipt(fee({ state: 'paid', receipt: RECEIPT }), '8f'.repeat(32)), null)
-  assert.equal(verifiedDenial(fee({ state: 'denied', denial: DENIAL }), MODERATOR), true)
-  assert.equal(verifiedDenial(fee({ state: 'denied', denial: RECEIPT }), MODERATOR), false)
+  assert.equal(verifiedDenial(fee({ state: 'denied', denial: DENIAL }), MODERATOR, 'buyer'), true)
+  assert.equal(verifiedDenial(fee({ state: 'denied', denial: DENIAL }), MODERATOR, 'vendor'), false)
+  assert.equal(verifiedDenial(fee({ state: 'denied', denial: RECEIPT }), MODERATOR, 'buyer'), false)
 })
 
 test('the filer reads what its fee is waiting on', () => {

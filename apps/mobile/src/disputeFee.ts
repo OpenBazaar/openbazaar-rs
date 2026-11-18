@@ -94,10 +94,10 @@ export function verifiedReceipt(fee: DisputeFee, moderator: string): FeeReceiptR
   return fee.receipt ? verifyFeeReceipt(fee.receipt, moderator) : null
 }
 
-/** Whether the moderator's key signed the denial on this fee. */
-export function verifiedDenial(fee: DisputeFee, moderator: string): boolean {
+/** Whether the moderator's key signed a denial of `filer`'s letter on this fee. */
+export function verifiedDenial(fee: DisputeFee, moderator: string, filer: 'buyer' | 'vendor'): boolean {
   const decision = fee.denial ? verifyDisputeDecision(fee.denial, moderator) : null
-  return decision?.decision === 'denied-buyer' || decision?.decision === 'denied-vendor'
+  return decision?.decision === `denied-${filer}`
 }
 
 /** What the filer reads about its fee. `tip` is the chain height, when known. */
