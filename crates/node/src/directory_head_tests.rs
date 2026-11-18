@@ -52,6 +52,8 @@ fn a_fresh_node_takes_the_highest_head_and_marks_the_tip() {
     assert_eq!(heads.last_current, 5_000);
     heads.keep(vec![], Some(6_000)).unwrap();
     assert_eq!(heads.last_current, 5_000, "a pass no source answered does not move the mark");
+    heads.keep(vec![v2(4)], Some(7_000)).unwrap();
+    assert_eq!(heads.last_current, 5_000, "an old introduction cannot have offered new terms");
 }
 
 #[test]
@@ -105,6 +107,13 @@ fn a_version_2_head_never_replaces_version_3_and_is_served_to_old_nodes() {
     assert_eq!(SeedDocument::decode(&heads.head_bytes().unwrap()).unwrap(), head(3, &[]));
     heads.keep(vec![v2(10)], Some(100)).unwrap();
     assert_eq!(sequence(&heads), Some(3));
+
+    let other = TempDir::new();
+    let mut heads = open(&other);
+    heads.accept(v2(3), Some(100)).unwrap();
+    let elsewhere = SeedDocument::sign(3, vec![format!("{}.onion", "b".repeat(56))], standard(), None, &operator()).unwrap();
+    assert!(heads.accept(elsewhere, Some(100)).is_err(), "version 3 at the same sequence must name the same introductions");
+    assert_eq!(heads.document().unwrap().version, 2);
 }
 
 #[test]

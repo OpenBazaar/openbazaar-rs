@@ -89,10 +89,11 @@ impl Heads {
     }
 
     /// Weigh every head one pass fetched, highest sequence first. When a
-    /// source answered and no head is waiting on the chain, the tip becomes
-    /// the last-current height.
+    /// source answered with version 3 and no head is waiting on the chain, the
+    /// tip becomes the last-current height. A version 2 answer cannot carry new
+    /// terms, so it does not show this node was offered them.
     pub(crate) fn keep(&mut self, mut fetched: Vec<SeedDocument>, tip: Option<u32>) -> Result<(), String> {
-        let answered = !fetched.is_empty();
+        let answered = fetched.iter().any(|document| document.version >= 3);
         fetched.sort_by(|a, b| b.sequence.cmp(&a.sequence).then(b.version.cmp(&a.version)));
         let mut waiting = false;
         for candidate in fetched {
@@ -135,7 +136,8 @@ impl Heads {
         if let Some((_, reason)) = self.refused.as_ref().filter(|(sequence, _)| *sequence == candidate.sequence) {
             return Ok(Weighed::Refused(reason.clone()));
         }
-        if candidate.sequence == held.sequence && !(held.version == 2 && candidate.version != 2) {
+        let upgrade = held.version == 2 && candidate.version != 2 && candidate.introductions == held.introductions;
+        if candidate.sequence == held.sequence && !upgrade {
             let bytes = candidate.encode().map_err(|err| err.to_string())?;
             atomic(&self.dir.join(format!("equivocation-{}.obsd", candidate.sequence)), &bytes)?;
             return self.refuse(candidate.sequence, "two different heads were signed at this sequence");
