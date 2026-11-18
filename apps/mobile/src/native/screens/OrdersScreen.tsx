@@ -2,6 +2,7 @@ import { useMemo } from "react";
 import { ScrollView, StyleSheet, Text, View } from "react-native";
 
 import { parseBuyerOrder, type BuyerOrder } from "../../catalog.ts";
+import { disputeFeeText } from "../../disputeFee.ts";
 import { collectionValue } from "../../homeNode/replica.ts";
 import { useSession } from "../session.ts";
 import { Button, Card, formatBtc, LINE, NAVY, Notice, ui } from "../ui.tsx";
@@ -46,6 +47,7 @@ export function OrdersScreen({ onRefresh }: { onRefresh: () => void }) {
               <Text style={ui.muted}>
                 {order.status} · {order.settlement === "escrow" ? "escrow" : "direct"} · {new Date(order.created * 1000).toLocaleDateString()}
               </Text>
+              {order.escrow?.disputeFee ? <Text style={ui.muted}>{disputeFeeText(order.escrow.disputeFee)}</Text> : null}
             </View>
           ))}
         </Card>

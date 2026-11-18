@@ -1,15 +1,30 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { disputeState, parseDisputes, parseDisputeTracking, partyName } from "./moderator.ts";
+import { canDecide, caseFeeText, disputeState, parseDisputes, parseDisputeTracking, partyName } from "./moderator.ts";
 
 const letter = (favors: string, ruled = false) => ({ id: "ab".repeat(16), favors, memo: "No parcel arrived.", outpoint: `${"cd".repeat(32)}:0`, receivedHeight: 160400, ruled });
 
 test("disputes parse as the node sends them", () => {
   const [dispute] = parseDisputes({ disputes: [letter("buyer")] });
-  assert.deepEqual(dispute, { id: "ab".repeat(16), favors: "buyer", memo: "No parcel arrived.", outpoint: `${"cd".repeat(32)}:0`, receivedHeight: 160400, ruled: false, builtIn: false, tracking: null });
+  assert.deepEqual(dispute, { id: "ab".repeat(16), favors: "buyer", memo: "No parcel arrived.", outpoint: `${"cd".repeat(32)}:0`, receivedHeight: 160400, ruled: false, denied: false, builtIn: false, tracking: null, fee: null });
   assert.equal(parseDisputes({ disputes: [{ ...letter("buyer"), builtIn: true }] })[0].builtIn, true);
   assert.deepEqual(parseDisputes({ disputes: [] }), []);
+});
+
+test("a filing fee gates the decision until it is paid, and a denial is its own state", () => {
+  const fee = (state: string, extra: Record<string, unknown> = {}) => parseDisputes({ disputes: [{ ...letter("buyer"), fee: { state, amountSats: 2500, dueHeight: 160600, overdue: false, ...extra } }] })[0];
+  assert.equal(canDecide(fee("requested")), false);
+  assert.equal(canDecide(fee("expired")), false);
+  assert.equal(canDecide(fee("paid")), true);
+  assert.equal(canDecide(fee("free")), true);
+  assert.equal(canDecide(parseDisputes({ disputes: [letter("buyer")] })[0]), true, "an escrow from before filing fees");
+  assert.equal(fee("paid", { paidBy: "buyer", rail: "ln" }).fee?.paidBy, "buyer");
+  assert.equal(fee("refunded").fee, null);
+  assert.equal(caseFeeText(fee("paid", { rail: "onchain" }).fee), "Paid 2,500 sats on-chain · decision due by block 160,600");
+  assert.match(caseFeeText(fee("paid", { overdue: true }).fee), /overdue/);
+  const denied = { ...fee("paid"), denied: true };
+  assert.equal(disputeState(denied, [denied]), "denied");
 });
 
 const lookedUp = () => ({

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Alert, Text, View } from "react-native";
 
-import { disputeState, fetchDisputes, partyName, ruleDispute, type Dispute } from "../../moderator.ts";
+import { canDecide, caseFeeText, denyDispute, disputeState, fetchDisputes, partyName, ruleDispute, type Dispute } from "../../moderator.ts";
 import { isLocked } from "../../walletLock.ts";
 import { Button, Card, Notice, Row, ui } from "../ui.tsx";
 
@@ -24,13 +24,13 @@ export function Disputes({ unlocked }: { unlocked: boolean }) {
   }, []);
   useEffect(() => void load(), [load]);
 
-  const rule = async (dispute: Dispute) => {
+  const decide = async (dispute: Dispute, deny: boolean) => {
     setRuling(keyOf(dispute));
     setMessage(null);
     try {
-      await ruleDispute(dispute);
+      await (deny ? denyDispute : ruleDispute)(dispute);
     } catch (err) {
-      setMessage(isLocked(err) ? "Unlock the node's wallet, then rule." : failure(err, "The ruling was not sent."));
+      setMessage(isLocked(err) ? "Unlock the node's wallet, then decide." : failure(err, deny ? "The denial was not sent." : "The ruling was not sent."));
     }
     await load();
     setRuling(null);
@@ -40,7 +40,13 @@ export function Disputes({ unlocked }: { unlocked: boolean }) {
     const effect = dispute.favors === "buyer" ? "The buyer can then take the escrowed coins back." : "The seller can then take the escrowed coins.";
     Alert.alert(`Rule for the ${party}?`, `${effect} A ruling cannot be changed, and it closes the other party's letter about this escrow.`, [
       { text: "Cancel", style: "cancel" },
-      { text: `Rule for the ${party}`, style: "destructive", onPress: () => void rule(dispute) },
+      { text: `Rule for the ${party}`, style: "destructive", onPress: () => void decide(dispute, false) },
+    ]);
+  };
+  const confirmDenial = (dispute: Dispute) => {
+    Alert.alert(`Deny the ${partyName(dispute.favors)}'s letter?`, "A denial is final and the filing fee is kept. Nothing is paid from the escrow, and the other party's letter stays open.", [
+      { text: "Cancel", style: "cancel" },
+      { text: "Deny", style: "destructive", onPress: () => void decide(dispute, true) },
     ]);
   };
 
@@ -50,7 +56,7 @@ export function Disputes({ unlocked }: { unlocked: boolean }) {
       {message ? <Notice tone="error" text={message} /> : null}
       {disputes && !disputes.length ? <Notice text="No dispute has reached this node." /> : null}
       {disputes?.map(dispute => (
-        <DisputeItem key={keyOf(dispute)} dispute={dispute} all={disputes} unlocked={unlocked} busy={ruling === keyOf(dispute)} onRule={() => confirm(dispute)} />
+        <DisputeItem key={keyOf(dispute)} dispute={dispute} all={disputes} unlocked={unlocked} busy={ruling === keyOf(dispute)} onRule={() => confirm(dispute)} onDeny={() => confirmDenial(dispute)} />
       ))}
       {disputes?.some(dispute => disputeState(dispute, disputes) === "open") && !unlocked ? <Text style={ui.muted}>Unlock the node's wallet above to rule.</Text> : null}
       <Button label="Check for new disputes" kind="plain" onPress={() => void load()} />
@@ -58,7 +64,7 @@ export function Disputes({ unlocked }: { unlocked: boolean }) {
   );
 }
 
-function DisputeItem({ dispute, all, unlocked, busy, onRule }: { dispute: Dispute; all: Dispute[]; unlocked: boolean; busy: boolean; onRule: () => void }) {
+function DisputeItem({ dispute, all, unlocked, busy, onRule, onDeny }: { dispute: Dispute; all: Dispute[]; unlocked: boolean; busy: boolean; onRule: () => void; onDeny: () => void }) {
   const party = partyName(dispute.favors);
   const state = disputeState(dispute, all);
   return (
@@ -70,9 +76,13 @@ function DisputeItem({ dispute, all, unlocked, busy, onRule }: { dispute: Disput
       <Row label="Escrow" value={shortId(dispute.id)} />
       <Row label="Funding" value={shortId(dispute.outpoint)} />
       <Row label="Arrived at block" value={String(dispute.receivedHeight)} />
+      {dispute.fee ? <Row label="Filing fee" value={caseFeeText(dispute.fee)} /> : null}
       {state === "granted" ? <Notice text={`Ruled for the ${party}.`} /> : null}
+      {state === "denied" ? <Notice text="Denied. Final; the filing fee is kept." /> : null}
       {state === "lost" ? <Notice text="Closed. The ruling on this escrow went to the other party." /> : null}
-      {state === "open" ? <Button label={`Rule for the ${party}`} busy={busy} disabled={!unlocked} onPress={onRule} /> : null}
+      {state === "open" && !canDecide(dispute) ? <Text style={ui.muted}>Waiting for the {party} to pay the filing fee.</Text> : null}
+      {state === "open" && canDecide(dispute) ? <Button label={`Rule for the ${party}`} busy={busy} disabled={!unlocked} onPress={onRule} /> : null}
+      {state === "open" && canDecide(dispute) && dispute.fee ? <Button label="Deny this letter" kind="plain" busy={busy} disabled={!unlocked} onPress={onDeny} /> : null}
     </View>
   );
 }

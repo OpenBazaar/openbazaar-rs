@@ -6,7 +6,7 @@ import { schnorr } from "@noble/curves/secp256k1.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 
 import { parseCatalog, storeRatingOf } from "./catalog.ts";
-import { bytesToHex, hexToBytes, verifiedListing, verifyListingRecord, verifyStoreRecord } from "./records.ts";
+import { bytesToHex, hexToBytes, verifiedListing, verifyDisputeDecision, verifyFeeReceipt, verifyListingRecord, verifyStoreRecord } from "./records.ts";
 
 type Raw = { stores: Record<string, unknown>[]; listings: Record<string, unknown>[] };
 const raw = (): Raw => JSON.parse(readFileSync(new URL("./catalog.json", import.meta.url), "utf8")) as Raw;
@@ -186,4 +186,34 @@ test("a catalog from a node that refuses Lightning names why", () => {
   assert.equal(catalog.lightningBlocked, blocked);
   assert.ok(catalog.listings.every((item) => !item.acceptsLightning));
   assert.equal(parseCatalog(raw()).lightningBlocked, null);
+});
+
+// Signed by crates/protocol with the secret [7; 32].
+const MODERATOR = "989c0b76cb563971fdc9bef31ec06c3560f3249d6ee9e5d83c57625596e05f6f";
+const ON_CHAIN_RECEIPT = "4f42465201989c0b76cb563971fdc9bef31ec06c3560f3249d6ee9e5d83c57625596e05f6f1111111111111111111111111111111111111111111111111111111111111111222222222222222222222222222222222222222222222222222222222222222202333333333333333333333333333333333333333333333333333333333333333301000000c409000000000000780000002c010000ccf956344b339203b6e19a51cb854c1efdbc914a8d94214b60e23b45951e99125da536c4225726aa546e8caf510f89e82b798c9ed46b008d6ace26154158b7d2";
+const LN_RECEIPT = "4f42465201989c0b76cb563971fdc9bef31ec06c3560f3249d6ee9e5d83c57625596e05f6f11111111111111111111111111111111111111111111111111111111111111112222222222222222222222222222222222222222222222222222222222222222014444444444444444444444444444444444444444444444444444444444444444c409000000000000780000002c0100008834a2eceb5b6aa924f38434d6d49b74aee0309b5e33e72c1baebe2ea192e66906eb559d74965c81a9ce6b67ba4dd500217f0c715aaf7aa889e8ebfdd8a5ca4c";
+const DENIAL = "4f42444401989c0b76cb563971fdc9bef31ec06c3560f3249d6ee9e5d83c57625596e05f6f11111111111111111111111111111111111111111111111111111111111111110300000000000000000000000000000000000000000000000000000000000000005e2f1a15d12c2c4e53d01057269ba75c0b8a7ea98556f7991e542331ee990872dbf724ebbdb39a5279094af1e30d89571f940684ba513f7e013f4ca1f91ec64b";
+
+test("a filing fee receipt verifies against the moderator's key, as the node signs it", () => {
+  const receipt = verifyFeeReceipt(ON_CHAIN_RECEIPT, MODERATOR);
+  assert.deepEqual(receipt, {
+    key: MODERATOR,
+    caseId: "11".repeat(32),
+    requestDigest: "22".repeat(32),
+    payment: { rail: "onchain", txid: "33".repeat(32), vout: 1 },
+    receivedSats: 2500,
+    paidHeight: 120,
+    dueHeight: 300,
+  });
+  assert.deepEqual(verifyFeeReceipt(LN_RECEIPT, MODERATOR)?.payment, { rail: "ln", paymentHash: "44".repeat(32) });
+  assert.equal(verifyFeeReceipt(ON_CHAIN_RECEIPT, "8f".repeat(32)), null, "another moderator's key");
+  assert.equal(verifyFeeReceipt(flip(ON_CHAIN_RECEIPT, 140), MODERATOR), null, "a changed amount");
+  assert.equal(verifyFeeReceipt(DENIAL, MODERATOR), null, "a decision is not a receipt");
+  assert.equal(verifyFeeReceipt(`${ON_CHAIN_RECEIPT}00`, MODERATOR), null);
+});
+
+test("a denial verifies as a final decision on the buyer's letter", () => {
+  assert.deepEqual(verifyDisputeDecision(DENIAL, MODERATOR), { key: MODERATOR, caseId: "11".repeat(32), decision: "denied-buyer", rulingDigest: "00".repeat(32) });
+  assert.equal(verifyDisputeDecision(flip(DENIAL, 70), MODERATOR), null);
+  assert.equal(verifyDisputeDecision(LN_RECEIPT, MODERATOR), null);
 });

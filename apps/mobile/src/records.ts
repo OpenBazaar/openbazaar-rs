@@ -388,3 +388,60 @@ export function verifiedListings(
   const listings = items.map((item) => verifiedListing(item, storeKeys, xmrStores, lnStores, zecStores)).filter((item): item is ListingHeader => item !== null);
   return { listings, rejected: items.length - listings.length };
 }
+
+const FEE_RECEIPT_TAG = "ob/dispute-fee-receipt/v1";
+const DISPUTE_DECISION_TAG = "ob/dispute-decision/v1";
+
+/** A moderator's signed receipt for a dispute filing fee (`OBFR`). */
+export type FeeReceiptRecord = {
+  key: string;
+  caseId: string;
+  requestDigest: string;
+  payment: { rail: "ln"; paymentHash: string } | { rail: "onchain"; txid: string; vout: number };
+  receivedSats: number;
+  paidHeight: number;
+  dueHeight: number;
+};
+
+/** A moderator's signed decision on a dispute letter (`OBDD`): a ruling or a final denial. */
+export type DisputeDecisionRecord = {
+  key: string;
+  caseId: string;
+  decision: "buyer" | "vendor" | "denied-buyer" | "denied-vendor";
+  rulingDigest: string;
+};
+
+const DECISIONS = { 1: "buyer", 2: "vendor", 3: "denied-buyer", 4: "denied-vendor" } as const;
+
+/// A fee receipt that `moderator`'s key signed, or null.
+export function verifyFeeReceipt(hex: unknown, moderator: string): FeeReceiptRecord | null {
+  const bytes = typeof hex === "string" ? hexToBytes(hex) : null;
+  const checked = bytes && signed(bytes, FEE_RECEIPT_TAG, (reader): FeeReceiptRecord => {
+    reader.magic("OBFR", [1]);
+    const key = reader.hex(32);
+    const caseId = reader.hex(32);
+    const requestDigest = reader.hex(32);
+    const rail = reader.u8();
+    // A txid is kept in its internal byte order; people read it reversed.
+    const payment = rail === 1 ? { rail: "ln" as const, paymentHash: reader.hex(32) }
+      : rail === 2 ? { rail: "onchain" as const, txid: bytesToHex(reader.take(32).slice().reverse()), vout: reader.u32() }
+      : null;
+    if (!payment) throw new Error("rail");
+    return { key, caseId, requestDigest, payment, receivedSats: reader.u64(), paidHeight: reader.u32(), dueHeight: reader.u32() };
+  });
+  return checked && checked.record.key === moderator ? checked.record : null;
+}
+
+/// A dispute decision that `moderator`'s key signed, or null.
+export function verifyDisputeDecision(hex: unknown, moderator: string): DisputeDecisionRecord | null {
+  const bytes = typeof hex === "string" ? hexToBytes(hex) : null;
+  const checked = bytes && signed(bytes, DISPUTE_DECISION_TAG, (reader): DisputeDecisionRecord => {
+    reader.magic("OBDD", [1]);
+    const key = reader.hex(32);
+    const caseId = reader.hex(32);
+    const decision = DECISIONS[reader.u8() as keyof typeof DECISIONS];
+    if (!decision) throw new Error("decision");
+    return { key, caseId, decision, rulingDigest: reader.hex(32) };
+  });
+  return checked && checked.record.key === moderator ? checked.record : null;
+}

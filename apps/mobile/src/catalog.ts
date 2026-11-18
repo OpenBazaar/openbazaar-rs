@@ -5,6 +5,7 @@ import { lnBlockedReason, lnCatalogNetwork, lnStoreKeys, parseLnInvoice, type Ln
 import { xmrCatalogNetwork, type XmrNetwork } from "./xmr.ts";
 import { parseShipmentTracking, type ShipmentTracking } from "./shipment.ts";
 import { parseMessages, type OrderMessage } from "./messages.ts";
+import { parseDisputeFee, parseFeeKind, type DisputeFee, type FeeKind } from "./disputeFee.ts";
 
 // The shop dials only this origin. A query parameter, settings field, seed,
 // peer, or vendor address cannot point it anywhere else. Paired requests send
@@ -274,6 +275,10 @@ export type EscrowReceipt = {
   signaturesRequired: number;
   /** The fee in the chosen moderator's signed record, in sats. */
   moderatorFeeSats?: number;
+  /** `filing`: paid by whoever opens a dispute. `ruling`: out of the escrow, on escrows from before filing fees. */
+  feeKind?: FeeKind;
+  /** This buyer's own filing fee, once it has opened a dispute. */
+  disputeFee?: DisputeFee | null;
   /** The moderator the buyer chose. The key is who it is; the name is a label. Absent on older orders. */
   moderator?: { id: string; name: string; builtIn: boolean };
 };
@@ -1243,6 +1248,8 @@ function parseEscrow(value: unknown): EscrowReceipt | null {
     outpoint: typeof escrow.outpoint === "string" ? escrow.outpoint : "",
     signaturesRequired: typeof escrow.signaturesRequired === "number" ? requiredNumber(escrow.signaturesRequired) : 0,
     ...(typeof escrow.moderatorFeeSats === "number" ? { moderatorFeeSats: requiredNumber(escrow.moderatorFeeSats) } : {}),
+    ...(parseFeeKind(escrow.feeKind) ? { feeKind: parseFeeKind(escrow.feeKind) } : {}),
+    ...(escrow.disputeFee !== undefined ? { disputeFee: parseDisputeFee(escrow.disputeFee) } : {}),
   };
 }
 

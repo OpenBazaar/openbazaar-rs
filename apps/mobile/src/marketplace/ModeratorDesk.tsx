@@ -1,6 +1,6 @@
 import { useRef, useState } from "react";
 import { servedByHomeNode, signOut } from "../homeNode/transport";
-import { disputeState, fetchDisputes, partyName, ruleDispute, type Dispute } from "../moderator";
+import { canDecide, caseFeeText, denyDispute, disputeState, fetchDisputes, partyName, ruleDispute, type Dispute } from "../moderator";
 import { DisputeShipment } from "./DisputeShipment";
 import { useNodeResource } from "../useNodeResource";
 import { isLocked, lockWallet } from "../walletLock";
@@ -15,7 +15,7 @@ type Case = { id: string; letters: Dispute[]; resolved: boolean };
 function casesOf(disputes: Dispute[]): Case[] {
   const groups = new Map<string, Dispute[]>();
   for (const letter of disputes) groups.set(letter.id, [...(groups.get(letter.id) ?? []), letter]);
-  return [...groups].map(([id, letters]) => ({ id, letters, resolved: letters.some(letter => letter.ruled) }));
+  return [...groups].map(([id, letters]) => ({ id, letters, resolved: letters.some(letter => letter.ruled) || letters.every(letter => letter.denied) }));
 }
 const shortId = (id: string) => `${id.slice(0, 8)}…${id.slice(-6)}`;
 
@@ -31,6 +31,7 @@ export function ModeratorDesk({ onShop }: { onShop: () => void }) {
   const [refreshing, setRefreshing] = useState(false);
   const [locking, setLocking] = useState(false);
   const [proposal, setProposal] = useState<Dispute | null>(null);
+  const [action, setAction] = useState<"rule" | "deny">("rule");
   const [ruling, setRuling] = useState(false);
   const submitting = useRef(false);
   const [dark, setDark] = useState(() => document.documentElement.dataset.obTheme === "dark");
@@ -40,7 +41,7 @@ export function ModeratorDesk({ onShop }: { onShop: () => void }) {
   const openCount = cases.filter(item => !item.resolved).length;
   const unlocked = lock.data?.state === "unlocked" && !lock.error;
   const proposed = proposal && resource.data?.find(letter => letter.id === proposal.id && letter.favors === proposal.favors);
-  const canRule = !!proposed && disputeState(proposed, resource.data ?? []) === "open" && unlocked && !resource.error && !resource.loading;
+  const canRule = !!proposed && disputeState(proposed, resource.data ?? []) === "open" && canDecide(proposed) && unlocked && !resource.error && !resource.loading;
 
   async function refresh() {
     if (refreshing) return;
@@ -62,11 +63,11 @@ export function ModeratorDesk({ onShop }: { onShop: () => void }) {
     setRuling(true);
     setError("");
     try {
-      await ruleDispute(proposal);
+      await (action === "deny" ? denyDispute : ruleDispute)(proposal);
       setProposal(null);
     } catch (err) {
       if (isLocked(err)) await lock.refresh();
-      setError(isLocked(err) ? "The wallet locked. Unlock it before issuing a ruling." : failed(err, "The ruling was not sent."));
+      setError(isLocked(err) ? "The wallet locked. Unlock it before deciding." : failed(err, action === "deny" ? "The denial was not sent." : "The ruling was not sent."));
     } finally {
       await resource.refresh();
       submitting.current = false;
@@ -111,19 +112,20 @@ export function ModeratorDesk({ onShop }: { onShop: () => void }) {
             <details className="ob-case-identifiers"><summary>Escrow and funding references</summary><CopyPaymentValue label="Escrow ID" value={selected.id}/>{[...new Set(selected.letters.map(letter => letter.outpoint))].map(outpoint => <CopyPaymentValue key={outpoint} label="Funding outpoint" value={outpoint}/>)}</details>
             <div className="ob-case-letters">{selected.letters.map(letter => {
               const state = disputeState(letter, resource.data ?? []);
-              return <section className="ob-case-letter" key={`${letter.id}-${letter.favors}`} aria-label={`${partyName(letter.favors)} statement`}><header><h3>{letter.favors === "buyer" ? "Buyer requests a refund" : "Seller requests payment"}</h3><span>Received at block {letter.receivedHeight.toLocaleString()}</span></header><p className="ob-case-memo">{letter.memo || "No statement was included in this letter."}</p>
-                <footer>{state === "open" ? <button className="ob-secondary" disabled={!unlocked || !!resource.error || ruling} onClick={() => { setError(""); setProposal(letter); }}>Review ruling for {partyName(letter.favors)}</button> : <strong className="ob-case-outcome">{state === "granted" ? `Ruled for the ${partyName(letter.favors)}` : "Closed by the ruling for the other party"}</strong>}</footer>
+              return <section className="ob-case-letter" key={`${letter.id}-${letter.favors}`} aria-label={`${partyName(letter.favors)} statement`}><header><h3>{letter.favors === "buyer" ? "Buyer requests a refund" : "Seller requests payment"}</h3><span>Received at block {letter.receivedHeight.toLocaleString()}</span></header><p className="ob-case-memo">{letter.memo || "No statement was included in this letter."}</p>{letter.fee && <p className={`ob-case-fee ${letter.fee.overdue ? "is-overdue" : ""}`}>{caseFeeText(letter.fee)}</p>}
+                <footer>{state === "open" && !canDecide(letter) ? <strong className="ob-case-outcome">Waiting for the {partyName(letter.favors)} to pay the filing fee</strong> : state === "open" ? <><button className="ob-secondary" disabled={!unlocked || !!resource.error || ruling} onClick={() => { setError(""); setAction("rule"); setProposal(letter); }}>Review ruling for {partyName(letter.favors)}</button>{letter.fee && <button className="ob-text-link" disabled={!unlocked || !!resource.error || ruling} onClick={() => { setError(""); setAction("deny"); setProposal(letter); }}>Deny this letter</button>}</> : <strong className="ob-case-outcome">{state === "granted" ? `Ruled for the ${partyName(letter.favors)}` : state === "denied" ? "Denied. Final; the filing fee is kept." : "Closed by the ruling for the other party"}</strong>}</footer>
               </section>;
             })}</div>
             <DisputeShipment key={selected.id} id={selected.id} tracking={selected.letters.map(letter => letter.tracking).find(Boolean) ?? null} onLooked={() => resource.refresh()}/>
             {!unlocked && !selected.resolved && <p className="ob-moderator-inline-note">Unlock the wallet using the control above before issuing a ruling.</p>}
-            {!selected.resolved && <p className="ob-case-final-note">A final ruling applies to this escrow and closes both parties’ letters.</p>}
+            {!selected.resolved && <p className="ob-case-final-note">A final ruling applies to this escrow and closes both parties’ letters. A denial closes only the letter it answers.</p>}
           </article>}
         </div>}
         <p className="ob-moderator-poll-note">Updates every 15 seconds while this view is visible.</p>
       </section>}
       {security && <Dialog label="Wallet security" onCancel={() => setSecurity(false)}><h2>Wallet security</h2><WalletLockPanel lock={lock} purpose="moderator"/><div className="ob-form-actions"><button className="ob-secondary" onClick={() => setSecurity(false)}>Done</button></div></Dialog>}
-      {proposal && <Dialog label="Confirm final ruling" onCancel={() => { if (!ruling) setProposal(null); }}><h2>Confirm final ruling</h2><p>Rule for the <strong>{partyName(proposal.favors)}</strong> in case <strong>{shortId(proposal.id)}</strong>?</p><p>{proposal.favors === "buyer" ? "The buyer can claim the escrowed funds back." : "The seller can claim the escrowed funds."} This ruling cannot be changed and closes the other party’s letter.</p><p className="ob-moderator-inline-note">This action signs a final ruling with this node’s wallet.</p>{!canRule && <p className="ob-form-error" role="alert">{!unlocked ? "The wallet must be unlocked to confirm this ruling." : "This case changed or its status could not be verified. Refresh disputes before continuing."}</p>}{error && <p className="ob-form-error" role="alert">{error}</p>}<div className="ob-form-actions"><button className="ob-secondary" disabled={ruling} onClick={() => setProposal(null)}>Cancel</button><button className="ob-primary" disabled={ruling || !canRule} onClick={() => void confirmRuling()}>{ruling ? "Signing ruling…" : `Confirm ruling for ${partyName(proposal.favors)}`}</button></div></Dialog>}
+      {proposal && action === "deny" && <Dialog label="Confirm denial" onCancel={() => { if (!ruling) setProposal(null); }}><h2>Deny this letter?</h2><p>Deny the <strong>{partyName(proposal.favors)}</strong>’s letter in case <strong>{shortId(proposal.id)}</strong>?</p><p>The denial is final and the filing fee is kept. Nothing is paid from the escrow; it stays where its timelocks send it. The other party’s letter, if any, stays open.</p><p className="ob-moderator-inline-note">This action signs a final denial with this node’s wallet.</p>{!canRule && <p className="ob-form-error" role="alert">{!unlocked ? "The wallet must be unlocked to confirm this denial." : "This case changed or its status could not be verified. Refresh disputes before continuing."}</p>}{error && <p className="ob-form-error" role="alert">{error}</p>}<div className="ob-form-actions"><button className="ob-secondary" disabled={ruling} onClick={() => setProposal(null)}>Cancel</button><button className="ob-primary" disabled={ruling || !canRule} onClick={() => void confirmRuling()}>{ruling ? "Signing denial…" : "Confirm denial"}</button></div></Dialog>}
+      {proposal && action === "rule" && <Dialog label="Confirm final ruling" onCancel={() => { if (!ruling) setProposal(null); }}><h2>Confirm final ruling</h2><p>Rule for the <strong>{partyName(proposal.favors)}</strong> in case <strong>{shortId(proposal.id)}</strong>?</p><p>{proposal.favors === "buyer" ? "The buyer can claim the escrowed funds back." : "The seller can claim the escrowed funds."} This ruling cannot be changed and closes the other party’s letter.</p><p className="ob-moderator-inline-note">This action signs a final ruling with this node’s wallet.</p>{!canRule && <p className="ob-form-error" role="alert">{!unlocked ? "The wallet must be unlocked to confirm this ruling." : "This case changed or its status could not be verified. Refresh disputes before continuing."}</p>}{error && <p className="ob-form-error" role="alert">{error}</p>}<div className="ob-form-actions"><button className="ob-secondary" disabled={ruling} onClick={() => setProposal(null)}>Cancel</button><button className="ob-primary" disabled={ruling || !canRule} onClick={() => void confirmRuling()}>{ruling ? "Signing ruling…" : `Confirm ruling for ${partyName(proposal.favors)}`}</button></div></Dialog>}
     </div>
   </main>;
 }

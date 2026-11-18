@@ -1,11 +1,15 @@
 import { paired } from "./catalog.ts";
+import { parseFeeKind, type FeeKind } from "./disputeFee.ts";
 
 // Moderators as the node knows them. A moderator is its key: the node checks
 // every profile's signature before it lists one, and the name is only a
 // label. The track record is what the node counted from rulings that key
 // signed, never a number the moderator claims.
 
-export type TrackRecord = { rulings: number; stores: number; checkedAt: number };
+/** Filing-fee cases, counted from the case-accepted and decision records the key signed. */
+export type CaseCounts = { accepted: number; decided: number; denied: number; overdue: number };
+
+export type TrackRecord = { rulings: number; stores: number; checkedAt: number; cases: CaseCounts };
 
 export type KnownModerator = {
   /** The moderator's key, in hex. This, not the name, is who the moderator is. */
@@ -15,6 +19,8 @@ export type KnownModerator = {
   terms: string;
   languages: string[];
   feeSats: number;
+  /** `filing`: paid by whoever opens a dispute. `ruling`: an output of each ruling, from before filing fees. */
+  feeKind: FeeKind;
   /** Where dispute letters go. `null`: this node has no address for it. */
   address: string | null;
   /** The built-in test moderator, whose keys are public. */
@@ -35,12 +41,15 @@ export type OwnModerator = {
   languages: string[];
   feeSats: number;
   minFeeSats: number;
+  /** Why filers would pay this fee on-chain rather than over Lightning, if they would. */
+  feeWarning: string | null;
   /** A signed profile is being served. */
   published: boolean;
   /** The address other nodes reach this one at, once it has one. */
   address: string | null;
   rulings: number;
   stores: number;
+  cases: CaseCounts;
   builtIn: { id: string; name: string } | null;
 };
 
@@ -49,6 +58,10 @@ export type ProfileEdit = { name: string; description: string; terms: string; la
 const record = (value: unknown) => (value && typeof value === "object" ? value : {}) as Record<string, unknown>;
 const text = (value: unknown) => (typeof value === "string" ? value : "");
 const count = (value: unknown) => (typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : 0);
+const casesOf = (value: unknown): CaseCounts => {
+  const r = record(value);
+  return { accepted: count(r.accepted), decided: count(r.decided), denied: count(r.denied), overdue: count(r.overdue) };
+};
 const tags = (value: unknown) => (Array.isArray(value) ? value.filter((tag): tag is string => typeof tag === "string") : []);
 
 function parseModerator(value: unknown): KnownModerator {
@@ -62,10 +75,11 @@ function parseModerator(value: unknown): KnownModerator {
     terms: text(r.terms),
     languages: tags(r.languages),
     feeSats: count(r.feeSats),
+    feeKind: parseFeeKind(r.feeKind) ?? "ruling",
     address: typeof r.address === "string" ? r.address : null,
     builtIn: r.builtIn === true,
     accepted: r.accepted === true,
-    trackRecord: track ? { rulings: count(track.rulings), stores: count(track.stores), checkedAt: count(track.checkedAt) } : null,
+    trackRecord: track ? { rulings: count(track.rulings), stores: count(track.stores), checkedAt: count(track.checkedAt), cases: casesOf(track.cases) } : null,
   };
 }
 
@@ -88,10 +102,12 @@ export function parseOwnModerator(value: unknown): OwnModerator {
     languages: tags(r.languages),
     feeSats: count(r.feeSats),
     minFeeSats: count(r.minFeeSats),
+    feeWarning: typeof r.feeWarning === "string" && r.feeWarning ? r.feeWarning : null,
     published: r.published,
     address: typeof r.address === "string" ? r.address : null,
     rulings: count(track.rulings),
     stores: count(track.stores),
+    cases: casesOf(track.cases),
     builtIn: typeof builtIn.id === "string" ? { id: builtIn.id, name: text(builtIn.name) } : null,
   };
 }
@@ -104,8 +120,24 @@ export function trackRecordText(moderator: Pick<KnownModerator, "builtIn" | "tra
   if (moderator.builtIn) return "Test moderator with public keys. No track record.";
   const track = moderator.trackRecord;
   if (!track) return "Track record not checked yet.";
-  if (!track.rulings) return "No public rulings yet.";
-  return `${track.rulings} signed public ${track.rulings === 1 ? "ruling" : "rulings"} across ${track.stores} ${track.stores === 1 ? "store" : "stores"}.`;
+  const rulings = track.rulings ? `${track.rulings} signed public ${track.rulings === 1 ? "ruling" : "rulings"} across ${track.stores} ${track.stores === 1 ? "store" : "stores"}.` : "No public rulings yet.";
+  const cases = caseCountsText(track.cases);
+  return cases ? `${rulings} ${cases}` : rulings;
+}
+
+/** The filing-fee cases in words, or "" when there are none. */
+export function caseCountsText(cases: CaseCounts): string {
+  if (!cases.accepted && !cases.decided) return "";
+  const parts = [`${cases.accepted} paid ${cases.accepted === 1 ? "case" : "cases"}`, `${cases.decided} decided`];
+  if (cases.denied) parts.push(`${cases.denied} denied`);
+  if (cases.overdue) parts.push(`${cases.overdue} overdue`);
+  return `${parts.join(", ")}.`;
+}
+
+/** What one dispute with `moderator` costs, as a buyer or seller compares them. */
+export function feeText(moderator: Pick<KnownModerator, "feeKind" | "feeSats">): string {
+  if (moderator.feeKind === "ruling") return `Fee ${moderator.feeSats.toLocaleString()} sats if a dispute is ruled`;
+  return moderator.feeSats ? `Opening a dispute costs ${moderator.feeSats.toLocaleString()} sats` : "No filing fee";
 }
 
 /** Language tags as the owner types them: "en, pt-br". */

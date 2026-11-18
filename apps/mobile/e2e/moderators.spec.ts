@@ -6,8 +6,8 @@ import { test, expect, type Page, type TestInfo } from '@playwright/test'
 const builtInId = 'f9f279d91e97d7e2273ac15a73caa2646422d0d51824075c259b2084eb98e5ff'
 const inesId = '8f4f09e776d5fe8e5f807ac7c7008fbf42701d88cef9a8b4795a654db9b197b8'
 const address = `http://${'b'.repeat(56)}.onion`
-const builtIn = { id: builtInId, name: 'June Pell', description: 'The built-in test moderator. Its keys are public, so it is for testnet4 coins only.', terms: '', languages: ['en'], feeSats: 1000, address: `http://${'c'.repeat(56)}.onion`, builtIn: true, accepted: true, trackRecord: null }
-const ines = { id: inesId, name: 'Ines Varga', description: 'Shipping and condition disputes. I answer within two days.', terms: 'Send tracking, photos of the parcel as it arrived, and your messages with the other party.', languages: ['en', 'pt-br'], feeSats: 1500, address, builtIn: false, accepted: true, trackRecord: { rulings: 3, stores: 2, checkedAt: 1794316800 } }
+const builtIn = { id: builtInId, name: 'June Pell', description: 'The built-in test moderator. Its keys are public, so it is for testnet4 coins only.', terms: '', languages: ['en'], feeSats: 0, feeKind: 'filing', address: `http://${'c'.repeat(56)}.onion`, builtIn: true, accepted: true, trackRecord: null }
+const ines = { id: inesId, name: 'Ines Varga', description: 'Shipping and condition disputes. I answer within two days.', terms: 'Send tracking, photos of the parcel as it arrived, and your messages with the other party.', languages: ['en', 'pt-br'], feeSats: 1500, feeKind: 'filing', address, builtIn: false, accepted: true, trackRecord: { rulings: 3, stores: 2, checkedAt: 1794316800 } }
 const lock = { state: 'unlocked', autoLockMinutes: 15, autoLockRange: [1, 60], lockInSecs: 900, failedAttempts: 0, retryAfterSecs: 0, rememberDevice: true, rememberAvailable: true, backupConfirmed: true, minPassphraseChars: 8 }
 // The narrow viewport is tall so one screenshot holds a whole section.
 const widths = [[1366, 900], [390, 1800]] as const
@@ -58,9 +58,9 @@ for (const [width, height] of widths) {
     const publish = profile.getByRole('button', { name: 'Sign and publish profile', exact: true })
     await expect(publish).toBeDisabled()
     await profile.getByLabel('Display name', { exact: true }).fill('Ines Varga')
-    await profile.getByLabel('Fee per ruling (sats)', { exact: true }).fill('100')
+    await profile.getByLabel('Filing fee (sats)', { exact: true }).fill('100')
     await expect(profile.getByRole('alert')).toContainText('at least 330 sats')
-    await profile.getByLabel('Fee per ruling (sats)', { exact: true }).fill('1500')
+    await profile.getByLabel('Filing fee (sats)', { exact: true }).fill('1500')
     await profile.getByLabel('Short description', { exact: true }).fill(ines.description)
     await profile.getByLabel('Languages', { exact: true }).fill('en, pt-br')
     await profile.getByLabel('Terms and policy', { exact: true }).fill(ines.terms)
@@ -125,7 +125,7 @@ for (const [width, height] of widths) {
     await section.getByRole('button', { name: 'Add moderator', exact: true }).click()
     await expect(accepted.getByRole('listitem')).toHaveCount(2)
     const added = accepted.getByRole('listitem').filter({ hasText: 'Ines Varga' })
-    await expect(added).toContainText('Fee 1,500 sats if a dispute is ruled')
+    await expect(added).toContainText('Opening a dispute costs 1,500 sats')
     await expect(added).toContainText('3 signed public rulings across 2 stores.')
     await expect(added).toContainText('8f4f09e7…b197b8')
     await expect(section.getByText('Moderator added. Your store record was signed again.', { exact: true })).toBeVisible()
@@ -171,7 +171,7 @@ for (const [width, height] of widths) {
     const choice = page.getByRole('group', { name: 'Choose a moderator for Marlow Goods', exact: true })
     await expect(choice.getByRole('radio')).toHaveCount(2)
     await expect(choice.getByRole('radio', { name: /June Pell/ })).toBeChecked()
-    await expect(choice).toContainText('Fee 1,000 sats if a dispute is ruled')
+    await expect(choice).toContainText('No filing fee')
     await expect(choice).toContainText('3 signed public rulings across 2 stores.')
     await choice.getByRole('radio', { name: /Ines Varga/ }).check()
     expect(await page.locator('.ob-content').evaluate(el => el.scrollWidth <= el.clientWidth + 1)).toBeTruthy()
