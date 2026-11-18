@@ -12,8 +12,8 @@
 \node[box] (bnode) at (0,-2.6) {Buyer node\\\scriptsize keys, vault, wallet};
 \node[box] (vnode) at (9.0,-2.6) {Vendor node\\\scriptsize mailbox, wallet};
 \node[box] (vapp) at (9.0,0) {Vendor client\\\scriptsize opens letters};
-\node[ext] (tor) at (4.5,-2.6) {Loopback mail};
-\node[ext] (rep) at (4.5,-0.3) {Replicas and seeds};
+\node[ext] (tor) at (4.5,-2.6) {Tor onion\\services};
+\node[ext] (rep) at (4.5,-0.3) {Introductions\\and replicas};
 \node[ext] (mod) at (13.6,0.4) {Moderator\\\scriptsize dispute only};
 \node[ext] (esplora) at (0,-5.0) {Chain data\\\scriptsize own node or filters};
 \node[ext] (chain) at (4.5,-5.0) {Bitcoin network};
@@ -31,6 +31,6 @@
 \draw[impl] (vnode) -- node[lbl, sloped, above]{dispute letter} (mod);
 \draw[impl] (bnode) -- node[lbl, above=3pt]{rates,\\if proxied} (rates);
 \end{tikzpicture}}
-\caption{Components and data paths. A phone reaches its node over a sealed home-network channel or Tor. A sale's sealed letters go to the other node's loopback mail endpoint. The moderator is contacted only when a party opens a dispute.}
+\caption{Components and data paths. A phone reaches its node over a sealed home-network channel or Tor. A sale's sealed letters go over Tor to the store's onion and to a reply onion for the order. Catalog records come from introductions and followed stores, also over Tor. The moderator is contacted only when a party opens a dispute.}
 \label{fig:architecture}
 \end{figure}

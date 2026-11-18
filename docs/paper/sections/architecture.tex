@@ -7,13 +7,18 @@ Figure~\ref{fig:architecture} shows the components. A user runs a client and a n
 
 \subsection{The client-node boundary}
 
-A node listens only on a loopback address and refuses requests whose TCP peer is not a loopback address. On first start it creates a 256-bit random pairing token, stored in a file readable only by its owner. Requests that place orders, read or write the address book, or read the buyer's order list must carry the token. Cross-origin responses name only the client's origins, so a web page from another origin in the user's browser cannot read the token or call the node with it. A phone or another computer that manages the node from somewhere else uses the channel in \S\ref{sec:remote}.
+A node listens only on a loopback address and refuses requests whose TCP peer is not a loopback address; its onion services (\S\ref{sec:public-onion}, \S\ref{sec:remote}) reach it there through its own Tor client. On first start it creates a 256-bit random pairing token, stored in a file readable only by its owner. Requests that place orders, read or write the address book, or read the buyer's order list must carry the token. Cross-origin responses name only the client's origins, so a web page from another origin in the user's browser cannot read the token or call the node with it. A browser on the same machine can also be signed in without the token: the desktop app, which holds the token, asks the node for a one-time path, and opening it sets a short-lived session cookie that only loopback requests from the client's own origins may use. A phone or another computer that manages the node from somewhere else uses the channel in \S\ref{sec:remote}.
 
 This boundary protects against remote callers and against other web origins in the user's browser. It does not protect against another process running as the same user on the same machine, which can read the token file; we treat that as a compromised device (A6).
 
 Nodes leave escrow letters for each other in a drop that takes no pairing token, since the sender is another node, not the owner's client. The drop only stores the bytes. A letter has effect only if it opens under one of the node's keys and parses as an escrow message for an escrow the node is in, and every message is then checked against the signed terms (\S\ref{sec:escrow}).
 
-Checkout refuses a body that names a destination: a field such as \code{peer}, \code{onion}, \code{seed}, \code{replica}, or \code{url}, or any string value containing \code{://} or \code{.onion}. The vendor on an order is the store that signed the listing the node already holds. Following another node's store is separate, and that request accepts only a loopback address (\S\ref{sec:sale}).
+Checkout refuses a body that names a destination: a field such as \code{peer}, \code{onion}, \code{seed}, \code{replica}, or \code{url}, or any string value containing \code{://} or \code{.onion}. The vendor on an order is the store that signed the listing the node already holds. Following another node's store is separate, and that request accepts only a v3 onion address or a loopback address (\S\ref{sec:sale}).
+
+\subsection{The public onion}
+\label{sec:public-onion}
+
+A node also publishes a v3 onion service for its store. That service answers only public requests: the signed store record and listings, media named by hash, reviews, the moderator profile, the order and escrow mail drops, and directory queries and submissions (\S\ref{sec:directory}). Any other path is refused without reaching the node's own routes, and the onion is the address other nodes find in the store's signed record. For each order and each escrow, the buyer's node publishes a further reply onion (\S\ref{sec:transport}).
 
 \subsection{Remote devices}
 \label{sec:remote}
@@ -24,8 +29,8 @@ Each paired phone holds two hardware-backed keys. The device key signs requests.
 
 Pairing uses an eight-word secret or a QR code. Both sides display four emoji from the pairing transcript, and the device is added only when the owner approves it on the node. On the home network the app delivers requests through a channel sealed to the node key it pinned at pairing. If that channel does not answer, the app uses the admin onion. Removing a device drops it and its discovery key at once, and also drops devices that device had paired. The owner can move the node to a new onion address at the same time. Devices that remain learn the new address on their next request, and the old address is retired once they have moved or after seven days.
 
-A device session does not spend. Every spend requires the wallet passphrase again. Push is off unless that device opts in. A wake-up carries no order contents, and the node sends one only after the operator names a gateway. This project runs no gateway, so the path stays empty until someone does. The iOS simulator build is arm64, and the App Store build is skipped until Apple signing secrets exist.
+A device session does not spend. Every spend requires the wallet passphrase again. Push is off unless that device opts in. A wake-up carries no order contents, and the node sends one only after the operator names a gateway. This project runs no gateway, so the path stays empty until someone does.
 
 \subsection{Deployment}
 
-A vendor runs a node that stays awake on a computer the vendor controls, publishes the catalog, accepts sealed letters on its loopback listener, and watches the chain. A buyer uses the same software. A phone pairs the native app with the owner's node (\S\ref{sec:remote}). A sale between two such nodes is \S\ref{sec:sale}. A moderator is a node like any other and needs to be online only to answer disputes.
+A vendor runs a node that stays awake on a computer the vendor controls, publishes the catalog, accepts sealed letters on its onion service, pays the directory fee, and watches the chain. A buyer uses the same software. A phone pairs the native app with the owner's node (\S\ref{sec:remote}). A sale between two such nodes is \S\ref{sec:sale}. A moderator is a node like any other and needs to be online only to answer disputes.

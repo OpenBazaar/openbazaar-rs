@@ -9,12 +9,13 @@ Search runs over listing headers already held by the client: a case-insensitive 
 
 The design treats every source of nodes as untrusted for content and only partly trusted for availability:
 \begin{itemize}
-  \item A user can paste a store link (a store key plus an onion address). A store reached this way opens with an empty seed list.
-  \item Seeds shipped with the software, and peers remembered from earlier sessions, are used to find replicas.
+  \item A user can paste a store's address, its onion. The node follows it over Tor, copies its signed records, and shows the store whether or not the directory admits it.
+  \item A user can follow a store by its key alone. The node fetches the store's record from the introductions and keeps it only if the signature matches that key.
+  \item The directory (\S\ref{sec:directory}) names stores through admissions that each node checks against the chain, and its head names the introductions to ask. Two introductions ship with the software; the node remembers the latest head across sessions.
   \item Every record received from any of them is verified against its signature and content hash before use.
 \end{itemize}
 
-The node follows a store by a loopback URL and copies its signed records (\S\ref{sec:sale}). It does not dial a seed or an onion address to find stores. Because records are self-authenticating, a malicious seed or replica cannot forge or alter a listing. It can withhold records, serve stale ones (\S\ref{sec:catalog}), or, if it controls all of a node's peers, present a partial view of the network: an eclipse attack~\citep{heilman2015eclipse}. Remembering peers across sessions, drawing peers from several independent sources, and preferring a pasted link over seed-supplied data are the mitigations; no Sybil defense~\citep{douceur2002sybil} is designed beyond the publishing cost of \S\ref{sec:catalog}.
+The node never takes an onion address from a client request when it follows by key: the onion it dials for a store's listings is the one in that store's signed record. Because records are self-authenticating, a malicious introduction or replica cannot forge or alter a listing. It can withhold records, serve stale ones (\S\ref{sec:catalog}), or, if it controls every introduction a node asks, present a partial view of the network: an eclipse attack~\citep{heilman2015eclipse}. A head lists up to 64 introductions and a node rotates among them, and a pasted address does not depend on the directory at all; these are the mitigations. The directory fee is a cost per store and epoch; no Sybil defense~\citep{douceur2002sybil} for introductions is designed beyond the operator's choice of them.
 
 \subsection{Private search at scale}
 
