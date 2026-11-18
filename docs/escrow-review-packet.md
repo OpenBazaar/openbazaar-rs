@@ -94,3 +94,24 @@ cargo test --locked -p ob-node multinode_durable      # restarts, retries, dispu
 ```
 
 Test names follow the review IDs, for example `h1_*`, `m1_*`, `m6_*` in `crates/escrow/src/tests/review.rs` and `persistence.rs`. `every_node_restarts_before_every_round_and_the_escrow_still_funds_and_releases` restarts all three nodes between every mail round.
+
+## Terms v5: the dispute filing fee
+
+New escrows use terms v5 (`OBET` v5 in `OBTS` v5), which carry a moderator record v2 (`OBMR` v2, `FeeKind::Filing`): a filing fee, 0 or at least 330 sats, and no payout script. The spend table above is v4. Under v5 no spend pays the moderator: buyer wins and vendor wins pay the winner and the anchor, and the claim at `R` stays the buyer refund. Escrows funded under v4 finish under v4; their bytes, digest and transactions are pinned by `v4_terms_keep_their_exact_bytes_digest_and_transactions` (`crates/escrow/src/tests/filing.rs`).
+
+Whoever files first pays the fee outside the escrow, after the moderator reviewed the letter. Four records, all signed by the moderator's ruling key (`crates/protocol/src/dispute_fee.rs`):
+
+| Record | Holds | Who checks it |
+|---|---|---|
+| `OBFQ` fee request | case id (`tagged("ob-escrow/case/v1", terms digest ‖ txid ‖ vout)`), letter digest, favored party, amount, optional BOLT 11 invoice, the moderator's own script, valid-until and due height (`V`) | the filer: same case, a letter it wrote, the fee in the terms, `due = V` (`read_fee_request`) |
+| `OBFR` fee receipt | case id, request digest, Lightning payment hash or on-chain outpoint, amount received, paid and due heights | the filer, against a request it holds (`read_fee_receipt`) |
+| `OBCA` case accepted | case id, accepted and due heights | public: the track record |
+| `OBDD` decision | case id, ruled for a party (with the ruling digest) or denied a party's letter | the filer, and public |
+
+The moderator credits a payment only from its own Lightning node or chain view: an invoice it issued paid in full, or a confirmed output of at least the fee to the request's script, confirmed by `V`. It rules or denies only once the fee is paid. A denial is final and keeps the fee. A paid case undecided past `V` is counted overdue in the public track record; nothing refunds it.
+
+Questions for the reviewer:
+
+1. Is binding the request to the case id, the letter digest and `V` enough to stop a request for one escrow being paid against another, or replayed after a new letter?
+2. A moderator can take the fee and never decide. The escrow still ends by its timelocks and the overdue count is public. Is that disclosure enough without an enforced refund?
+3. One fee settles an escrow: once either filer paid, both letters can be decided. The moderator's node keeps one live request per escrow and asks the other filer only after the first request lapsed unpaid, so a late payment of the lapsed request can make both filers pay. Each filer's node pays only a request matching its own letter. Is that exposure acceptable, or should the moderator refund the second payment?
