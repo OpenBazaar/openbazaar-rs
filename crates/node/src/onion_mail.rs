@@ -184,33 +184,64 @@ impl Node {
                 }
             }
         });
-        let mut next_status = std::time::Instant::now();
-        loop {
-            tokio::select! {
-                result = running.accept_letter(
-                    &self.mailbox,
-                    |kind, id| self.directory_reply(kind, &id),
-                    |kind, body| self.directory_submit(kind, body),
-                ) => {
-                    match result {
-                        Ok(tormail::Arrival::Letter(id)) => eprintln!("ob-node: stored letter {id}"),
-                        Ok(tormail::Arrival::Shop) | Ok(tormail::Arrival::Query) => {}
-                        Err(tormail::Error::ListenerClosed) => break,
-                        Err(err) => {
-                            eprintln!("ob-node: {err}");
-                            tokio::time::sleep(Duration::from_secs(1)).await;
-                        }
-                    }
-                }
-                _ = &mut stop_wait => break,
+        let gate = running.shop();
+        let requests = running.take_requests();
+        let serve = serve_concurrently(requests, ONION_IN_FLIGHT, ONION_REQUEST_TIMEOUT, |incoming| async move {
+            let result = tormail::serve_request(
+                incoming,
+                &self.mailbox,
+                gate,
+                |kind, id| self.directory_reply(kind, &id),
+                |kind, body| self.directory_submit(kind, body),
+            )
+            .await;
+            match result {
+                Ok(tormail::Arrival::Letter(id)) => eprintln!("ob-node: stored letter {id}"),
+                Ok(tormail::Arrival::Shop) | Ok(tormail::Arrival::Query) => {}
+                Err(err) => eprintln!("ob-node: {err}"),
             }
-            if next_status.elapsed() >= Duration::from_secs(20) {
+        });
+        let status = async {
+            loop {
+                tokio::time::sleep(Duration::from_secs(20)).await;
                 eprintln!("ob-node: onion service {}", running.status_summary());
-                next_status = std::time::Instant::now();
             }
+        };
+        tokio::select! {
+            () = serve => {}
+            () = status => {}
+            _ = &mut stop_wait => {}
         }
         Ok(())
     }
+}
+
+/// Clients served at once on the onion. Each waits on its own rendezvous
+/// circuit, which can take a minute or fail, so one slow client must not hold
+/// up the rest.
+const ONION_IN_FLIGHT: usize = 32;
+/// A client still unanswered after this is dropped to free its slot.
+const ONION_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// Run `serve` on each request, up to `limit` at a time, each cut off after
+/// `timeout`. Ends when `requests` does.
+async fn serve_concurrently<S, F, Fut>(requests: S, limit: usize, timeout: Duration, serve: F)
+where
+    S: futures::Stream,
+    F: Fn(S::Item) -> Fut,
+    Fut: std::future::Future<Output = ()>,
+{
+    use futures::StreamExt;
+    requests
+        .for_each_concurrent(limit, |request| {
+            let served = tokio::time::timeout(timeout, serve(request));
+            async move {
+                if served.await.is_err() {
+                    eprintln!("ob-node: onion client timed out after {}s", timeout.as_secs());
+                }
+            }
+        })
+        .await;
 }
 
 /// `ob-node send-letter`.
@@ -346,6 +377,31 @@ mod tests {
     use crate::harness::TempDir;
     use crate::http::dispatch;
     use crate::{load_catalog, NetworkMode, Node};
+
+    #[test]
+    fn a_stuck_onion_client_does_not_hold_up_the_others() {
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
+        let served = Mutex::new(Vec::new());
+        let started = std::time::Instant::now();
+        runtime.block_on(serve_concurrently(
+            futures::stream::iter(0..5),
+            ONION_IN_FLIGHT,
+            Duration::from_millis(300),
+            |client| {
+                let served = &served;
+                async move {
+                    if client == 0 {
+                        std::future::pending::<()>().await;
+                    }
+                    served.lock().unwrap().push((client, started.elapsed()));
+                }
+            },
+        ));
+        let served = served.into_inner().unwrap();
+        assert_eq!(served.iter().map(|(client, _)| *client).collect::<Vec<_>>(), vec![1, 2, 3, 4]);
+        assert!(served.iter().all(|(_, at)| *at < Duration::from_millis(300)), "served while client 0 was stuck");
+        assert!(started.elapsed() < Duration::from_secs(5), "the stuck client was cut off");
+    }
 
     const TEST_ONION: &str = "25njqamcweflpvkl73j4szahhihoc4xt3ktcgjnpaingr5yhkenl5sid.onion";
 

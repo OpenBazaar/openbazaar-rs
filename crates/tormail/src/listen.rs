@@ -90,64 +90,15 @@ impl OnionListener {
         G: FnOnce(u8, &[u8]) -> bool,
     {
         let rend = self.requests.next().await.ok_or(Error::ListenerClosed)?;
-        let mut streams = rend
-            .accept()
-            .await
-            .map_err(|err| Error::Arti(err.to_string()))?;
-        let request = streams
-            .next()
-            .await
-            .ok_or(Error::Listener("rendezvous closed before a stream"))?;
-        let port = match request.request() {
-            IncomingStreamRequest::Begin(begin) => Some(begin.port()),
-            _ => None,
-        };
-        if port != Some(ORDER_PORT) {
-            request
-                .reject(End::new_with_reason(EndReason::DONE))
-                .await
-                .map_err(|err| Error::Arti(err.to_string()))?;
-            return Err(Error::Listener("rejected a stream for another port"));
-        }
-        let mut stream = request
-            .accept(Connected::new_empty())
-            .await
-            .map_err(|err| Error::Arti(err.to_string()))?;
-        let mut preface = [0u8; 4];
-        read_exact(&mut stream, &mut preface).await?;
-        if is_letter_preface(&preface) {
-            let mut replay = futures::io::Cursor::new(preface).chain(&mut stream);
-            let letter = read_letter(&mut replay).await?;
-            let id = mailbox.accept(&letter)?;
-            // The sender blocks until it reads this byte. Close without it and
-            // the sender drops the circuit thinking the letter was lost.
-            stream.write_all(&[STORED_ACK]).await?;
-            stream.flush().await?;
-            let mut done = [0u8; 1];
-            let _ = stream.read(&mut done).await;
-            return Ok(Arrival::Letter(id));
-        }
-        if preface == *QUERY_MAGIC {
-            let (kind, id) = read_query_after_magic(&mut stream).await?;
-            write_query_reply(&mut stream, answer(kind, id).as_deref()).await?;
-            stream.flush().await?;
-            return Ok(Arrival::Query);
-        }
-        if preface == *SUBMIT_MAGIC {
-            let (kind, body) = read_submit_after_magic(&mut stream).await?;
-            let kept = ingest(kind, &body);
-            stream.write_all(&[u8::from(!kept)]).await?;
-            stream.flush().await?;
-            return Ok(Arrival::Query);
-        }
-        if is_shop_preface(&preface) {
-            let Some(shop) = shop else {
-                return Err(Error::Listener("shop request with no sale gate"));
-            };
-            relay_shop(&mut stream, preface, shop).await?;
-            return Ok(Arrival::Shop);
-        }
-        Err(Error::Malformed)
+        serve_request(Incoming(rend), mailbox, shop, answer, ingest).await
+    }
+
+    /// Hand over the introduced requests, so each can be served on its own
+    /// with [`serve_request`]. Later calls to [`OnionListener::accept_next`]
+    /// see a closed listener.
+    pub fn take_requests(&mut self) -> Pin<Box<dyn Stream<Item = Incoming> + Send>> {
+        let requests = std::mem::replace(&mut self.requests, Box::pin(futures::stream::empty()));
+        Box::pin(requests.map(Incoming))
     }
 
     /// Short status for the operator log: high-level state, and the current
@@ -159,6 +110,87 @@ impl OnionListener {
             None => format!("{:?}", status.state()),
         }
     }
+}
+
+/// One introduced client, not yet answered. Building the rendezvous circuit
+/// back to it can take a minute or fail, so serve each one apart from the
+/// others.
+pub struct Incoming(RendRequest);
+
+/// Serve one introduced client: accept its rendezvous, then read one sealed
+/// letter, relay one public shop request, or answer one directory query.
+/// `shop` is the sale gate. `answer` and `ingest` are as in
+/// [`OnionListener::accept_next`].
+pub async fn serve_request<F, G>(
+    incoming: Incoming,
+    mailbox: &Mailbox,
+    shop: Option<SocketAddr>,
+    answer: F,
+    ingest: G,
+) -> Result<Arrival, Error>
+where
+    F: FnOnce(u8, [u8; 32]) -> Option<Vec<u8>>,
+    G: FnOnce(u8, &[u8]) -> bool,
+{
+    let mut streams = incoming
+        .0
+        .accept()
+        .await
+        .map_err(|err| Error::Arti(err.to_string()))?;
+    let request = streams
+        .next()
+        .await
+        .ok_or(Error::Listener("rendezvous closed before a stream"))?;
+    let port = match request.request() {
+        IncomingStreamRequest::Begin(begin) => Some(begin.port()),
+        _ => None,
+    };
+    if port != Some(ORDER_PORT) {
+        request
+            .reject(End::new_with_reason(EndReason::DONE))
+            .await
+            .map_err(|err| Error::Arti(err.to_string()))?;
+        return Err(Error::Listener("rejected a stream for another port"));
+    }
+    let mut stream = request
+        .accept(Connected::new_empty())
+        .await
+        .map_err(|err| Error::Arti(err.to_string()))?;
+    let mut preface = [0u8; 4];
+    read_exact(&mut stream, &mut preface).await?;
+    if is_letter_preface(&preface) {
+        let mut replay = futures::io::Cursor::new(preface).chain(&mut stream);
+        let letter = read_letter(&mut replay).await?;
+        let id = mailbox.accept(&letter)?;
+        // The sender blocks until it reads this byte. Close without it and
+        // the sender drops the circuit thinking the letter was lost.
+        stream.write_all(&[STORED_ACK]).await?;
+        stream.flush().await?;
+        let mut done = [0u8; 1];
+        let _ = stream.read(&mut done).await;
+        return Ok(Arrival::Letter(id));
+    }
+    if preface == *QUERY_MAGIC {
+        let (kind, id) = read_query_after_magic(&mut stream).await?;
+        write_query_reply(&mut stream, answer(kind, id).as_deref()).await?;
+        stream.flush().await?;
+        return Ok(Arrival::Query);
+    }
+    if preface == *SUBMIT_MAGIC {
+        let (kind, body) = read_submit_after_magic(&mut stream).await?;
+        let kept = ingest(kind, &body);
+        stream.write_all(&[u8::from(!kept)]).await?;
+        stream.flush().await?;
+        return Ok(Arrival::Query);
+    }
+    if is_shop_preface(&preface) {
+        let Some(shop) = shop else {
+            return Err(Error::Listener("shop request with no sale gate"));
+        };
+        relay_shop(&mut stream, preface, shop).await?;
+        return Ok(Arrival::Shop);
+    }
+    Err(Error::Malformed)
 }
 
 /// Copy one HTTP request to the sale gate and copy its answer back.
@@ -278,6 +310,16 @@ impl RunningMailbox {
         G: FnOnce(u8, &[u8]) -> bool,
     {
         self.listener.accept_next(mailbox, self.shop, answer, ingest).await
+    }
+
+    /// See [`OnionListener::take_requests`].
+    pub fn take_requests(&mut self) -> Pin<Box<dyn Stream<Item = Incoming> + Send>> {
+        self.listener.take_requests()
+    }
+
+    /// The sale gate set with [`RunningMailbox::set_shop`].
+    pub fn shop(&self) -> Option<SocketAddr> {
+        self.shop
     }
 
     /// Download a Tor directory. Launching the service does not do this.
