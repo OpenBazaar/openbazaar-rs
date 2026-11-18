@@ -33,7 +33,7 @@ impl Node {
             })?;
             (case.record.clone(), fee.case_id)
         };
-        let (keys, _) = self.case_identity(record.as_deref()).map_err(PayError::Failed)?;
+        let keys = self.case_keys(record.as_deref()).map_err(PayError::Failed)?;
         let decision = keys
             .sign_dispute_decision(case_id, Decision::Denied(favor), None)
             .map_err(|err| PayError::Failed(err.to_string()))?;

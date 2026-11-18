@@ -249,6 +249,25 @@ fn a_denied_letter_is_final_and_its_fee_is_kept() {
     );
 }
 
+/// Nothing refunds a fee the moderator sits on: the paid case past its due
+/// height is flagged on the desk and counted in the public track record.
+#[test]
+fn a_paid_case_left_undecided_past_its_due_height_is_flagged_overdue() {
+    let market = Market::new();
+    let (id, escrow) = funded_with(&market, FEE);
+    let moderator = market.moderator.node.clone();
+    let filed = filed(&market, &id);
+    moderator.moderator_fee_steps();
+    pay(&market, &last_request(&moderator, &filed).unwrap());
+    let counts = || request(&moderator, "GET", "/moderator/profile", "").1["trackRecord"]["cases"].clone();
+    assert_eq!(case(&moderator)["fee"]["overdue"], false);
+    assert_eq!(counts(), json!({ "accepted": 1, "decided": 0, "denied": 0, "overdue": 0 }));
+
+    *market.chain.0.tip.lock().unwrap() = terms(&escrow).vendor_claim_height + 1;
+    assert_eq!(case(&moderator)["fee"]["overdue"], true, "{}", case(&moderator));
+    assert_eq!(counts(), json!({ "accepted": 1, "decided": 0, "denied": 0, "overdue": 1 }));
+}
+
 #[test]
 fn a_locked_moderator_asks_for_the_fee_once_unlocked() {
     let mut market = Market::new();

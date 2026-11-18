@@ -54,7 +54,7 @@ use tormail::StoreKey;
 use self::case::{branch_byte, case_name, check_citation, citation_from_fields, party_name, party_of, Case, CaseFee};
 use self::fee::{fee_id, EscrowFee, FeePool};
 use crate::chain::ChainSource;
-use crate::escrow_fixture::{moderator_keys, moderator_record};
+use crate::escrow_fixture::{legacy_moderator_record, moderator_keys, moderator_record};
 use crate::escrow_limits::DisputeLimits;
 use crate::escrow_mail::{hex, id_hex, key_bytes, parse_id, EscrowId, Kind, Mail, RETRY_LATER};
 use crate::escrow_outbox::now_secs;
@@ -155,17 +155,25 @@ impl Node {
             .unwrap_or_else(|err| err.into_inner())
     }
 
-    /// The keys and record a case is ruled under: this node's own identity
-    /// for a case that names one of its records, else the built-in one.
-    fn case_identity(&self, record: Option<&[u8]>) -> Result<(ModeratorKeys, ModeratorRecord), String> {
+    /// The keys a case is ruled under: this node's own identity for a case
+    /// that names one of its records, else the built-in one.
+    fn case_keys(&self, record: Option<&[u8]>) -> Result<ModeratorKeys, String> {
         match record {
-            Some(bytes) => Ok((self.own_moderator_keys()?, ModeratorRecord::from_bytes(bytes).map_err(|err| err.to_string())?)),
-            None => Ok((moderator_keys(self.network)?, moderator_record(self.network)?)),
+            Some(_) => self.own_moderator_keys(),
+            None => moderator_keys(self.network),
         }
     }
 
-    fn moderator(&self, record: Option<&[u8]>) -> Result<Moderator<ChainView<'_>, &FileRulingStore>, String> {
-        let (keys, record) = self.case_identity(record)?;
+    /// The moderator a case is ruled by. A built-in case with a filing fee
+    /// was reviewed under the built-in filing-fee record, one without under
+    /// its record from before filing fees.
+    fn moderator(&self, record: Option<&[u8]>, filing: bool) -> Result<Moderator<ChainView<'_>, &FileRulingStore>, String> {
+        let keys = self.case_keys(record)?;
+        let record = match (record, filing) {
+            (Some(bytes), _) => ModeratorRecord::from_bytes(bytes).map_err(|err| err.to_string())?,
+            (None, true) => moderator_record(self.network)?,
+            (None, false) => legacy_moderator_record(self.network)?,
+        };
         Moderator::new(keys, record, ChainView(&*self.chain), &self.escrow.rulings)
             .map(|moderator| moderator.with_cache(self.escrow.letters.clone()))
             .map_err(|err| err.to_string())
@@ -178,7 +186,10 @@ impl Node {
         let digest = letter_digest(letter);
         let limits: &DisputeLimits = &self.escrow.limits;
         let mut gate = |key: &openbazaar_escrow::RulingKey, _: Party| limits.admit(digest, key, now_secs());
-        let builtin = moderator_record(self.network).ok().map(|record| (record, None));
+        let builtin = [moderator_record(self.network), legacy_moderator_record(self.network)]
+            .into_iter()
+            .filter_map(Result::ok)
+            .map(|record| (record, None));
         let own = self.own_moderator_records().into_iter().map(|record| {
             let bytes = record.to_bytes();
             (record, Some(bytes))
@@ -355,13 +366,13 @@ impl Node {
         let escrow_id = parse_id(id).ok_or(PayError::NotFound)?;
         let lock = self.escrow.locks.get(&escrow_id);
         let _held = lock.lock().unwrap_or_else(|err| err.into_inner());
-        let (letter, received, record) = {
+        let (letter, received, record, filing) = {
             let desk = self.moderator_desk();
             let case = desk.undecided(&escrow_id, favor)?;
-            (case.letter.clone(), case.received, case.record.clone())
+            (case.letter.clone(), case.received, case.record.clone(), case.fee.is_some())
         };
         let ruling = self
-            .moderator(record.as_deref())
+            .moderator(record.as_deref(), filing)
             .map_err(PayError::Failed)?
             .open(&letter, received)
             .map_err(|err| PayError::Conflict(err.to_string()))?;
@@ -375,7 +386,7 @@ impl Node {
         let mut desk = self.moderator_desk();
         let case = desk.cases.get_mut(&(*id, favor as u8)).ok_or("the case is gone")?;
         case.ruling = Some(ruling.to_bytes());
-        let (keys, _) = self.case_identity(case.record.as_deref())?;
+        let keys = self.case_keys(case.record.as_deref())?;
         case.outcome = Some(keys.sign_dispute_outcome(&ruling.to_bytes()).map_err(|err| err.to_string())?);
         if let Some(citation) = case.citation {
             case.public_ruling = Some(

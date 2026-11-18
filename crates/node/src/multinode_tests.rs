@@ -225,10 +225,61 @@ fn escrow_released_to_the_vendor_across_three_nodes() {
 
 #[test]
 fn escrow_dispute_ruled_for_the_buyer() {
+    let (_market, escrow, outcome) = dispute_ruled_for_the_buyer(false);
+    assert_eq!(escrow["feeKind"], "filing");
+    assert_eq!(escrow["moderatorFeeSats"], 0, "the built-in moderator charges no filing fee");
+    let winner = escrow["fundingSats"].as_u64().unwrap() - escrow["spendFeeSats"].as_u64().unwrap() - ANCHOR_VALUE.to_sat();
+    assert_eq!(outcome.output[0].value.to_sat(), winner);
+    assert_eq!(outcome.output.len(), 2, "the winner and the anchor; a ruling pays no moderator fee");
+}
+
+#[test]
+/// An order placed before the upgrade, whose old terms arrive after it.
+fn a_buyer_opens_no_escrow_under_terms_from_before_filing_fees() {
+    let market = Market::new();
+    let buyer = &market.buyer.node;
+    for node in [buyer, &market.vendor.node] {
+        node.escrow.legacy_builtin.store(true, Ordering::Relaxed);
+    }
+    let placed = checkout(buyer, &[("Paperback novel", SELLER, "escrow")]);
+    let id = placed[0]["orderId"].as_str().unwrap().to_string();
+    buyer.escrow.legacy_builtin.store(false, Ordering::Relaxed);
+    market.deliver();
+    let refused = order(buyer, &id);
+    assert_eq!(refused["status"], AWAITING_TERMS, "{refused}");
+    assert!(refused["escrow"]["address"].is_null(), "no escrow address to fund: {refused}");
+    assert_eq!(sale(&market.vendor.node)["feeKind"], "ruling", "the vendor did offer the old terms");
+}
+
+/// Terms v4 stay pinned for escrows funded before filing fees: the nodes
+/// that built them stop offering them, and the escrow is still ruled under
+/// its own record, ruling fee and all.
+#[test]
+fn an_escrow_funded_before_filing_fees_is_ruled_with_its_ruling_fee() {
+    let (market, escrow, outcome) = dispute_ruled_for_the_buyer(true);
+    assert_eq!(escrow["feeKind"], "ruling");
+    let winner =
+        escrow["fundingSats"].as_u64().unwrap() - escrow["spendFeeSats"].as_u64().unwrap() - ANCHOR_VALUE.to_sat() - MODERATOR_FEE_SATS;
+    assert_eq!(outcome.output[0].value.to_sat(), winner);
+    assert_eq!(outcome.output[1].value.to_sat(), MODERATOR_FEE_SATS);
+    let (_, record) = request(&market.buyer.node, "GET", "/moderators", "");
+    assert_eq!(record["moderators"][0]["feeKind"], "filing", "{record}");
+}
+
+/// Fund a built-in escrow, the buyer disputes, and the moderator rules for
+/// it. With `legacy`, both nodes build the escrow under the built-in ruling-fee
+/// record, then go on as nodes that no longer offer it.
+fn dispute_ruled_for_the_buyer(legacy: bool) -> (Market, Value, Transaction) {
     let market = Market::new();
     fund_node_wallet(&market.buyer.node, &market.chain, 100_000);
+    for node in [&market.buyer.node, &market.vendor.node] {
+        node.escrow.legacy_builtin.store(legacy, Ordering::Relaxed);
+    }
     let (id, _) = offered(&market);
     let after = funded(&market, &id);
+    for node in [&market.buyer.node, &market.vendor.node] {
+        node.escrow.legacy_builtin.store(false, Ordering::Relaxed);
+    }
     let escrow = &after["escrow"];
     let funding = escrow["fundingSats"].as_u64().unwrap();
     let (_, outpoint) = funding_tx(&market, escrow);
@@ -270,18 +321,18 @@ fn escrow_dispute_ruled_for_the_buyer() {
         json!(outcome.compute_txid().to_string())
     );
     assert!(spends(&outcome, outpoint));
-    let winner = funding - escrow["spendFeeSats"].as_u64().unwrap() - ANCHOR_VALUE.to_sat() - MODERATOR_FEE_SATS;
     assert_eq!(
         outcome.output[0].script_pubkey,
         script_of(&escrow["buyerPayout"])
     );
-    assert_eq!(outcome.output[0].value.to_sat(), winner);
-    assert_eq!(outcome.output[1].value.to_sat(), MODERATOR_FEE_SATS);
+    assert!(outcome.output[0].value.to_sat() < funding);
 
     let (status, _) = request(moderator, "POST", &rule, r#"{"favor": "buyer"}"#);
     assert!(status.contains("409"), "one ruling per escrow");
     market.mine();
     assert_eq!(order(&market.buyer.node, &id)["status"], SETTLED);
+    let escrow = escrow.clone();
+    (market, escrow, outcome)
 }
 
 #[test]

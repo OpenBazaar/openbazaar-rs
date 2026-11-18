@@ -166,7 +166,13 @@ fn an_escrow_with_the_moderator_the_buyer_chose_is_disputed_and_ruled_by_it() {
     assert_eq!(cases(&market)[0]["ruled"], true);
     assert_eq!(
         profile(&market.moderator.node)["trackRecord"],
-        json!({ "rulings": 0, "stores": 0, "buyerWins": 1, "vendorWins": 0 })
+        json!({
+            "rulings": 0,
+            "stores": 0,
+            "buyerWins": 1,
+            "vendorWins": 0,
+            "cases": { "accepted": 1, "decided": 1, "denied": 0, "overdue": 0 },
+        })
     );
     let (status, body) = crate::seller_store_tests::peer_request(&market.moderator.node, "/public/moderator");
     assert!(status.contains("200"), "{status}");
@@ -176,6 +182,14 @@ fn an_escrow_with_the_moderator_the_buyer_chose_is_disputed_and_ruled_by_it() {
     assert_eq!(crate::moderators::count_outcomes(&id, &outcomes), (1, 0), "one public buyer win: {public}");
     let (_, list) = accept(&market.vendor.node, &market.moderator.url);
     assert_eq!(listed(&list, &chosen)["trackRecord"]["rulings"], 0, "{list}");
+    assert_eq!(public["accepted"].as_array().unwrap().len(), 1, "the paid case is public: {public}");
+    assert_eq!(public["decisions"].as_array().unwrap().len(), 1, "{public}");
+    assert_eq!(
+        listed(&list, &chosen)["trackRecord"]["cases"],
+        json!({ "accepted": 1, "decided": 1, "denied": 0, "overdue": 0 }),
+        "counted from the moderator's own signed records: {list}"
+    );
+    assert_eq!(listed(&list, &chosen)["feeKind"], "filing");
     assert_eq!(sale(&market.vendor.node)["stage"], "funded", "the buyer disputed; the vendor's sale waits for the outcome");
 }
 

@@ -65,6 +65,7 @@ mod media;
 mod messages;
 mod moderator_http;
 mod moderator_identity;
+mod moderator_track;
 mod moderators;
 mod network;
 mod offers;

@@ -99,6 +99,8 @@ impl VendorDesk {
                     "disputeDeadline": sale.terms.dispute_deadline,
                     "vendorClaimHeight": sale.terms.vendor_claim_height,
                     "refundHeight": sale.terms.refund_height,
+                    "moderatorFeeSats": sale.terms.moderator.fee.to_sat(),
+                    "feeKind": crate::moderators::fee_kind(&sale.terms.moderator),
                     "claimHeld": sale.claim.is_some(),
                     "claim": sale.claim.as_deref().map(hex),
                     "releaseTxid": sale.release_txid.map(|txid| txid.to_string()),

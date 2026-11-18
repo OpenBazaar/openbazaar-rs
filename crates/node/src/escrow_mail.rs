@@ -264,6 +264,10 @@ pub(crate) struct Escrow {
     pub book: Mutex<crate::moderators::Book>,
     /// This node's own moderator identity, once a `--moderate` node has made one.
     pub identity: Mutex<Option<crate::moderator_identity::Identity>>,
+    /// Build new built-in escrows under the record from before filing fees,
+    /// as an older node did.
+    #[cfg(test)]
+    pub legacy_builtin: std::sync::atomic::AtomicBool,
 }
 
 impl Escrow {
@@ -292,6 +296,8 @@ impl Escrow {
             moderator: Mutex::new(moderator),
             book: Mutex::new(crate::moderators::Book::open(dir)?),
             identity: Mutex::new(crate::moderator_identity::Identity::open(dir, vault)?),
+            #[cfg(test)]
+            legacy_builtin: Default::default(),
         })
     }
 }

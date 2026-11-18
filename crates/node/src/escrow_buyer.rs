@@ -195,6 +195,7 @@ impl Node {
             "fundingSats": funding,
             "spendFeeSats": spend_fee,
             "moderatorFeeSats": record.fee.to_sat(),
+            "feeKind": crate::moderators::fee_kind(&record),
             "moderator": moderator,
             "buyerKeyIndex": index,
             "buyerPayout": payout.to_string(),
@@ -414,6 +415,9 @@ impl Node {
         {
             return Err("the vendor's terms are not the ones this node asked for".into());
         }
+        if !self.new_escrow_takes(&terms.moderator) {
+            return Err("the vendor's terms are from before filing fees, so this node opens no escrow under them".into());
+        }
         let moderator: [u8; 32] = terms.moderator.signing_key[1..].try_into().map_err(failed)?;
         let store = self.seller_store(&order.seller)?;
         if !store.details.as_ref().is_some_and(|details| details.moderators.contains(&moderator)) {
@@ -441,6 +445,7 @@ impl Node {
                 "address": address.to_string(),
                 "vendorPayout": vendor_payout.to_string(),
                 "moderatorFeeSats": terms.moderator.fee.to_sat(),
+                "feeKind": crate::moderators::fee_kind(&terms.moderator),
                 "disputeDeadline": terms.dispute_deadline,
                 "vendorClaimHeight": terms.vendor_claim_height,
                 "refundHeight": terms.refund_height,

@@ -40,8 +40,7 @@ impl Node {
         let rail = self.ln.rail()?;
         let config = self.ln.config()?;
         let amount_msat = amount_sats.checked_mul(1_000)?;
-        let room = rail.channels().iter().filter(|channel| channel.usable).map(|channel| channel.inbound_msat).max();
-        if room.unwrap_or(0) < amount_msat {
+        if self.ln_fee_room_msat()? < amount_msat {
             return None;
         }
         let issued = rail.receive(amount_msat, &format!("OpenBazaar dispute fee {label}"), FEE_INVOICE_SECS).ok()?;
@@ -52,6 +51,36 @@ impl Node {
             network: super::options::network_name(config.network),
             bolt11: issued.bolt11,
             payment_hash: issued.payment_hash,
+        })
+    }
+
+    /// The most one usable channel can receive, in msat. `None` when Lightning is off.
+    fn ln_fee_room_msat(&self) -> Option<u64> {
+        let rail = self.ln.rail()?;
+        self.ln.config()?;
+        Some(rail.channels().iter().filter(|channel| channel.usable).map(|channel| channel.inbound_msat).max().unwrap_or(0))
+    }
+
+    /// Why filers would pay a filing fee of `fee_sats` on-chain, if they
+    /// would: Lightning is off here, or no channel has room for the fee. A
+    /// fee under the LSP's fee cap could not pay for a new channel anyway.
+    pub(crate) fn ln_fee_warning(&self, fee_sats: u64) -> Option<String> {
+        if fee_sats == 0 {
+            return None;
+        }
+        let room = self.ln_fee_room_msat().filter(|_| !self.ln_blocked());
+        let Some(room) = room else {
+            return Some("Lightning is off on this node, so filers pay the filing fee on-chain.".into());
+        };
+        let fee_msat = fee_sats.saturating_mul(1_000);
+        if room >= fee_msat {
+            return None;
+        }
+        let cap_sats = self.ln.config()?.lsp_fee_cap_msat(fee_msat) / 1_000;
+        Some(if fee_sats <= cap_sats {
+            format!("No Lightning channel here has room for {fee_sats} sats, and a new channel can cost up to {cap_sats} sats, more than the fee. Filers pay it on-chain.")
+        } else {
+            format!("No Lightning channel here has room for {fee_sats} sats, so filers pay the fee on-chain until one does.")
         })
     }
 

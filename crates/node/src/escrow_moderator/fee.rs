@@ -516,7 +516,7 @@ impl Node {
         }
         if let Some(paid) = fee.paid {
             if fee.receipt.is_none() {
-                let (keys, _) = self.case_identity(record.as_deref())?;
+                let keys = self.case_keys(record.as_deref())?;
                 let receipt = FeeReceipt {
                     moderator_key: keys.record_key().map_err(|err| err.to_string())?,
                     case_id: fee.case_id,
@@ -569,7 +569,7 @@ impl Node {
                 script
             }
         };
-        let (keys, _) = self.case_identity(filer.record.as_deref())?;
+        let keys = self.case_keys(filer.record.as_deref())?;
         let invoice = self.ln_fee_invoice(fee.amount, &id_hex(id)[..8]);
         let request = FeeRequest {
             moderator_key: keys.record_key().map_err(|err| err.to_string())?,

@@ -15,7 +15,8 @@
 //!
 //! The track record is counted here, never claimed: the public rulings a
 //! moderator serves are counted only when its ruling key signed them. The
-//! built-in moderator's keys are public, so it gets no track record.
+//! built-in moderator's keys are public, so it gets no track record. The
+//! filing-fee cases are counted the same way ([`crate::moderator_track`]).
 //!
 //! `moderators.json` holds only public, signed data and the accepted ids.
 
@@ -24,7 +25,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use openbazaar_escrow::{read_profile, VerifiedProfile};
+use openbazaar_escrow::{read_profile, FeeKind, ModeratorRecord, VerifiedProfile};
 use openbazaar_protocol::{Catalog, DisputeOutcome, ModeratorProfile, PublicRuling, Signed, FAVORED_BUYER, FAVORED_VENDOR};
 use serde_json::{json, Value};
 
@@ -32,6 +33,7 @@ use crate::escrow_fixture::{moderator_keys, moderator_mail_key, moderator_record
 use crate::escrow_mail::{hex, unhex};
 use crate::escrow_outbox::now_secs;
 use crate::instructions::ESCROW_MAINNET_REFUSAL;
+use crate::moderator_track::{count_cases, CaseCounts};
 use crate::network::NetworkMode;
 use crate::own_listings::StoreError;
 use crate::peer_http::sale_base;
@@ -54,6 +56,7 @@ pub(crate) struct Known {
     pub profile: VerifiedProfile,
     pub rulings: u32,
     pub stores: u32,
+    pub cases: CaseCounts,
     /// Unix seconds of the last count from the moderator's address. 0: never.
     pub checked: u64,
 }
@@ -86,7 +89,13 @@ impl Book {
             let count = |key: &str| entry[key].as_u64().and_then(|n| u32::try_from(n).ok()).unwrap_or(0);
             known.insert(
                 profile.id(),
-                Known { profile, rulings: count("rulings"), stores: count("stores"), checked: entry["checked"].as_u64().unwrap_or(0) },
+                Known {
+                    profile,
+                    rulings: count("rulings"),
+                    stores: count("stores"),
+                    cases: CaseCounts::from_value(&entry["cases"]),
+                    checked: entry["checked"].as_u64().unwrap_or(0),
+                },
             );
         }
         Ok(Self { path, accepted, known })
@@ -96,7 +105,15 @@ impl Book {
         let known: Vec<Value> = self
             .known
             .values()
-            .map(|known| json!({ "profile": hex(&known.profile.bytes), "rulings": known.rulings, "stores": known.stores, "checked": known.checked }))
+            .map(|known| {
+                json!({
+                    "profile": hex(&known.profile.bytes),
+                    "rulings": known.rulings,
+                    "stores": known.stores,
+                    "cases": known.cases.to_value(),
+                    "checked": known.checked,
+                })
+            })
             .collect();
         let mut value = json!({ "known": known });
         if let Some(accepted) = &self.accepted {
@@ -115,7 +132,7 @@ impl Book {
                 return false;
             }
             if known.checked == 0 {
-                (known.rulings, known.stores, known.checked) = (old.rulings, old.stores, old.checked);
+                (known.rulings, known.stores, known.cases, known.checked) = (old.rulings, old.stores, old.cases, old.checked);
             }
             if old.profile == known.profile && old.checked == known.checked {
                 return false;
@@ -123,6 +140,15 @@ impl Book {
         }
         self.known.insert(known.profile.id(), known);
         true
+    }
+}
+
+/// `"filing"`: paid by whoever opens a dispute (terms v5). `"ruling"`: an
+/// output of each ruling, in escrows from before filing fees (terms v4).
+pub(crate) fn fee_kind(record: &ModeratorRecord) -> &'static str {
+    match record.fee_kind {
+        FeeKind::Filing => "filing",
+        FeeKind::Ruling => "ruling",
     }
 }
 
@@ -249,11 +275,12 @@ impl Node {
     /// node's own identity, or a profile in the book.
     pub(crate) fn known_moderator(&self, id: &[u8; 32]) -> Option<Known> {
         if self.builtin_moderator() == Some(*id) {
-            return self.builtin_profile().map(|profile| Known { profile, rulings: 0, stores: 0, checked: 0 });
+            return self.builtin_profile().map(|profile| Known { profile, rulings: 0, stores: 0, cases: CaseCounts::default(), checked: 0 });
         }
         if let Some(profile) = self.own_moderator_profile().filter(|profile| profile.id() == *id) {
             let (rulings, stores) = count_rulings(id, &self.public_rulings_value());
-            return Some(Known { profile, rulings, stores, checked: now_secs() });
+            let cases = self.own_case_counts(id);
+            return Some(Known { profile, rulings, stores, cases, checked: now_secs() });
         }
         self.book().known.get(id).cloned()
     }
@@ -292,8 +319,17 @@ impl Node {
         if sale_base(&profile.profile.address).ok().as_deref() != Some(base) {
             return Err("That profile is published for another address. Use the address the moderator gives out.".into());
         }
-        let (rulings, stores) = count_rulings(&profile.id(), value["rulings"].as_array().map_or(&[][..], Vec::as_slice));
-        Ok(Known { profile, rulings, stores, checked: now_secs() })
+        let list = |key: &str| value[key].as_array().map_or(&[][..], Vec::as_slice);
+        let (rulings, stores) = count_rulings(&profile.id(), list("rulings"));
+        let tip = self.chain.tip_height().unwrap_or(0);
+        let cases = count_cases(&profile.id(), list("accepted"), list("decisions"), tip);
+        Ok(Known { profile, rulings, stores, cases, checked: now_secs() })
+    }
+
+    /// The filing-fee cases this node's own identity `id` signed records for.
+    pub(crate) fn own_case_counts(&self, id: &[u8; 32]) -> CaseCounts {
+        let tip = self.chain.tip_height().unwrap_or(0);
+        count_cases(id, &self.cases_accepted_value(), &self.dispute_decisions_value(), tip)
     }
 
     /// Keep verified profiles a store's node relayed. Returns how many were new.
@@ -309,7 +345,7 @@ impl Node {
             if Some(profile.id()) == own || Some(profile.id()) == self.builtin_moderator() {
                 continue;
             }
-            if book.learn(Known { profile, rulings: 0, stores: 0, checked: 0 }) {
+            if book.learn(Known { profile, rulings: 0, stores: 0, cases: CaseCounts::default(), checked: 0 }) {
                 learned += 1;
             }
         }
@@ -402,11 +438,14 @@ impl Node {
             "terms": profile.terms,
             "languages": profile.languages,
             "feeSats": known.profile.record.fee.to_sat(),
+            "feeKind": fee_kind(&known.profile.record),
             "address": profile.address,
             "builtIn": builtin,
             "accepted": accepted,
-            // Counted from rulings the moderator's key signed. The built-in key is public, so nothing is counted for it.
-            "trackRecord": (!builtin && known.checked > 0).then(|| json!({ "rulings": known.rulings, "stores": known.stores, "checkedAt": known.checked })),
+            // Counted from records the moderator's key signed. The built-in key is public, so nothing is counted for it.
+            "trackRecord": (!builtin && known.checked > 0).then(|| {
+                json!({ "rulings": known.rulings, "stores": known.stores, "cases": known.cases.to_value(), "checkedAt": known.checked })
+            }),
         })
     }
 
@@ -425,6 +464,7 @@ impl Node {
             "terms": "",
             "languages": ["en"],
             "feeSats": record.fee.to_sat(),
+            "feeKind": fee_kind(&record),
             "address": null,
             "builtIn": true,
             "accepted": accepted,

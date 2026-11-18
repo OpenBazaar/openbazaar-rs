@@ -82,11 +82,8 @@ fn the_vendor_disputes_and_a_vendor_ruling_settles_for_it() {
     assert_eq!(sold["settleTxid"], json!(outcome.compute_txid().to_string()));
     assert!(spends(&outcome, outpoint));
     assert_eq!(outcome.output[0].script_pubkey, script_of(&escrow["vendorPayout"]));
-    assert_eq!(
-        outcome.output[0].value.to_sat(),
-        funding - fee - ANCHOR_VALUE.to_sat() - MODERATOR_FEE_SATS
-    );
-    assert_eq!(outcome.output[1].value.to_sat(), MODERATOR_FEE_SATS);
+    assert_eq!(outcome.output[0].value.to_sat(), funding - fee - ANCHOR_VALUE.to_sat());
+    assert_eq!(outcome.output.len(), 2, "a ruling pays no moderator fee");
 }
 
 /// A missing moderator does not pay the vendor. The presigned claim is the
