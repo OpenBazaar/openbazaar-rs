@@ -125,6 +125,7 @@ jobs:
       - run: npm ci
       - run: npx playwright install --with-deps chromium
       - run: npx playwright test -c playwright.real.config.ts --project=real
+      - run: npx playwright test -c playwright.real.config.ts --project=crawl selftest
       - if: failure()
         uses: actions/upload-artifact@v4
         with:

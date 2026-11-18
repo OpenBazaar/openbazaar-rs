@@ -513,7 +513,7 @@ fn fixed_rates_price_a_zcash_order_with_no_rate_server_and_say_they_are_fixed() 
     node.zec.rate = super::rate::ZecRate::new(off);
     assert_eq!(request(&node, "GET", "/rates", "").1["zec"], Value::Null);
 
-    node.set_fixed_rates(100_000, 50).unwrap();
+    node.set_fixed_rates(100_000, 50, None).unwrap();
     let (_, rates) = request(&node, "GET", "/rates", "");
     assert_eq!(
         (&rates["source"], &rates["currencies"]),
@@ -540,7 +540,7 @@ fn a_mainnet_node_refuses_fixed_rates() {
         1,
         unreachable_escrow(),
     );
-    let err = node.set_fixed_rates(100_000, 50).unwrap_err();
+    let err = node.set_fixed_rates(100_000, 50, None).unwrap_err();
     assert!(err.contains("testnet4 only"), "{err}");
     let (_, rates) = request(&node, "GET", "/rates", "");
     assert_eq!(

@@ -27,6 +27,30 @@ address, `chain.mine(n)` confirms what was broadcast, and `chain.mempool()` and
 `chain.tx(id)` show what the nodes sent. The `market` fixture adds a `--moderate`
 node and points the seller and buyer at it for escrow and disputes.
 
+Lightning (`lightning.spec.ts`) runs on a throwaway regtest bitcoind and skips
+without one (`BITCOIND_EXE`). Monero (`monero.spec.ts`) runs on an offline
+stagenet monerod holding only the genesis block and skips without one
+(`MONEROD_EXE`); nodes price XMR from `--fixed-rates ...,XMRUSD=300`.
+
+**`crawl`** (same config, `e2e/crawl/`): `engine.ts` clicks every control it can
+reach in a seeded random order, fills inputs (the test passphrase where a field
+asks for one), sometimes locks the wallet first, and reports controls that do
+nothing (twice), dialogs that will not close, and error screens, on top of the
+real-node guards. `selftest.spec.ts` checks it finds a planted dead button and
+trap dialog. `crawl.spec.ts` crawls the buyer, seller and moderator pages of a
+seeded market.
+
+```sh
+npm run test:crawl                       # 2 minutes, a new seed
+OB_CRAWL_SEED=12345 OB_CRAWL_MINUTES=10 npm run test:crawl   # replay a seed, longer
+```
+
+Each run writes `findings.json`, `crawl-log.txt` (every action) and a screenshot
+per finding. Findings that are not bugs go in `e2e/crawl/known.ts` with a reason.
+The `ui crawl` workflow runs it nightly with the Lightning tests and opens or
+updates one `ui-crawl` issue when something fails; `release.yml` runs the real
+tests and a 3-minute crawl before packaging.
+
 **`mocked`** (`playwright.config.ts`, the rest of `e2e/`): checks of UI states with
 some node answers intercepted, described below. Run with `npm run test:e2e`.
 

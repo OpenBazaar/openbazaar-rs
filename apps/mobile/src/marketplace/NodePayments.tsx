@@ -559,7 +559,7 @@ export function OrderPayment({
           {view.progress && <p role='status'>{view.progress}</p>}
           {monero && monero.awaiting && order.status === ORDER_STATUS.awaitingPayment && !order.payTxid ? (
             <div className='ob-payment-options'>
-              <PaymentQr value={monero.uri} />
+              <PaymentQr value={monero.uri} label='Monero payment QR code' />
               <CopyPaymentValue label='Monero subaddress' value={monero.subaddress} />
               <CopyPaymentValue label='Amount in XMR' value={monero.remainingXmr} />
               <p className='ob-page-intro'>
@@ -581,7 +581,7 @@ export function OrderPayment({
             </p>
           ) : zcash && zcash.awaiting && order.status === ORDER_STATUS.awaitingPayment ? (
             <div className='ob-payment-options'>
-              <PaymentQr value={zcash.uri} />
+              <PaymentQr value={zcash.uri} label='Zcash payment QR code' />
               <CopyPaymentValue label='Zcash address' value={zcash.address} />
               <CopyPaymentValue label='Amount in ZEC' value={zcash.remainingZec} />
               <p className='ob-page-intro'>
