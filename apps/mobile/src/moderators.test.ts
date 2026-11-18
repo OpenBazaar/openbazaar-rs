@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { parseBuyerOrder } from "./catalog.ts";
-import { languagesOf, parseModerators, parseOwnModerator, shortKey, trackRecordText } from "./moderators.ts";
+import { feeText, languagesOf, parseModerators, parseOwnModerator, shortKey, trackRecordText } from "./moderators.ts";
 
 const id = "8f".repeat(32);
 const known = (extra: Record<string, unknown> = {}) => ({ id, name: "Ines Varga", description: "Rules within two days.", terms: "", languages: ["en", "pt-br"], feeSats: 1500, address: "http://127.0.0.1:9000", builtIn: false, accepted: true, trackRecord: { rulings: 3, stores: 2, checkedAt: 1700000000 }, ...extra });
@@ -13,7 +13,9 @@ test("moderators parse as the node sends them", () => {
   assert.equal(moderator.name, "Ines Varga");
   assert.equal(moderator.feeSats, 1500);
   assert.deepEqual(moderator.languages, ["en", "pt-br"]);
-  assert.deepEqual(moderator.trackRecord, { rulings: 3, stores: 2, checkedAt: 1700000000 });
+  assert.deepEqual(moderator.trackRecord, { rulings: 3, stores: 2, checkedAt: 1700000000, cases: { accepted: 0, decided: 0, denied: 0, recused: 0, overdue: 0 } });
+  assert.equal(moderator.feeKind, "ruling", "a node that names no kind is from before filing fees");
+  assert.equal(parseModerators({ moderators: [known({ feeKind: "filing" })] })[0].feeKind, "filing");
   assert.deepEqual(parseModerators({ moderators: [] }), []);
 });
 
@@ -30,13 +32,26 @@ test("the track record says only what was verified", () => {
   assert.equal(text({ trackRecord: { rulings: 0, stores: 0, checkedAt: 5 } }), "No public rulings yet.");
   assert.equal(text({ trackRecord: null }), "Track record not checked yet.");
   assert.equal(text({ builtIn: true, trackRecord: { rulings: 9, stores: 9, checkedAt: 5 } }), "Test moderator with public keys. No track record.");
+  const cases = { accepted: 4, decided: 3, denied: 1, recused: 0, overdue: 1 };
+  assert.equal(text({ trackRecord: { rulings: 2, stores: 1, checkedAt: 5, cases } }), "2 signed public rulings across 1 store. 4 paid cases, 3 decided, 1 denied, 1 overdue.");
+  assert.match(text({ trackRecord: { rulings: 0, stores: 0, checkedAt: 5, cases: { ...cases, recused: 1 } } }), /1 recused and refunded, 1 overdue/);
+});
+
+test("the fee reads as what a dispute costs, by the kind of record", () => {
+  const fee = (extra: Record<string, unknown>) => feeText(parseModerators({ moderators: [known(extra)] })[0]);
+  assert.equal(fee({ feeKind: "filing" }), "Opening a dispute costs 1,500 sats");
+  assert.equal(fee({ feeKind: "filing", feeSats: 0 }), "No filing fee");
+  assert.equal(fee({}), "Fee 1,500 sats if a dispute is ruled");
 });
 
 test("the desk's own profile parses before and after it is named", () => {
   const fresh = parseOwnModerator({ id: null, published: false, address: null, builtIn: { id: "f9".repeat(32), name: "June Pell" } });
   assert.deepEqual([fresh.id, fresh.name, fresh.published, fresh.builtIn?.name], [null, "", false, "June Pell"]);
-  const named = parseOwnModerator({ id, name: "Ines Varga", description: "", terms: "", languages: ["en"], feeSats: 1500, minFeeSats: 330, published: true, address: "http://127.0.0.1:9000", trackRecord: { rulings: 2, stores: 1 }, builtIn: null });
+  const named = parseOwnModerator({ id, name: "Ines Varga", description: "", terms: "", languages: ["en"], feeSats: 1500, minFeeSats: 330, published: true, address: "http://127.0.0.1:9000", trackRecord: { rulings: 2, stores: 1, cases: { accepted: 1, overdue: 1 } }, feeWarning: "Lightning is off on this node, so filers pay the filing fee on-chain.", builtIn: null });
   assert.deepEqual([named.id, named.feeSats, named.minFeeSats, named.rulings, named.stores, named.builtIn], [id, 1500, 330, 2, 1, null]);
+  assert.deepEqual(named.cases, { accepted: 1, decided: 0, denied: 0, recused: 0, overdue: 1 });
+  assert.match(named.feeWarning ?? "", /on-chain/);
+  assert.equal(fresh.feeWarning, null);
   assert.throws(() => parseOwnModerator({ name: "Ines Varga" }));
 });
 

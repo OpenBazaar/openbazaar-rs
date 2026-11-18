@@ -50,6 +50,7 @@ fn spend_routes(id: &str) -> Vec<(&'static str, String, String)> {
         ("POST", format!("/orders/{id}/release"), String::new()),
         ("POST", format!("/orders/{id}/dispute"), json!({"memo": "never arrived"}).to_string()),
         ("POST", format!("/moderator/disputes/{}/rule", "00".repeat(16)), json!({"favor": "buyer"}).to_string()),
+        ("POST", format!("/moderator/disputes/{}/deny", "00".repeat(16)), json!({"favor": "buyer"}).to_string()),
         ("POST", "/wallet/phrase".into(), json!({"passphrase": PASSPHRASE}).to_string()),
         ("PUT", "/lock/settings".into(), json!({"passphrase": PASSPHRASE, "autoLockMinutes": 60}).to_string()),
         ("POST", "/lock/passphrase".into(), json!({"current": PASSPHRASE, "new": "another long one"}).to_string()),

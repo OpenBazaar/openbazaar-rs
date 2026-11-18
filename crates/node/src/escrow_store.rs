@@ -1,6 +1,6 @@
 //! Durable escrow state: one sealed, versioned record per escrow and role.
 //!
-//! Records live in `escrow/{buyer,vendor,moderator}/` in the data dir. Each
+//! Records live in `escrow/{buyer,vendor,moderator,filer}/` in the data dir. Each
 //! is a JSON object sealed with the vault key (the receive tier), so the
 //! node can read them while the wallet is locked. No record holds a signing
 //! secret: the escrow crate's snapshots carry no secret key and no secret
@@ -33,6 +33,8 @@ pub(crate) enum Role {
     Buyer,
     Vendor,
     Moderator,
+    /// A party's side of a v5 filing fee ([`crate::escrow_dispute_fee`]).
+    Filer,
 }
 
 impl Role {
@@ -41,6 +43,7 @@ impl Role {
             Role::Buyer => "buyer",
             Role::Vendor => "vendor",
             Role::Moderator => "moderator",
+            Role::Filer => "filer",
         }
     }
 }
@@ -53,7 +56,7 @@ pub(crate) struct EscrowStore {
 impl EscrowStore {
     pub(crate) fn open(data_dir: &Path, vault: Vault) -> Result<Self, Error> {
         let dir = data_dir.join("escrow");
-        for role in [Role::Buyer, Role::Vendor, Role::Moderator] {
+        for role in [Role::Buyer, Role::Vendor, Role::Moderator, Role::Filer] {
             fs::create_dir_all(dir.join(role.dir())).map_err(|err| Error::Detail(err.to_string()))?;
         }
         Ok(Self { dir, vault })

@@ -26,12 +26,15 @@
 //! set, so every public peer, Esplora, and gossip dial runs over Tor.
 
 mod checkout;
+mod fee;
+#[cfg(test)]
+mod fee_tests;
 mod http;
 pub(crate) mod options;
 mod pay;
 mod sale;
 #[cfg(test)]
-mod sale_tests;
+pub(crate) mod sale_tests;
 mod send;
 #[cfg(test)]
 mod send_tests;
@@ -58,6 +61,7 @@ use crate::wallet_keys;
 use crate::{Error, Node};
 
 pub(crate) use checkout::{add_ln_flags, ln_rail_of};
+pub(crate) use fee::FeePaid;
 pub(crate) use http::response;
 pub(crate) use pay::LnTerms;
 pub(crate) use sale::{add_terms, payment_from_terms};
@@ -604,7 +608,7 @@ fn reveals(config: &LnConfig, proxy: bool) -> Vec<String> {
     let mut out = Vec::new();
     if let Some(lsp) = &config.lsp {
         out.push(format!(
-            "The LSP ({}) sees the amount and time of each payment to this node and the channels it opens.",
+            "The LSP ({}) sees the amount and time of each payment to this node and the channels it opens. For a moderator that includes the dispute fees it takes, so the LSP can count its disputes.",
             lsp.peer.address
         ));
     }

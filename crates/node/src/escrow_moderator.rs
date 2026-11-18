@@ -29,158 +29,88 @@
 //! branch per escrow across restarts and crashes before anything is
 //! decrypted. A ruling is stored with its case before it is sent, so a crash
 //! after the ruling resends the same branch.
+//!
+//! A letter under v5 terms owes the moderator a filing fee ([`fee`]). The
+//! operator can rule on it or deny it (`POST /moderator/disputes/{id}/deny`)
+//! only once the escrow's fee is paid or when the fee is zero. Either one
+//! is signed as a public decision; a denial is final. Before any decision,
+//! the operator can instead recuse from a paid case and pay the fee back
+//! ([`refund`]).
+
+mod case;
+mod decision;
+mod fee;
+mod owed;
+pub(crate) mod refund;
 
 use std::collections::BTreeMap;
 use std::sync::MutexGuard;
 
 use bitcoin::hashes::{sha256, Hash};
-use bitcoin::secp256k1::{schnorr, Secp256k1, XOnlyPublicKey};
 use bitcoin::{OutPoint, Script, TxOut};
 use openbazaar_escrow::{
-    review_letter, DisputeCase, Error as EscrowError, FundingChain, Moderator, ModeratorKeys, ModeratorRecord, ModeratorRuling, Party,
+    review_letter, Decision, DisputeCase, Error as EscrowError, FeeCase, FundingChain, Moderator, ModeratorKeys,
+    ModeratorRecord, ModeratorRuling, Party,
 };
 use serde_json::{json, Value};
 use tormail::StoreKey;
 
+use self::case::{
+    branch_byte, case_name, check_citation, citation_from_fields, party_name, party_of, refund_script, Case, CaseFee,
+};
+use self::fee::{fee_id, EscrowFee, FeePool};
 use crate::chain::ChainSource;
-use crate::escrow_fixture::{moderator_keys, moderator_record};
-use crate::escrow_vendor::offer_digest_with_listing;
+use crate::escrow_fixture::{legacy_moderator_record, moderator_keys, moderator_record};
 use crate::escrow_limits::DisputeLimits;
-use crate::escrow_mail::{hex, id_hex, key_bytes, parse_id, unhex, EscrowId, Kind, Mail, RETRY_LATER};
+use crate::escrow_mail::{hex, id_hex, key_bytes, parse_id, EscrowId, Kind, Mail, RETRY_LATER};
 use crate::escrow_outbox::now_secs;
 use crate::escrow_rulings::FileRulingStore;
 use crate::escrow_store::{EscrowStore, Role};
 use crate::pay_order::PayError;
 use crate::Node;
 
-#[derive(Clone, Copy)]
-struct Citation {
-    listing_id: [u8; 16],
-    store_key: [u8; 32],
-    store_signature: [u8; 64],
-}
-
-struct Case {
-    letter: Vec<u8>,
-    memo: String,
-    outpoint: OutPoint,
-    received: u32,
-    reply_mail: StoreKey,
-    reply_url: String,
-    ruling: Option<Vec<u8>>,
-    citation: Option<Citation>,
-    public_ruling: Option<Vec<u8>>,
-    /// The signed outcome beside the ruling: which party was paid
-    /// ([`openbazaar_escrow::read_dispute_outcome`]). No store, no listing.
-    outcome: Option<Vec<u8>>,
-    /// The record of this node's own identity the letter was reviewed
-    /// under. `None`: the built-in test moderator's.
-    record: Option<Vec<u8>>,
-    /// This node's own shipment lookup for the dispute
-    /// ([`crate::escrow_tracking`]). Coarse fields only.
-    tracking: Option<Value>,
-}
-
-impl Case {
-    fn to_record(&self) -> Value {
-        json!({
-            "letter": hex(&self.letter),
-            "memo": self.memo,
-            "outpoint": self.outpoint.to_string(),
-            "received": self.received,
-            "replyMail": hex(self.reply_mail.as_bytes()),
-            "replyUrl": self.reply_url,
-            "ruling": self.ruling.as_deref().map(hex),
-            "listingId": self.citation.map(|citation| hex(&citation.listing_id)),
-            "storeKey": self.citation.map(|citation| hex(&citation.store_key)),
-            "storeSignature": self.citation.map(|citation| hex(&citation.store_signature)),
-            "publicRuling": self.public_ruling.as_deref().map(hex),
-            "outcome": self.outcome.as_deref().map(hex),
-            "record": self.record.as_deref().map(hex),
-            "tracking": self.tracking.clone(),
-        })
-    }
-
-    fn from_record(value: &Value) -> Option<Self> {
-        Some(Self {
-            letter: unhex(value["letter"].as_str()?).ok()?,
-            memo: value["memo"].as_str()?.to_string(),
-            outpoint: value["outpoint"].as_str()?.parse().ok()?,
-            received: u32::try_from(value["received"].as_u64()?).ok()?,
-            reply_mail: key_bytes(&unhex(value["replyMail"].as_str()?).ok()?).ok()?,
-            reply_url: value["replyUrl"].as_str()?.to_string(),
-            ruling: match value["ruling"].as_str() {
-                Some(text) => Some(unhex(text).ok()?),
-                None => None,
-            },
-            citation: citation_from(value),
-            public_ruling: match value["publicRuling"].as_str() {
-                Some(text) => Some(unhex(text).ok()?),
-                None => None,
-            },
-            outcome: match value["outcome"].as_str() {
-                Some(text) => Some(unhex(text).ok()?),
-                None => None,
-            },
-            record: match value["record"].as_str() {
-                Some(text) => Some(unhex(text).ok()?),
-                None => None,
-            },
-            tracking: match &value["tracking"] {
-                Value::Null => None,
-                found => Some(found.clone()),
-            },
-        })
-    }
-}
-
-/// Cases by escrow and the branch the letter asks for.
+/// Cases by escrow and the branch the letter asks for, and the filing fee
+/// of each v5 escrow that owes one.
 #[derive(Default)]
 pub(crate) struct ModeratorDesk {
     cases: BTreeMap<(EscrowId, u8), Case>,
+    fees: BTreeMap<EscrowId, EscrowFee>,
+    pool: FeePool,
+    fee_tick: u64,
+    /// The tip at which stored refunds were last broadcast again.
+    refunds_checked: u32,
 }
 
 impl ModeratorDesk {
     pub(crate) fn load(store: &EscrowStore) -> Self {
-        let mut cases = BTreeMap::new();
+        let mut desk = Self::default();
         for (name, record) in store.list(Role::Moderator) {
+            if FeePool::is_pool(&name) {
+                match FeePool::from_record(&record) {
+                    Some(pool) => desk.pool = pool,
+                    None => eprintln!("ob-node: moderator fee pool could not be read"),
+                }
+                continue;
+            }
+            if let Some(id) = fee_id(&name) {
+                match EscrowFee::from_record(&record) {
+                    Some(fee) => {
+                        desk.fees.insert(id, fee);
+                    }
+                    None => eprintln!("ob-node: moderator fee {name} could not be read"),
+                }
+                continue;
+            }
             let parsed = name.split_once('-').and_then(|(id, party)| Some((parse_id(id)?, branch_byte(party)?)));
             match (parsed, Case::from_record(&record)) {
                 (Some(key), Some(case)) => {
-                    cases.insert(key, case);
+                    desk.cases.insert(key, case);
                 }
                 _ => eprintln!("ob-node: moderator case {name} could not be read"),
             }
         }
-        Self { cases }
+        desk
     }
-}
-
-fn branch_byte(name: &str) -> Option<u8> {
-    match name {
-        "buyer" => Some(Party::Buyer as u8),
-        "vendor" => Some(Party::Vendor as u8),
-        _ => None,
-    }
-}
-
-fn party_of(byte: u8) -> Party {
-    if byte == Party::Vendor as u8 {
-        Party::Vendor
-    } else {
-        Party::Buyer
-    }
-}
-
-fn party_name(party: Party) -> &'static str {
-    match party {
-        Party::Buyer => "buyer",
-        Party::Vendor => "vendor",
-    }
-}
-
-fn case_name(id: &EscrowId, party: Party) -> String {
-    format!("{}-{}", id_hex(id), party_name(party))
 }
 
 /// This node's chain source, followed by script. Confirmed outputs only.
@@ -208,6 +138,23 @@ fn letter_digest(letter: &[u8]) -> [u8; 32] {
     sha256::Hash::hash(letter).to_byte_array()
 }
 
+/// The filing fee of a reviewed letter's terms; `None` under v4 terms.
+fn case_fee(case: &DisputeCase) -> Option<CaseFee> {
+    let terms = case.terms();
+    let amount = terms.moderator.filing_fee()?;
+    let fee_case = FeeCase {
+        terms,
+        outpoint: case.funding_outpoint(),
+        filer: case.favored(),
+        letter_digest: [0; 32],
+    };
+    Some(CaseFee {
+        case_id: fee_case.case_id(),
+        amount: amount.to_sat(),
+        due: terms.vendor_claim_height,
+    })
+}
+
 impl Node {
     fn moderator_desk(&self) -> MutexGuard<'_, ModeratorDesk> {
         self.escrow
@@ -216,17 +163,25 @@ impl Node {
             .unwrap_or_else(|err| err.into_inner())
     }
 
-    /// The keys and record a case is ruled under: this node's own identity
-    /// for a case that names one of its records, else the built-in one.
-    fn case_identity(&self, record: Option<&[u8]>) -> Result<(ModeratorKeys, ModeratorRecord), String> {
+    /// The keys a case is ruled under: this node's own identity for a case
+    /// that names one of its records, else the built-in one.
+    fn case_keys(&self, record: Option<&[u8]>) -> Result<ModeratorKeys, String> {
         match record {
-            Some(bytes) => Ok((self.own_moderator_keys()?, ModeratorRecord::from_bytes(bytes).map_err(|err| err.to_string())?)),
-            None => Ok((moderator_keys(self.network)?, moderator_record(self.network)?)),
+            Some(_) => self.own_moderator_keys(),
+            None => moderator_keys(self.network),
         }
     }
 
-    fn moderator(&self, record: Option<&[u8]>) -> Result<Moderator<ChainView<'_>, &FileRulingStore>, String> {
-        let (keys, record) = self.case_identity(record)?;
+    /// The moderator a case is ruled by. A built-in case with a filing fee
+    /// was reviewed under the built-in filing-fee record, one without under
+    /// its record from before filing fees.
+    fn moderator(&self, record: Option<&[u8]>, filing: bool) -> Result<Moderator<ChainView<'_>, &FileRulingStore>, String> {
+        let keys = self.case_keys(record)?;
+        let record = match (record, filing) {
+            (Some(bytes), _) => ModeratorRecord::from_bytes(bytes).map_err(|err| err.to_string())?,
+            (None, true) => moderator_record(self.network)?,
+            (None, false) => legacy_moderator_record(self.network)?,
+        };
         Moderator::new(keys, record, ChainView(&*self.chain), &self.escrow.rulings)
             .map(|moderator| moderator.with_cache(self.escrow.letters.clone()))
             .map_err(|err| err.to_string())
@@ -239,7 +194,10 @@ impl Node {
         let digest = letter_digest(letter);
         let limits: &DisputeLimits = &self.escrow.limits;
         let mut gate = |key: &openbazaar_escrow::RulingKey, _: Party| limits.admit(digest, key, now_secs());
-        let builtin = moderator_record(self.network).ok().map(|record| (record, None));
+        let builtin = [moderator_record(self.network), legacy_moderator_record(self.network)]
+            .into_iter()
+            .filter_map(Result::ok)
+            .map(|record| (record, None));
         let own = self.own_moderator_records().into_iter().map(|record| {
             let bytes = record.to_bytes();
             (record, Some(bytes))
@@ -265,11 +223,9 @@ impl Node {
     /// Review a letter from `writer`, who must be the party it favors.
     fn moderator_review(&self, mail: &Mail, writer: Party) -> Result<(), String> {
         let fields = mail.as_fields();
-        let citation = match fields.len() {
-            3 => None,
-            6 => Some(citation_from_fields(fields)?),
-            _ => return Err("a Dispute message carries 3 fields".into()),
-        };
+        if !matches!(fields.len(), 3 | 4 | 6 | 7) {
+            return Err("a Dispute message carries 3 or 6 fields, or 4 or 7 under v5 terms".into());
+        }
         let reply_mail = key_bytes(&fields[1])?;
         let reply_url = crate::peer_http::sale_base(&String::from_utf8(fields[2].clone()).map_err(|err| err.to_string())?)?;
         let received = self.chain.tip_height()?;
@@ -281,13 +237,24 @@ impl Node {
         if case.favored() != writer {
             return Err("a dispute letter must ask for its writer's branch".into());
         }
+        let fee = case_fee(&case);
+        let (refund_script, cited) = match (fee.is_some(), fields.len()) {
+            (false, 3 | 6) => (None, 3),
+            (true, 4 | 7) => (Some(refund_script(&fields[3], self.network.bitcoin())?), 4),
+            _ => return Err("a dispute letter carries a refund script exactly under v5 terms".into()),
+        };
+        let citation = match fields.get(cited..) {
+            Some(rest) if !rest.is_empty() => Some(citation_from_fields(rest)?),
+            _ => None,
+        };
         if let Some(citation) = citation {
             check_citation(&mail.escrow, case.terms(), &citation)?;
         }
         let key = (mail.escrow, case.favored() as u8);
         let mut desk = self.moderator_desk();
         if desk.cases.contains_key(&key) {
-            return Ok(());
+            drop(desk);
+            return self.open_case_fee(&mail.escrow, writer, fee);
         }
         let case = Case {
             letter: fields[0].clone(),
@@ -302,12 +269,23 @@ impl Node {
             outcome: None,
             record,
             tracking: None,
+            fee,
+            decision: None,
+            refund_script,
         };
         self.escrow
             .store
             .save(Role::Moderator, &case_name(&mail.escrow, party_of(key.1)), &case.to_record())?;
         desk.cases.insert(key, case);
-        Ok(())
+        drop(desk);
+        self.open_case_fee(&mail.escrow, writer, fee)
+    }
+
+    fn open_case_fee(&self, id: &EscrowId, filer: Party, fee: Option<CaseFee>) -> Result<(), String> {
+        match fee {
+            Some(fee) if fee.amount > 0 => self.open_fee(id, filer, fee.case_id, fee.amount, fee.due),
+            _ => Ok(()),
+        }
     }
 
     /// True when this desk holds a letter for the escrow, in either branch.
@@ -339,7 +317,14 @@ impl Node {
     }
 
     pub(crate) fn disputes_value(&self) -> Value {
+        let tip = self.chain.tip_height().ok();
+        let received = self.all_fees_received();
         let desk = self.moderator_desk();
+        let decided = |id: &EscrowId| {
+            desk.cases
+                .iter()
+                .any(|((case_id, _), case)| case_id == id && (case.ruling.is_some() || case.decision.is_some()))
+        };
         let cases: Vec<Value> = desk
             .cases
             .iter()
@@ -352,8 +337,11 @@ impl Node {
                     "outpoint": case.outpoint.to_string(),
                     "receivedHeight": case.received,
                     "ruled": case.ruling.is_some(),
+                    "denied": case.ruling.is_none() && case.decision.is_some(),
                     "builtIn": case.record.is_none(),
                     "tracking": case.tracking.clone(),
+                    "caseId": case.fee.map(|fee| hex(&fee.case_id)),
+                    "fee": desk.case_fee_value(id, case, tip, decided(id), &received),
                 })
             })
             .collect();
@@ -391,44 +379,17 @@ impl Node {
     /// Rule on a reviewed letter and send the ruling to the party that wrote it.
     pub fn rule_dispute(&self, id: &str, body: &Value) -> Result<Value, PayError> {
         self.lock.spend_key()?;
-        let favor = match body.as_object() {
-            Some(map) if map.len() == 1 => map.get("favor").and_then(Value::as_str),
-            _ => None,
-        };
-        let favor = match favor {
-            Some("buyer") => Party::Buyer,
-            Some("vendor") => Party::Vendor,
-            _ => {
-                return Err(PayError::Invalid(
-                    "Send {\"favor\": \"buyer\"} or {\"favor\": \"vendor\"}.".into(),
-                ))
-            }
-        };
+        let favor = favor_of(body)?;
         let escrow_id = parse_id(id).ok_or(PayError::NotFound)?;
         let lock = self.escrow.locks.get(&escrow_id);
         let _held = lock.lock().unwrap_or_else(|err| err.into_inner());
-        let (letter, received, record) = {
+        let (letter, received, record, filing) = {
             let desk = self.moderator_desk();
-            let Some(case) = desk.cases.get(&(escrow_id, favor as u8)) else {
-                let other = match favor {
-                    Party::Buyer => Party::Vendor,
-                    Party::Vendor => Party::Buyer,
-                };
-                if desk.cases.contains_key(&(escrow_id, other as u8)) {
-                    let asks = party_name(other);
-                    return Err(PayError::Invalid(format!(
-                        "This letter asks for the {asks}. Only the {asks} branch can be opened from it."
-                    )));
-                }
-                return Err(PayError::NotFound);
-            };
-            if case.ruling.is_some() {
-                return Err(PayError::Conflict("This dispute has a ruling.".into()));
-            }
-            (case.letter.clone(), case.received, case.record.clone())
+            let case = desk.undecided(&escrow_id, favor)?;
+            (case.letter.clone(), case.received, case.record.clone(), case.fee.is_some())
         };
         let ruling = self
-            .moderator(record.as_deref())
+            .moderator(record.as_deref(), filing)
             .map_err(PayError::Failed)?
             .open(&letter, received)
             .map_err(|err| PayError::Conflict(err.to_string()))?;
@@ -442,7 +403,7 @@ impl Node {
         let mut desk = self.moderator_desk();
         let case = desk.cases.get_mut(&(*id, favor as u8)).ok_or("the case is gone")?;
         case.ruling = Some(ruling.to_bytes());
-        let (keys, _) = self.case_identity(case.record.as_deref())?;
+        let keys = self.case_keys(case.record.as_deref())?;
         case.outcome = Some(keys.sign_dispute_outcome(&ruling.to_bytes()).map_err(|err| err.to_string())?);
         if let Some(citation) = case.citation {
             case.public_ruling = Some(
@@ -450,75 +411,65 @@ impl Node {
                     .map_err(|err| err.to_string())?,
             );
         }
+        if let Some(fee) = case.fee {
+            let decision = keys.sign_dispute_decision(fee.case_id, Decision::Ruled(favor), Some(&ruling.to_bytes()));
+            case.decision = Some(decision.map_err(|err| err.to_string())?);
+        }
         self.escrow.store.save(Role::Moderator, &case_name(id, favor), &case.to_record())?;
         Ok((case.reply_url.clone(), case.reply_mail))
     }
 }
 
-fn fixed<const N: usize>(text: &str) -> Option<[u8; N]> {
-    unhex(text).ok().and_then(|bytes| bytes.as_slice().try_into().ok())
+/// The branch a rule or deny request names.
+fn favor_of(body: &Value) -> Result<Party, PayError> {
+    let favor = match body.as_object() {
+        Some(map) if map.len() == 1 => map.get("favor").and_then(Value::as_str),
+        _ => None,
+    };
+    match favor {
+        Some("buyer") => Ok(Party::Buyer),
+        Some("vendor") => Ok(Party::Vendor),
+        _ => Err(PayError::Invalid("Send {\"favor\": \"buyer\"} or {\"favor\": \"vendor\"}.".into())),
+    }
 }
 
-fn citation_from(value: &Value) -> Option<Citation> {
-    Some(Citation {
-        listing_id: fixed(value["listingId"].as_str()?)?,
-        store_key: fixed(value["storeKey"].as_str()?)?,
-        store_signature: fixed(value["storeSignature"].as_str()?)?,
-    })
-}
-
-fn citation_from_fields(fields: &[Vec<u8>]) -> Result<Citation, String> {
-    Ok(Citation {
-        listing_id: fields[3].as_slice().try_into().map_err(|_| "bad listing id")?,
-        store_key: fields[4].as_slice().try_into().map_err(|_| "bad store key")?,
-        store_signature: fields[5].as_slice().try_into().map_err(|_| "bad store signature")?,
-    })
-}
-
-fn check_citation(id: &EscrowId, terms: &openbazaar_escrow::EscrowTerms, citation: &Citation) -> Result<(), String> {
-    let key = XOnlyPublicKey::from_slice(&citation.store_key).map_err(|err| err.to_string())?;
-    let signature = schnorr::Signature::from_slice(&citation.store_signature).map_err(|err| err.to_string())?;
-    Secp256k1::new()
-        .verify_schnorr(&signature, &offer_digest_with_listing(id, terms, &citation.listing_id), &key)
-        .map_err(|_| "the store signature does not cover this listing".to_string())
+impl ModeratorDesk {
+    /// The letter for `favor` the operator may still decide: not ruled,
+    /// not denied, and with the escrow's filing fee settled.
+    fn undecided(&self, id: &EscrowId, favor: Party) -> Result<&Case, PayError> {
+        let Some(case) = self.cases.get(&(*id, favor as u8)) else {
+            let other = match favor {
+                Party::Buyer => Party::Vendor,
+                Party::Vendor => Party::Buyer,
+            };
+            if self.cases.contains_key(&(*id, other as u8)) {
+                let asks = party_name(other);
+                return Err(PayError::Invalid(format!(
+                    "This letter asks for the {asks}. Only the {asks} branch can be opened from it."
+                )));
+            }
+            return Err(PayError::NotFound);
+        };
+        if case.ruling.is_some() {
+            return Err(PayError::Conflict("This dispute has a ruling.".into()));
+        }
+        if case.decision.is_some() {
+            return Err(PayError::Conflict("This letter was denied. A denial is final.".into()));
+        }
+        if self.fees.get(id).is_some_and(|fee| fee.recusal.is_some()) {
+            return Err(PayError::Conflict("This node recused itself from the case. A recusal is final.".into()));
+        }
+        if !self.fee_settled(id, case) {
+            return Err(PayError::Conflict("The filing fee is not paid yet.".into()));
+        }
+        Ok(case)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::harness::MockChain;
-
-    #[test]
-    fn a_case_stored_before_moderators_had_their_own_keys_is_the_built_in_moderators() {
-        let mut case = Case {
-            letter: vec![1, 2, 3],
-            memo: "Never arrived.".into(),
-            outpoint: OutPoint::null(),
-            received: 120,
-            reply_mail: key_bytes(&[7; 32]).unwrap(),
-            reply_url: "http://127.0.0.1:9000".into(),
-            ruling: None,
-            citation: None,
-            public_ruling: None,
-            outcome: None,
-            record: Some(vec![9; 40]),
-            tracking: Some(json!({ "status": "delivered" })),
-        };
-        let own = Case::from_record(&case.to_record()).unwrap();
-        assert_eq!(own.record, Some(vec![9; 40]), "a case remembers the record it was reviewed under");
-        assert_eq!(own.tracking, Some(json!({ "status": "delivered" })), "a case remembers its shipment lookup");
-        case.record = None;
-        case.tracking = None;
-        case.outcome = None;
-        let mut old = case.to_record();
-        old.as_object_mut().unwrap().remove("record");
-        old.as_object_mut().unwrap().remove("tracking");
-        old.as_object_mut().unwrap().remove("outcome");
-        let old = Case::from_record(&old).unwrap();
-        assert_eq!((old.record, old.memo.as_str(), old.received), (None, "Never arrived.", 120));
-        assert_eq!(old.tracking, None, "a case stored before dispute lookups existed has none");
-        assert_eq!(old.outcome, None, "a case stored before signed outcomes existed has none");
-    }
 
     #[test]
     fn the_chain_view_finds_funding_by_script_and_waits_while_filters_scan() {

@@ -74,13 +74,23 @@ pub(crate) enum Kind {
     ReleaseNonce = 6,
     /// Buyer to vendor: `ReleaseSignature`.
     Release = 7,
-    /// Buyer to moderator: dispute letter, mail key, reply URL.
+    /// Buyer to moderator: dispute letter, mail key, reply URL, then under
+    /// v5 terms a refund script, then optionally the listing citation.
     Dispute = 8,
     /// Moderator to the party that wrote the letter: `ModeratorRuling`.
     Ruling = 9,
-    /// Vendor to moderator: dispute letter, mail key, reply URL. Its own
+    /// Vendor to moderator: the same fields as [`Kind::Dispute`]. Its own
     /// kind so the letter is signed and pinned in the vendor's role.
     VendorDispute = 10,
+    /// Moderator to a filer: the signed filing-fee request (`OBFQ`).
+    FeeRequest = 11,
+    /// Moderator to the filer that paid: the signed receipt (`OBFR`).
+    FeeReceipt = 12,
+    /// Moderator to a filer: the signed denial of its letter (`OBDD`).
+    Denied = 13,
+    /// Moderator to every filer of a case: the signed recusal (`OBDD`) and,
+    /// for the one that paid, the refund's txid.
+    Recused = 14,
 }
 
 impl Kind {
@@ -96,6 +106,10 @@ impl Kind {
             8 => Kind::Dispute,
             9 => Kind::Ruling,
             10 => Kind::VendorDispute,
+            11 => Kind::FeeRequest,
+            12 => Kind::FeeReceipt,
+            13 => Kind::Denied,
+            14 => Kind::Recused,
             _ => return None,
         })
     }
@@ -251,10 +265,15 @@ pub(crate) struct Escrow {
     pub buyer: Mutex<BuyerDesk>,
     pub vendor: Mutex<VendorDesk>,
     pub moderator: Mutex<ModeratorDesk>,
+    pub filer_tick: Mutex<crate::escrow_dispute_fee::watch::FilerTick>,
     /// The moderator profiles this node knows and the ones its stores accept.
     pub book: Mutex<crate::moderators::Book>,
     /// This node's own moderator identity, once a `--moderate` node has made one.
     pub identity: Mutex<Option<crate::moderator_identity::Identity>>,
+    /// Build new built-in escrows under the record from before filing fees,
+    /// as an older node did.
+    #[cfg(test)]
+    pub legacy_builtin: std::sync::atomic::AtomicBool,
 }
 
 impl Escrow {
@@ -281,8 +300,11 @@ impl Escrow {
             buyer: Mutex::new(BuyerDesk::default()),
             vendor: Mutex::new(vendor),
             moderator: Mutex::new(moderator),
+            filer_tick: Mutex::default(),
             book: Mutex::new(crate::moderators::Book::open(dir)?),
             identity: Mutex::new(crate::moderator_identity::Identity::open(dir, vault)?),
+            #[cfg(test)]
+            legacy_builtin: Default::default(),
         })
     }
 }
@@ -399,6 +421,8 @@ impl Node {
             self.flush_escrow_outbox(false);
             self.retry_escrow_requests(false);
             self.refresh_moderator_identity();
+            self.moderator_fee_tick();
+            self.filer_fee_tick();
             std::thread::sleep(MAIL_POLL);
         }
     }
@@ -413,8 +437,9 @@ impl Node {
         let mail = Mail::decode(&opened.body)?;
         let signs = match desk {
             Desk::Buyer => buyer_step_signs(mail.kind),
-            // Every vendor round uses the sale's per-order key.
-            Desk::Vendor(_) => true,
+            // Every vendor round uses the sale's per-order key; filing-fee
+            // mail from the moderator signs nothing.
+            Desk::Vendor(_) => !filing_fee_mail(mail.kind),
             Desk::Moderator => false,
         };
         if signs && !unlocked {
@@ -492,6 +517,10 @@ fn handled(result: Result<(), String>) -> Result<Handled, String> {
 /// Buyer rounds that sign or broadcast: countersigning terms, signing the
 /// funding, signing the release again for a vendor's fresh nonce, and
 /// settling a ruling.
+fn filing_fee_mail(kind: Kind) -> bool {
+    matches!(kind, Kind::FeeRequest | Kind::FeeReceipt | Kind::Denied | Kind::Recused)
+}
+
 fn buyer_step_signs(kind: Kind) -> bool {
     matches!(kind, Kind::Offer | Kind::Reply | Kind::ReleaseNonce | Kind::Ruling)
 }

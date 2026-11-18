@@ -17,8 +17,11 @@ use std::io::Write;
 use std::net::TcpListener;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
+use openbazaar_escrow::Party;
 use serde_json::{json, Value};
 
+use crate::escrow_dispute_fee;
+use crate::escrow_moderator;
 use crate::escrow_http::{self, Action};
 use crate::lock_http::{self, Route};
 use crate::http_guard::{check_origin, host_allowed, OriginCheck, DEFAULT_SHOP_ORIGIN};
@@ -235,6 +238,22 @@ fn route(node: &Node, request: &Request<'_>, client: Client, origin: Option<&str
         ("POST", "/setup/confirm") => lock_http::response(node, client, head, Route::ConfirmBackup, body, origin),
         ("POST", "/wallet/phrase") => lock_http::response(node, client, head, Route::Phrase, body, origin),
         ("POST", "/spend-tickets") => lock_http::response(node, client, head, Route::Ticket, body, origin),
+        ("POST", path) if between(path, "/orders/", "/dispute-fee/quote").is_some() => {
+            let id = between(path, "/orders/", "/dispute-fee/quote").unwrap_or_default();
+            escrow_dispute_fee::pay::quote_response(node, client, head, Party::Buyer, id, origin)
+        }
+        ("POST", path) if between(path, "/orders/", "/dispute-fee").is_some() => {
+            let id = between(path, "/orders/", "/dispute-fee").unwrap_or_default();
+            escrow_dispute_fee::pay::pay_response(node, client, head, Party::Buyer, id, body, origin)
+        }
+        ("POST", path) if between(path, "/escrow/sales/", "/dispute-fee/quote").is_some() => {
+            let id = between(path, "/escrow/sales/", "/dispute-fee/quote").unwrap_or_default();
+            escrow_dispute_fee::pay::quote_response(node, client, head, Party::Vendor, id, origin)
+        }
+        ("POST", path) if between(path, "/escrow/sales/", "/dispute-fee").is_some() => {
+            let id = between(path, "/escrow/sales/", "/dispute-fee").unwrap_or_default();
+            escrow_dispute_fee::pay::pay_response(node, client, head, Party::Vendor, id, body, origin)
+        }
         ("POST", path) if between(path, "/orders/", "/pay/quote").is_some() => {
             let id = between(path, "/orders/", "/pay/quote").unwrap_or_default();
             lock_http::response(node, client, head, Route::Quote(id), body, origin)
@@ -269,6 +288,26 @@ fn route(node: &Node, request: &Request<'_>, client: Client, origin: Option<&str
         ("POST", path) if between(path, "/moderator/disputes/", "/rule").is_some() => {
             let id = between(path, "/moderator/disputes/", "/rule").unwrap_or_default();
             escrow_http::action_response(node, client, head, Action::Rule(id), body, origin)
+        }
+        ("POST", path) if between(path, "/moderator/disputes/", "/recuse/quote").is_some() => {
+            let id = between(path, "/moderator/disputes/", "/recuse/quote").unwrap_or_default();
+            escrow_moderator::refund::recuse_quote_response(node, client, head, id, origin)
+        }
+        ("POST", path) if between(path, "/moderator/disputes/", "/recuse").is_some() => {
+            let id = between(path, "/moderator/disputes/", "/recuse").unwrap_or_default();
+            escrow_moderator::refund::recuse_response(node, client, head, id, body, origin)
+        }
+        ("POST", path) if between(path, "/moderator/disputes/", "/refund/quote").is_some() => {
+            let id = between(path, "/moderator/disputes/", "/refund/quote").unwrap_or_default();
+            escrow_moderator::refund::owed_quote_response(node, client, head, id, body, origin)
+        }
+        ("POST", path) if between(path, "/moderator/disputes/", "/refund").is_some() => {
+            let id = between(path, "/moderator/disputes/", "/refund").unwrap_or_default();
+            escrow_moderator::refund::owed_response(node, client, head, id, body, origin)
+        }
+        ("POST", path) if between(path, "/moderator/disputes/", "/deny").is_some() => {
+            let id = between(path, "/moderator/disputes/", "/deny").unwrap_or_default();
+            escrow_http::action_response(node, client, head, Action::Deny(id), body, origin)
         }
         ("POST", path) if between(path, "/moderator/disputes/", "/tracking").is_some() => {
             let id = between(path, "/moderator/disputes/", "/tracking").unwrap_or_default();

@@ -152,6 +152,10 @@ mod tests {
             ("POST", "/spend-tickets", "{}"),
             // Paying an order and reading or funding the wallet stay open to a device.
             ("POST", "/orders/00/pay", r#"{"ticket":"x"}"#),
+            // So is paying a dispute's filing fee, after the passphrase.
+            ("POST", "/orders/00/dispute-fee/quote", ""),
+            ("POST", "/orders/00/dispute-fee", r#"{"quote":"x","passphrase":"x","confirm":true}"#),
+            ("POST", "/escrow/sales/00/dispute-fee", r#"{"quote":"x","passphrase":"x","confirm":true}"#),
             ("GET", "/wallet", ""),
             ("POST", "/wallet/address", ""),
             ("GET", "/xmr/wallet", ""),
@@ -165,6 +169,24 @@ mod tests {
                 "POST",
                 "/moderator/disputes/00/rule",
                 r#"{"favor":"buyer"}"#,
+            ),
+            (
+                "POST",
+                "/moderator/disputes/00/deny",
+                r#"{"favor":"buyer"}"#,
+            ),
+            ("POST", "/moderator/disputes/00/recuse/quote", ""),
+            (
+                "POST",
+                "/moderator/disputes/00/recuse",
+                r#"{"quote":"x","passphrase":"x","confirm":true}"#,
+            ),
+            // A refund goes to the script in the filer's letter, not one the caller names.
+            ("POST", "/moderator/disputes/00/refund/quote", r#"{"payment":"x"}"#),
+            (
+                "POST",
+                "/moderator/disputes/00/refund",
+                r#"{"quote":"x","passphrase":"x","confirm":true}"#,
             ),
             // The same phone names the moderator and chooses the moderators its store accepts.
             ("GET", "/moderator/profile", ""),

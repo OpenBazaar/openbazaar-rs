@@ -18,7 +18,8 @@ use tormail::{StoreKey, StoreSecret};
 use crate::network::NetworkMode;
 use crate::Node;
 
-/// The fixture moderator's fee, paid by a published ruling.
+/// The fixture moderator's fee under its ruling-fee record, which escrows
+/// from before filing fees carry, and a new moderator identity's filing fee.
 pub const MODERATOR_FEE_SATS: u64 = 1_000;
 
 const MODERATOR_MAIL_LABEL: &[u8] = b"openbazaar/testnet4/fixture/moderator-mail";
@@ -37,8 +38,16 @@ pub(crate) fn moderator_keys(network: NetworkMode) -> Result<ModeratorKeys, Stri
         .map_err(|err| err.to_string())
 }
 
-/// The record the fixture moderator publishes: its keys, payout, fee, and policy.
+/// The record the fixture moderator publishes: its keys and policy, and no
+/// filing fee. Its keys are public, so a fee would pay no one in particular.
 pub(crate) fn moderator_record(network: NetworkMode) -> Result<ModeratorRecord, String> {
+    Ok(moderator_keys(network)?.filing_record(Amount::ZERO, Policy::default()))
+}
+
+/// The record the fixture moderator published before filing fees: a ruling
+/// fee paid to its payout. Escrows funded under it are still ruled under it;
+/// no new escrow uses it.
+pub(crate) fn legacy_moderator_record(network: NetworkMode) -> Result<ModeratorRecord, String> {
     let keys = moderator_keys(network)?;
     let secp = Secp256k1::new();
     let payout_key = Keypair::from_secret_key(&secp, &fixture_keys().moderator)

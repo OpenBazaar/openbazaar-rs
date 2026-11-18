@@ -1,15 +1,58 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { disputeState, parseDisputes, parseDisputeTracking, partyName } from "./moderator.ts";
+import { canDecide, canRecuse, caseFeeText, disputeState, parseDisputes, parseDisputeTracking, parseRefundQuote, partyName } from "./moderator.ts";
 
 const letter = (favors: string, ruled = false) => ({ id: "ab".repeat(16), favors, memo: "No parcel arrived.", outpoint: `${"cd".repeat(32)}:0`, receivedHeight: 160400, ruled });
 
 test("disputes parse as the node sends them", () => {
   const [dispute] = parseDisputes({ disputes: [letter("buyer")] });
-  assert.deepEqual(dispute, { id: "ab".repeat(16), favors: "buyer", memo: "No parcel arrived.", outpoint: `${"cd".repeat(32)}:0`, receivedHeight: 160400, ruled: false, builtIn: false, tracking: null });
+  assert.deepEqual(dispute, { id: "ab".repeat(16), favors: "buyer", memo: "No parcel arrived.", outpoint: `${"cd".repeat(32)}:0`, receivedHeight: 160400, ruled: false, denied: false, builtIn: false, tracking: null, fee: null });
   assert.equal(parseDisputes({ disputes: [{ ...letter("buyer"), builtIn: true }] })[0].builtIn, true);
   assert.deepEqual(parseDisputes({ disputes: [] }), []);
+});
+
+test("a filing fee gates the decision until it is paid, and a denial is its own state", () => {
+  const fee = (state: string, extra: Record<string, unknown> = {}) => parseDisputes({ disputes: [{ ...letter("buyer"), fee: { state, amountSats: 2500, dueHeight: 160600, overdue: false, ...extra } }] })[0];
+  assert.equal(canDecide(fee("requested")), false);
+  assert.equal(canDecide(fee("expired")), false);
+  assert.equal(canDecide(fee("paid")), true);
+  assert.equal(canDecide(fee("free")), true);
+  assert.equal(canDecide(parseDisputes({ disputes: [letter("buyer")] })[0]), true, "an escrow from before filing fees");
+  assert.equal(fee("paid", { paidBy: "buyer", rail: "ln" }).fee?.paidBy, "buyer");
+  assert.equal(fee("refunded").fee, null);
+  assert.equal(caseFeeText(fee("paid", { rail: "onchain" }).fee), "Paid 2,500 sats on-chain · decision due by block 160,600");
+  assert.match(caseFeeText(fee("paid", { overdue: true }).fee), /overdue/);
+  const denied = { ...fee("paid"), denied: true };
+  assert.equal(disputeState(denied, [denied]), "denied");
+});
+
+test("a paid case can be recused until a letter of it is decided, and a recusal closes it", () => {
+  const fee = (state: string, extra: Record<string, unknown> = {}) => parseDisputes({ disputes: [{ ...letter("buyer"), fee: { state, amountSats: 2500, dueHeight: 160600, overdue: false, ...extra } }] })[0];
+  const paid = fee("paid", { paidBy: "buyer" });
+  assert.equal(canRecuse(paid, [paid]), true);
+  assert.equal(canRecuse(fee("requested"), [fee("requested")]), false, "nothing was paid");
+  const ruled = { ...paid, ruled: true };
+  assert.equal(canRecuse(paid, [paid, ruled]), false, "a ruling came first");
+  const recused = fee("paid", { recused: true, refunds: [{ filer: "buyer", amountSats: 2500, txid: "ef".repeat(32) }, { filer: "nobody" }] });
+  assert.deepEqual(recused.fee?.refunds, [{ filer: "buyer", amountSats: 2500, txid: "ef".repeat(32), owed: null }]);
+  assert.equal(canRecuse(recused, [recused]), false);
+  assert.equal(canDecide(recused), false);
+  assert.equal(disputeState(recused, [recused]), "recused");
+  assert.equal(caseFeeText(recused.fee), "Recused · 2,500 sats paid back in efefefefefef…");
+  assert.deepEqual(parseRefundQuote({ quote: "q", filer: "buyer", amountSats: 2500, address: "tb1p", feeSats: 200, feeCapSats: 300, totalSats: 2700, expiresInSecs: 120 }), { quote: "q", filer: "buyer", amountSats: 2500, address: "tb1p", feeSats: 200, feeCapSats: 300, totalSats: 2700, expiresInSecs: 120 });
+  assert.throws(() => parseRefundQuote({ quote: "q", filer: "moderator", amountSats: 1, feeSats: 1, feeCapSats: 1 }));
+});
+
+test("payments a case does not keep are listed as owed back until sent", () => {
+  const payment = `${"aa".repeat(32)}:0`;
+  const parse = (extra: Record<string, unknown>) => parseDisputes({ disputes: [{ ...letter("buyer"), fee: { state: "expired", amountSats: 2500, dueHeight: 160600, overdue: false, ...extra } }] })[0].fee;
+  const owing = parse({ owed: [{ filer: "buyer", amountSats: 2500, payment }, { filer: "buyer", amountSats: 1 }] });
+  assert.deepEqual(owing?.owed, [{ filer: "buyer", amountSats: 2500, payment }]);
+  assert.equal(caseFeeText(owing), "Filing fee 2,500 sats · request lapsed; a new one goes out while there is time · 2,500 sats owed back");
+  const sent = parse({ owed: [], refunds: [{ filer: "buyer", amountSats: 2500, txid: "ef".repeat(32), owed: payment }] });
+  assert.equal(sent?.refunds[0].owed, payment);
+  assert.doesNotMatch(caseFeeText(sent), /owed/);
 });
 
 const lookedUp = () => ({

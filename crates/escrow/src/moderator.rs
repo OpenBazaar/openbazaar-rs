@@ -1,9 +1,11 @@
 //! The moderator: published record, keys, chain hook, ruling store.
 //!
 //! A moderator publishes a [`ModeratorRecord`]: a signing key for rulings, a
-//! separate encryption key for shares, its payout script, its fee, and its
-//! acceptance policy. Both parties embed that exact record in the signed
-//! terms, so the moderator's fee, payout, and policy are fixed at funding.
+//! separate encryption key for shares, its fee, and its acceptance policy.
+//! Both parties embed that exact record in the signed terms, so the
+//! moderator's fee and policy are fixed at funding. A v2 record's fee is a
+//! filing fee paid outside the escrow; a v1 record's fee is an output of each
+//! dispute outcome, paid to the record's payout script.
 //!
 //! [`Moderator::open`] is the only way to produce a ruling. Before decrypting
 //! it checks the letter, checks the funding output against the chain through
@@ -25,7 +27,23 @@ use crate::wire::{Reader, Writer};
 use crate::{Error, Party};
 
 const RECORD_MAGIC: &[u8; 4] = b"OBMR";
-const RECORD_VERSION: u8 = 1;
+const RULING_FEE_VERSION: u8 = 1;
+const FILING_FEE_VERSION: u8 = 2;
+
+/// The smallest non-zero filing fee: the dust limit of a P2TR output, the
+/// script a fee request asks the filer to pay on chain.
+pub const MIN_FILING_FEE: Amount = Amount::from_sat(330);
+
+/// What a moderator's fee pays for. It fixes the record version and the
+/// version of any terms that carry the record.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FeeKind {
+    /// Record v1, terms v4: an output of each dispute outcome, paid to `payout`.
+    Ruling,
+    /// Record v2, terms v5: paid outside the escrow by whoever opens a
+    /// dispute. No presigned spend pays the moderator.
+    Filing,
+}
 
 /// What a moderator publishes. Parties copy it verbatim into the terms.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -34,6 +52,8 @@ pub struct ModeratorRecord {
     pub signing_key: [u8; 33],
     /// Receives verifiably encrypted shares. Distinct from `signing_key`.
     pub encryption_key: [u8; 33],
+    pub fee_kind: FeeKind,
+    /// Where a ruling pays `fee`. Empty for [`FeeKind::Filing`].
     pub payout: ScriptBuf,
     pub fee: Amount,
     pub policy: Policy,
@@ -48,7 +68,28 @@ impl ModeratorRecord {
                 "moderator signing and encryption keys must differ",
             ));
         }
-        check_payout(&self.payout, self.fee)
+        match self.fee_kind {
+            FeeKind::Ruling => check_payout(&self.payout, self.fee),
+            FeeKind::Filing if !self.payout.is_empty() => {
+                Err(Error::InvalidParams("a filing-fee record has no payout script"))
+            }
+            FeeKind::Filing if self.fee != Amount::ZERO && self.fee < MIN_FILING_FEE => {
+                Err(Error::NonStandardOutput)
+            }
+            FeeKind::Filing => Ok(()),
+        }
+    }
+
+    /// The filing fee, for a v2 record.
+    pub fn filing_fee(&self) -> Option<Amount> {
+        (self.fee_kind == FeeKind::Filing).then_some(self.fee)
+    }
+
+    pub(crate) fn version(&self) -> u8 {
+        match self.fee_kind {
+            FeeKind::Ruling => RULING_FEE_VERSION,
+            FeeKind::Filing => FILING_FEE_VERSION,
+        }
     }
 
     pub(crate) fn signing_point(&self) -> Result<Point, Error> {
@@ -62,16 +103,22 @@ impl ModeratorRecord {
     pub(crate) fn write(&self, w: &mut Writer) {
         w.bytes(&self.signing_key);
         w.bytes(&self.encryption_key);
-        w.script(&self.payout);
+        if self.fee_kind == FeeKind::Ruling {
+            w.script(&self.payout);
+        }
         w.amount(self.fee);
         self.policy.write(w);
     }
 
-    pub(crate) fn read(r: &mut Reader<'_>) -> Result<Self, Error> {
+    pub(crate) fn read(r: &mut Reader<'_>, fee_kind: FeeKind) -> Result<Self, Error> {
         Ok(Self {
             signing_key: r.array()?,
             encryption_key: r.array()?,
-            payout: r.script()?,
+            fee_kind,
+            payout: match fee_kind {
+                FeeKind::Ruling => r.script()?,
+                FeeKind::Filing => ScriptBuf::new(),
+            },
             fee: r.amount()?,
             policy: Policy::read(r)?,
         })
@@ -79,15 +126,24 @@ impl ModeratorRecord {
 
     /// The record as a signed moderator profile carries it.
     pub fn to_bytes(&self) -> Vec<u8> {
-        let mut w = Writer::new(RECORD_MAGIC, RECORD_VERSION);
+        let mut w = Writer::new(RECORD_MAGIC, self.version());
         self.write(&mut w);
         w.finish()
     }
 
     /// Read and validate a record written by [`Self::to_bytes`].
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, Error> {
-        let mut r = Reader::new(bytes, RECORD_MAGIC, RECORD_VERSION)?;
-        let record = Self::read(&mut r)?;
+        let (mut r, version) = Reader::versioned(
+            bytes,
+            RECORD_MAGIC,
+            &[RULING_FEE_VERSION, FILING_FEE_VERSION],
+        )?;
+        let fee_kind = if version == FILING_FEE_VERSION {
+            FeeKind::Filing
+        } else {
+            FeeKind::Ruling
+        };
+        let record = Self::read(&mut r, fee_kind)?;
         r.finish()?;
         record.validate()?;
         Ok(record)
@@ -132,14 +188,24 @@ impl ModeratorKeys {
         (self.decryption * G).serialize()
     }
 
-    /// The record to publish for these keys.
+    /// A v1 record: `fee` is paid to `payout` by each dispute outcome.
     pub fn record(&self, payout: ScriptBuf, fee: Amount, policy: Policy) -> ModeratorRecord {
         ModeratorRecord {
             signing_key: self.signing_public(),
             encryption_key: self.encryption_public(),
+            fee_kind: FeeKind::Ruling,
             payout,
             fee,
             policy,
+        }
+    }
+
+    /// A v2 record: `fee` is the filing fee for opening a dispute.
+    pub fn filing_record(&self, fee: Amount, policy: Policy) -> ModeratorRecord {
+        ModeratorRecord {
+            fee_kind: FeeKind::Filing,
+            payout: ScriptBuf::new(),
+            ..self.record(ScriptBuf::new(), fee, policy)
         }
     }
 

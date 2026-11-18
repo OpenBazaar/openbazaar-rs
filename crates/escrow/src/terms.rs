@@ -1,16 +1,17 @@
 //! Escrow terms both parties sign before any funding round.
 //!
 //! The terms fix every payout the escrow can make: who is paid, how much, at
-//! which height, and which moderator (with which fee, payout script, and
-//! policy) may pick between the two dispute outcomes. Nothing outside the
-//! signed terms can appear in any presigned transaction.
+//! which height, and which moderator (with which fee and policy) may pick
+//! between the two dispute outcomes. Nothing outside the signed terms can
+//! appear in any presigned transaction. Under v5 terms the moderator's fee is
+//! a filing fee, paid outside the escrow, and no presigned transaction pays it.
 
 use bitcoin::absolute::LOCK_TIME_THRESHOLD;
 use bitcoin::{Amount, OutPoint, ScriptBuf, TxOut};
 use musig2::secp::{Point, Scalar, G};
 
 use crate::crypto::{self, point_from_compressed, scalar_key};
-use crate::moderator::ModeratorRecord;
+use crate::moderator::{FeeKind, ModeratorRecord};
 use crate::policy::{check_payout, Policy, ANCHOR_VALUE};
 use crate::proofs::tagged;
 use crate::tx::{self, Templates};
@@ -23,7 +24,11 @@ const SIGNED_MAGIC: &[u8; 4] = b"OBTS";
 /// v4: a silent moderator does not pay the vendor. The presigned claim is the
 /// buyer refund, and the moderator fee stays on a published ruling. v3 signed
 /// a vendor claim that paid the fee, so a v3 encoding must not decode.
-const VERSION: u8 = 4;
+const RULING_FEE_VERSION: u8 = 4;
+/// v5: the moderator record is v2 and its fee is a filing fee paid outside
+/// the escrow. Dispute outcomes pay the winner everything but the network
+/// fee and anchor.
+const FILING_FEE_VERSION: u8 = 5;
 
 /// Everything the escrow can pay, agreed before funding.
 ///
@@ -71,11 +76,10 @@ impl EscrowTerms {
             }
         }
         self.validate_timeline(policy)?;
-        let scripts = [
-            &self.buyer_payout,
-            &self.vendor_payout,
-            &self.moderator.payout,
-        ];
+        let mut scripts = vec![&self.buyer_payout, &self.vendor_payout];
+        if self.moderator.fee_kind == FeeKind::Ruling {
+            scripts.push(&self.moderator.payout);
+        }
         for (i, script) in scripts.iter().enumerate() {
             if script.len() > SCRIPT_MAX {
                 return Err(Error::InvalidParams("payout script is too long"));
@@ -92,7 +96,7 @@ impl EscrowTerms {
         }
         self.funding_value
             .checked_sub(self.network_fee)
-            .and_then(|rest| rest.checked_sub(self.moderator.fee))
+            .and_then(|rest| rest.checked_sub(self.ruling_fee()))
             .and_then(|rest| rest.checked_sub(ANCHOR_VALUE))
             .ok_or(Error::InvalidParams("fees exceed the funding value"))?;
         let templates = Templates::build(self, OutPoint::null())?;
@@ -173,8 +177,29 @@ impl EscrowTerms {
         })
     }
 
+    /// What each dispute outcome pays the moderator: the record fee under v4
+    /// terms, nothing under v5.
+    pub fn ruling_fee(&self) -> Amount {
+        match self.moderator.fee_kind {
+            FeeKind::Ruling => self.moderator.fee,
+            FeeKind::Filing => Amount::ZERO,
+        }
+    }
+
+    /// 4 or 5, fixed by the moderator record's fee kind.
+    pub fn version(&self) -> u8 {
+        match self.moderator.fee_kind {
+            FeeKind::Ruling => RULING_FEE_VERSION,
+            FeeKind::Filing => FILING_FEE_VERSION,
+        }
+    }
+
     pub fn digest(&self) -> [u8; 32] {
-        tagged("ob-escrow/terms/v4", &[&self.encode()])
+        let tag = match self.moderator.fee_kind {
+            FeeKind::Ruling => "ob-escrow/terms/v4",
+            FeeKind::Filing => "ob-escrow/terms/v5",
+        };
+        tagged(tag, &[&self.encode()])
     }
 
     /// Sign the terms with a per-order key. The key must be the buyer's or the vendor's.
@@ -188,7 +213,7 @@ impl EscrowTerms {
     }
 
     pub fn encode(&self) -> Vec<u8> {
-        let mut w = Writer::new(TERMS_MAGIC, VERSION);
+        let mut w = Writer::new(TERMS_MAGIC, self.version());
         w.bytes(&self.buyer);
         w.bytes(&self.vendor);
         self.moderator.write(&mut w);
@@ -203,11 +228,20 @@ impl EscrowTerms {
     }
 
     pub fn decode(bytes: &[u8]) -> Result<Self, Error> {
-        let mut r = Reader::new(bytes, TERMS_MAGIC, VERSION)?;
+        let (mut r, version) = Reader::versioned(
+            bytes,
+            TERMS_MAGIC,
+            &[RULING_FEE_VERSION, FILING_FEE_VERSION],
+        )?;
+        let fee_kind = if version == FILING_FEE_VERSION {
+            FeeKind::Filing
+        } else {
+            FeeKind::Ruling
+        };
         let terms = Self {
             buyer: r.array()?,
             vendor: r.array()?,
-            moderator: ModeratorRecord::read(&mut r)?,
+            moderator: ModeratorRecord::read(&mut r, fee_kind)?,
             funding_value: r.amount()?,
             network_fee: r.amount()?,
             dispute_deadline: r.u32()?,
@@ -255,7 +289,7 @@ impl SignedTerms {
     }
 
     pub fn encode(&self) -> Vec<u8> {
-        let mut w = Writer::new(SIGNED_MAGIC, VERSION);
+        let mut w = Writer::new(SIGNED_MAGIC, self.terms.version());
         w.var(&self.terms.encode());
         w.bytes(&self.buyer_signature);
         w.bytes(&self.vendor_signature);
@@ -263,8 +297,15 @@ impl SignedTerms {
     }
 
     pub fn decode(bytes: &[u8]) -> Result<Self, Error> {
-        let mut r = Reader::new(bytes, SIGNED_MAGIC, VERSION)?;
+        let (mut r, version) = Reader::versioned(
+            bytes,
+            SIGNED_MAGIC,
+            &[RULING_FEE_VERSION, FILING_FEE_VERSION],
+        )?;
         let terms = EscrowTerms::decode(r.var(usize::MAX)?)?;
+        if terms.version() != version {
+            return Err(Error::Malformed);
+        }
         let buyer_signature = r.array()?;
         let vendor_signature = r.array()?;
         r.finish()?;

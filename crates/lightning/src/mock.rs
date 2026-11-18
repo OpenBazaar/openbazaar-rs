@@ -4,7 +4,8 @@
 //! reads them. Mocks made with [`MockRail::linked`] share one ledger: paying
 //! an invoice one of them issued settles it on the issuer. `inbound_sats`
 //! starts at zero, so every invoice is a just-in-time one while an LSP is
-//! set; [`MockRail::set_lsp_fee`] chooses what the "LSP" keeps.
+//! set; [`MockRail::set_lsp_fee`] chooses what the "LSP" keeps, and
+//! [`MockRail::set_inbound_sats`] gives the mock channel room instead.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -23,6 +24,7 @@ use crate::rail::{decode_invoice, Balances, Channel, Incoming, IssuedInvoice, Li
 struct Ledger {
     /// payment hash -> (issuer id, amount, state)
     invoices: HashMap<String, (usize, u64, Incoming)>,
+    preimages: HashMap<String, [u8; 32]>,
     next_id: usize,
 }
 
@@ -95,6 +97,22 @@ impl MockRail {
         guard(&self.state).lightning_sats = sats;
     }
 
+    /// A usable channel with `sats` of inbound room: invoices up to that need no LSP.
+    pub fn set_inbound_sats(&self, sats: u64) {
+        let mut state = guard(&self.state);
+        let id = (state.channels.len() + 1).to_string();
+        state.channels.push(Channel {
+            id,
+            peer: "02".to_string() + &"22".repeat(32),
+            capacity_sats: sats,
+            outbound_msat: 0,
+            inbound_msat: sats * 1_000,
+            ready: true,
+            usable: true,
+            funding_txid: None,
+        });
+    }
+
     pub fn set_lsp_fee(&self, msat: u64) {
         guard(&self.state).lsp_fee_msat = msat;
     }
@@ -163,8 +181,13 @@ impl LightningRail for MockRail {
     }
 
     fn receive(&self, amount_msat: u64, description: &str, expiry_secs: u32) -> Result<IssuedInvoice, LnError> {
-        let lsp = guard(&self.state).lsp;
-        if !lsp {
+        let (lsp, room) = {
+            let state = guard(&self.state);
+            let room = state.channels.iter().filter(|channel| channel.usable).map(|channel| channel.inbound_msat).max();
+            (state.lsp, room.unwrap_or(0))
+        };
+        let jit = amount_msat > room;
+        if jit && !lsp {
             return Err(LnError::Insufficient("No channel can take this payment and no LSP is set. Open a channel first.".into()));
         }
         let mut preimage = [0u8; 32];
@@ -182,14 +205,16 @@ impl LightningRail for MockRail {
             .build_signed(|message| secp.sign_ecdsa_recoverable(message, &self.key))
             .map_err(|err| LnError::Failed(format!("{err:?}")))?;
         let payment_hash = hash.to_string();
-        guard(&self.ledger).invoices.insert(payment_hash.clone(), (self.id, amount_msat, Incoming::Pending));
+        let mut ledger = guard(&self.ledger);
+        ledger.invoices.insert(payment_hash.clone(), (self.id, amount_msat, Incoming::Pending));
+        ledger.preimages.insert(payment_hash.clone(), preimage);
         Ok(IssuedInvoice {
             bolt11: invoice.to_string(),
             payment_hash,
             amount_msat,
             expires_at: now() + u64::from(expiry_secs),
-            jit: true,
-            lsp_fee_cap_msat: Some(amount_msat / 20),
+            jit,
+            lsp_fee_cap_msat: jit.then_some(amount_msat / 20),
         })
     }
 
@@ -211,9 +236,10 @@ impl LightningRail for MockRail {
             return Err(LnError::Insufficient("Not enough funds for that.".into()));
         }
         state.lightning_sats -= amount.div_ceil(1_000);
-        state.outgoing.insert(info.payment_hash.clone(), Outgoing::Paid { fee_msat: 0, at: now() });
-        drop(state);
         let mut ledger = guard(&self.ledger);
+        let preimage = ledger.preimages.get(&info.payment_hash).copied();
+        state.outgoing.insert(info.payment_hash.clone(), Outgoing::Paid { fee_msat: 0, at: now(), preimage });
+        drop(state);
         if let Some((issuer, _, paid)) = ledger.invoices.get_mut(&info.payment_hash) {
             if *issuer != self.id && *paid == Incoming::Pending {
                 *paid = Incoming::Paid { received_msat: amount, lsp_fee_msat: 0, at: now() };
@@ -303,5 +329,23 @@ mod tests {
         let second = seller.receive(1_000_000, "order 2", 600).unwrap();
         assert!(seller.settle(&second.payment_hash));
         assert_eq!(seller.incoming(&second.payment_hash), Incoming::Paid { received_msat: 999_000, lsp_fee_msat: 1_000, at: now() });
+    }
+
+    #[test]
+    fn a_paid_invoice_yields_its_preimage_and_inbound_room_skips_the_lsp() {
+        let moderator = MockRail::new(Network::Signet);
+        let filer = moderator.linked();
+        filer.set_lightning_sats(10_000);
+        moderator.set_lsp(false);
+        assert!(moderator.receive(5_000_000, "fee", 600).is_err());
+        moderator.set_inbound_sats(5_000);
+        let invoice = moderator.receive(5_000_000, "fee", 600).unwrap();
+        assert!(!invoice.jit);
+        assert_eq!(invoice.lsp_fee_cap_msat, None);
+        filer.pay(&invoice.bolt11, 1_000).unwrap();
+        let Outgoing::Paid { preimage: Some(preimage), .. } = filer.outgoing(&invoice.payment_hash) else {
+            panic!("paid with a preimage");
+        };
+        assert_eq!(sha256::Hash::hash(&preimage).to_string(), invoice.payment_hash);
     }
 }

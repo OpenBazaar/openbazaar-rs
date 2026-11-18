@@ -138,7 +138,7 @@ impl Terms for PublicRuling {
 
 /// A name, a street, an email, a phone, coordinates, or a ship-to, if these
 /// bytes are text. Random keys are not text and pass.
-fn refuse_private(bytes: &[u8]) -> Result<(), Error> {
+pub(crate) fn refuse_private(bytes: &[u8]) -> Result<(), Error> {
     let end = bytes.iter().rposition(|byte| *byte != 0).map(|index| index + 1).unwrap_or(0);
     let Ok(text) = std::str::from_utf8(&bytes[..end]) else {
         return Ok(());

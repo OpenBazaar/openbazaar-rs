@@ -1,6 +1,6 @@
 # Lightning direct pay
 
-`ob-node serve --lightning` runs an embedded Lightning node ([LDK](https://lightningdevkit.org/) through `ldk-node`) so a store can take direct orders over Lightning. Public peers, Esplora, and gossip go through `--proxy` or the built-in `--tor` client, so they do not see this machine. Mainnet Lightning requires that path and an LSP you name (see [Mainnet](#mainnet)). Escrow stays on-chain (MuSig2, [escrow review packet](escrow-review-packet.md)); `"rail": "ln"` with escrow is refused at checkout.
+`ob-node serve --lightning` runs an embedded Lightning node ([LDK](https://lightningdevkit.org/) through `ldk-node`) so a store can take direct orders over Lightning. Public peers, Esplora, and gossip go through `--proxy` or the built-in `--tor` client, so they do not see this machine. Mainnet Lightning requires that path and an LSP you name (see [Mainnet](#mainnet)). Escrow stays on-chain (MuSig2, [escrow review packet](escrow-review-packet.md)); `"rail": "ln"` with escrow is refused at checkout. The one Lightning payment around escrow is a dispute filing fee ([below](#dispute-filing-fees)).
 
 The code is in `crates/lightning` (the `LightningRail` trait, the LDK implementation, a mock, and a regtest harness) and `crates/node/src/lightning` (routes, checkout, order status, wallet lock). Shared files only call into it.
 
@@ -58,6 +58,18 @@ OpenBazaar runs no LSP. The default on test mode is Megalith's public Mutinynet 
 
 The desktop app starts built-in `--tor` and does not pass a separate `--proxy`. That Tor client is the proxy Lightning, rates, and the other public clients use. Without either, public peers and servers are not contacted. The Lightning node ID is separate from the store key. The Settings page shows this list and the one-time notice.
 
+## Dispute filing fees
+
+On a v5 escrow, whoever opens a dispute pays the moderator a filing fee outside the escrow. The moderator's fee request carries a BOLT 11 invoice only when one of its own usable channels has inbound room for the whole fee; it never asks the LSP for a just-in-time channel, because that would cost an LSP round trip for every reviewed letter and the LSP's fee could be larger than the filing fee. Otherwise the request carries only an on-chain script. An invoice lives one hour; after that the filer pays on-chain until the request itself lapses and the moderator sends a new one.
+
+The filer pays the invoice from its own Lightning node like any remote invoice (`ln_can_pay_fee`, `ln_pay_fee`), with the routing fee cap shown in the quote. The moderator credits only what its own node received for that payment hash, at least the fee in full; the filer's preimage is its own proof and is never what the moderator trusts. The moderator's profile warns when filers would pay on-chain: Lightning is off, or no channel has room for the fee (a fee under the LSP fee cap could not pay for a new channel anyway).
+
+| Party | Sees | Does not see |
+|---|---|---|
+| Moderator | The fee's payment hash and amount, as for any invoice it issues | The filer's Lightning node, unless the route reveals it |
+| Routing hops | The fee amount and timing | That it is a dispute fee |
+| LSP | Nothing new: no JIT channel is opened for a fee | |
+
 ## Networks
 
 | Mode | Lightning network | Chain view | LSP | Status |
@@ -105,6 +117,7 @@ The LSP keeps a channel reserve, anchor outputs, and the commitment fee out of t
 - `cargo test -p ob-node lightning`: the node against the mock (LSP notice and signing, a locked node issuing an invoice and turning the order Paid, paying with a bound ticket, passphrase on channel work, refusals, the secret in the receive tier, mainnet refusing every entry point while the test networks still run).
 - Regtest with real LDK nodes (needs `bitcoind` on `PATH`, skipped otherwise): `crates/lightning/tests/regtest_jit.rs` and the node test `lightning::regtest_tests`. A buyer node opens a channel to an LSPS2 LSP; the seller node, locked, issues an invoice; the payment opens a JIT channel and the order turns Paid with the LSP fee recorded; quote and close answer `423` while locked and a wrong passphrase `400`.
 - `crates/lightning/tests/signet_live.rs` (ignored): asks the live Mutinynet LSP for a JIT invoice.
+- `cargo test -p ob-node multinode_fee_tests::a_fee_the_moderators_channels_can_take_is_paid_over_lightning`: a filing fee paid over the mock rail and credited from the moderator's own node. No regtest test of the fee path yet.
 - `apps/mobile`: `src/lightning.test.ts` and `src/records.test.ts` (rail-flags byte, no Lightning offered by a node that refuses it).
 
 ## Not done

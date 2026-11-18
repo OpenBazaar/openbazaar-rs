@@ -56,6 +56,7 @@ import { CopyAddress, CopyButton } from './CopyAddress'
 import { pairingKind, pairingWalletPrompt } from '../pairingUi'
 import { SpeedUpPayment } from './SpeedUpPayment'
 import { BitcoinSendButton } from './BitcoinSend'
+import { DisputePanel } from './DisputePanel'
 
 function usePaymentState(activeWallet: boolean, onWallet: () => void) {
   const network = useNodeResource(fetchNetwork, 30000)
@@ -538,10 +539,13 @@ export function OrderPayment({
               Moderator: {order.escrow.moderator.name || 'Unnamed moderator'}{order.escrow.moderator.builtIn ? ' (built-in test moderator)' : ''}, key <code title={order.escrow.moderator.id}>{order.escrow.moderator.id.slice(0, 8)}…{order.escrow.moderator.id.slice(-6)}</code>. A dispute on this order goes to this moderator only.
             </p>
           ) : null}
-          {order.escrow?.moderatorFeeSats ? (
+          {order.escrow?.moderatorFeeSats && order.escrow.feeKind !== 'filing' ? (
             <p className='ob-page-intro'>
               Moderator fee {order.escrow.moderatorFeeSats.toLocaleString()} sats, paid from the escrow to the moderator key in the terms.
             </p>
+          ) : null}
+          {order.escrow && 'checkoutId' in order ? (
+            <DisputePanel id={id} status={order.status} escrow={order.escrow} onChange={() => void resource.refresh()} />
           ) : null}
           {order.status === ORDER_STATUS.awaitingTerms && (
             <p className='ob-page-intro'>

@@ -30,7 +30,7 @@ use openbazaar_escrow::{
 use serde_json::{json, Value};
 
 use crate::escrow_buyer::read_attempt;
-use crate::escrow_mail::{hex, id_hex, key_bytes, EscrowId, Kind, Mail, RETRY_LATER};
+use crate::escrow_mail::{hex, id_hex, key_bytes, parse_id, EscrowId, Kind, Mail, RETRY_LATER};
 use crate::network::NetworkMode;
 use crate::Node;
 
@@ -99,6 +99,8 @@ impl VendorDesk {
                     "disputeDeadline": sale.terms.dispute_deadline,
                     "vendorClaimHeight": sale.terms.vendor_claim_height,
                     "refundHeight": sale.terms.refund_height,
+                    "moderatorFeeSats": sale.terms.moderator.fee.to_sat(),
+                    "feeKind": crate::moderators::fee_kind(&sale.terms.moderator),
                     "claimHeld": sale.claim.is_some(),
                     "claim": sale.claim.as_deref().map(hex),
                     "releaseTxid": sale.release_txid.map(|txid| txid.to_string()),
@@ -117,7 +119,13 @@ fn failed(err: impl std::fmt::Display) -> String {
 
 impl Node {
     pub(crate) fn sales_value(&self) -> Value {
-        self.vendor_desk().value(self.network)
+        let mut value = self.vendor_desk().value(self.network);
+        for sale in value["sales"].as_array_mut().into_iter().flatten() {
+            if let Some(id) = sale["id"].as_str().and_then(parse_id) {
+                sale["disputeFee"] = self.filer_fee_value(openbazaar_escrow::Party::Vendor, &id);
+            }
+        }
+        value
     }
 
     pub(crate) fn vendor_escrow_ids(&self) -> Vec<EscrowId> {
@@ -162,6 +170,7 @@ impl Node {
             Kind::Signatures => self.vendor_signatures(seller, &mail),
             Kind::Release => self.vendor_release(seller, &mail),
             Kind::Ruling => self.vendor_ruling(seller, &mail),
+            Kind::FeeRequest | Kind::FeeReceipt | Kind::Denied | Kind::Recused => self.vendor_fee_mail(seller, &mail),
             other => Err(format!("a vendor does not take {other:?}")),
         }
     }

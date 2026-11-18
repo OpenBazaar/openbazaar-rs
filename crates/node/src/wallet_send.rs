@@ -18,7 +18,8 @@
 
 use bdk_wallet::coin_selection::InsufficientFunds;
 use bdk_wallet::error::CreateTxError;
-use bitcoin::{Address, Amount, FeeRate, Psbt, ScriptBuf};
+use bitcoin::absolute::LockTime;
+use bitcoin::{Address, Amount, FeeRate, OutPoint, Psbt, ScriptBuf};
 use serde_json::{json, Value};
 
 use crate::buyer_orders::now_secs;
@@ -134,7 +135,7 @@ fn parse_quote(body: &Value, network: NetworkMode) -> Result<Request, PayError> 
 }
 
 /// The sats `psbt` pays to `recipient`, when exactly one output does.
-fn paid_to(psbt: &Psbt, recipient: &ScriptBuf) -> Option<u64> {
+pub(crate) fn paid_to(psbt: &Psbt, recipient: &ScriptBuf) -> Option<u64> {
     let mut paying = psbt
         .unsigned_tx
         .output
@@ -144,6 +145,15 @@ fn paid_to(psbt: &Psbt, recipient: &ScriptBuf) -> Option<u64> {
         (Some(out), None) => Some(out.value.to_sat()),
         _ => None,
     }
+}
+
+/// Constraints on a send beyond its recipient and fee rate.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct SendShape {
+    /// The lock time, as a block height.
+    pub lock_height: Option<u32>,
+    /// Coins the send must spend.
+    pub spend: Vec<OutPoint>,
 }
 
 fn build_error(err: CreateTxError, held_back: u64) -> PayError {
@@ -170,12 +180,24 @@ fn build_error(err: CreateTxError, held_back: u64) -> PayError {
 impl Node {
     /// An unsigned send of `amount` (or everything) to `address`, and the
     /// sats of linked change it left out.
-    fn build_send(
+    pub(crate) fn build_send(
         &self,
         address: &Address,
         amount: Option<u64>,
         fee_rate: FeeRate,
         link_coins: bool,
+    ) -> Result<(Psbt, u64), PayError> {
+        self.build_send_from(address, amount, fee_rate, link_coins, &SendShape::default())
+    }
+
+    /// [`Self::build_send`], with a lock time and coins it must spend.
+    pub(crate) fn build_send_from(
+        &self,
+        address: &Address,
+        amount: Option<u64>,
+        fee_rate: FeeRate,
+        link_coins: bool,
+        shape: &SendShape,
     ) -> Result<(Psbt, u64), PayError> {
         let mut wallet = self.buyer_wallet();
         let recipient = address.script_pubkey();
@@ -201,6 +223,14 @@ impl Node {
             }
         }
         builder.fee_rate(fee_rate);
+        if let Some(height) = shape.lock_height {
+            builder.nlocktime(LockTime::from_height(height).map_err(|err| PayError::Failed(err.to_string()))?);
+        }
+        if !shape.spend.is_empty() {
+            builder
+                .add_utxos(&shape.spend)
+                .map_err(|err| PayError::Conflict(format!("A coin this payment must spend is gone: {err}")))?;
+        }
         for outpoint in untrusted
             .into_iter()
             .chain(self.escrow.coins.outpoints())

@@ -16,20 +16,25 @@
 //! (`GET /public/moderators`) and refuses the checkout with the reason when
 //! it does not take this one. The vendor checks again when the request
 //! arrives; the question only makes the refusal visible to the buyer.
+//!
+//! A new escrow takes only a filing-fee record (terms v5). An escrow funded
+//! under a ruling-fee record (terms v4) keeps it to the end: the built-in
+//! moderator's old record is read back from the order's signed terms.
 
 use std::time::Duration;
 
-use openbazaar_escrow::{read_profile, ModeratorRecord, VerifiedProfile};
+use openbazaar_escrow::{read_profile, FeeKind, ModeratorRecord, SignedTerms, VerifiedProfile};
 use serde_json::{json, Value};
 use tormail::StoreKey;
 
-use crate::escrow_fixture::moderator_record;
+use crate::escrow_fixture::{legacy_moderator_record, moderator_record};
 use crate::escrow_mail::{hex, key_bytes, unhex};
 use crate::peer_http::sale_base;
 use crate::{Node, OrderError};
 
 const ASK_TIMEOUT: Duration = Duration::from_secs(20);
 const MAX_BODY: usize = 256 * 1024;
+const OLD_RECORD: &str = "That moderator's profile is from before filing fees. It must publish a new one before a new order can use it.";
 
 impl Node {
     /// The moderator a buyer's checkout uses for `seller`: `chosen`, or the
@@ -57,9 +62,32 @@ impl Node {
         if Some(id) == self.own_moderator_id() {
             return Err(OrderError::Invalid("That moderator is this node. Choose another one."));
         }
-        self.known_moderator(&id)
-            .map(|known| Some(known.profile))
-            .ok_or(OrderError::Invalid("This node has no verified profile for that moderator."))
+        let profile = self
+            .known_moderator(&id)
+            .map(|known| known.profile)
+            .ok_or(OrderError::Invalid("This node has no verified profile for that moderator."))?;
+        if !self.new_escrow_takes(&profile.record) {
+            return Err(OrderError::Invalid(OLD_RECORD));
+        }
+        Ok(Some(profile))
+    }
+
+    /// The built-in moderator's record for a new escrow.
+    pub(crate) fn builtin_record(&self) -> Result<ModeratorRecord, String> {
+        #[cfg(test)]
+        if self.escrow.legacy_builtin.load(std::sync::atomic::Ordering::Relaxed) {
+            return legacy_moderator_record(self.network);
+        }
+        moderator_record(self.network)
+    }
+
+    /// Whether a new escrow may carry `record`: a filing-fee record only.
+    pub(crate) fn new_escrow_takes(&self, record: &ModeratorRecord) -> bool {
+        #[cfg(test)]
+        if self.escrow.legacy_builtin.load(std::sync::atomic::Ordering::Relaxed) {
+            return true;
+        }
+        record.fee_kind == FeeKind::Filing
     }
 
     /// Ask the vendor's node whether it takes the chosen moderator, before
@@ -125,7 +153,7 @@ impl Node {
                 json!({ "id": hex(&profile.id()), "name": profile.profile.name, "builtIn": false, "profile": hex(&profile.bytes) }),
             )),
             None => {
-                let record = moderator_record(self.network)?;
+                let record = self.builtin_record()?;
                 let name = self.catalog().moderator.name.clone();
                 let value = json!({ "id": hex(&record.id()), "name": name, "builtIn": true });
                 Ok((record, value))
@@ -144,11 +172,17 @@ impl Node {
     }
 
     /// The moderator record this order's terms must carry: the one in the
-    /// profile the buyer chose, or the built-in one for an older order.
+    /// profile the buyer chose, or the built-in one for an older order. An
+    /// order whose signed terms carry the built-in ruling-fee record keeps it.
     pub(crate) fn order_moderator_record(&self, escrow: &Value) -> Result<ModeratorRecord, String> {
-        match Self::order_profile(escrow)? {
-            Some(profile) => Ok(profile.record),
-            None => moderator_record(self.network),
+        if let Some(profile) = Self::order_profile(escrow)? {
+            return Ok(profile.record);
+        }
+        let signed = escrow["terms"].as_str().and_then(|text| SignedTerms::decode(&unhex(text).ok()?).ok());
+        let legacy = legacy_moderator_record(self.network)?;
+        match signed {
+            Some(signed) if signed.terms().moderator == legacy => Ok(legacy),
+            _ => self.builtin_record(),
         }
     }
 
@@ -175,7 +209,7 @@ impl Node {
     /// profile this node holds for `chosen`. Refused unless the store's own
     /// signed record accepts that moderator.
     pub(crate) fn sale_moderator(&self, seller: &str, chosen: Option<[u8; 32]>) -> Result<ModeratorRecord, String> {
-        let builtin = moderator_record(self.network)?;
+        let builtin = self.builtin_record()?;
         let id = chosen.unwrap_or(builtin.id());
         let accepted = self.seller_store(seller)?.details.map(|details| details.moderators).unwrap_or_default();
         if !accepted.contains(&id) {
@@ -187,8 +221,13 @@ impl Node {
         if Some(id) == self.own_moderator_id() {
             return Err("a store cannot use its own node as its moderator".into());
         }
-        self.known_moderator(&id)
+        let record = self
+            .known_moderator(&id)
             .map(|known| known.profile.record)
-            .ok_or_else(|| "this node holds no verified profile for that moderator".into())
+            .ok_or("this node holds no verified profile for that moderator")?;
+        if !self.new_escrow_takes(&record) {
+            return Err("that moderator's profile is from before filing fees, so a new sale cannot use it".into());
+        }
+        Ok(record)
     }
 }

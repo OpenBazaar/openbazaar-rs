@@ -1,13 +1,16 @@
 //! Vendor-initiated disputes: `POST /escrow/sales/{id}/dispute` sends a
 //! letter for the vendor-wins branch, and the moderator's ruling finishes
-//! that outcome. Also the vendor's outcomes a fee bump can spend from.
+//! that outcome. Under v5 terms the moderator's filing-fee mail for that
+//! letter lands here too ([`crate::escrow_dispute_fee`]). Also the vendor's
+//! outcomes a fee bump can spend from.
 
 use bitcoin::consensus::encode::{deserialize_hex, serialize_hex};
 use bitcoin::Transaction;
-use openbazaar_escrow::ModeratorRuling;
+use openbazaar_escrow::{ModeratorRuling, Party};
 use serde_json::Value;
 
 use super::failed;
+use crate::escrow_dispute_fee::FiledEscrow;
 use crate::escrow_mail::{parse_id, EscrowId, Kind, Mail};
 use crate::instructions::ESCROW_MAINNET_REFUSAL;
 use crate::network::NetworkMode;
@@ -44,16 +47,18 @@ impl Node {
         let reply = self.escrow_reply_url(&escrow_id).map_err(PayError::Invalid)?.to_string();
         let lock = self.escrow.locks.get(&escrow_id);
         let _held = lock.lock().unwrap_or_else(|err| err.into_inner());
-        let (seller, stage, record, citation) = {
+        let (seller, stage, terms, citation) = {
             let desk = self.vendor_desk();
             let sale = desk.sales.get(&escrow_id).ok_or(PayError::NotFound)?;
             // The listing and the store signature over it, as the offer carried them.
             let citation = sale.listing_id.zip(sale.offer.get(2).cloned());
-            (sale.seller.clone(), sale.stage.clone(), sale.terms.moderator.clone(), citation)
+            (sale.seller.clone(), sale.stage.clone(), sale.terms.clone(), citation)
         };
+        let record = terms.moderator.clone();
         if stage != "funded" && stage != "disputed" {
             return Err(PayError::Conflict(format!("This sale is {stage}.")));
         }
+        self.refuse_after_denial(Party::Vendor, &escrow_id).map_err(PayError::Conflict)?;
         // The moderator in the terms both parties signed, at the address its profile gives.
         let (moderator, moderator_key) = self.moderator_mailbox(&record, None).map_err(PayError::Invalid)?;
         let mail_key = self
@@ -67,7 +72,9 @@ impl Node {
                 |sale, _| sale.stage = "disputed".into(),
             )
             .map_err(PayError::Failed)?;
+        let refund = self.note_dispute_letter(Party::Vendor, &escrow_id, &terms, &letter).map_err(PayError::Failed)?;
         let mut fields = vec![letter, mail_key.as_bytes().to_vec(), reply.into_bytes()];
+        fields.extend(refund);
         if let (Some((listing, store_signature)), Ok(store_key)) = (citation, self.seller_store_key(&seller)) {
             fields.push(listing.to_vec());
             fields.push(store_key.serialize().to_vec());
@@ -112,6 +119,21 @@ impl Node {
             _ => return Err(format!("this sale is {stage}; there is no {spend} to bump")),
         };
         Ok(Some((tx, funding)))
+    }
+
+    /// What the vendor knows of a sale's escrow, for its filing fee.
+    pub(crate) fn vendor_filed_escrow(&self, id: &EscrowId) -> Result<FiledEscrow, String> {
+        let desk = self.vendor_desk();
+        let sale = desk.sales.get(id).ok_or("no sale for that escrow")?;
+        Ok(FiledEscrow {
+            terms: sale.terms.clone(),
+            outpoint: sale.outpoint.ok_or("that sale is not funded")?,
+        })
+    }
+
+    pub(super) fn vendor_fee_mail(&self, seller: &str, mail: &Mail) -> Result<(), String> {
+        self.sale_of(seller, &mail.escrow, |_| ())?;
+        self.filer_mail(Party::Vendor, &self.vendor_filed_escrow(&mail.escrow)?, mail)
     }
 
     /// Finish the vendor-wins outcome with the moderator's ruling and broadcast it.

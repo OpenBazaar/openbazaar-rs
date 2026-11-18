@@ -15,7 +15,8 @@ use bdk_wallet::chain::{ChainPosition, Merge};
 use bdk_wallet::descriptor::IntoWalletDescriptor;
 use bdk_wallet::signer::SignersContainer;
 use bdk_wallet::{Balance, ChangeSet, KeychainKind, SignOptions, Update, Wallet};
-use bitcoin::{Address, OutPoint, Psbt};
+use bitcoin::absolute::LockTime;
+use bitcoin::{Address, OutPoint, Psbt, Script, ScriptBuf};
 use serde_json::{json, Value};
 
 use crate::chain::WalletRequest;
@@ -24,6 +25,17 @@ use crate::seed::Seed;
 use crate::vault::Vault;
 use crate::wallet_keys::{self, WatchKeys};
 use crate::Error;
+
+/// A confirmed output to a fee script. `made`: the height its transaction
+/// was built at, from a block-height lock time below the confirmation
+/// (anti-fee-sniping), else the confirmation height.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct FeeOutput {
+    pub outpoint: OutPoint,
+    pub sats: u64,
+    pub height: u32,
+    pub made: u32,
+}
 
 pub(crate) struct NodeWallet {
     pub(crate) watch: WatchKeys,
@@ -108,6 +120,54 @@ impl NodeWallet {
         let info = self.wallet.next_unused_address(KeychainKind::External);
         self.persist()?;
         Ok(info.address)
+    }
+
+    /// A fresh receive script for a dispute fee request, held back from
+    /// [`Self::receive_address`] until the next restart; the moderator desk
+    /// holds it again on start ([`Self::hold_fee_addresses`]).
+    pub(crate) fn fee_address(&mut self) -> Result<(u32, ScriptBuf), Error> {
+        let info = self.wallet.reveal_next_address(KeychainKind::External);
+        self.persist()?;
+        self.wallet.mark_used(KeychainKind::External, info.index);
+        Ok((info.index, info.address.script_pubkey()))
+    }
+
+    pub(crate) fn hold_fee_addresses(&mut self, indices: &[u32]) {
+        for index in indices {
+            self.wallet.mark_used(KeychainKind::External, *index);
+        }
+    }
+
+    /// Every confirmed output to `script`, earliest first.
+    pub(crate) fn fee_outputs(&self, script: &Script) -> Vec<FeeOutput> {
+        let mut found: Vec<FeeOutput> = self
+            .wallet
+            .list_output()
+            .filter(|output| output.txout.script_pubkey == *script)
+            .filter_map(|output| {
+                let height = output.chain_position.confirmation_height_upper_bound()?;
+                let lock = self.wallet.get_tx(output.outpoint.txid)?.tx_node.tx.lock_time;
+                let made = match lock {
+                    LockTime::Blocks(lock) if lock.to_consensus_u32() > 0 && lock.to_consensus_u32() < height => {
+                        lock.to_consensus_u32()
+                    }
+                    _ => height,
+                };
+                Some(FeeOutput {
+                    outpoint: output.outpoint,
+                    sats: output.txout.value.to_sat(),
+                    height,
+                    made,
+                })
+            })
+            .collect();
+        found.sort_by_key(|output| (output.height, output.outpoint));
+        found
+    }
+
+    /// Whether anything, confirmed or not, ever paid `script`.
+    pub(crate) fn script_used(&self, script: &Script) -> bool {
+        self.wallet.list_output().any(|output| output.txout.script_pubkey == *script)
     }
 
     /// The next escrow key index. Each one is used once.

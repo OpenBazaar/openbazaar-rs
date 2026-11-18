@@ -12,6 +12,7 @@
 //! ReleaseNonce     <- kept for POST /orders/{id}/release
 //! POST /release    -> ReleaseSignature to vendor
 //! POST /dispute    -> dispute letter to the moderator
+//! FeeRequest       <- v5: kept for POST /orders/{id}/dispute-fee
 //! Ruling           <- settle_dispute, broadcast the buyer-wins outcome
 //! ```
 //!
@@ -35,7 +36,7 @@ use bitcoin::secp256k1::{PublicKey, Secp256k1};
 use bitcoin::{Address, Amount, Psbt, Transaction};
 use musig2::PubNonce;
 use openbazaar_escrow::{
-    BuyerAwaitingReply, BuyerEscrow, BuyerSession, EscrowTerms, FundingPlan, ModeratorRuling,
+    BuyerAwaitingReply, BuyerEscrow, BuyerSession, EscrowTerms, FundingPlan, ModeratorRuling, Party,
     SignedTerms, VendorReply,
 };
 use serde_json::{json, Map, Value};
@@ -52,6 +53,7 @@ use crate::spend_tickets::SpendTerms;
 use crate::watch::{AWAITING_FUNDING, AWAITING_TERMS, DISPUTED, FUNDED, RELEASED, SETTLED};
 use crate::{Node, OrderError};
 
+mod fee;
 mod state;
 
 const MAX_MEMO: usize = 1_000;
@@ -193,6 +195,7 @@ impl Node {
             "fundingSats": funding,
             "spendFeeSats": spend_fee,
             "moderatorFeeSats": record.fee.to_sat(),
+            "feeKind": crate::moderators::fee_kind(&record),
             "moderator": moderator,
             "buyerKeyIndex": index,
             "buyerPayout": payout.to_string(),
@@ -361,6 +364,7 @@ impl Node {
             Kind::Reply => self.buyer_reply(&order, &mail),
             Kind::ReleaseNonce => self.buyer_release_nonce(&order, &mail),
             Kind::Ruling => self.buyer_ruling(&order, &mail),
+            Kind::FeeRequest | Kind::FeeReceipt | Kind::Denied | Kind::Recused => self.buyer_fee_mail(&order, &mail),
             other => Err(format!("a buyer does not take {other:?}")),
         }
     }
@@ -411,6 +415,9 @@ impl Node {
         {
             return Err("the vendor's terms are not the ones this node asked for".into());
         }
+        if !self.new_escrow_takes(&terms.moderator) {
+            return Err("the vendor's terms are from before filing fees, so this node opens no escrow under them".into());
+        }
         let moderator: [u8; 32] = terms.moderator.signing_key[1..].try_into().map_err(failed)?;
         let store = self.seller_store(&order.seller)?;
         if !store.details.as_ref().is_some_and(|details| details.moderators.contains(&moderator)) {
@@ -438,6 +445,7 @@ impl Node {
                 "address": address.to_string(),
                 "vendorPayout": vendor_payout.to_string(),
                 "moderatorFeeSats": terms.moderator.fee.to_sat(),
+                "feeKind": crate::moderators::fee_kind(&terms.moderator),
                 "disputeDeadline": terms.dispute_deadline,
                 "vendorClaimHeight": terms.vendor_claim_height,
                 "refundHeight": terms.refund_height,
@@ -759,6 +767,7 @@ impl Node {
         }
         self.lock.spend_key()?;
         let (order, escrow_id) = self.funded_escrow(id, &["funded", "disputed"])?;
+        self.refuse_after_denial(Party::Buyer, &escrow_id).map_err(PayError::Conflict)?;
         // The moderator this order's terms name, at the address its profile gives.
         let (moderator, moderator_key) = order
             .escrow
@@ -772,6 +781,7 @@ impl Node {
         let letter = self
             .with_buyer_escrow(&order, &escrow_id, |escrow| escrow.dispute_letter(memo.as_bytes()).map_err(failed))
             .map_err(PayError::Failed)?;
+        let refund = self.note_buyer_letter(&order, &escrow_id, &letter).map_err(PayError::Failed)?;
         let was = order.escrow.as_ref().and_then(|escrow| escrow.get("stage")).cloned();
         self.update_escrow(id, Some(DISPUTED), json!({ "stage": "disputed" }))
             .map_err(PayError::Failed)?;
@@ -780,6 +790,7 @@ impl Node {
             self.buyer_mail_secret().public_key().as_bytes().to_vec(),
             reply.into_bytes(),
         ];
+        fields.extend(refund);
         let cited = (
             listing_bytes(order.escrow.as_ref().and_then(|escrow| escrow.get("listingId"))).map_err(PayError::Invalid)?,
             bytes_of(&order, "storeKey", 32).map_err(PayError::Invalid)?,

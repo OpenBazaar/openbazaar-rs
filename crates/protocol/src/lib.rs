@@ -11,6 +11,9 @@ mod commerce_tests;
 mod content;
 mod coupon;
 mod dispute;
+mod dispute_fee;
+#[cfg(test)]
+mod dispute_fee_tests;
 mod encode;
 mod error;
 mod escrow;
@@ -47,6 +50,11 @@ mod variants;
 pub use commerce::{Availability, Commerce, Condition, Pricing, Purchase, Returns, Sale, Tier, MAX_SPECIFICS, MAX_TIERS};
 pub use content::{ContentLabel, ContentRating, ContentTags};
 pub use dispute::{DisputeEnvelope, DisputePlaintext};
+pub use dispute_fee::{
+    CaseAccepted, DisputeDecision, FeeInvoice, FeePayment, FeeReceipt, FeeRequest, SignedCaseAccepted,
+    SignedDisputeDecision, SignedFeeReceipt, SignedFeeRequest, DECISION_BUYER, DECISION_DENIED_BUYER,
+    DECISION_DENIED_VENDOR, DECISION_RECUSED, DECISION_VENDOR,
+};
 pub use error::Error;
 pub use escrow::{EscrowBranch, EscrowTerms};
 pub use fixture_labels::{fixture_label_sets, fixture_labeler_key};

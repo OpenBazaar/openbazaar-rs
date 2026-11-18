@@ -37,6 +37,7 @@ mod egress;
 mod escrow_bump;
 mod escrow_buyer;
 mod escrow_choice;
+mod escrow_dispute_fee;
 mod escrow_fee;
 mod escrow_fixture;
 mod escrow_http;
@@ -66,6 +67,7 @@ mod media;
 mod messages;
 mod moderator_http;
 mod moderator_identity;
+mod moderator_track;
 mod moderators;
 mod network;
 mod offers;
@@ -103,6 +105,7 @@ mod test_network;
 mod tor_socks;
 mod tor_status;
 mod tracking;
+mod tx_watch;
 mod vacation;
 mod vault;
 mod vault_key;
@@ -132,9 +135,15 @@ mod lock_tests;
 #[cfg(test)]
 mod multinode_durable_tests;
 #[cfg(test)]
+mod multinode_dropped_fee_tests;
+#[cfg(test)]
+mod multinode_fee_tests;
+#[cfg(test)]
 mod multinode_moderator_tests;
 #[cfg(test)]
 mod multinode_payment_tests;
+#[cfg(test)]
+mod multinode_refund_tests;
 #[cfg(test)]
 mod multinode_review_tests;
 #[cfg(test)]
@@ -571,6 +580,7 @@ impl Node {
             browser: browser::Browser::new(),
         };
         node.drop_uncommitted_spend()?;
+        node.hold_moderator_fee_addresses();
         Ok(node)
     }
 

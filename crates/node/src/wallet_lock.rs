@@ -197,6 +197,10 @@ pub(crate) struct WalletLock {
     pub(crate) send_quotes: SpendTickets<crate::wallet_send::SendTerms>,
     /// Zcash spend tickets ([`crate::zec`]), dropped on lock with the rest.
     pub(crate) zec_tickets: SpendTickets<crate::zec::ZecTerms>,
+    /// Quotes for dispute filing fees ([`crate::escrow_dispute_fee::pay`]).
+    pub(crate) dispute_fee_quotes: SpendTickets<crate::escrow_dispute_fee::pay::DisputeFeeTerms>,
+    /// Quotes for a moderator's filing-fee refunds ([`crate::escrow_moderator::refund`]).
+    pub(crate) refund_quotes: SpendTickets<crate::escrow_moderator::refund::RefundTerms>,
 }
 
 impl WalletLock {
@@ -236,6 +240,8 @@ impl WalletLock {
             ln_send_quotes: SpendTickets::default(),
             send_quotes: SpendTickets::default(),
             zec_tickets: SpendTickets::default(),
+            dispute_fee_quotes: SpendTickets::default(),
+            refund_quotes: SpendTickets::default(),
         })
     }
 
@@ -280,6 +286,8 @@ impl WalletLock {
         self.ln_send_quotes.clear();
         self.send_quotes.clear();
         self.zec_tickets.clear();
+        self.dispute_fee_quotes.clear();
+        self.refund_quotes.clear();
     }
 
     fn state_of(inner: &Inner) -> State {

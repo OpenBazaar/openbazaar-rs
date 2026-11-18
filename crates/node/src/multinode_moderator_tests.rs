@@ -142,9 +142,12 @@ fn an_escrow_with_the_moderator_the_buyer_chose_is_disputed_and_ruled_by_it() {
     let (status, value) = request(&market.moderator.node, "POST", &rule, r#"{"favor": "buyer"}"#);
     assert!(status.contains("423"), "a ruling is signed with the wallet's key: {status} {value}");
     unlock(&market.moderator.node);
+    market.moderator.node.moderator_fee_steps();
+    let asked = market.moderator.node.last_fee_request(&crate::escrow_mail::parse_id(case["id"].as_str().unwrap()).unwrap()).unwrap();
+    crate::multinode_fee_tests::pay(&market, &openbazaar_protocol::SignedFeeRequest::decode(&asked).unwrap().terms);
     let (status, value) = request(&market.moderator.node, "POST", &rule, r#"{"favor": "buyer"}"#);
     assert!(status.contains("200"), "{status} {value}");
-    assert_eq!(market.deliver(), 1, "the buyer settles with the ruling");
+    assert_eq!(market.deliver(), 3, "the buyer takes the fee request and receipt, then settles with the ruling");
 
     let settled = order(&market.buyer.node, &id);
     assert_eq!(settled["status"], SETTLED, "{settled}");
@@ -153,9 +156,8 @@ fn an_escrow_with_the_moderator_the_buyer_chose_is_disputed_and_ruled_by_it() {
     assert!(spends(&outcome, outpoint));
     let funding = escrow["fundingSats"].as_u64().unwrap();
     assert_eq!(outcome.output[0].script_pubkey, script_of(&escrow["buyerPayout"]));
-    assert_eq!(outcome.output[0].value.to_sat(), funding - escrow["spendFeeSats"].as_u64().unwrap() - ANCHOR_VALUE.to_sat() - FEE);
-    assert_eq!(outcome.output[1].value.to_sat(), FEE, "the fee in the moderator's own record, not the built-in one");
-    assert_eq!(outcome.output[1].script_pubkey, terms.terms().moderator.payout);
+    assert_eq!(outcome.output[0].value.to_sat(), funding - escrow["spendFeeSats"].as_u64().unwrap() - ANCHOR_VALUE.to_sat());
+    assert_eq!(outcome.output.len(), 2, "the filing fee was paid on the side; the ruling pays no fee");
     assert_ne!(FEE, MODERATOR_FEE_SATS);
 
     // A demo listing has no stable id, so this ruling cites no listing and
@@ -164,7 +166,13 @@ fn an_escrow_with_the_moderator_the_buyer_chose_is_disputed_and_ruled_by_it() {
     assert_eq!(cases(&market)[0]["ruled"], true);
     assert_eq!(
         profile(&market.moderator.node)["trackRecord"],
-        json!({ "rulings": 0, "stores": 0, "buyerWins": 1, "vendorWins": 0 })
+        json!({
+            "rulings": 0,
+            "stores": 0,
+            "buyerWins": 1,
+            "vendorWins": 0,
+            "cases": { "accepted": 1, "decided": 1, "denied": 0, "recused": 0, "overdue": 0 },
+        })
     );
     let (status, body) = crate::seller_store_tests::peer_request(&market.moderator.node, "/public/moderator");
     assert!(status.contains("200"), "{status}");
@@ -174,6 +182,14 @@ fn an_escrow_with_the_moderator_the_buyer_chose_is_disputed_and_ruled_by_it() {
     assert_eq!(crate::moderators::count_outcomes(&id, &outcomes), (1, 0), "one public buyer win: {public}");
     let (_, list) = accept(&market.vendor.node, &market.moderator.url);
     assert_eq!(listed(&list, &chosen)["trackRecord"]["rulings"], 0, "{list}");
+    assert_eq!(public["accepted"].as_array().unwrap().len(), 1, "the paid case is public: {public}");
+    assert_eq!(public["decisions"].as_array().unwrap().len(), 1, "{public}");
+    assert_eq!(
+        listed(&list, &chosen)["trackRecord"]["cases"],
+        json!({ "accepted": 1, "decided": 1, "denied": 0, "recused": 0, "overdue": 0 }),
+        "counted from the moderator's own signed records: {list}"
+    );
+    assert_eq!(listed(&list, &chosen)["feeKind"], "filing");
     assert_eq!(sale(&market.vendor.node)["stage"], "funded", "the buyer disputed; the vendor's sale waits for the outcome");
 }
 

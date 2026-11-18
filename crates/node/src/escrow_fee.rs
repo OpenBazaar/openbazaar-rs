@@ -159,14 +159,16 @@ fn sign_child(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::escrow_fixture::moderator_record;
+    use crate::escrow_fixture::{legacy_moderator_record, moderator_record};
     use crate::network::NetworkMode;
 
     #[test]
     fn the_presigned_fee_follows_the_estimate_within_the_policy_floor_and_cap() {
         let record = moderator_record(NetworkMode::Testnet4).unwrap();
         let vsize = vsize_bound(&record);
-        assert!((150..250).contains(&vsize), "{vsize}");
+        assert!((100..200).contains(&vsize), "{vsize}");
+        let legacy = vsize_bound(&legacy_moderator_record(NetworkMode::Testnet4).unwrap());
+        assert!((150..250).contains(&legacy) && vsize < legacy, "a ruling with a fee output is larger: {legacy}");
         let floor = record.policy.min_fee_rate_sat_vb * vsize;
         assert_eq!(presigned_fee(None, &record), floor);
         assert_eq!(presigned_fee(Some(1.0), &record), floor, "never below the floor");
