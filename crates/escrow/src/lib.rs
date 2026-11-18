@@ -15,17 +15,19 @@
 //! | release        | 0                     | vendor                            | no        |
 //! | vendor claim   | `refund_height`       | buyer + anchor (the refund)       | no        |
 //! | buyer refund   | `refund_height`       | buyer + anchor                    | no        |
-//! | buyer wins     | 0                     | buyer + moderator fee + anchor    | picks it  |
-//! | vendor wins    | 0                     | vendor + moderator fee + anchor   | picks it  |
+//! | buyer wins     | 0                     | buyer + anchor                    | picks it  |
+//! | vendor wins    | 0                     | vendor + anchor                   | picks it  |
 //!
 //! The anchor is a 240-sat pay-to-anchor output ([`ANCHOR_VALUE`]) so the
 //! recipient can CPFP a presigned spend whose fee was fixed at funding.
+//! Under v4 terms each dispute outcome also pays the moderator fee; see
+//! [Moderator fee collection](#moderator-fee-collection).
 //!
 //! # Context
 //!
 //! The buyer, the vendor, and the moderator each build the contract from a
 //! [`Context`]: the chain tip, the moderator's published [`ModeratorRecord`]
-//! (signing key, encryption key, payout script, fee, policy), and their own
+//! (signing key, encryption key, fee, policy), and their own
 //! [`Policy`]. The terms must carry that exact record and pass both policies,
 //! and every payout must be a standard script above its dust limit. Because
 //! the moderator checks letters against the policy in its own record, terms
@@ -110,11 +112,17 @@
 //!
 //! # Moderator fee collection
 //!
-//! The fee is an output of a published ruling, buyer-wins or vendor-wins.
-//! It is not an output of the presigned claim. Silence follows the buyer
-//! refund, so a missing moderator pays neither the vendor nor the fee.
-//! A ruling for the vendor still pays the vendor and the fee. The cooperative
-//! release and the buyer refund are fee-free.
+//! v5 terms carry a v2 record ([`FeeKind::Filing`]). Its fee is a filing fee:
+//! whoever opens a dispute pays the moderator outside the escrow, and no
+//! presigned spend pays the moderator. The fee does not depend on the ruling,
+//! so the moderator gains nothing by favoring either side.
+//!
+//! v4 terms carry a v1 record ([`FeeKind::Ruling`]), and only escrows funded
+//! under v4 still use it. The fee is an output of a published ruling,
+//! buyer-wins or vendor-wins. It is not an output of the presigned claim.
+//! Silence follows the buyer refund, so a missing moderator pays neither the
+//! vendor nor the fee. The cooperative release and the buyer refund are
+//! fee-free under both versions.
 //!
 //! # Caller obligations
 //!
@@ -176,8 +184,8 @@ pub use funding::{
 pub use letter::{is_equivocation, DisputeCase, ModeratorRuling};
 pub use messages::{BuyerOpen, BuyerSignatures, FundingNonces, ReleaseSignature, VendorReply};
 pub use moderator::{
-    review_letter, FundingChain, InMemoryRulingStore, LetterCache, Moderator, ModeratorKeys,
-    ModeratorRecord, RulingKey, RulingStore,
+    review_letter, FeeKind, FundingChain, InMemoryRulingStore, LetterCache, Moderator,
+    ModeratorKeys, ModeratorRecord, RulingKey, RulingStore, MIN_FILING_FEE,
 };
 pub use policy::{payout_dust_limit, Policy, ANCHOR_VALUE};
 pub use profile::{read_profile, VerifiedProfile};

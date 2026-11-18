@@ -9,8 +9,9 @@
 //! - Buyer refund: presigned, pays the buyer at `refund_locktime`, which is
 //!   later than the ruling window.
 //! - Dispute: two adaptor-signed outcomes, one per branch, each paying the
-//!   winner plus `moderator_fee`. The moderator can reveal the secret for at
-//!   most one branch it was asked about; it never signs a transaction.
+//!   winner (plus `moderator_fee` under v4 terms; under v5 terms the fee is a
+//!   filing fee paid outside the escrow). The moderator can reveal the secret
+//!   for at most one branch it was asked about; it never signs a transaction.
 //!
 //! The claimed branch carries the escrow crate's self-verifying dispute
 //! letter as an opaque blob. The other branch's letter is empty unless the

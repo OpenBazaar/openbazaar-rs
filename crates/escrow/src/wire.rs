@@ -103,11 +103,25 @@ pub struct Reader<'a> {
 
 impl<'a> Reader<'a> {
     pub fn new(bytes: &'a [u8], magic: &[u8; 4], version: u8) -> Result<Self, Error> {
+        let (reader, _) = Self::versioned(bytes, magic, &[version])?;
+        Ok(reader)
+    }
+
+    /// Like [`Self::new`], accepting any of `versions` and returning the one read.
+    pub fn versioned(
+        bytes: &'a [u8],
+        magic: &[u8; 4],
+        versions: &[u8],
+    ) -> Result<(Self, u8), Error> {
         let mut reader = Self { bytes, at: 0 };
-        if &reader.array::<4>()? != magic || reader.u8()? != version {
+        if &reader.array::<4>()? != magic {
             return Err(Error::Malformed);
         }
-        Ok(reader)
+        let version = reader.u8()?;
+        if !versions.contains(&version) {
+            return Err(Error::Malformed);
+        }
+        Ok((reader, version))
     }
 
     pub fn position(&self) -> usize {

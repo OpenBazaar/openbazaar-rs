@@ -122,7 +122,16 @@ pub fn run_funding_signed(
     signed: SignedTerms,
     plan: FundingPlan,
 ) -> Result<(BuyerEscrow, VendorEscrow), Error> {
-    let ctx = ctx();
+    run_funding_in(&ctx(), order, signed, plan)
+}
+
+pub fn run_funding_in(
+    ctx: &Context,
+    order: &Order,
+    signed: SignedTerms,
+    plan: FundingPlan,
+) -> Result<(BuyerEscrow, VendorEscrow), Error> {
+    let ctx = ctx.clone();
     let (buyer, open) = BuyerSession::start(signed.clone(), &order.buyer_secret, &ctx, plan)?;
     let open = BuyerOpen::from_bytes(&open.to_bytes())?;
 

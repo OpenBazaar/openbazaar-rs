@@ -8,6 +8,7 @@ use bitcoin::hashes::Hash;
 use bitcoin::sighash::{Prevouts, SighashCache, TapSighashType};
 use bitcoin::{absolute, Amount, OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Witness};
 
+use crate::moderator::FeeKind;
 use crate::policy::{Policy, ANCHOR_VALUE};
 use crate::terms::EscrowTerms;
 use crate::{Error, Party};
@@ -139,7 +140,7 @@ impl Templates {
             .checked_sub(terms.network_fee)
             .ok_or(short.clone())?;
         let anchored = payout.checked_sub(ANCHOR_VALUE).ok_or(short.clone())?;
-        let winner = anchored.checked_sub(terms.moderator.fee).ok_or(short)?;
+        let winner = anchored.checked_sub(terms.ruling_fee()).ok_or(short)?;
         let anchor = TxOut {
             value: ANCHOR_VALUE,
             script_pubkey: anchor_script(),
@@ -154,13 +155,11 @@ impl Templates {
             vec![pay(Party::Buyer, anchored), anchor.clone()],
         );
         // Silence follows the buyer refund. The presigned claim is that
-        // refund: it does not pay the vendor, and the moderator fee stays on
-        // a published ruling.
+        // refund: it does not pay the vendor. Under v4 terms the moderator
+        // fee stays on a published ruling; v5 rulings carry no fee output.
         let with_fee = |party: Party, lock: absolute::LockTime| {
-            spend_template(
-                outpoint,
-                lock,
-                vec![
+            let outputs = match terms.moderator.fee_kind {
+                FeeKind::Ruling => vec![
                     pay(party, winner),
                     TxOut {
                         value: terms.moderator.fee,
@@ -168,7 +167,9 @@ impl Templates {
                     },
                     anchor.clone(),
                 ],
-            )
+                FeeKind::Filing => vec![pay(party, winner), anchor.clone()],
+            };
+            spend_template(outpoint, lock, outputs)
         };
         Ok(Self {
             release: spend_template(
