@@ -128,19 +128,33 @@ test('the seller lists, edits, and removes goods', async ({ page }, info) => {
   await page.getByRole('button', { name: 'Save changes' }).click()
   await expect(row).toContainText('4 in stock')
 
+  // The unlock dialog sits inside the listing form; unlocking must not also submit the listing.
+  expect(await page.evaluate(async () => (await fetch('/lock', {
+    method: 'POST',
+    headers: { 'X-Ob-Pair': (globalThis as { __OB_PAIR_TOKEN__?: string }).__OB_PAIR_TOKEN__ ?? '' }
+  })).ok)).toBeTruthy()
+  await page.getByRole('button', { name: 'Edit Ash glaze mug' }).click()
+  await page.getByLabel('In stock').fill('3')
+  await page.getByRole('button', { name: 'Save changes' }).click()
+  const unlock = page.getByRole('dialog', { name: 'Unlock wallet' })
+  await unlock.getByLabel('Wallet passphrase', { exact: true }).fill(PASSPHRASE)
+  await unlock.getByRole('button', { name: 'Unlock wallet' }).click()
+  await expect(unlock).toHaveCount(0)
+  await expect(page.getByText('Listing updated and signed')).toBeVisible()
+
   // A draft of a published listing updates that listing when published, never adds a second one.
   const published = page.locator('.ob-own-listing:not(.is-draft)')
   const mugs = published.filter({ hasText: 'Ash glaze mug' })
   const listingCount = await published.count()
   await page.getByRole('button', { name: 'Edit Ash glaze mug' }).click()
-  await page.getByLabel('In stock').fill('3')
+  await page.getByLabel('In stock').fill('2')
   await page.getByRole('button', { name: 'Save draft', exact: true }).click()
   await page.getByRole('button', { name: 'Edit draft Ash glaze mug', exact: true }).click()
   await expect(page.getByRole('button', { name: 'Save changes' })).toBeVisible()
   await page.getByRole('button', { name: 'Save changes' }).click()
   await expect(page.locator('.ob-own-listing.is-draft', { hasText: 'Ash glaze mug' })).toHaveCount(0)
   await expect(mugs).toHaveCount(1)
-  await expect(mugs).toContainText('3 in stock')
+  await expect(mugs).toContainText('2 in stock')
   await expect(published).toHaveCount(listingCount)
 
   await page.getByRole('button', { name: 'New listing' }).click()
