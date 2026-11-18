@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { cartPackages, lineKey } from "./cart.ts";
+import { cartPackages, lineKey, missingLines } from "./cart.ts";
 import type { ListingHeader, ShopCatalog } from "./catalog.ts";
 import { emptyCommerce } from "./commerceDraft.ts";
 
@@ -59,4 +59,22 @@ test("a sold-out variant shows no units left, which holds the bag back from chec
   const [pkg] = cartPackages(shop(mug(0)), [sand]);
   assert.equal(pkg.items[0].available, 0);
   assert.ok(pkg.items[0].quantity > pkg.items[0].available);
+});
+
+test("every bag line is either priced or listed as missing, so the badge matches the page", () => {
+  const catalog = { listings: [mug()], stores: [{ key: "bb".repeat(32) }], moderator: null } as unknown as ShopCatalog;
+  const lines = [sea, { hash: "dd".repeat(32), quantity: 1, storeId: "bb".repeat(32), title: "Deck box" }, { hash: "ee".repeat(32), quantity: 2, storeId: "ff".repeat(32), title: "Far item" }, { hash: "11".repeat(32), quantity: 1 }];
+  const rendered = cartPackages(catalog, lines).flatMap(p => p.items).reduce((n, i) => n + i.quantity, 0) + missingLines(catalog, lines).reduce((n, m) => n + m.quantity, 0);
+  assert.equal(rendered, lines.reduce((n, l) => n + l.quantity, 0));
+});
+
+test("a listing its store no longer offers is marked removed", () => {
+  const catalog = { listings: [], stores: [{ key: "bb".repeat(32) }], moderator: null } as unknown as ShopCatalog;
+  assert.deepEqual(missingLines(catalog, [{ hash: "dd".repeat(32), quantity: 1, storeId: "bb".repeat(32), title: "Deck box" }]), [{ key: lineKey({ hash: "dd".repeat(32) }), quantity: 1, title: "Deck box", removed: true }]);
+});
+
+test("a listing from a store missing from the catalog, or with no store recorded, is not marked removed", () => {
+  const catalog = { listings: [], stores: [], moderator: null } as unknown as ShopCatalog;
+  const out = missingLines(catalog, [{ hash: "dd".repeat(32), quantity: 1, storeId: "bb".repeat(32), title: "Deck box" }, { hash: "ee".repeat(32), quantity: 1 }]);
+  assert.deepEqual(out.map(m => [m.title, m.removed]), [["Deck box", false], ["An item in your bag", false]]);
 });
