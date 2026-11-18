@@ -117,9 +117,23 @@ enum FeePayment {
     Unpaid,
 }
 
-/// The terms a fee broadcast at `tip` pays: it confirms at `tip + 1` at the earliest.
+/// Blocks before a new entry starts in which a fee may still confirm under either entry.
+pub(crate) const GUARD_BLOCKS: u32 = 6;
+
+/// The terms a fee broadcast at `tip` pays. It confirms at `tip + 1` at the
+/// earliest. When the next entry starts inside [`GUARD_BLOCKS`] of that and
+/// names the same fee key, the fee is the higher amount, so it passes on either
+/// side of the boundary. A new fee key inside the guard is paid as the current
+/// entry: `sign-seed` does not sign one yet.
 pub(crate) fn payment_terms(schedule: &TermsSchedule, tip: u32) -> Option<DirectoryTerms> {
-    schedule.at(tip.saturating_add(1)).map(|entry| entry.terms)
+    let next_block = tip.saturating_add(1);
+    let mut pay = schedule.at(next_block)?.terms;
+    if let Some(next) = schedule.after(next_block) {
+        if next.start_height <= next_block.saturating_add(GUARD_BLOCKS) && next.terms.fee_key == pay.fee_key {
+            pay.fee_sats = pay.fee_sats.max(next.terms.fee_sats);
+        }
+    }
+    Some(pay)
 }
 
 /// Last height an admission confirmed at `height` is listed.
@@ -129,18 +143,20 @@ pub(crate) fn listed_until(schedule: &TermsSchedule, height: u32) -> u32 {
 
 /// The newest output on `script` that pays the entry in force at its height,
 /// inside that entry's epoch with enough confirmations, else whether one is
-/// still confirming. Only entries with `pay`'s fee key name `script`.
-fn fee_payment(chain: &dyn ChainSource, schedule: &TermsSchedule, pay: &DirectoryTerms, script: &Script) -> Result<FeePayment, String> {
+/// still confirming. Only entries with `fee_key` name `script`. A mempool
+/// output counts as confirming when it pays the entry in force at the next block.
+fn fee_payment(chain: &dyn ChainSource, schedule: &TermsSchedule, fee_key: &[u8; 32], script: &Script) -> Result<FeePayment, String> {
     let tip = chain.tip_height()?;
+    let least = schedule.at(tip.saturating_add(1)).map_or(u64::MAX, |entry| entry.terms.fee_sats);
     let mut paid: Option<(Txid, u32, u32)> = None;
     let mut pending = false;
     for tx in chain.script_txs(script, tip.saturating_sub(schedule.max_epoch()))? {
         let Some(height) = tx.height else {
-            pending |= tx.outputs.iter().any(|(_, sats)| *sats >= pay.fee_sats);
+            pending |= tx.outputs.iter().any(|(_, sats)| *sats >= least);
             continue;
         };
         let Some(terms) = schedule.at(height).map(|entry| entry.terms) else { continue };
-        if terms.fee_key != pay.fee_key {
+        if terms.fee_key != *fee_key {
             continue;
         }
         let Some(&(vout, _)) = tx.outputs.iter().find(|(_, sats)| *sats >= terms.fee_sats) else { continue };
@@ -200,7 +216,7 @@ impl Node {
         }
         let Some(pay) = payment_terms(&head.schedule, tip) else { return Ok(()) };
         let script = store_fee_address(&pay.fee_key, &id, self.network.bitcoin())?.script_pubkey();
-        let (txid, vout, height) = match fee_payment(self.chain.as_ref(), &head.schedule, &pay, &script)? {
+        let (txid, vout, height) = match fee_payment(self.chain.as_ref(), &head.schedule, &pay.fee_key, &script)? {
             FeePayment::Paid { txid, vout, height } => (txid, vout, height),
             FeePayment::Pending => {
                 self.set_fee_state(FeeState::Confirming, tip);

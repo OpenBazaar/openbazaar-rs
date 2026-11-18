@@ -120,6 +120,8 @@ mod admission_tests;
 #[cfg(test)]
 mod checkout_tests;
 #[cfg(test)]
+mod fee_schedule_tests;
+#[cfg(test)]
 mod harness;
 #[cfg(test)]
 mod lock_receive_tests;
