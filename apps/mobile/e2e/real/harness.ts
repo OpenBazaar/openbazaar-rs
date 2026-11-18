@@ -196,8 +196,10 @@ export type Guard = {
 // nodes.mjs is a plain ES module shared with server.mjs; tests compile to CommonJS.
 const nodes = import('../nodes.mjs') as Promise<any>
 const chains = import('../chain.mjs') as Promise<any>
+const bitcoinds = import('../bitcoind.mjs') as Promise<any>
+const monerods = import('../monerod.mjs') as Promise<any>
 // Fixed exchange rates and no seed introductions: no outside network calls.
-const DETERMINISTIC_ARGS = ['--fixed-rates', 'BTCUSD=100000,ZECUSD=50', '--no-introductions']
+const DETERMINISTIC_ARGS = ['--fixed-rates', 'BTCUSD=100000,ZECUSD=50,XMRUSD=300', '--no-introductions']
 
 async function freePort(): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -216,8 +218,18 @@ async function attachLogs(info: TestInfo, nodes: TestNode[]) {
 
 export type Market = { moderator: TestNode; seller: TestNode; buyer: TestNode }
 
+/** A regtest bitcoind for Lightning (e2e/bitcoind.mjs). */
+export type Bitcoind = {
+  chainArg: string
+  rpc(method: string, params?: unknown[], wallet?: string): Promise<any>
+  mine(count?: number): Promise<string[]>
+  send(address: string, btc: number): Promise<string>
+  mempool(): Promise<string[]>
+}
+export type MoneroMarket = { seller: TestNode; buyer: TestNode }
+export type LightningMarket = { bitcoind: Bitcoind; seller: TestNode; buyer: TestNode; sellerPeer: string }
 
-export const test = base.extend<{ chain: Chain; spawn: Spawn; guard: Guard; seller: TestNode; buyer: TestNode; market: Market }>({
+export const test = base.extend<{ chain: Chain; spawn: Spawn; guard: Guard; seller: TestNode; buyer: TestNode; market: Market; lightning: LightningMarket; monero: MoneroMarket }>({
   chain: async ({}, use) => {
     const chain = await (await chains).startChain()
     await use(chain)
@@ -280,6 +292,40 @@ export const test = base.extend<{ chain: Chain; spawn: Spawn; guard: Guard; sell
     const buyer = await spawn('buyer', { role: 'buyer', args: [...args, ...vendor(store.name), ...vendor(store.storeKey)] })
     await buyer.setupWallet()
     await use({ moderator, seller, buyer })
+  },
+
+  // Seller and buyer with Lightning on a regtest bitcoind, no LSP: channels are opened by hand.
+  lightning: async ({ spawn }, use, info) => {
+    const { available, startBitcoind } = await bitcoinds
+    info.skip(!available(), 'No bitcoind (set BITCOIND_EXE)')
+    const bitcoind = await startBitcoind()
+    const ln = async (name: string, role: 'buyer' | null) => {
+      const listen = await freePort()
+      const node = await spawn(name, { role, args: ['--lightning', '--ln-network', 'regtest', '--ln-chain', bitcoind.chainArg, '--no-lsp', '--ln-p2p-gossip', '--ln-listen', `127.0.0.1:${listen}`] })
+      await node.setupWallet()
+      return { node, listen }
+    }
+    const seller = await ln('seller', null)
+    await seller.node.openStore('Brook and Pine')
+    const buyer = await ln('buyer', 'buyer')
+    const status = await seller.node.api('GET', '/ln/status')
+    await use({ bitcoind, seller: seller.node, buyer: buyer.node, sellerPeer: `${status.nodeId}@127.0.0.1:${seller.listen}` })
+    await bitcoind.stop()
+  },
+
+  // Seller and buyer with Monero on an offline stagenet monerod that holds only the genesis block.
+  monero: async ({ spawn }, use, info) => {
+    const { available, startMonerod } = await monerods
+    info.skip(!available(), 'No monerod (set MONEROD_EXE)')
+    const monerod = await startMonerod()
+    const args = ['--xmr-daemon', monerod.url]
+    const seller = await spawn('seller', { args })
+    await seller.setupWallet()
+    await seller.openStore('Brook and Pine')
+    const buyer = await spawn('buyer', { role: 'buyer', args })
+    await buyer.setupWallet()
+    await use({ seller, buyer })
+    await monerod.stop()
   },
 
   guard: [

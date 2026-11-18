@@ -84,7 +84,7 @@ export function LightningOrderPayment({ id, initial, invoice }: { id: string; in
             </div>
           )}
           <div className='ob-wallet-receive'>
-            <PaymentQr value={ln.uri} />
+            <PaymentQr value={ln.uri} label='Lightning invoice QR code' />
             <CopyPaymentValue label='Lightning invoice' value={ln.invoice} />
           </div>
           <p className='ob-page-intro'>

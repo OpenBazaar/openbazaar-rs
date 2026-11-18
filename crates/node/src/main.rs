@@ -12,7 +12,7 @@ use ob_node::{
     VaultChoice, VaultMode,
 };
 
-const USAGE: &str = "ob-node [print | --version | pair [port] [--network N] [--data-dir DIR] [--lan-page] | devices [port] [--remove ID [--rotate] | --remove-all --rotate] | serve [port] [--remote] [--lan] [--lan-listen ADDR] [--remote-listen 127.0.0.1:PORT] [--web-dir DIR] [--web-listen ADDR --web-origin https://HOST] [--local-shop DIR] [--push-gateway http://ONION] [--network testnet4|mainnet] [--data-dir DIR] [--peer HOST:PORT[,...] | --esplora URL[,URL...]] [--public-fallback | --no-public-fallback] [--confirmations N] [--poll-secs S] [--escrow-vendor SELLER=URL] [--moderator URL] [--moderate] [--vault keystore|passphrase|file] [--shop-origin URL] [--no-pair-codes] [--proxy socks5h://HOST:PORT | --tor] [--no-rates] [--fixed-rates BTCUSD=N,ZECUSD=N] [--no-introductions] [--tracking aftership] [--xmr-daemon URL[,URL...]|default] [--zec-indexer URL[,URL...]] [--onion] [--lightning [--ln-network signet|testnet4|regtest] [--ln-chain esplora:URL|electrum:URL|bitcoind:USER:PASS@HOST:PORT] [--lsp NODE_ID@HOST:PORT [--lsp-token T] | --no-lsp] [--lsp-max-fee-sats N] [--ln-rgs URL | --ln-p2p-gossip] [--ln-listen HOST:PORT]] | send-letter --to ONION|http://127.0.0.1:PORT --file FILE [--data-dir DIR] [--network testnet4|mainnet] [--timeout SECS] | poll-mail [--data-dir DIR] [--network testnet4|mainnet] [--expect SHA256] | sign-seed --key FILE --sequence N [--introductions ONION,ONION] --out FILE | fetch-seed --data-dir DIR --from ONION [--from ONION...]]
+const USAGE: &str = "ob-node [print | --version | pair [port] [--network N] [--data-dir DIR] [--lan-page] | devices [port] [--remove ID [--rotate] | --remove-all --rotate] | serve [port] [--remote] [--lan] [--lan-listen ADDR] [--remote-listen 127.0.0.1:PORT] [--web-dir DIR] [--web-listen ADDR --web-origin https://HOST] [--local-shop DIR] [--push-gateway http://ONION] [--network testnet4|mainnet] [--data-dir DIR] [--peer HOST:PORT[,...] | --esplora URL[,URL...]] [--public-fallback | --no-public-fallback] [--confirmations N] [--poll-secs S] [--escrow-vendor SELLER=URL] [--moderator URL] [--moderate] [--vault keystore|passphrase|file] [--shop-origin URL] [--no-pair-codes] [--proxy socks5h://HOST:PORT | --tor] [--no-rates] [--fixed-rates BTCUSD=N,ZECUSD=N[,XMRUSD=N]] [--no-introductions] [--tracking aftership] [--xmr-daemon URL[,URL...]|default] [--zec-indexer URL[,URL...]] [--onion] [--lightning [--ln-network signet|testnet4|regtest] [--ln-chain esplora:URL|electrum:URL|bitcoind:USER:PASS@HOST:PORT] [--lsp NODE_ID@HOST:PORT [--lsp-token T] | --no-lsp] [--lsp-max-fee-sats N] [--ln-rgs URL | --ln-p2p-gossip] [--ln-listen HOST:PORT]] | send-letter --to ONION|http://127.0.0.1:PORT --file FILE [--data-dir DIR] [--network testnet4|mainnet] [--timeout SECS] | poll-mail [--data-dir DIR] [--network testnet4|mainnet] [--expect SHA256] | sign-seed --key FILE --sequence N [--introductions ONION,ONION] --out FILE | fetch-seed --data-dir DIR --from ONION [--from ONION...]]
 
 Chain data comes from BIP 157/158 compact block filters by default.
 --peer uses only your own node (bitcoind with blockfilterindex=1 and peerblockfilters=1).
@@ -233,7 +233,7 @@ fn serve(args: &[String]) -> ExitCode {
         }
     };
     if let Some((btc_usd, zec_usd)) = options.fixed_rates {
-        if let Err(err) = node.set_fixed_rates(btc_usd, zec_usd) {
+        if let Err(err) = node.set_fixed_rates(btc_usd, zec_usd, options.fixed_xmr_usd) {
             eprintln!("ob-node: {err}");
             return ExitCode::from(1);
         }

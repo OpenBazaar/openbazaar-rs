@@ -8,7 +8,10 @@ export default defineConfig({
   timeout: 60000,
   expect: { timeout: 10000 },
   reporter: process.env.CI ? [['list'], ['html', { open: 'never' }], ['github']] : [['list'], ['html', { open: 'never' }]],
-  projects: [{ name: 'real', testDir: './e2e/real' }],
+  projects: [
+    { name: 'real', testDir: './e2e/real' },
+    { name: 'crawl', testDir: './e2e/crawl', timeout: 20 * 60000 }
+  ],
   use: {
     actionTimeout: 15000,
     viewport: { width: 1366, height: 900 },

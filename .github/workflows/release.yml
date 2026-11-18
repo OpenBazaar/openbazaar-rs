@@ -75,9 +75,46 @@ jobs:
       - run: npm run typecheck
         working-directory: apps/mobile
 
+  ui-gate:
+    name: browser tests and a short crawl on real nodes
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: apps/mobile
+    env:
+      OB_CRAWL_MINUTES: "3"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ob-node-bin
+      - run: cargo build -p ob-node --locked
+        working-directory: .
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/mobile/package-lock.json
+      - run: npm ci
+      - run: npm run build
+      - run: npx playwright install --with-deps chromium
+      - run: npx playwright test -c playwright.real.config.ts --project=real --project=crawl
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-ui-report
+          path: |
+            apps/mobile/playwright-report
+            apps/mobile/test-results
+          retention-days: 14
+
   desktop:
     name: tauri (${{ matrix.name }})
-    needs: verify
+    needs: [verify, ui-gate]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     permissions:
@@ -297,7 +334,7 @@ jobs:
 
   home-node:
     name: home node (${{ matrix.name }})
-    needs: verify
+    needs: [verify, ui-gate]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     permissions:
