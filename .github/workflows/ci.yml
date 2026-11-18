@@ -74,3 +74,100 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: web-dist
+          path: apps/mobile/dist
+          retention-days: 3
+
+  node-bin:
+    name: build ob-node for browser tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ob-node-bin
+      - run: cargo build -p ob-node --locked
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ob-node
+          path: target/debug/ob-node
+          retention-days: 3
+
+  ui-real:
+    name: browser tests against real nodes
+    needs: [web, node-bin]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: apps/mobile
+    env:
+      OB_NODE_BIN: ${{ github.workspace }}/bin/ob-node
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/mobile/package-lock.json
+      - uses: actions/download-artifact@v4
+        with:
+          name: ob-node
+          path: bin
+      - uses: actions/download-artifact@v4
+        with:
+          name: web-dist
+          path: apps/mobile/dist
+      - run: chmod +x "$OB_NODE_BIN"
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: npx playwright test -c playwright.real.config.ts --project=real
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-real-report
+          path: |
+            apps/mobile/playwright-report
+            apps/mobile/test-results
+          retention-days: 7
+
+  ui-mocked:
+    name: browser tests with node answers intercepted
+    needs: [web, node-bin]
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: apps/mobile
+    env:
+      OB_NODE_BIN: ${{ github.workspace }}/bin/ob-node
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/mobile/package-lock.json
+      - uses: actions/download-artifact@v4
+        with:
+          name: ob-node
+          path: bin
+      - uses: actions/download-artifact@v4
+        with:
+          name: web-dist
+          path: apps/mobile/dist
+      - run: chmod +x "$OB_NODE_BIN"
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: npx playwright test
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-mocked-report
+          path: |
+            apps/mobile/playwright-report
+            apps/mobile/test-results
+          retention-days: 7

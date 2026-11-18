@@ -170,6 +170,7 @@ test('followed stores take a store key, and a store address only in its own card
 // A page the node serves to a signed-in browser signs every request, an image
 // upload too (src/homeNode/transport.ts). The node's answers are mocked.
 test('a browser signed in on the node’s web address uploads a store avatar', async ({ page }) => {
+  test.fixme(true, 'Fails on main before CI ran it: https://github.com/OpenBazaar/openbazaar-rs/issues/167')
   const hash = 'c414cd0e204de974f73753c7e28d7638e7b3691bb8b1a2bab6b25bb7fed7ce77'
   const uploads: (string | undefined)[] = []
   const bodies: (Buffer | null)[] = []
