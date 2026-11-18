@@ -50,7 +50,7 @@ pub use forward::{
 };
 pub use guard::{ReplayGuard, SenderPins};
 pub use letter::{MessageId, Opened, SenderId, SenderKey};
-pub use listen::{is_shop_preface, start_onion_listener, Arrival, OnionListener, RunningMailbox};
+pub use listen::{is_shop_preface, serve_request, start_onion_listener, Arrival, Incoming, OnionListener, RunningMailbox};
 pub use mailbox::{LetterId, Mailbox};
 pub use onion::{HsIdParseError, OnionAddress, ORDER_PORT};
 pub use order::{ListingHash, Order, OrderTerms, PaymentRail, TermsLine, NO_SERVICE};

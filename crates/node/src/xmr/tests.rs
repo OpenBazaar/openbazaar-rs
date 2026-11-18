@@ -17,6 +17,19 @@ const SATS_PER_XMR: u64 = 300_000;
 const XMR: u64 = 1_000_000_000_000;
 const NET: XmrNetwork = XmrNetwork::Stagenet;
 
+#[test]
+fn fixed_rates_with_an_xmr_price_price_monero_orders_without_kraken() {
+    let Setup { node, xmr: _xmr, btc: _btc, dir: _dir } = setup();
+    node.xmr.rate.set_for_tests(None);
+    node.set_fixed_rates(100_000, 50, Some(300)).unwrap();
+    let (_, rates) = request(&node, "GET", "/rates", "");
+    assert_eq!(rates["xmr"]["satsPerXmr"], 300_000, "300 / 100,000 of a bitcoin");
+    assert_eq!(rates["xmr"]["source"], "fixed");
+    node.set_fixed_rates(100_000, 50, None).unwrap();
+    let (_, rates) = request(&node, "GET", "/rates", "");
+    assert!(rates["xmr"].is_null(), "no XMR figure, no XMR price: {}", rates["xmr"]);
+}
+
 struct Setup {
     node: Node,
     xmr: Arc<XmrChainMock>,

@@ -625,15 +625,16 @@ impl Node {
             .unwrap_or_else(|err| err.into_inner())
     }
 
-    /// `--fixed-rates`: price orders from these dollar figures for 1 BTC and
-    /// 1 ZEC instead of a rate server's. Refused on any network but testnet4.
-    pub fn set_fixed_rates(&self, btc_usd: u32, zec_usd: u32) -> Result<(), String> {
+    /// `--fixed-rates`: price orders from these dollar figures for 1 BTC, 1 ZEC,
+    /// and optionally 1 XMR instead of a rate server's. Refused on any network but testnet4.
+    pub fn set_fixed_rates(&self, btc_usd: u32, zec_usd: u32, xmr_usd: Option<u32>) -> Result<(), String> {
         if self.network != NetworkMode::Testnet4 {
             return Err("fixed rates are for testnet4 only".to_string());
         }
         *self.rates.fixed.lock().unwrap() = Some([("USD".to_string(), f64::from(btc_usd))].into());
         *self.zec.rate.fixed.lock().unwrap() =
             openbazaar_zec::amount::sats_per_zec(f64::from(zec_usd), f64::from(btc_usd));
+        self.xmr.rate.set_fixed(xmr_usd.map(|xmr| u64::from(xmr) * 100_000_000 / u64::from(btc_usd)));
         Ok(())
     }
 

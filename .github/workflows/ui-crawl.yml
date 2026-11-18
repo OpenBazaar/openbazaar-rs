@@ -1,0 +1,86 @@
+name: ui crawl
+
+# Explores the shop on real disposable nodes for dead controls, stuck dialogs,
+# page errors and node errors, and runs the Lightning browser tests on a regtest
+# bitcoind. Failures open (or add to) one issue labelled ui-crawl.
+on:
+  schedule:
+    - cron: "17 7 * * *"
+  workflow_dispatch:
+    inputs:
+      minutes:
+        description: "Crawl time budget in minutes"
+        default: "10"
+      seed:
+        description: "Seed to replay (empty for a new one)"
+        default: ""
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  crawl:
+    name: crawl the shop
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: apps/mobile
+    env:
+      OB_CRAWL_MINUTES: ${{ inputs.minutes || '10' }}
+      OB_CRAWL_SEED: ${{ inputs.seed }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ob-node-bin
+      - run: cargo build -p ob-node --locked
+        working-directory: .
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/mobile/package-lock.json
+      - run: npm ci
+      - run: npm run build
+      - run: npx playwright install --with-deps chromium
+      # The same checked Bitcoin Core build as the cargo test job in ci.yml.
+      - id: bitcoind-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/bitcoin-31.0
+          key: bitcoind-31.0-${{ runner.os }}-${{ runner.arch }}
+      - name: install bitcoind
+        if: steps.bitcoind-cache.outputs.cache-hit != 'true'
+        working-directory: ${{ runner.temp }}
+        env:
+          BITCOIN_CORE: "31.0"
+          SHA256: d3e4c58a35b1d0a97a457462c94f55501ad167c660c245cb1ffa565641c65074
+        run: |
+          tarball="bitcoin-$BITCOIN_CORE-x86_64-linux-gnu.tar.gz"
+          for host in https://bitcoincore.org https://bitcoin.org; do
+            curl -fsSL --retry 3 -o "$tarball" "$host/bin/bitcoin-core-$BITCOIN_CORE/$tarball" && break
+          done
+          echo "$SHA256  $tarball" | sha256sum --check
+          tar -xzf "$tarball"
+      - run: echo "$RUNNER_TEMP/bitcoin-31.0/bin" >> "$GITHUB_PATH"
+      - id: lightning
+        run: npx playwright test -c playwright.real.config.ts --project=real lightning
+      - id: crawl
+        if: always() && steps.lightning.outcome != 'cancelled'
+        run: npx playwright test -c playwright.real.config.ts --project=crawl
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-crawl-report
+          path: |
+            apps/mobile/playwright-report
+            apps/mobile/test-results
+          retention-days: 14
+      - if: failure() && (steps.crawl.outcome == 'failure' || steps.lightning.outcome == 'failure')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: node e2e/crawl/report-issue.mjs

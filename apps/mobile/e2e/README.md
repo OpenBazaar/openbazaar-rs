@@ -1,4 +1,60 @@
-# Buyer payment browser checks
+# Browser checks
+
+There are two Playwright projects.
+
+**`real`** (`playwright.real.config.ts`, `e2e/real/`): every test starts its own
+disposable nodes (`e2e/nodes.mjs`) on free ports, with a file vault, fixed exchange
+rates and no seed introductions, and drives the shop against them. Nothing is
+mocked: `page.route` throws. Each test also fails on uncaught page errors,
+`console.error`, a node answer of 400 or more that the test did not allow, a page
+load the test did not ask for, and a dialog still open at the end. Failures keep
+a trace, screenshot, video, and each node's log.
+
+```sh
+cd apps/mobile
+npm ci && npx playwright install chromium
+npm run test:ui   # builds ob-node and the web export when stale, then runs the tests
+```
+
+Set `OB_NODE_BIN` to use an existing binary. Seed state through `TestNode` in
+`e2e/real/harness.ts` (`setupWallet`, `openStore`, `addListing`, `follow`, `lock`,
+`unlock`, `receiveAddress`, `balance`) and keep the UI for what the test is about.
+
+The nodes in a test share a simulated testnet4 chain (`e2e/chain.mjs`): an
+Esplora API over real serialized transactions, so wallets sync, sign and
+broadcast as they do against a real server. `chain.fund(address, sats)` pays an
+address, `chain.mine(n)` confirms what was broadcast, and `chain.mempool()` and
+`chain.tx(id)` show what the nodes sent. The `market` fixture adds a `--moderate`
+node and points the seller and buyer at it for escrow and disputes.
+
+Lightning (`lightning.spec.ts`) runs on a throwaway regtest bitcoind and skips
+without one (`BITCOIND_EXE`). Monero (`monero.spec.ts`) runs on an offline
+stagenet monerod holding only the genesis block and skips without one
+(`MONEROD_EXE`); nodes price XMR from `--fixed-rates ...,XMRUSD=300`.
+
+**`crawl`** (same config, `e2e/crawl/`): `engine.ts` clicks every control it can
+reach in a seeded random order, fills inputs (the test passphrase where a field
+asks for one), sometimes locks the wallet first, and reports controls that do
+nothing (twice), dialogs that will not close, and error screens, on top of the
+real-node guards. `selftest.spec.ts` checks it finds a planted dead button and
+trap dialog. `crawl.spec.ts` crawls the buyer, seller and moderator pages of a
+seeded market.
+
+```sh
+npm run test:crawl                       # 2 minutes, a new seed
+OB_CRAWL_SEED=12345 OB_CRAWL_MINUTES=10 npm run test:crawl   # replay a seed, longer
+```
+
+Each run writes `findings.json`, `crawl-log.txt` (every action) and a screenshot
+per finding. Findings that are not bugs go in `e2e/crawl/known.ts` with a reason.
+The `ui crawl` workflow runs it nightly with the Lightning tests and opens or
+updates one `ui-crawl` issue when something fails; `release.yml` runs the real
+tests and a 3-minute crawl before packaging.
+
+**`mocked`** (`playwright.config.ts`, the rest of `e2e/`): checks of UI states with
+some node answers intercepted, described below. Run with `npm run test:e2e`.
+
+## Mocked checks
 
 From the repository root:
 

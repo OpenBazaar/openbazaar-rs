@@ -142,9 +142,10 @@ export function StoreListings({ profile, rates, currency, startNew = false, onCh
     </li>;
     })}</ul>}
     {(drafts.data ?? []).length > 0 && <ul className="ob-own-listings">{(drafts.data ?? []).map(draft => <li key={draft.draftId} className="ob-own-listing is-draft">
+      <span className="ob-own-listing-image" aria-hidden="true">{(draft.listing.title || "Untitled draft").charAt(0)}</span>
       <span className="ob-own-listing-copy">
         <strong>{draft.listing.title || "Untitled draft"}</strong>
-        <span>Draft, not published</span>
+        <span className="ob-own-listing-status">Draft, not published</span>
       </span>
       <span className="ob-own-listing-actions">
         <button className="ob-secondary" onClick={() => setEditing(draft)} aria-label={`Edit draft ${draft.listing.title || "listing"}`}>Edit draft</button>

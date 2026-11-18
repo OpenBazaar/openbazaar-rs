@@ -1,0 +1,33 @@
+import { test, expect, protectWallet, photos } from './harness.ts'
+
+test('a new shopper protects the wallet and lands in the shop', async ({ page, spawn }) => {
+  const node = await spawn('fresh')
+  await page.goto(node.ui)
+  await expect(page.getByText('Step 1 of 2')).toBeVisible()
+  const words = await protectWallet(page)
+  expect(words.length).toBeGreaterThanOrEqual(12)
+  await expect(page.getByRole('heading', { name: 'How will you use OpenBazaar?' })).toBeVisible()
+  await page.getByRole('button', { name: /^Shop/ }).click()
+  await expect(page.getByRole('heading', { name: /^All products/ })).toBeVisible()
+  const lock = await node.lockState()
+  expect(lock.state).toBe('unlocked')
+})
+
+test('a new seller sets up and opens a store', async ({ page, spawn }) => {
+  const node = await spawn('fresh')
+  await page.goto(node.ui)
+  await protectWallet(page)
+  await page.getByRole('button', { name: /^Sell/ }).click()
+  await expect(page.getByRole('heading', { name: 'Set up your store' })).toBeVisible()
+  await page.getByLabel('Display name').fill('Brook and Pine')
+  await page.getByLabel('Based in').fill('Portland')
+  await page.getByLabel('Tagline').fill('Small-batch ceramics')
+  await page.getByLabel('Ships to (country codes)').fill('US, CA')
+  await page.locator('input[type=file][aria-label="Add avatar"]').setInputFiles(photos(1, 'avatar'))
+  await expect(page.getByRole('img', { name: 'Store avatar' })).toBeVisible()
+  await page.getByRole('button', { name: 'Open my store' }).click()
+  await expect(page.getByRole('heading', { name: 'Brook and Pine', level: 1 })).toBeVisible()
+  const profile = await node.api('GET', '/store/profile')
+  expect(profile).toMatchObject({ name: 'Brook and Pine', role: 'seller', published: true })
+  expect(profile.avatar).toMatch(/^[0-9a-f]{64}$/)
+})

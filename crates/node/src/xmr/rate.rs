@@ -25,6 +25,8 @@ const USABLE: Duration = Duration::from_secs(30 * 60);
 
 pub(crate) struct XmrRate {
     cache: Mutex<Option<(Instant, u64)>>,
+    /// `--fixed-rates ...,XMRUSD=N` on testnet4: sats per XMR, with no price server asked.
+    fixed: Mutex<Option<u64>>,
     retry: Mutex<Backoff>,
     egress: Egress,
     source: String,
@@ -34,6 +36,7 @@ impl XmrRate {
     pub(crate) fn new(egress: Egress) -> Self {
         Self {
             cache: Mutex::new(None),
+            fixed: Mutex::new(None),
             retry: Mutex::new(for_prices()),
             egress,
             source: SOURCE.to_string(),
@@ -42,6 +45,9 @@ impl XmrRate {
 
     /// Sats per XMR, or `None` with `--no-rates` or no usable answer.
     pub(crate) fn sats_per_xmr(&self) -> Option<u64> {
+        if let Some(sats) = *self.fixed.lock().unwrap_or_else(|err| err.into_inner()) {
+            return Some(sats);
+        }
         if !self.egress.live_rates {
             return None;
         }
@@ -74,7 +80,9 @@ impl XmrRate {
                 }
             }
         }
-        let mut value = json!({ "base": "XMR", "satsPerXmr": sats, "decimals": 12, "source": "kraken", "currencies": currencies });
+        let fixed = self.fixed.lock().unwrap_or_else(|err| err.into_inner()).is_some();
+        let source = if fixed { "fixed" } else { "kraken" };
+        let mut value = json!({ "base": "XMR", "satsPerXmr": sats, "decimals": 12, "source": source, "currencies": currencies });
         let own = self
             .cache
             .lock()
@@ -84,6 +92,10 @@ impl XmrRate {
             value["ageSecs"] = json!(age);
         }
         value
+    }
+
+    pub(crate) fn set_fixed(&self, sats: Option<u64>) {
+        *self.fixed.lock().unwrap_or_else(|err| err.into_inner()) = sats.filter(|sats| *sats > 0);
     }
 
     #[cfg(test)]

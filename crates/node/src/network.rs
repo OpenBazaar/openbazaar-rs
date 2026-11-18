@@ -172,8 +172,10 @@ pub struct ServeOptions {
     pub tor: bool,
     /// False with `--no-rates` or `--fixed-rates`.
     pub live_rates: bool,
-    /// `--fixed-rates BTCUSD=N,ZECUSD=N`: testnet4 prices in whole dollars, with no rate server asked.
+    /// `--fixed-rates BTCUSD=N,ZECUSD=N[,XMRUSD=N]`: testnet4 prices in whole dollars, with no rate server asked.
     pub fixed_rates: Option<(u32, u32)>,
+    /// The `XMRUSD=N` part of `--fixed-rates`, when given.
+    pub fixed_xmr_usd: Option<u32>,
     /// False with `--no-introductions`: the directory's introductions are not asked.
     pub introductions: bool,
     /// `--tracking aftership`: seller-side shipment tracking. The API key is
@@ -218,6 +220,7 @@ impl ServeOptions {
         let mut tor = false;
         let mut live_rates = true;
         let mut fixed_rates = None;
+        let mut fixed_xmr_usd = None;
         let mut tracking_aftership = false;
         let mut introductions = true;
         let mut xmr_daemons: Vec<String> = Vec::new();
@@ -314,7 +317,11 @@ impl ServeOptions {
                 "--proxy" => proxy = Some(crate::egress::Egress::parse_proxy(&value("--proxy")?)?),
                 "--tor" => tor = true,
                 "--no-rates" => live_rates = false,
-                "--fixed-rates" => fixed_rates = Some(parse_fixed_rates(&value("--fixed-rates")?)?),
+                "--fixed-rates" => {
+                    let (btc, zec, xmr) = parse_fixed_rates(&value("--fixed-rates")?)?;
+                    fixed_rates = Some((btc, zec));
+                    fixed_xmr_usd = xmr;
+                }
                 "--no-introductions" => introductions = false,
                 "--tracking" => {
                     tracking_aftership = match value("--tracking")?.as_str() {
@@ -413,6 +420,7 @@ impl ServeOptions {
             tor,
             live_rates: live_rates && fixed_rates.is_none(),
             fixed_rates,
+            fixed_xmr_usd,
             tracking_aftership,
             introductions,
             xmr_daemons,
@@ -558,17 +566,25 @@ fn expand_default_xmr_daemons(
 }
 
 /// `BTCUSD=N,ZECUSD=N`, each a whole number of dollars above zero.
-fn parse_fixed_rates(text: &str) -> Result<(u32, u32), String> {
-    let refused =
-        || format!("--fixed-rates must be BTCUSD=N,ZECUSD=N in whole dollars, not {text:?}");
+fn parse_fixed_rates(text: &str) -> Result<(u32, u32, Option<u32>), String> {
+    let refused = || {
+        format!("--fixed-rates must be BTCUSD=N,ZECUSD=N[,XMRUSD=N] in whole dollars, not {text:?}")
+    };
     let dollars = |pair: &str, name: &str| {
         pair.strip_prefix(name)
             .and_then(|n| n.parse().ok())
             .filter(|n| *n > 0)
             .ok_or_else(refused)
     };
-    let (btc, zec) = text.split_once(',').ok_or_else(refused)?;
-    Ok((dollars(btc, "BTCUSD=")?, dollars(zec, "ZECUSD=")?))
+    match text.split(',').collect::<Vec<_>>()[..] {
+        [btc, zec] => Ok((dollars(btc, "BTCUSD=")?, dollars(zec, "ZECUSD=")?, None)),
+        [btc, zec, xmr] => Ok((
+            dollars(btc, "BTCUSD=")?,
+            dollars(zec, "ZECUSD=")?,
+            Some(dollars(xmr, "XMRUSD=")?),
+        )),
+        _ => Err(refused()),
+    }
 }
 
 /// The Esplora base to dial for the tip, fees, and broadcasts.
@@ -903,6 +919,11 @@ mod tests {
             Some((100_000, 50))
         );
         assert_eq!(ServeOptions::parse(&[]).unwrap().fixed_rates, None);
+        assert_eq!(options.fixed_xmr_usd, None);
+        let with_xmr = ServeOptions::parse(&args(&["--fixed-rates", "BTCUSD=100000,ZECUSD=50,XMRUSD=300"])).unwrap();
+        assert_eq!((with_xmr.fixed_rates, with_xmr.fixed_xmr_usd), (Some((100_000, 50)), Some(300)));
+        assert!(ServeOptions::parse(&args(&["--fixed-rates", "BTCUSD=1,ZECUSD=1,XMRUSD=0"])).is_err());
+        assert!(ServeOptions::parse(&args(&["--fixed-rates", "BTCUSD=1,ZECUSD=1,ETHUSD=2"])).is_err());
 
         let err =
             ServeOptions::parse(&args(&[fixed, &["--network", "mainnet"]].concat())).unwrap_err();

@@ -7,7 +7,9 @@
     "typecheck": "tsc --noEmit",
     "test": "node --experimental-strip-types --test \"src/**/*.test.ts\"",
     "build": "expo export --platform web",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "test:ui": "node e2e/prepare.mjs && playwright test -c playwright.real.config.ts --project=real",
+    "test:crawl": "node e2e/prepare.mjs && playwright test -c playwright.real.config.ts --project=crawl"
   },
   "dependencies": {
     "@expo/metro-runtime": "~58.0.17",
