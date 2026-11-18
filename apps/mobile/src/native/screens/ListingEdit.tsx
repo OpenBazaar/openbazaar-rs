@@ -4,6 +4,7 @@ import { File } from "expo-file-system";
 
 import type { ListingHeader } from "../../catalog.ts";
 import { compareAtText, listingFacts, packageFieldsOf, priceTerms, purchaseFields, purchaseTerms, returnsDraft, saleFieldsOf, scheduledSale, shippingTerms, signedTaxonomy, specificRows, tierRows, volumeTiers, withFacts, withPackage, withPrice, withPurchase, withSale, withTaxonomy, withTiers, withVariantWeights, type AvailabilityDraft, type PackageInput, type ReturnsDraft, type SpecificRow, type TierRow } from "../../commerceDraft.ts";
+import { draftListingId } from "../../listingDraft.ts";
 import { CONTENT_TAGS, MAX_LISTING_IMAGES, PRICE_CURRENCIES, deleteDraft, deleteListing, draftOf, fromMinorUnits, saveDraft, saveListing, toMinorUnits, uploadImage, type ListingDraft, type PriceCurrency, type SavedDraft } from "../../seller.ts";
 import { isLocked, passphraseError, unlockWallet } from "../../walletLock.ts";
 import { sync } from "../session.ts";
@@ -117,6 +118,7 @@ function draftFrom(form: Fields): ListingDraft | string {
 export function ListingEdit({ listing, unpublished, onClose }: { listing: ListingHeader | null; unpublished?: SavedDraft | null; onClose: () => void }) {
   const [form, setForm] = useState<Fields>(() => fieldsOf(listing, unpublished?.listing));
   const [draftId, setDraftId] = useState(unpublished?.draftId ?? null);
+  const listingId = draftListingId(listing, unpublished);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [needsUnlock, setNeedsUnlock] = useState(false);
@@ -140,12 +142,12 @@ export function ListingEdit({ listing, unpublished, onClose }: { listing: Listin
         setNeedsUnlock(false);
       }
       if (!publish) {
-        const saved = await saveDraft(draftId, draft);
+        const saved = await saveDraft(draftId, { ...draft, listingId });
         setDraftId(saved.draftId);
         onClose();
         return;
       }
-      await saveListing(listing?.listingId ?? null, draft);
+      await saveListing(listingId, draft);
       if (draftId) await deleteDraft(draftId);
       await sync();
       onClose();
@@ -353,7 +355,7 @@ export function ListingEdit({ listing, unpublished, onClose }: { listing: Listin
         </Card>
       ) : null}
       <Button label="Save draft" kind="plain" disabled={busy} onPress={() => void save(false)} />
-      <Button label={busy ? "Saving…" : listing ? "Save changes" : "Publish listing"} busy={busy} onPress={() => void save(true)} />
+      <Button label={busy ? "Saving…" : listingId ? "Save changes" : "Publish listing"} busy={busy} onPress={() => void save(true)} />
       <Button label="Cancel" kind="plain" disabled={busy} onPress={onClose} />
       {listing?.listingId ? <Button label="Delete listing" kind="danger" disabled={busy} onPress={remove} /> : null}
     </ScrollView>

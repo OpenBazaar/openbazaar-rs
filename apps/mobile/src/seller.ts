@@ -90,6 +90,8 @@ export type ListingDraft = {
   contentTags: string[];
   /** Options, condition and shipping services; signing with these makes a version 7 listing. */
   commerce?: Commerce | null;
+  /** On a saved draft: the published listing it edits. Never signed. */
+  listingId?: string | null;
 };
 
 export type SaleLine = { listingHash: string; listingId: string | null; title: string; kind: ListingKind; quantity: number; priceSats: number };
@@ -338,7 +340,7 @@ export async function fetchOwnListings(storeKey: string): Promise<ListingHeader[
   return parseOwnListings(await paired("/store/listings"), storeKey);
 }
 
-export async function saveListing(id: string | null, draft: ListingDraft): Promise<void> {
+export async function saveListing(id: string | null, { listingId: _listingId, ...draft }: ListingDraft): Promise<void> {
   const body = draft.kind === "digital" ? { ...draft, shipFrom: "", shipping: 0, commerce: draft.commerce ? forKind(draft.commerce, "digital") : null } : draft;
   await paired(id ? `/store/listings/${id}` : "/store/listings", json(id ? "PUT" : "POST", body));
 }
