@@ -5,9 +5,8 @@
 //! [`INTRODUCTIONS`] are the bootstrap: a node with no saved head dials them.
 //! After a head is stored, the node dials the list in that head. The private
 //! keys for the compiled onions live in `data/intro-a` and `data/intro-b` on
-//! the operator machine (`data/` is gitignored).
-
-use openbazaar_protocol::{DirectoryTerms, SeedDocument};
+//! the operator machine (`data/` is gitignored). `sign-seed` signs heads
+//! ([`crate::head_plan`]).
 
 /// BIP-340 x-only public key for the testnet4 directory head.
 /// The matching secret is `data/seed-document.key` on the operator laptop.
@@ -16,28 +15,6 @@ pub const DOCUMENT_KEY: [u8; 32] = [
     0xaa, 0x8c, 0xab, 0x28, 0x20, 0xfa, 0x74, 0x0a, 0x09, 0x85, 0x08, 0xde, 0xa7, 0xc1, 0xad, 0x0a,
     0xf3, 0x51, 0xc2, 0x4f, 0xf1, 0x21, 0x88, 0x71, 0x94, 0x6f, 0x77, 0xb4, 0x97, 0x60, 0x15, 0xc0,
 ];
-
-/// Sign a directory head with the operator secret. Refuses a secret whose
-/// public key is not [`DOCUMENT_KEY`]. `introductions` is the list the head
-/// publishes. An empty list is the two compiled onions, which is the first head.
-/// The fee is 20,000 sats, 1 confirmation, 2,016 blocks, paid to [`DOCUMENT_KEY`].
-pub fn sign_document(sequence: u64, introductions: Vec<String>, secret_bytes: [u8; 32]) -> Result<Vec<u8>, String> {
-    use bitcoin::secp256k1::{Secp256k1, SecretKey};
-
-    let secret = SecretKey::from_slice(&secret_bytes).map_err(|_| "the document key is not a secret key".to_string())?;
-    let public = secret.x_only_public_key(&Secp256k1::new()).0.serialize();
-    if public != DOCUMENT_KEY {
-        return Err("this key does not match the public key shipped in the binary".into());
-    }
-    let introductions = if introductions.is_empty() {
-        INTRODUCTIONS.iter().map(|onion| (*onion).to_string()).collect()
-    } else {
-        introductions
-    };
-    let document = SeedDocument::sign(sequence, introductions, DirectoryTerms::standard(DOCUMENT_KEY), None, &secret)
-        .map_err(|err| err.to_string())?;
-    document.encode().map_err(|err| err.to_string())
-}
 
 pub const INTRODUCTIONS: [&str; 2] = [
     "a5kon2xfzc2myexkxvvrdcw73jare5ptov4cyu3zp6alfcthge7ilmqd.onion",
@@ -68,7 +45,7 @@ mod tests {
         use openbazaar_protocol::secret_from_label;
 
         let wrong = secret_from_label("not-the-operator").secret_bytes();
-        let err = super::sign_document(1, vec![], wrong).unwrap_err();
+        let err = crate::head_plan::sign_head(crate::head_plan::HeadPlan { sequence: 1, ..Default::default() }, wrong).unwrap_err();
         assert!(err.contains("does not match"), "{err}");
 
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data/seed-document.key");
@@ -81,16 +58,18 @@ mod tests {
         for (index, byte) in secret.iter_mut().enumerate() {
             *byte = u8::from_str_radix(&text[index * 2..index * 2 + 2], 16).unwrap();
         }
-        let bytes = super::sign_document(1, vec![], secret).unwrap();
+        let bytes = crate::head_plan::sign_head(crate::head_plan::HeadPlan { sequence: 1, ..Default::default() }, secret).unwrap().v3;
         let document = SeedDocument::decode(&bytes).unwrap();
         document.verify_signer(&DOCUMENT_KEY).unwrap();
-        assert_eq!(document.terms, DirectoryTerms::standard(DOCUMENT_KEY));
-        assert_eq!((document.terms.fee_sats, document.terms.fee_confs, document.terms.epoch_blocks), (FEE_SATS, FEE_CONFS, EPOCH_BLOCKS));
+        let terms = document.schedule.at(0).unwrap().terms;
+        assert!(document.schedule.is_single());
+        assert_eq!(terms, DirectoryTerms::standard(DOCUMENT_KEY));
+        assert_eq!((terms.fee_sats, terms.fee_confs, terms.epoch_blocks), (FEE_SATS, FEE_CONFS, EPOCH_BLOCKS));
         assert_eq!(document.introductions.len(), INTRODUCTIONS.len());
     }
 
     #[test]
-    fn sign_document_uses_the_list_it_is_given() {
+    fn sign_head_uses_the_list_it_is_given() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data/seed-document.key");
         let Ok(text) = std::fs::read_to_string(&path) else {
             return;
@@ -100,7 +79,8 @@ mod tests {
             *byte = u8::from_str_radix(&text.trim()[index * 2..index * 2 + 2], 16).unwrap();
         }
         let third = format!("{}.onion", "c".repeat(56));
-        let bytes = super::sign_document(2, vec![third.clone()], secret).unwrap();
+        let plan = crate::head_plan::HeadPlan { sequence: 2, introductions: vec![third.clone()], ..Default::default() };
+        let bytes = crate::head_plan::sign_head(plan, secret).unwrap().v3;
         let document = SeedDocument::decode(&bytes).unwrap();
         assert_eq!(document.introductions, vec![third]);
         assert_eq!(document.sequence, 2);

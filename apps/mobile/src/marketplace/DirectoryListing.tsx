@@ -1,4 +1,4 @@
-import { directoryFeeStatus, fetchDirectoryFee } from "../directoryFee";
+import { directoryFeeChanges, directoryFeeStatus, directoryHeadRefusal, epochWords, fetchDirectoryFee } from "../directoryFee";
 import { useNodeResource } from "../useNodeResource";
 import { CopyAddress } from "./CopyAddress";
 
@@ -6,14 +6,17 @@ import { CopyAddress } from "./CopyAddress";
 export function DirectoryListing() {
   const resource = useNodeResource(fetchDirectoryFee, 15000);
   const fee = resource.data;
+  const refusal = fee?.available ? directoryHeadRefusal(fee) : null;
   return <section className="ob-store-section" aria-labelledby="ob-directory-listing-title">
     <h2 id="ob-directory-listing-title">Directory listing</h2>
     {!fee ? resource.error ? <p className="ob-form-error" role="alert">{resource.error}</p> : <p role="status">Loading…</p>
       : !fee.available ? <p className="ob-field-hint">{fee.reason}</p>
       : <>
-        <p className="ob-field-hint">The directory lists stores that pay {fee.sats.toLocaleString("en-US")} sats every two weeks. Your node pays from its bitcoin wallet when it can. You can also pay this address from any wallet, exchange, or swap service, for example by swapping Monero, Zcash, or Lightning sats into bitcoin sent here. The address belongs to this store, so the payment cannot list anyone else.</p>
+        <p className="ob-field-hint">The directory lists stores that pay {fee.sats.toLocaleString("en-US")} sats every {epochWords(fee.epochBlocks)}. Your node pays from its bitcoin wallet when it can. You can also pay this address from any wallet, exchange, or swap service, for example by swapping Monero, Zcash, or Lightning sats into bitcoin sent here. The address belongs to this store, so the payment cannot list anyone else.</p>
         <CopyAddress value={fee.address} label="Copy fee address"/>
         <p role="status">{directoryFeeStatus(fee)}</p>
+        {directoryFeeChanges(fee).map(change => <p className="ob-field-hint" key={change}>{change}</p>)}
+        {refusal && <p className="ob-form-error" role="alert">{refusal}</p>}
       </>}
   </section>;
 }

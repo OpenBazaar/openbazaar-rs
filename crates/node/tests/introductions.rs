@@ -47,7 +47,7 @@ fn one_stopped_introduction_still_returns_the_document_over_tor() {
 }
 
 fn plant(data_root: &Path, sequence: u64, key: [u8; 32]) {
-    let bytes = ob_node::sign_document(sequence, Vec::new(), key).unwrap();
+    let bytes = ob_node::sign_head(ob_node::HeadPlan { sequence, ..Default::default() }, key).unwrap().v3;
     let dir = data_root.join("testnet4").join("directory");
     fs::create_dir_all(&dir).unwrap();
     fs::write(dir.join("document.obsd"), bytes).unwrap();
@@ -68,7 +68,7 @@ fn fetch_until(data_root: &Path, onions: &[&str], want: u64, low: &Serve, low_lo
         let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
         last = format!("status {}\nstdout {stdout}\nstderr {stderr}", output.status);
-        if output.status.success() && stdout.parse::<u64>().ok() == Some(want) {
+        if output.status.success() && stdout.lines().next().and_then(|line| line.parse::<u64>().ok()) == Some(want) {
             return;
         }
         std::thread::sleep(Duration::from_secs(5));

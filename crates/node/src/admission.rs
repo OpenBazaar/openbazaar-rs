@@ -1,8 +1,10 @@
 //! The directory fee.
 //!
-//! A store pays `fee_sats` to its own fee address: the head's fee key tweaked
-//! by the store id ([`store_fee_key`]). The seller's node pays it from its
-//! wallet, or the seller pays it from any wallet, exchange, or swap. After
+//! A store pays `fee_sats` to its own fee address: the fee key tweaked by the
+//! store id ([`store_fee_key`]). The head schedules those terms; a payment is
+//! judged by the entry in force at the height that confirmed it, so a new
+//! entry reaches each store when it next pays. The seller's node pays from its
+//! wallet, or the seller pays from any wallet, exchange, or swap. After
 //! `fee_confs` confirmations inside `epoch_blocks` of the tip, the store key
 //! signs an admission over that outpoint, and over a new payment once the old
 //! one leaves the epoch. Version 1 admissions paid the head's fee key with an
@@ -19,7 +21,7 @@ use bitcoin::secp256k1::{Secp256k1, XOnlyPublicKey};
 use bitcoin::{Address, Amount, Network, Script, ScriptBuf, Transaction, Txid};
 use serde_json::{json, Value};
 
-use openbazaar_protocol::{store_fee_key, Admission, SeedDocument};
+use openbazaar_protocol::{store_fee_key, Admission, DirectoryTerms, SeedDocument, TermsSchedule};
 
 use crate::chain::ChainSource;
 use crate::http::{json_body, local_guard, Client};
@@ -50,8 +52,8 @@ pub(crate) fn fee_return(store_id: &[u8; 32]) -> Result<ScriptBuf, String> {
 
 /// The payment proves the store id, a real output of at least `fee_sats` on
 /// the address the admission's version names, `fee_confs` confirmations, and
-/// a height inside `epoch_blocks` of the tip. It does not prove honesty,
-/// direct pay, or the bond.
+/// a height inside `epoch_blocks` of the tip, all from the head's entry in
+/// force at that height. It does not prove honesty, direct pay, or the bond.
 pub(crate) fn fee_confirmed(
     chain: &dyn ChainSource,
     network: NetworkMode,
@@ -62,12 +64,14 @@ pub(crate) fn fee_confirmed(
         return false;
     }
     let Ok(tip) = chain.tip_height() else { return false };
+    let Some(entry) = head.schedule.at(admission.height) else { return false };
+    let terms = &entry.terms;
     let script = match admission.version {
-        1 => fee_script(&head.terms.fee_key, network.bitcoin()),
-        _ => store_fee_address(&head.terms.fee_key, &admission.store_id, network.bitcoin()).map(|address| address.script_pubkey()),
+        1 => fee_script(&terms.fee_key, network.bitcoin()),
+        _ => store_fee_address(&terms.fee_key, &admission.store_id, network.bitcoin()).map(|address| address.script_pubkey()),
     };
     let Ok(script) = script else { return false };
-    let from = tip.saturating_sub(head.terms.epoch_blocks);
+    let from = tip.saturating_sub(terms.epoch_blocks);
     if chain.script_txs(script.as_script(), from).is_err() {
         return false;
     }
@@ -78,15 +82,15 @@ pub(crate) fn fee_confirmed(
         return false;
     }
     let age = tip.saturating_sub(height);
-    if age > head.terms.epoch_blocks {
+    if age > terms.epoch_blocks {
         return false;
     }
     let confs = age.saturating_add(1);
-    if confs < head.terms.fee_confs {
+    if confs < terms.fee_confs {
         return false;
     }
     let Some(output) = tx.output.get(admission.vout as usize) else { return false };
-    if output.script_pubkey != script || output.value.to_sat() < head.terms.fee_sats {
+    if output.script_pubkey != script || output.value.to_sat() < terms.fee_sats {
         return false;
     }
     if admission.version != 1 {
@@ -113,21 +117,57 @@ enum FeePayment {
     Unpaid,
 }
 
-/// The newest output on `script` of at least the fee that is inside the
-/// epoch with enough confirmations, else whether one is still confirming.
-fn fee_payment(chain: &dyn ChainSource, head: &SeedDocument, script: &Script) -> Result<FeePayment, String> {
+/// Blocks before a new entry starts in which a fee may still confirm under either entry.
+pub(crate) const GUARD_BLOCKS: u32 = 6;
+
+/// The terms a fee broadcast at `tip` pays. It confirms at `tip + 1` at the
+/// earliest. When the next entry starts inside [`GUARD_BLOCKS`] of that and
+/// names the same fee key, the fee is the higher amount, so it passes on either
+/// side of the boundary. A new fee key inside the guard is paid as the current
+/// entry: `sign-seed` does not sign one yet.
+pub(crate) fn payment_terms(schedule: &TermsSchedule, tip: u32) -> Option<DirectoryTerms> {
+    let next_block = tip.saturating_add(1);
+    let mut pay = schedule.at(next_block)?.terms;
+    if let Some(next) = schedule.after(next_block) {
+        if next.start_height <= next_block.saturating_add(GUARD_BLOCKS) && next.terms.fee_key == pay.fee_key {
+            pay.fee_sats = pay.fee_sats.max(next.terms.fee_sats);
+        }
+    }
+    Some(pay)
+}
+
+/// Last height an admission confirmed at `height` is listed.
+pub(crate) fn listed_until(schedule: &TermsSchedule, height: u32) -> u32 {
+    height.saturating_add(schedule.at(height).map_or(0, |entry| entry.terms.epoch_blocks))
+}
+
+/// The newest output on `script` that pays the entry in force at its height,
+/// inside that entry's epoch with enough confirmations, else whether one is
+/// still confirming. Only entries with `fee_key` name `script`. A mempool
+/// output counts as confirming when it pays the entry in force at the next block.
+fn fee_payment(chain: &dyn ChainSource, schedule: &TermsSchedule, fee_key: &[u8; 32], script: &Script) -> Result<FeePayment, String> {
     let tip = chain.tip_height()?;
-    let terms = &head.terms;
+    let least = schedule.at(tip.saturating_add(1)).map_or(u64::MAX, |entry| entry.terms.fee_sats);
     let mut paid: Option<(Txid, u32, u32)> = None;
     let mut pending = false;
-    for tx in chain.script_txs(script, tip.saturating_sub(terms.epoch_blocks))? {
+    for tx in chain.script_txs(script, tip.saturating_sub(schedule.max_epoch()))? {
+        let Some(height) = tx.height else {
+            pending |= tx.outputs.iter().any(|(_, sats)| *sats >= least);
+            continue;
+        };
+        let Some(terms) = schedule.at(height).map(|entry| entry.terms) else { continue };
+        if terms.fee_key != *fee_key {
+            continue;
+        }
         let Some(&(vout, _)) = tx.outputs.iter().find(|(_, sats)| *sats >= terms.fee_sats) else { continue };
-        match tx.height {
-            None => pending = true,
-            Some(height) if tip.saturating_sub(height) > terms.epoch_blocks => {}
-            Some(height) if tip.saturating_sub(height).saturating_add(1) < terms.fee_confs => pending = true,
-            Some(height) if paid.is_none_or(|(_, _, best)| height > best) => paid = Some((tx.txid, vout, height)),
-            Some(_) => {}
+        let age = tip.saturating_sub(height);
+        if age > terms.epoch_blocks {
+            continue;
+        }
+        if age.saturating_add(1) < terms.fee_confs {
+            pending = true;
+        } else if paid.is_none_or(|(_, _, best)| height > best) {
+            paid = Some((tx.txid, vout, height));
         }
     }
     Ok(match (paid, pending) {
@@ -145,6 +185,13 @@ pub(crate) enum FeeState {
     Unpaid { error: Option<String> },
 }
 
+/// The fee state and the chain tip it was seen at.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct FeeSeen {
+    state: FeeState,
+    tip: u32,
+}
+
 impl Node {
     /// Admit the own store for this epoch. A payment to the store's fee
     /// address from anywhere counts. With none, the node pays from its wallet
@@ -158,31 +205,33 @@ impl Node {
         let Some(head) = self.seed_head() else { return Ok(()) };
         let store = self.own_record().ok_or_else(|| "the own store has no signed record yet".to_string())?;
         let id = *store.id.as_bytes();
+        let tip = self.chain.tip_height()?;
         if let Some(bytes) = self.read_outbox("admission") {
             if let Ok(admission) = Admission::decode(&bytes) {
                 if admission.store_id == id && fee_confirmed(self.chain.as_ref(), self.network, &head, &admission) {
-                    self.set_fee_state(FeeState::Listed { until: admission.height.saturating_add(head.terms.epoch_blocks) });
+                    self.set_fee_state(FeeState::Listed { until: listed_until(&head.schedule, admission.height) }, tip);
                     return Ok(());
                 }
             }
         }
-        let script = store_fee_address(&head.terms.fee_key, &id, self.network.bitcoin())?.script_pubkey();
-        let (txid, vout, height) = match fee_payment(self.chain.as_ref(), &head, &script)? {
+        let Some(pay) = payment_terms(&head.schedule, tip) else { return Ok(()) };
+        let script = store_fee_address(&pay.fee_key, &id, self.network.bitcoin())?.script_pubkey();
+        let (txid, vout, height) = match fee_payment(self.chain.as_ref(), &head.schedule, &pay.fee_key, &script)? {
             FeePayment::Paid { txid, vout, height } => (txid, vout, height),
             FeePayment::Pending => {
-                self.set_fee_state(FeeState::Confirming);
+                self.set_fee_state(FeeState::Confirming, tip);
                 return Ok(());
             }
             FeePayment::Unpaid if !self.last_fee_confirmed()? => {
-                self.set_fee_state(FeeState::Confirming);
+                self.set_fee_state(FeeState::Confirming, tip);
                 return Ok(());
             }
             FeePayment::Unpaid => {
-                if let Err(err) = self.broadcast_fee(&head, &script) {
-                    self.set_fee_state(FeeState::Unpaid { error: Some(err.clone()) });
+                if let Err(err) = self.broadcast_fee(&script, pay.fee_sats) {
+                    self.set_fee_state(FeeState::Unpaid { error: Some(err.clone()) }, tip);
                     return Err(err);
                 }
-                self.set_fee_state(FeeState::Confirming);
+                self.set_fee_state(FeeState::Confirming, tip);
                 return Ok(());
             }
         };
@@ -196,7 +245,7 @@ impl Node {
             replica.queue_admission(&admission.encode().map_err(|err| err.to_string())?)?;
             replica.queue_store(&store)?;
         }
-        self.set_fee_state(FeeState::Listed { until: height.saturating_add(head.terms.epoch_blocks) });
+        self.set_fee_state(FeeState::Listed { until: listed_until(&head.schedule, height) }, tip);
         Ok(())
     }
 
@@ -210,14 +259,14 @@ impl Node {
         Ok(matches!(self.chain.transaction(&tx.compute_txid())?, Some((_, Some(_)))))
     }
 
-    fn broadcast_fee(&self, head: &SeedDocument, script: &Script) -> Result<Transaction, String> {
+    fn broadcast_fee(&self, script: &Script, sats: u64) -> Result<Transaction, String> {
         self.sync_buyer_wallet()?;
         let fee_rate = self.pay_fee_rate().map_err(|err| format!("{err:?}"))?;
         let mut psbt = {
             let mut wallet = self.buyer_wallet();
             let untrusted = wallet.untrusted_pending();
             let mut builder = wallet.wallet.build_tx();
-            builder.add_recipient(script.to_owned(), Amount::from_sat(head.terms.fee_sats)).fee_rate(fee_rate);
+            builder.add_recipient(script.to_owned(), Amount::from_sat(sats)).fee_rate(fee_rate);
             for outpoint in untrusted.into_iter().chain(self.escrow.coins.outpoints()) {
                 builder.add_unspendable(outpoint);
             }
@@ -248,8 +297,8 @@ impl Node {
         self.seed_replica.lock().unwrap_or_else(|err| err.into_inner()).head()
     }
 
-    fn set_fee_state(&self, state: FeeState) {
-        *self.directory_fee.lock().unwrap_or_else(|err| err.into_inner()) = Some(state);
+    fn set_fee_state(&self, state: FeeState, tip: u32) {
+        *self.directory_fee.lock().unwrap_or_else(|err| err.into_inner()) = Some(FeeSeen { state, tip });
     }
 
     fn read_outbox(&self, name: &str) -> Option<Vec<u8>> {
@@ -278,11 +327,40 @@ impl Node {
         let Some(store) = self.own_record() else {
             return unavailable("Open your store first.");
         };
-        let Ok(address) = store_fee_address(&head.terms.fee_key, store.id.as_bytes(), self.network.bitcoin()) else {
+        let seen = self.directory_fee.lock().unwrap_or_else(|err| err.into_inner()).clone();
+        let first = head.schedule.entries()[0];
+        let (pay, after) = match &seen {
+            Some(seen) => (payment_terms(&head.schedule, seen.tip), seen.tip.saturating_add(1)),
+            None => (Some(first.terms), first.start_height),
+        };
+        let Some(pay) = pay else {
+            return unavailable("The directory's fee terms have not started yet.");
+        };
+        let fee_address = |terms: &DirectoryTerms| store_fee_address(&terms.fee_key, store.id.as_bytes(), self.network.bitcoin()).ok();
+        let Some(address) = fee_address(&pay) else {
             return unavailable("The directory's fee key is not a public key.");
         };
-        let state = self.directory_fee.lock().unwrap_or_else(|err| err.into_inner()).clone();
-        let (state, until, error) = match state {
+        let upcoming: Vec<Value> = head
+            .schedule
+            .entries()
+            .iter()
+            .filter(|entry| entry.start_height > after)
+            .filter_map(|entry| {
+                let next = fee_address(&entry.terms)?;
+                Some(json!({
+                    "startHeight": entry.start_height,
+                    "announcedHeight": entry.announced_height,
+                    "address": next.to_string(),
+                    "addressChanges": next != address,
+                    "sats": entry.terms.fee_sats,
+                    "confirmations": entry.terms.fee_confs,
+                    "epochBlocks": entry.terms.epoch_blocks,
+                }))
+            })
+            .collect();
+        let refused = self.seed_replica.lock().unwrap_or_else(|err| err.into_inner()).head_refused();
+        let tip = seen.as_ref().map(|seen| seen.tip);
+        let (state, until, error) = match seen.map(|seen| seen.state) {
             Some(FeeState::Listed { until }) => ("listed", Some(until), None),
             Some(FeeState::Confirming) => ("confirming", None, None),
             Some(FeeState::Unpaid { error }) => ("unpaid", None, error),
@@ -291,12 +369,15 @@ impl Node {
         json!({
             "available": true,
             "address": address.to_string(),
-            "sats": head.terms.fee_sats,
-            "confirmations": head.terms.fee_confs,
-            "epochBlocks": head.terms.epoch_blocks,
+            "sats": pay.fee_sats,
+            "confirmations": pay.fee_confs,
+            "epochBlocks": pay.epoch_blocks,
             "state": state,
             "listedUntilHeight": until,
             "error": error,
+            "tipHeight": tip,
+            "upcoming": upcoming,
+            "headRefused": refused.map(|(sequence, reason)| json!({ "sequence": sequence, "reason": reason })),
         })
     }
 }
