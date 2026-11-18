@@ -52,7 +52,8 @@ pub struct DirectoryTerms {
 }
 
 impl DirectoryTerms {
-    /// 20,000 sats, 1 confirmation, 2,016 blocks, paid to `fee_key`.
+    /// 20,000 sats, 1 confirmation, 2,016 blocks, paid to each store's key
+    /// tweaked from `fee_key`.
     pub fn standard(fee_key: [u8; PUBKEY_LEN]) -> Self {
         Self { fee_key, fee_sats: FEE_SATS, fee_confs: FEE_CONFS, epoch_blocks: EPOCH_BLOCKS }
     }

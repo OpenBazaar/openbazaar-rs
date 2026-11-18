@@ -6,7 +6,7 @@ Status: design only. Nothing in this document is implemented.
 
 The network already unbundles everything a classic marketplace operator did:
 a signed directory head names introductions and an admission fee
-(`ob/seed/v2`), stores admit themselves with a fee receipt (`ob/admit/v1`),
+(`ob/seed/v2`), stores admit themselves with a fee receipt (`ob/admit/v2`),
 moderators publish signed profiles with public rulings, dispute outcomes, and
 bonds, labelers publish signed label sets (`ob/labels/v1`), and any node can
 replicate a store it follows. Each role is a key, each product is a signed

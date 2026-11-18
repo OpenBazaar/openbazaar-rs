@@ -1,5 +1,6 @@
 import { useState, type FormEvent } from "react";
 import { displayNameError, setVacation, storeImageChange, updateProfile, type ProfileChanges, type SellerProfile, type StoreImageField } from "../seller";
+import { DirectoryListing } from "./DirectoryListing";
 import { PageHeading } from "./PageHeading";
 import { ImageUpload, MediaImage, useLockedAction } from "./SellerKit";
 import { StoreModerators } from "./StoreModerators";
@@ -139,6 +140,7 @@ export function StoreSetup({ profile, onSaved, onViewStore }: { profile: SellerP
       </div>
     </form>
     {profile.setUp && <StoreModerators escrow={profile.network === "testnet4"} ownListings={profile.escrowAvailable}/>}
+    {profile.setUp && <DirectoryListing/>}
     {dialog}
   </section>;
 }

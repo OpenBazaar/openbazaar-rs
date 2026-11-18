@@ -45,7 +45,7 @@ Labels: **tested** = code on main with automated tests; **demo** = code runs, bu
 | Catalog served to client | demo | Testnet4 only: three demo stores (Marlow Goods, Hale Paper, North Kitchen), each with its own fixture key and v3 record, signing its own listings (38 in all), plus the node's own store and followed stores. Mainnet serves only the node's own store. |
 | Following stores on other nodes | demo | `POST /follows {url}` (loopback HTTP, as escrow mail). The node reads `GET {url}/public/store` (no token, no `Origin`, only while the user sells), checks every signature, copies the images, and keeps the copies in `replicas.obv`, so a seller that is offline stays browsable and orderable. A copy never replaces the own store or a demo store. The desktop node keeps its port in `node.port`, so a follow survives restarts. |
 | Replication by every node | specified | Only stores a node follows are copied; no gossip. |
-| Publishing cost against spam | specified | No fee design in code. |
+| Publishing cost against spam | tested | The directory fee, testnet4 only: 20,000 sats to the store's own fee address (the head's fee key tweaked by the store id), checked on-chain by every node, for 2,016 blocks. Any wallet, exchange, or swap can pay it; the seller's node pays from its wallet when it can and again when the epoch ends. `GET /directory/fee` gives the address and state, shown under Store settings. Version 1 admissions (fee key plus an `OBAD` OP_RETURN) still verify. |
 | Freshness and completeness | future | No sequence number or signed index. |
 | Rejecting street, email, phone in public records | tested | Signing refuses store and listing text with an email, phone number, street address, PO box, or coordinates. Heuristic; decoding does not filter. |
 

@@ -2012,7 +2012,7 @@ mod tests {
         let chain = harness::MockChain::new();
         let store_id = key;
         let head = SeedDocument::sign(3, vec![onion('a')], DirectoryTerms::standard(key), None, &secret).unwrap();
-        let pay = |sats: u64, id: &[u8; 32]| {
+        let send = |output: Vec<TxOut>| {
             let tx = Transaction {
                 version: Version::TWO,
                 lock_time: LockTime::ZERO,
@@ -2022,21 +2022,22 @@ mod tests {
                     sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
                     witness: Witness::default(),
                 }],
-                output: vec![
-                    TxOut { value: Amount::from_sat(sats), script_pubkey: crate::admission::fee_script(&key, NetworkMode::Testnet4.bitcoin()).unwrap() },
-                    TxOut { value: Amount::ZERO, script_pubkey: crate::admission::fee_return(id).unwrap() },
-                ],
+                output,
             };
             chain.broadcast(&tx).unwrap();
             chain.mine();
             tx
+        };
+        let pay = |sats: u64, id: &[u8; 32]| {
+            let script = crate::admission::store_fee_address(&key, id, NetworkMode::Testnet4.bitcoin()).unwrap().script_pubkey();
+            send(vec![TxOut { value: Amount::from_sat(sats), script_pubkey: script }])
         };
         assert_eq!(page_cap(), tormail::MAX_QUERY_LEN / ADMISSION_LEN);
         assert_eq!(20_000 * ADMISSION_LEN, 2_820_000);
         assert_eq!(20_000_usize.div_ceil(page_cap()), 3);
         let tx = pay(FEE_SATS, &store_id);
         assert!(tx.output.iter().any(|output| output.value.to_sat() >= FEE_SATS));
-        assert_eq!(tx.output.len(), 2, "the fee transaction has a payment and an OP_RETURN, not an order");
+        assert_eq!(tx.output.len(), 1, "the fee transaction is one payment to the store's fee address, not an order");
         let height = chain.tip();
         let admission = Admission::sign(store_id, tx.compute_txid().to_byte_array(), 0, height, &secret).unwrap();
         assert!(crate::admission::fee_confirmed(&chain, NetworkMode::Testnet4, &head, &admission));
@@ -2049,6 +2050,17 @@ mod tests {
         let other_id = xonly(&other);
         let reused = Admission::sign(other_id, tx.compute_txid().to_byte_array(), 0, height, &other).unwrap();
         assert!(!crate::admission::fee_confirmed(&chain, NetworkMode::Testnet4, &head, &reused), "one fee admits one store id");
+        let legacy = send(vec![
+            TxOut { value: Amount::from_sat(FEE_SATS), script_pubkey: crate::admission::fee_script(&key, NetworkMode::Testnet4.bitcoin()).unwrap() },
+            TxOut { value: Amount::ZERO, script_pubkey: crate::admission::fee_return(&store_id).unwrap() },
+        ]);
+        let legacy_txid = legacy.compute_txid().to_byte_array();
+        let v1 = Admission::sign_v1(store_id, legacy_txid, 0, chain.tip(), &secret).unwrap();
+        assert!(crate::admission::fee_confirmed(&chain, NetworkMode::Testnet4, &head, &v1), "a version 1 admission still lists its store");
+        let v2_on_legacy = Admission::sign(store_id, legacy_txid, 0, chain.tip(), &secret).unwrap();
+        assert!(!crate::admission::fee_confirmed(&chain, NetworkMode::Testnet4, &head, &v2_on_legacy), "version 2 needs the store's own address");
+        let v1_on_store_address = Admission::sign_v1(store_id, tx.compute_txid().to_byte_array(), 0, height, &secret).unwrap();
+        assert!(!crate::admission::fee_confirmed(&chain, NetworkMode::Testnet4, &head, &v1_on_store_address), "version 1 needs the head's fee key and the OP_RETURN");
 
         let dir = TempDir::new();
         let mut intro = Replica::open(&dir.0).unwrap();
@@ -2125,9 +2137,11 @@ mod tests {
         assert!(node.seed_replica.lock().unwrap().read_outbox("admission").is_none(), "the admission waits for fee_confs");
         assert_eq!(chain.broadcasts().len(), 1);
         let tx = chain.broadcasts()[0].clone();
-        let label = crate::admission::fee_return(node.own_store.as_bytes()).unwrap();
-        assert!(tx.output.iter().any(|output| output.script_pubkey == label));
-        assert!(tx.output.iter().any(|output| output.value.to_sat() >= FEE_SATS));
+        let address = crate::admission::store_fee_address(&xonly(&secret), node.own_store.as_bytes(), NetworkMode::Testnet4.bitcoin()).unwrap();
+        assert!(tx.output.iter().any(|output| output.script_pubkey == address.script_pubkey() && output.value.to_sat() >= FEE_SATS));
+        assert!(!tx.output.iter().any(|output| output.script_pubkey.is_op_return()), "the store's fee address names it; no OP_RETURN");
+        node.publish_admission().unwrap();
+        assert_eq!(chain.broadcasts().len(), 1, "a fee in the mempool is not paid again");
         chain.mine();
         node.publish_admission().unwrap();
         let bytes = node.seed_replica.lock().unwrap().read_outbox("admission").expect("the admission is queued");
