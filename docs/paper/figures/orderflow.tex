@@ -24,6 +24,6 @@
 \draw[msg] (\xa,-7.4) -- node[note, above]{9. ship once paid} (\xv,-7.4);
 \draw[msg] (\xb,-8.3) -- node[note, above]{10. buyer confirms} (\xv,-8.3);
 \end{tikzpicture}
-\caption{A sale between two nodes (\S\ref{sec:sale}). Steps 4, 6, and 10 are sealed letters to the other node's loopback mail endpoint. The seller shows step 8 because compact filters cannot see the mempool. A multi-seller checkout repeats the exchange once per seller.}
+\caption{A sale between two nodes (\S\ref{sec:sale}). Steps 4, 6, and 10 are sealed letters over Tor: to the onion in the store's signed record, and back to the reply onion made for this order. The seller shows step 8 because compact filters cannot see the mempool. A multi-seller checkout repeats the exchange once per seller.}
 \label{fig:orderflow}
 \end{figure}

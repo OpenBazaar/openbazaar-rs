@@ -8,22 +8,37 @@ All integers are little-endian. \code{str} is a 2-byte length followed by UTF-8 
 \toprule
 \textbf{Magic} & \textbf{Record} & \textbf{Fields after magic and version} \\
 \midrule
-\code{OBST} v2 & Store & name (str), region (str), BOLT 12 offer (str), BIP 352 code (str), store key (32 bytes), store rating (u8: 0 general, 1 sensitive, 2 adult), then a 64-byte BIP 340 signature over the preceding bytes with tag \code{ob/store/v1}. Version 1 omits the rating. The mailbox key and onion address of \S\ref{sec:identity} are added at the end in a later version. \\
+\code{OBST} v2 & Store & name (str), region (str), BOLT 12 offer (str), BIP 352 code (str), store key (32 bytes), store rating (u8: 0 general, 1 sensitive, 2 adult), then a 64-byte BIP 340 signature over the preceding bytes with tag \code{ob/store/v1}. Version 1 omits the rating. \\
+\code{OBST} v3 & Store & Version 2's fields, then mailbox key (32), onion host (str, a v3 onion or empty), moderator count (u8, at most 16) and moderator keys (32 each, sorted, no repeats), tagline (str), about (str), avatar and banner (each a u8 flag, then a 32-byte hash if 1), shipping policy (str), returns policy (str), processing time (str), ships-to count (u8, at most 64) and country codes (2 each, sorted), created-on day (u32), and rail flags (u8: bit 0 Monero, bit 1 Lightning, bit 2 Zcash; other bits zero), then the signature. \\
+\code{OBSD} v2 & Directory head & signer (32), sequence (u64), introduction count (u16, at most 64) and onion hosts (str each, sorted, no repeats), fee key (32), fee (u64, satoshis), confirmations (u32), epoch (u32, blocks), an optional moderator onion (u8 flag, then str if 1); signature by the document key with tag \code{ob/seed/v2}. \\
+\code{OBAD} v1, v2 & Admission & store key (32), fee transaction id (32), output index (u32), confirming height (u32); signature by the store key with tag \code{ob/admit/v1} or \code{ob/admit/v2}; 141 bytes. Version 2 pays the store's fee key $K_{F,S}$ (\S\ref{sec:directory}). Version 1 pays $K_F$ and needs an \code{OP\_RETURN} of \code{OBAD} and the store key in the same transaction. \\
 \code{OBLS} v5 & Listing & store key (32), title (str), category (str), price (u64), ship-from (str), description (str), seller (str), stock (u32), listed-on date (u32), moderated (u8), kind (u8), product (str), shipping (u64), free-over (u64), rating (u8), tags (u16 bit set), then a signature with tag \code{ob/listing/v1}. Address: SHA-256 of everything before the signature. Version 4 omits the rating and tags. \\
 \code{OBLS} v7 & Listing & Version 6 adds the listing id (16), image hashes (at most 8), and an optional fiat price (currency code, amount, shipping in minor units). Version 7 adds the commerce block of \S\ref{sec:commerce} (condition, category, specifics, option axes and variants, sale, tiers, limits, availability, package, services, pickup area, returns) to a fiat-priced listing. \\
 \code{OBCP} v1 & Coupon & Store key (32), code (str), percentage or fixed amount, currency (str), minimum subtotal, listing ids, first and last days, maximum uses; signature by the store key. Kept by the seller's node; not published. \\
 \code{OBRC} v1 & Receipt & Store key (32), listing id (16), review key (32), payment date (u32, \code{YYYYMMDD}; nodes write the first of the month); signature by the store key. \\
 \code{OBRV} v1 & Review & A signed receipt, stars (u8, 1--5), text (str, at most 1{,}000 bytes), written-on day (u32, not before the receipt's date); signature by the receipt's review key. \\
 \code{OBRY} v1 & Reply & Store key (32), review hash (32), text (str, 1 to 1{,}000 bytes), written-on day (u32); signature by the store key. \\
+\code{OBOF} v1 & Offer & Store key (32), offer id (16), listing id (16), variant id (8), quantity (u16, 1 to 999), price per unit (u64, minor units), currency (str), buyer conversation key (32), expiry (u64, Unix seconds), counter (u8); signature by the store key with tag \code{ob/offer/v1}. \\
 \code{OBLB} v1 & Label set & labeler key (32), name (str, at most 64 bytes), sequence (u64), issued-on date (u32), entry count (u16, at most 4{,}096), then entries sorted by target with no repeats: target kind (u8: 0 listing, 1 store), target (32), flags (u8; bit 0 retracts, others zero), rating (u8), tags (u16), reason (str, \code{[a-z0-9-]}, at most 32 bytes). A retraction has rating 0, tags 0, and no reason. Signature with tag \code{ob/labels/v1}; address: SHA-256 of the body. \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\begin{center}\small
+\begin{tabularx}{\textwidth}{@{}lp{0.15\textwidth}X@{}}
+\toprule
+\textbf{Magic} & \textbf{Message} & \textbf{Fields after magic and version} \\
+\midrule
 \code{OBOD} v1 & Order plaintext & listing address (32), quantity (u32), option count (u16) and name/value pairs (str, str), ship-to (str), rail (u8), reply key (32). Version 3 appends the terms: up to 20 lines (listing address, variant id, quantity, optional store-signed offer), a service index (\code{0xff} for pickup or digital delivery), a coupon code, and a review key (32). \\
 \code{OBSL} v2 & Sealed letter & HPKE encapsulated key (32), ciphertext length (u32), ciphertext. The sealed letter is exactly 2~KiB, 8~KiB, or 64~KiB. Inside, \code{OBLT} version 1 carries the kind, the per-conversation sender key, a message id, the body, a BIP 340 signature with tag \code{ob/letter/v1}, and zero padding. Orders, later sale messages, and escrow use different HPKE \code{info} strings. \\
 \code{OBSR} v2 & Sealed reply & As \code{OBSL}, sealed to the order's reply key, in the 2~KiB or 8~KiB bucket. \\
 \code{OBML} v1 & Onion frame & Letter length (u32), then one \code{OBSL} letter. \\
-\code{OBET} v2 & Escrow terms & The keys, moderator record (keys, payout, fee, policy), amounts, heights, and payout scripts of \S\ref{sec:escrow-notation}. \\
+\code{OBET} v4 & Escrow terms & The keys, moderator record (keys, payout, fee, policy), amounts, heights, and payout scripts of \S\ref{sec:escrow-notation}. In this version the presigned claim is the buyer refund at $h_R$. \\
 \code{OBEM} v1 & Escrow mail & Message kind (u8), escrow id (16), field count (u8), then fields as u32 length and bytes; sealed as an \code{OBSL} letter between nodes. \\
 \code{OBDL} v3 & Dispute letter & The fields of the dispute letter in \S\ref{sec:escrow}, then the claimant's signature. \\
 \code{OBRU} v2 & Ruling & Terms digest (32), output key (32), funding outpoint, favored party (u8), adaptor point (33), moderator share (32), signature (64) by the moderator's signing key over all preceding fields. \\
+\code{OBPR} v1 & Public ruling & Ruling digest (32: tagged hash \code{ob-escrow/ruling-digest/v1} of the ruling), store key (32), listing id (16), moderator key (32); signature by the moderator key with tag \code{ob/public-ruling/v1}. \\
+\code{OBDO} v1 & Dispute outcome & Ruling digest (32), favored party (u8: 1 buyer, 2 vendor), moderator key (32); signature by the moderator key with tag \code{ob/dispute-outcome/v1}. \\
 \bottomrule
 \end{tabularx}
 \end{center}
