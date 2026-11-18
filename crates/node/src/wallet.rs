@@ -15,7 +15,7 @@ use bdk_wallet::chain::{ChainPosition, Merge};
 use bdk_wallet::descriptor::IntoWalletDescriptor;
 use bdk_wallet::signer::SignersContainer;
 use bdk_wallet::{Balance, ChangeSet, KeychainKind, SignOptions, Update, Wallet};
-use bitcoin::{Address, OutPoint, Psbt};
+use bitcoin::{Address, OutPoint, Psbt, Script, ScriptBuf};
 use serde_json::{json, Value};
 
 use crate::chain::WalletRequest;
@@ -108,6 +108,37 @@ impl NodeWallet {
         let info = self.wallet.next_unused_address(KeychainKind::External);
         self.persist()?;
         Ok(info.address)
+    }
+
+    /// A fresh receive script for a dispute fee request, held back from
+    /// [`Self::receive_address`] until the next restart; the moderator desk
+    /// holds it again on start ([`Self::hold_fee_addresses`]).
+    pub(crate) fn fee_address(&mut self) -> Result<(u32, ScriptBuf), Error> {
+        let info = self.wallet.reveal_next_address(KeychainKind::External);
+        self.persist()?;
+        self.wallet.mark_used(KeychainKind::External, info.index);
+        Ok((info.index, info.address.script_pubkey()))
+    }
+
+    pub(crate) fn hold_fee_addresses(&mut self, indices: &[u32]) {
+        for index in indices {
+            self.wallet.mark_used(KeychainKind::External, *index);
+        }
+    }
+
+    /// A confirmed output of at least `sats` to `script`: its outpoint,
+    /// value, and confirmation height.
+    pub(crate) fn fee_payment(&self, script: &Script, sats: u64) -> Option<(OutPoint, u64, u32)> {
+        self.wallet.list_output().find_map(|output| {
+            let height = output.chain_position.confirmation_height_upper_bound()?;
+            (output.txout.script_pubkey == *script && output.txout.value.to_sat() >= sats)
+                .then_some((output.outpoint, output.txout.value.to_sat(), height))
+        })
+    }
+
+    /// Whether anything, confirmed or not, ever paid `script`.
+    pub(crate) fn script_used(&self, script: &Script) -> bool {
+        self.wallet.list_output().any(|output| output.txout.script_pubkey == *script)
     }
 
     /// The next escrow key index. Each one is used once.

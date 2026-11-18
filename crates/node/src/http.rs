@@ -270,6 +270,10 @@ fn route(node: &Node, request: &Request<'_>, client: Client, origin: Option<&str
             let id = between(path, "/moderator/disputes/", "/rule").unwrap_or_default();
             escrow_http::action_response(node, client, head, Action::Rule(id), body, origin)
         }
+        ("POST", path) if between(path, "/moderator/disputes/", "/deny").is_some() => {
+            let id = between(path, "/moderator/disputes/", "/deny").unwrap_or_default();
+            escrow_http::action_response(node, client, head, Action::Deny(id), body, origin)
+        }
         ("POST", path) if between(path, "/moderator/disputes/", "/tracking").is_some() => {
             let id = between(path, "/moderator/disputes/", "/tracking").unwrap_or_default();
             escrow_http::action_response(node, client, head, Action::DisputeTracking(id), body, origin)

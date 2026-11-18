@@ -126,6 +126,8 @@ mod lock_tests;
 #[cfg(test)]
 mod multinode_durable_tests;
 #[cfg(test)]
+mod multinode_fee_tests;
+#[cfg(test)]
 mod multinode_moderator_tests;
 #[cfg(test)]
 mod multinode_payment_tests;
@@ -559,6 +561,7 @@ impl Node {
             browser: browser::Browser::new(),
         };
         node.drop_uncommitted_spend()?;
+        node.hold_moderator_fee_addresses();
         Ok(node)
     }
 

@@ -13,6 +13,10 @@
 //! signed, including one from before the fee was changed. Changing the
 //! profile and ruling need the wallet unlocked.
 //!
+//! New records are filing-fee records (v5 terms): the fee is paid when a
+//! dispute is filed, not out of the ruling. Ruling-fee records published
+//! before stay in `records`, so escrows funded under them still finish.
+//!
 //! The identity is created at the first unlock of a moderating node. Its
 //! profile is first signed when the owner saves a name, and again whenever
 //! the node's address changes while the wallet is unlocked.
@@ -20,7 +24,7 @@
 use std::path::{Path, PathBuf};
 
 use bitcoin::{Amount, ScriptBuf};
-use openbazaar_escrow::{payout_dust_limit, read_profile, ModeratorKeys, ModeratorRecord, Policy, VerifiedProfile};
+use openbazaar_escrow::{read_profile, ModeratorKeys, ModeratorRecord, Policy, VerifiedProfile, MIN_FILING_FEE};
 use openbazaar_protocol::{ModeratorProfile, MAX_MODERATOR_DESCRIPTION, MAX_MODERATOR_LANGUAGES, MAX_MODERATOR_TERMS, MAX_NAME};
 use serde_json::{json, Value};
 use tormail::StoreSecret;
@@ -117,12 +121,12 @@ impl Identity {
         id
     }
 
-    /// Sign the profile for `address` with the current text and fee.
+    /// Sign the profile for `address` with the current text and filing fee.
     fn sign(&mut self, keys: &ModeratorKeys, address: String) -> Result<(), StoreError> {
-        let record = keys.record(self.payout.clone(), Amount::from_sat(self.fee_sats), Policy::default());
+        let record = keys.filing_record(Amount::from_sat(self.fee_sats), Policy::default());
         if record.validate().is_err() {
-            let least = payout_dust_limit(&self.payout).map_or(0, Amount::to_sat);
-            return Err(StoreError::invalid(format!("The fee must be at least {least} sats, or the payout could not be spent.")));
+            let least = MIN_FILING_FEE.to_sat();
+            return Err(StoreError::invalid(format!("The filing fee must be 0 or at least {least} sats, or it could not be paid on-chain.")));
         }
         let profile = keys
             .sign_profile(ModeratorProfile {
@@ -319,7 +323,7 @@ impl Node {
             "terms": identity.terms,
             "languages": identity.languages,
             "feeSats": identity.fee_sats,
-            "minFeeSats": payout_dust_limit(&identity.payout).map_or(0, Amount::to_sat),
+            "minFeeSats": MIN_FILING_FEE.to_sat(),
             "published": identity.profile.is_some(),
             // The address in the signed profile, and the one this node has now.
             "publishedAddress": identity.profile.as_ref().map(|profile| profile.profile.address.clone()),

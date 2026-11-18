@@ -142,6 +142,9 @@ fn an_escrow_with_the_moderator_the_buyer_chose_is_disputed_and_ruled_by_it() {
     let (status, value) = request(&market.moderator.node, "POST", &rule, r#"{"favor": "buyer"}"#);
     assert!(status.contains("423"), "a ruling is signed with the wallet's key: {status} {value}");
     unlock(&market.moderator.node);
+    market.moderator.node.moderator_fee_steps();
+    let asked = market.moderator.node.last_fee_request(&crate::escrow_mail::parse_id(case["id"].as_str().unwrap()).unwrap()).unwrap();
+    crate::multinode_fee_tests::pay(&market, &openbazaar_protocol::SignedFeeRequest::decode(&asked).unwrap().terms);
     let (status, value) = request(&market.moderator.node, "POST", &rule, r#"{"favor": "buyer"}"#);
     assert!(status.contains("200"), "{status} {value}");
     assert_eq!(market.deliver(), 1, "the buyer settles with the ruling");
@@ -153,9 +156,8 @@ fn an_escrow_with_the_moderator_the_buyer_chose_is_disputed_and_ruled_by_it() {
     assert!(spends(&outcome, outpoint));
     let funding = escrow["fundingSats"].as_u64().unwrap();
     assert_eq!(outcome.output[0].script_pubkey, script_of(&escrow["buyerPayout"]));
-    assert_eq!(outcome.output[0].value.to_sat(), funding - escrow["spendFeeSats"].as_u64().unwrap() - ANCHOR_VALUE.to_sat() - FEE);
-    assert_eq!(outcome.output[1].value.to_sat(), FEE, "the fee in the moderator's own record, not the built-in one");
-    assert_eq!(outcome.output[1].script_pubkey, terms.terms().moderator.payout);
+    assert_eq!(outcome.output[0].value.to_sat(), funding - escrow["spendFeeSats"].as_u64().unwrap() - ANCHOR_VALUE.to_sat());
+    assert_eq!(outcome.output.len(), 2, "the filing fee was paid on the side; the ruling pays no fee");
     assert_ne!(FEE, MODERATOR_FEE_SATS);
 
     // A demo listing has no stable id, so this ruling cites no listing and

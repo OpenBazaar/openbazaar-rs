@@ -38,7 +38,7 @@ pub struct FeeRequest {
     /// The filing fee in the terms both parties signed.
     pub amount_sats: u64,
     pub invoice: Option<FeeInvoice>,
-    /// A fresh output script of the moderator's, used for no other request.
+    /// An output script of the moderator's that no other open case uses.
     pub script: Vec<u8>,
     /// Last height at which the moderator still takes payment for this request.
     pub valid_until_height: u32,

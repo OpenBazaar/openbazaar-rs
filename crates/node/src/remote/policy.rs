@@ -166,6 +166,11 @@ mod tests {
                 "/moderator/disputes/00/rule",
                 r#"{"favor":"buyer"}"#,
             ),
+            (
+                "POST",
+                "/moderator/disputes/00/deny",
+                r#"{"favor":"buyer"}"#,
+            ),
             // The same phone names the moderator and chooses the moderators its store accepts.
             ("GET", "/moderator/profile", ""),
             ("PUT", "/moderator/profile", r#"{"name":"x"}"#),

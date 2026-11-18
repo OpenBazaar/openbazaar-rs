@@ -81,6 +81,12 @@ pub(crate) enum Kind {
     /// Vendor to moderator: dispute letter, mail key, reply URL. Its own
     /// kind so the letter is signed and pinned in the vendor's role.
     VendorDispute = 10,
+    /// Moderator to a filer: the signed filing-fee request (`OBFQ`).
+    FeeRequest = 11,
+    /// Moderator to the filer that paid: the signed receipt (`OBFR`).
+    FeeReceipt = 12,
+    /// Moderator to a filer: the signed denial of its letter (`OBDD`).
+    Denied = 13,
 }
 
 impl Kind {
@@ -96,6 +102,9 @@ impl Kind {
             8 => Kind::Dispute,
             9 => Kind::Ruling,
             10 => Kind::VendorDispute,
+            11 => Kind::FeeRequest,
+            12 => Kind::FeeReceipt,
+            13 => Kind::Denied,
             _ => return None,
         })
     }
@@ -399,6 +408,7 @@ impl Node {
             self.flush_escrow_outbox(false);
             self.retry_escrow_requests(false);
             self.refresh_moderator_identity();
+            self.moderator_fee_tick();
             std::thread::sleep(MAIL_POLL);
         }
     }
