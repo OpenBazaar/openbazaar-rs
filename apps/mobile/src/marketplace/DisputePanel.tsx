@@ -7,6 +7,7 @@ import {
   payDisputeFee,
   quoteDisputeFee,
   verifiedDenial,
+  verifiedRecusal,
   verifiedReceipt,
   type DisputeFee,
   type DisputeFeeQuote
@@ -65,6 +66,7 @@ function FeeProof({ fee, moderator }: { fee: DisputeFee; moderator?: string }) {
       : <p className='ob-form-error' role='alert'>The receipt this node holds is not signed by the moderator in the escrow terms.</p>
   }
   if (fee.denial && !verifiedDenial(fee, moderator, 'buyer')) return <p className='ob-form-error' role='alert'>The denial this node holds is not signed by the moderator in the escrow terms.</p>
+  if (fee.recusal && !verifiedRecusal(fee, moderator)) return <p className='ob-form-error' role='alert'>The recusal this node holds is not signed by the moderator in the escrow terms.</p>
   return null
 }
 

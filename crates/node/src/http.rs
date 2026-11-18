@@ -21,6 +21,7 @@ use openbazaar_escrow::Party;
 use serde_json::{json, Value};
 
 use crate::escrow_dispute_fee;
+use crate::escrow_moderator;
 use crate::escrow_http::{self, Action};
 use crate::lock_http::{self, Route};
 use crate::http_guard::{check_origin, host_allowed, OriginCheck, DEFAULT_SHOP_ORIGIN};
@@ -287,6 +288,14 @@ fn route(node: &Node, request: &Request<'_>, client: Client, origin: Option<&str
         ("POST", path) if between(path, "/moderator/disputes/", "/rule").is_some() => {
             let id = between(path, "/moderator/disputes/", "/rule").unwrap_or_default();
             escrow_http::action_response(node, client, head, Action::Rule(id), body, origin)
+        }
+        ("POST", path) if between(path, "/moderator/disputes/", "/recuse/quote").is_some() => {
+            let id = between(path, "/moderator/disputes/", "/recuse/quote").unwrap_or_default();
+            escrow_moderator::refund::recuse_quote_response(node, client, head, id, origin)
+        }
+        ("POST", path) if between(path, "/moderator/disputes/", "/recuse").is_some() => {
+            let id = between(path, "/moderator/disputes/", "/recuse").unwrap_or_default();
+            escrow_moderator::refund::recuse_response(node, client, head, id, body, origin)
         }
         ("POST", path) if between(path, "/moderator/disputes/", "/deny").is_some() => {
             let id = between(path, "/moderator/disputes/", "/deny").unwrap_or_default();

@@ -50,7 +50,7 @@ pub use dispute::{DisputeEnvelope, DisputePlaintext};
 pub use dispute_fee::{
     CaseAccepted, DisputeDecision, FeeInvoice, FeePayment, FeeReceipt, FeeRequest, SignedCaseAccepted,
     SignedDisputeDecision, SignedFeeReceipt, SignedFeeRequest, DECISION_BUYER, DECISION_DENIED_BUYER,
-    DECISION_DENIED_VENDOR, DECISION_VENDOR,
+    DECISION_DENIED_VENDOR, DECISION_RECUSED, DECISION_VENDOR,
 };
 pub use error::Error;
 pub use escrow::{EscrowBranch, EscrowTerms};

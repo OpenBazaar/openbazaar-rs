@@ -212,8 +212,11 @@ test("a filing fee receipt verifies against the moderator's key, as the node sig
   assert.equal(verifyFeeReceipt(`${ON_CHAIN_RECEIPT}00`, MODERATOR), null);
 });
 
+const RECUSAL = "4f42444401989c0b76cb563971fdc9bef31ec06c3560f3249d6ee9e5d83c57625596e05f6f11111111111111111111111111111111111111111111111111111111111111110500000000000000000000000000000000000000000000000000000000000000001fe5b94a7dc4482c35384ae500eccbffe1ba368b026802cf3ac40c5c17a6459476965c5dc6cb8c3964cea30cba6e25d0069a35e9b0102695ed61ad5425bf80a6";
+
 test("a denial verifies as a final decision on the buyer's letter", () => {
   assert.deepEqual(verifyDisputeDecision(DENIAL, MODERATOR), { key: MODERATOR, caseId: "11".repeat(32), decision: "denied-buyer", rulingDigest: "00".repeat(32) });
   assert.equal(verifyDisputeDecision(flip(DENIAL, 70), MODERATOR), null);
   assert.equal(verifyDisputeDecision(LN_RECEIPT, MODERATOR), null);
+  assert.equal(verifyDisputeDecision(RECUSAL, MODERATOR)?.decision, "recused");
 });

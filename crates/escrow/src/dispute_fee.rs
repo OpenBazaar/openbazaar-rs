@@ -11,7 +11,7 @@ use bitcoin::{Amount, OutPoint, ScriptBuf};
 use openbazaar_protocol::{
     ruling_digest, CaseAccepted, DisputeDecision, FeeReceipt, FeeRequest, Signed, SignedCaseAccepted,
     SignedDisputeDecision, SignedFeeReceipt, SignedFeeRequest, Terms, DECISION_BUYER, DECISION_DENIED_BUYER,
-    DECISION_DENIED_VENDOR, DECISION_VENDOR, FAVORED_BUYER, FAVORED_VENDOR,
+    DECISION_DENIED_VENDOR, DECISION_RECUSED, DECISION_VENDOR, FAVORED_BUYER, FAVORED_VENDOR,
 };
 
 use crate::letter::ModeratorRuling;
@@ -42,6 +42,8 @@ pub fn fee_letter_digest(letter: &[u8]) -> [u8; 32] {
 pub enum Decision {
     Ruled(Party),
     Denied(Party),
+    /// The moderator stepped away from the whole case after the fee was paid.
+    Recused,
 }
 
 impl Decision {
@@ -51,6 +53,7 @@ impl Decision {
             Decision::Ruled(Party::Vendor) => DECISION_VENDOR,
             Decision::Denied(Party::Buyer) => DECISION_DENIED_BUYER,
             Decision::Denied(Party::Vendor) => DECISION_DENIED_VENDOR,
+            Decision::Recused => DECISION_RECUSED,
         }
     }
 
@@ -60,6 +63,7 @@ impl Decision {
             DECISION_VENDOR => Decision::Ruled(Party::Vendor),
             DECISION_DENIED_BUYER => Decision::Denied(Party::Buyer),
             DECISION_DENIED_VENDOR => Decision::Denied(Party::Vendor),
+            DECISION_RECUSED => Decision::Recused,
             _ => return None,
         })
     }
@@ -133,7 +137,7 @@ impl ModeratorKeys {
                 }
                 ruling_digest(bytes)
             }
-            (Decision::Denied(_), None) => [0; 32],
+            (Decision::Denied(_) | Decision::Recused, None) => [0; 32],
             _ => return Err(Error::BadPayload),
         };
         self.sign_record(DisputeDecision {

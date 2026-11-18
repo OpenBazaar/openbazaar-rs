@@ -171,7 +171,7 @@ fn an_escrow_with_the_moderator_the_buyer_chose_is_disputed_and_ruled_by_it() {
             "stores": 0,
             "buyerWins": 1,
             "vendorWins": 0,
-            "cases": { "accepted": 1, "decided": 1, "denied": 0, "overdue": 0 },
+            "cases": { "accepted": 1, "decided": 1, "denied": 0, "recused": 0, "overdue": 0 },
         })
     );
     let (status, body) = crate::seller_store_tests::peer_request(&market.moderator.node, "/public/moderator");
@@ -186,7 +186,7 @@ fn an_escrow_with_the_moderator_the_buyer_chose_is_disputed_and_ruled_by_it() {
     assert_eq!(public["decisions"].as_array().unwrap().len(), 1, "{public}");
     assert_eq!(
         listed(&list, &chosen)["trackRecord"]["cases"],
-        json!({ "accepted": 1, "decided": 1, "denied": 0, "overdue": 0 }),
+        json!({ "accepted": 1, "decided": 1, "denied": 0, "recused": 0, "overdue": 0 }),
         "counted from the moderator's own signed records: {list}"
     );
     assert_eq!(listed(&list, &chosen)["feeKind"], "filing");

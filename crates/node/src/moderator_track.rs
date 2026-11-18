@@ -1,8 +1,8 @@
 //! The filing-fee half of a moderator's track record, counted from the
 //! records its ruling key signed: the cases it was paid for (`OBCA`), the
-//! ones it decided or denied (`OBDD`), and the paid ones still undecided past
-//! their due height. Nothing refunds an overdue fee; the count is the
-//! public answer.
+//! ones it decided or denied (`OBDD`), the ones it recused from and paid
+//! back, and the paid ones still undecided past their due height. Nothing
+//! refunds an overdue fee; the count is the public answer.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -17,17 +17,24 @@ pub(crate) struct CaseCounts {
     pub accepted: u32,
     pub decided: u32,
     pub denied: u32,
+    pub recused: u32,
     pub overdue: u32,
 }
 
 impl CaseCounts {
     pub fn to_value(self) -> Value {
-        json!({ "accepted": self.accepted, "decided": self.decided, "denied": self.denied, "overdue": self.overdue })
+        json!({ "accepted": self.accepted, "decided": self.decided, "denied": self.denied, "recused": self.recused, "overdue": self.overdue })
     }
 
     pub fn from_value(value: &Value) -> Self {
         let count = |key: &str| value[key].as_u64().and_then(|n| u32::try_from(n).ok()).unwrap_or(0);
-        Self { accepted: count("accepted"), decided: count("decided"), denied: count("denied"), overdue: count("overdue") }
+        Self {
+            accepted: count("accepted"),
+            decided: count("decided"),
+            denied: count("denied"),
+            recused: count("recused"),
+            overdue: count("overdue"),
+        }
     }
 }
 
@@ -41,21 +48,29 @@ fn signed_by<T: openbazaar_protocol::Terms>(moderator: &[u8; 32], list: &[Value]
 }
 
 /// Count the cases in `accepted` and `decisions` that `moderator` signed,
-/// by case id. A paid case is overdue once `tip` is past its due height
-/// with no decision.
+/// by case id. A recusal is not a decision. A paid case is overdue once
+/// `tip` is past its due height with neither.
 pub(crate) fn count_cases(moderator: &[u8; 32], accepted: &[Value], decisions: &[Value], tip: u32) -> CaseCounts {
     let due: BTreeMap<[u8; 32], u32> = signed_by::<CaseAccepted>(moderator, accepted)
         .into_iter()
         .map(|case| (case.case_id, case.due_height))
         .collect();
     let decisions = signed_by::<DisputeDecision>(moderator, decisions);
-    let decided: BTreeSet<[u8; 32]> = decisions.iter().map(|decision| decision.case_id).collect();
-    let denied: BTreeSet<[u8; 32]> = decisions.iter().filter(|decision| decision.is_denial()).map(|decision| decision.case_id).collect();
-    let overdue = due.iter().filter(|(id, due)| tip > **due && !decided.contains(*id)).count();
+    let cases = |keep: fn(&DisputeDecision) -> bool| -> BTreeSet<[u8; 32]> {
+        decisions.iter().filter(|decision| keep(decision)).map(|decision| decision.case_id).collect()
+    };
+    let decided = cases(|decision| !decision.is_recusal());
+    let denied = cases(DisputeDecision::is_denial);
+    let recused = cases(DisputeDecision::is_recusal);
+    let overdue = due
+        .iter()
+        .filter(|(id, due)| tip > **due && !decided.contains(*id) && !recused.contains(*id))
+        .count();
     CaseCounts {
         accepted: due.len() as u32,
         decided: decided.len() as u32,
         denied: denied.len() as u32,
+        recused: recused.len() as u32,
         overdue: overdue as u32,
     }
 }
@@ -63,7 +78,7 @@ pub(crate) fn count_cases(moderator: &[u8; 32], accepted: &[Value], decisions: &
 #[cfg(test)]
 mod tests {
     use bitcoin::secp256k1::{Keypair, Secp256k1};
-    use openbazaar_protocol::{DECISION_BUYER, DECISION_DENIED_VENDOR};
+    use openbazaar_protocol::{DECISION_BUYER, DECISION_DENIED_VENDOR, DECISION_RECUSED};
     use super::*;
     use crate::escrow_mail::hex;
 
@@ -89,9 +104,20 @@ mod tests {
         let (keys, id) = key(3);
         let (other, _) = key(4);
         let accepted = [accepted(&keys, 1, 100), accepted(&keys, 2, 100), accepted(&keys, 3, 200), accepted(&other, 4, 100), json!("zz")];
-        let decisions = [decided(&keys, 1, DECISION_BUYER), decided(&keys, 5, DECISION_DENIED_VENDOR), decided(&other, 2, DECISION_BUYER)];
+        let decisions = [
+            decided(&keys, 1, DECISION_BUYER),
+            decided(&keys, 5, DECISION_DENIED_VENDOR),
+            decided(&other, 2, DECISION_BUYER),
+            decided(&keys, 6, DECISION_RECUSED),
+        ];
         let counts = count_cases(&id, &accepted, &decisions, 150);
-        assert_eq!(counts, CaseCounts { accepted: 3, decided: 2, denied: 1, overdue: 1 });
+        assert_eq!(counts, CaseCounts { accepted: 3, decided: 2, denied: 1, recused: 1, overdue: 1 });
+        let recused = [decided(&keys, 2, DECISION_RECUSED)];
+        assert_eq!(
+            count_cases(&id, &accepted, &recused, 150).overdue,
+            1,
+            "of the two cases past due, the recused one is not overdue"
+        );
         assert_eq!(count_cases(&id, &accepted, &decisions, 100).overdue, 0, "due at 100 is not overdue at 100");
         assert_eq!(CaseCounts::from_value(&counts.to_value()), counts);
         assert_eq!(CaseCounts::from_value(&json!(null)), CaseCounts::default());

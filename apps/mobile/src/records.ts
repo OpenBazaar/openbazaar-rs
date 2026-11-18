@@ -403,15 +403,15 @@ export type FeeReceiptRecord = {
   dueHeight: number;
 };
 
-/** A moderator's signed decision on a dispute letter (`OBDD`): a ruling or a final denial. */
+/** A moderator's signed decision on a dispute letter (`OBDD`): a ruling, a final denial, or a recusal from the whole case. */
 export type DisputeDecisionRecord = {
   key: string;
   caseId: string;
-  decision: "buyer" | "vendor" | "denied-buyer" | "denied-vendor";
+  decision: "buyer" | "vendor" | "denied-buyer" | "denied-vendor" | "recused";
   rulingDigest: string;
 };
 
-const DECISIONS = { 1: "buyer", 2: "vendor", 3: "denied-buyer", 4: "denied-vendor" } as const;
+const DECISIONS = { 1: "buyer", 2: "vendor", 3: "denied-buyer", 4: "denied-vendor", 5: "recused" } as const;
 
 /// A fee receipt that `moderator`'s key signed, or null.
 export function verifyFeeReceipt(hex: unknown, moderator: string): FeeReceiptRecord | null {

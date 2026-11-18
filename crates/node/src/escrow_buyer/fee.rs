@@ -33,7 +33,7 @@ impl Node {
         self.filer_mail(Party::Buyer, &filed(order)?, mail)
     }
 
-    pub(super) fn note_buyer_letter(&self, order: &BuyerOrder, id: &EscrowId, letter: &[u8]) -> Result<(), String> {
+    pub(super) fn note_buyer_letter(&self, order: &BuyerOrder, id: &EscrowId, letter: &[u8]) -> Result<Option<Vec<u8>>, String> {
         self.note_dispute_letter(Party::Buyer, id, &filed(order)?.terms, letter)
     }
 }

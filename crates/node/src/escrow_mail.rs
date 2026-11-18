@@ -74,11 +74,12 @@ pub(crate) enum Kind {
     ReleaseNonce = 6,
     /// Buyer to vendor: `ReleaseSignature`.
     Release = 7,
-    /// Buyer to moderator: dispute letter, mail key, reply URL.
+    /// Buyer to moderator: dispute letter, mail key, reply URL, then under
+    /// v5 terms a refund script, then optionally the listing citation.
     Dispute = 8,
     /// Moderator to the party that wrote the letter: `ModeratorRuling`.
     Ruling = 9,
-    /// Vendor to moderator: dispute letter, mail key, reply URL. Its own
+    /// Vendor to moderator: the same fields as [`Kind::Dispute`]. Its own
     /// kind so the letter is signed and pinned in the vendor's role.
     VendorDispute = 10,
     /// Moderator to a filer: the signed filing-fee request (`OBFQ`).
@@ -87,6 +88,9 @@ pub(crate) enum Kind {
     FeeReceipt = 12,
     /// Moderator to a filer: the signed denial of its letter (`OBDD`).
     Denied = 13,
+    /// Moderator to every filer of a case: the signed recusal (`OBDD`) and,
+    /// for the one that paid, the refund's txid.
+    Recused = 14,
 }
 
 impl Kind {
@@ -105,6 +109,7 @@ impl Kind {
             11 => Kind::FeeRequest,
             12 => Kind::FeeReceipt,
             13 => Kind::Denied,
+            14 => Kind::Recused,
             _ => return None,
         })
     }
@@ -510,7 +515,7 @@ fn handled(result: Result<(), String>) -> Result<Handled, String> {
 /// funding, signing the release again for a vendor's fresh nonce, and
 /// settling a ruling.
 fn filing_fee_mail(kind: Kind) -> bool {
-    matches!(kind, Kind::FeeRequest | Kind::FeeReceipt | Kind::Denied)
+    matches!(kind, Kind::FeeRequest | Kind::FeeReceipt | Kind::Denied | Kind::Recused)
 }
 
 fn buyer_step_signs(kind: Kind) -> bool {

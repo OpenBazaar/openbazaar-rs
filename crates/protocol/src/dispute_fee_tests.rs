@@ -4,7 +4,7 @@ use crate::sign::{secret_from_label, xonly};
 use crate::{
     CaseAccepted, DisputeDecision, Error, FeeInvoice, FeePayment, FeeReceipt, FeeRequest, Signed, SignedCaseAccepted,
     SignedDisputeDecision, SignedDisputeOutcome, SignedFeeReceipt, SignedFeeRequest, Terms, DECISION_BUYER,
-    DECISION_DENIED_BUYER, DECISION_DENIED_VENDOR, DECISION_VENDOR, FAVORED_BUYER, FAVORED_VENDOR,
+    DECISION_DENIED_BUYER, DECISION_DENIED_VENDOR, DECISION_RECUSED, DECISION_VENDOR, FAVORED_BUYER, FAVORED_VENDOR,
 };
 
 fn moderator() -> SecretKey {
@@ -173,7 +173,8 @@ fn a_decision_cites_a_ruling_exactly_when_it_rules() {
         decision(DECISION_BUYER, [0; 32]),
         decision(DECISION_DENIED_VENDOR, [8; 32]),
         decision(0, [8; 32]),
-        decision(5, [0; 32]),
+        decision(DECISION_RECUSED, [8; 32]),
+        decision(6, [0; 32]),
     ] {
         assert!(Signed::sign(terms.clone(), &moderator()).is_err(), "{terms:?}");
     }
@@ -181,6 +182,9 @@ fn a_decision_cites_a_ruling_exactly_when_it_rules() {
     assert!(denied.is_denial());
     assert_eq!(denied.filer(), FAVORED_VENDOR);
     assert_eq!(decision(DECISION_BUYER, [8; 32]).filer(), FAVORED_BUYER);
+    let recused = decision(DECISION_RECUSED, [0; 32]);
+    assert!(Signed::sign(recused.clone(), &moderator()).is_ok());
+    assert!(recused.is_recusal() && !recused.is_denial());
 }
 
 #[test]

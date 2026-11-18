@@ -7,7 +7,7 @@ import { parseFeeKind, type FeeKind } from "./disputeFee.ts";
 // signed, never a number the moderator claims.
 
 /** Filing-fee cases, counted from the case-accepted and decision records the key signed. */
-export type CaseCounts = { accepted: number; decided: number; denied: number; overdue: number };
+export type CaseCounts = { accepted: number; decided: number; denied: number; recused: number; overdue: number };
 
 export type TrackRecord = { rulings: number; stores: number; checkedAt: number; cases: CaseCounts };
 
@@ -60,7 +60,7 @@ const text = (value: unknown) => (typeof value === "string" ? value : "");
 const count = (value: unknown) => (typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : 0);
 const casesOf = (value: unknown): CaseCounts => {
   const r = record(value);
-  return { accepted: count(r.accepted), decided: count(r.decided), denied: count(r.denied), overdue: count(r.overdue) };
+  return { accepted: count(r.accepted), decided: count(r.decided), denied: count(r.denied), recused: count(r.recused), overdue: count(r.overdue) };
 };
 const tags = (value: unknown) => (Array.isArray(value) ? value.filter((tag): tag is string => typeof tag === "string") : []);
 
@@ -130,6 +130,7 @@ export function caseCountsText(cases: CaseCounts): string {
   if (!cases.accepted && !cases.decided) return "";
   const parts = [`${cases.accepted} paid ${cases.accepted === 1 ? "case" : "cases"}`, `${cases.decided} decided`];
   if (cases.denied) parts.push(`${cases.denied} denied`);
+  if (cases.recused) parts.push(`${cases.recused} recused and refunded`);
   if (cases.overdue) parts.push(`${cases.overdue} overdue`);
   return `${parts.join(", ")}.`;
 }

@@ -15,7 +15,7 @@
 //! The on-chain payment is recorded before it is broadcast, so a crash in
 //! between cannot lead to a second payment; a broadcast that fails clears it.
 
-use bitcoin::{Address, FeeRate, ScriptBuf};
+use bitcoin::{Address, FeeRate, ScriptBuf, Transaction};
 use openbazaar_escrow::Party;
 use serde_json::{json, Value};
 
@@ -131,6 +131,9 @@ impl Node {
 
     /// The newest request, if it can still be paid.
     fn payable(&self, fee: &FilerFee) -> Result<(openbazaar_protocol::FeeRequest, [u8; 32]), PayError> {
+        if fee.recused.is_some() {
+            return Err(conflict("The moderator recused itself from this dispute. Nothing is owed."));
+        }
         if fee.denied.is_some() {
             return Err(conflict("The moderator denied this dispute. A denial is final."));
         }
@@ -271,32 +274,8 @@ impl Node {
         fee_rate: FeeRate,
         fee_cap_sats: u64,
     ) -> Result<(String, u64), PayError> {
-        let address =
-            Address::from_script(recipient, self.network.bitcoin()).map_err(|err| PayError::Failed(err.to_string()))?;
         let _spending = self.spending.lock().unwrap_or_else(|err| err.into_inner());
-        let (mut psbt, _) = self.build_send(&address, Some(terms.amount_sats), fee_rate, false)?;
-        if paid_to(&psbt, recipient) != Some(terms.amount_sats) {
-            return Err(conflict(
-                "The wallet's balance changed since the quote. Nothing was paid; review the fee again.",
-            ));
-        }
-        let network_fee = psbt_fee(&psbt)?;
-        if network_fee > fee_cap_sats {
-            return Err(PayError::Conflict(format!(
-                "The network fee is now {network_fee} sats, above the {fee_cap_sats} sats you confirmed. Nothing was paid; review the fee again."
-            )));
-        }
-        let tx = {
-            let wallet = self.buyer_wallet();
-            let seed = self.spend_seed(&wallet)?;
-            if !wallet
-                .sign(&mut psbt, &seed)
-                .map_err(|err| PayError::Failed(err.to_string()))?
-            {
-                return Err(PayError::Failed("the filing fee could not be fully signed".into()));
-            }
-            psbt.extract_tx().map_err(|err| PayError::Failed(err.to_string()))?
-        };
+        let (tx, network_fee) = self.signed_send(recipient, terms.amount_sats, fee_rate, fee_cap_sats)?;
         let txid = tx.compute_txid();
         let vout = tx
             .output
@@ -324,6 +303,42 @@ impl Node {
         }
         eprintln!("ob-node: paid a dispute filing fee in {txid}");
         Ok((txid.to_string(), network_fee))
+    }
+
+    /// A signed payment of exactly `amount` to `recipient` from the node
+    /// wallet, at no more than `fee_cap_sats` of network fee, and that fee.
+    /// The caller holds the wallet's spending lock.
+    pub(crate) fn signed_send(
+        &self,
+        recipient: &ScriptBuf,
+        amount: u64,
+        fee_rate: FeeRate,
+        fee_cap_sats: u64,
+    ) -> Result<(Transaction, u64), PayError> {
+        let address =
+            Address::from_script(recipient, self.network.bitcoin()).map_err(|err| PayError::Failed(err.to_string()))?;
+        let (mut psbt, _) = self.build_send(&address, Some(amount), fee_rate, false)?;
+        if paid_to(&psbt, recipient) != Some(amount) {
+            return Err(conflict(
+                "The wallet's balance changed since the quote. Nothing was paid; review it again.",
+            ));
+        }
+        let network_fee = psbt_fee(&psbt)?;
+        if network_fee > fee_cap_sats {
+            return Err(PayError::Conflict(format!(
+                "The network fee is now {network_fee} sats, above the {fee_cap_sats} sats you confirmed. Nothing was paid; review it again."
+            )));
+        }
+        let wallet = self.buyer_wallet();
+        let seed = self.spend_seed(&wallet)?;
+        if !wallet
+            .sign(&mut psbt, &seed)
+            .map_err(|err| PayError::Failed(err.to_string()))?
+        {
+            return Err(PayError::Failed("the payment could not be fully signed".into()));
+        }
+        let tx = psbt.extract_tx().map_err(|err| PayError::Failed(err.to_string()))?;
+        Ok((tx, network_fee))
     }
 }
 

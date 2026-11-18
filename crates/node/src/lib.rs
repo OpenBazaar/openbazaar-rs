@@ -103,6 +103,7 @@ mod test_network;
 mod tor_socks;
 mod tor_status;
 mod tracking;
+mod tx_watch;
 mod vacation;
 mod vault;
 mod vault_key;
@@ -133,6 +134,8 @@ mod multinode_fee_tests;
 mod multinode_moderator_tests;
 #[cfg(test)]
 mod multinode_payment_tests;
+#[cfg(test)]
+mod multinode_refund_tests;
 #[cfg(test)]
 mod multinode_review_tests;
 #[cfg(test)]

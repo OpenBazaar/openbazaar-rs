@@ -80,6 +80,7 @@ function DisputeItem({ dispute, all, unlocked, busy, onRule, onDeny }: { dispute
       {state === "granted" ? <Notice text={`Ruled for the ${party}.`} /> : null}
       {state === "denied" ? <Notice text="Denied. Final; the filing fee is kept." /> : null}
       {state === "lost" ? <Notice text="Closed. The ruling on this escrow went to the other party." /> : null}
+      {state === "recused" ? <Notice text="Recused. The filing fee was paid back." /> : null}
       {state === "open" && !canDecide(dispute) ? <Text style={ui.muted}>Waiting for the {party} to pay the filing fee.</Text> : null}
       {state === "open" && canDecide(dispute) ? <Button label={`Rule for the ${party}`} busy={busy} disabled={!unlocked} onPress={onRule} /> : null}
       {state === "open" && canDecide(dispute) && dispute.fee ? <Button label="Deny this letter" kind="plain" busy={busy} disabled={!unlocked} onPress={onDeny} /> : null}

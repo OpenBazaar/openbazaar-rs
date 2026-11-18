@@ -170,7 +170,7 @@ impl Node {
             Kind::Signatures => self.vendor_signatures(seller, &mail),
             Kind::Release => self.vendor_release(seller, &mail),
             Kind::Ruling => self.vendor_ruling(seller, &mail),
-            Kind::FeeRequest | Kind::FeeReceipt | Kind::Denied => self.vendor_fee_mail(seller, &mail),
+            Kind::FeeRequest | Kind::FeeReceipt | Kind::Denied | Kind::Recused => self.vendor_fee_mail(seller, &mail),
             other => Err(format!("a vendor does not take {other:?}")),
         }
     }

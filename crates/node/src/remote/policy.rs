@@ -175,6 +175,12 @@ mod tests {
                 "/moderator/disputes/00/deny",
                 r#"{"favor":"buyer"}"#,
             ),
+            ("POST", "/moderator/disputes/00/recuse/quote", ""),
+            (
+                "POST",
+                "/moderator/disputes/00/recuse",
+                r#"{"quote":"x","passphrase":"x","confirm":true}"#,
+            ),
             // The same phone names the moderator and chooses the moderators its store accepts.
             ("GET", "/moderator/profile", ""),
             ("PUT", "/moderator/profile", r#"{"name":"x"}"#),

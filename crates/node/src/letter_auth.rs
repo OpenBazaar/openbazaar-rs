@@ -34,7 +34,7 @@ pub(crate) fn sender_role(kind: Kind) -> u8 {
     match kind {
         Kind::Request | Kind::Open | Kind::Signatures | Kind::Release | Kind::Dispute => 1,
         Kind::Offer | Kind::Reply | Kind::ReleaseNonce | Kind::VendorDispute => 2,
-        Kind::Ruling | Kind::FeeRequest | Kind::FeeReceipt | Kind::Denied => 3,
+        Kind::Ruling | Kind::FeeRequest | Kind::FeeReceipt | Kind::Denied | Kind::Recused => 3,
     }
 }
 

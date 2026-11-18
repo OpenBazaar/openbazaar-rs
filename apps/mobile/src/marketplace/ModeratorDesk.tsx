@@ -1,6 +1,7 @@
 import { useRef, useState } from "react";
 import { servedByHomeNode, signOut } from "../homeNode/transport";
 import { canDecide, caseFeeText, denyDispute, disputeState, fetchDisputes, partyName, ruleDispute, type Dispute } from "../moderator";
+import { CaseRefunds } from "./CaseRefunds";
 import { DisputeShipment } from "./DisputeShipment";
 import { useNodeResource } from "../useNodeResource";
 import { isLocked, lockWallet } from "../walletLock";
@@ -15,7 +16,7 @@ type Case = { id: string; letters: Dispute[]; resolved: boolean };
 function casesOf(disputes: Dispute[]): Case[] {
   const groups = new Map<string, Dispute[]>();
   for (const letter of disputes) groups.set(letter.id, [...(groups.get(letter.id) ?? []), letter]);
-  return [...groups].map(([id, letters]) => ({ id, letters, resolved: letters.some(letter => letter.ruled) || letters.every(letter => letter.denied) }));
+  return [...groups].map(([id, letters]) => ({ id, letters, resolved: letters.some(letter => letter.ruled || letter.fee?.recused) || letters.every(letter => letter.denied) }));
 }
 const shortId = (id: string) => `${id.slice(0, 8)}…${id.slice(-6)}`;
 
@@ -113,9 +114,10 @@ export function ModeratorDesk({ onShop }: { onShop: () => void }) {
             <div className="ob-case-letters">{selected.letters.map(letter => {
               const state = disputeState(letter, resource.data ?? []);
               return <section className="ob-case-letter" key={`${letter.id}-${letter.favors}`} aria-label={`${partyName(letter.favors)} statement`}><header><h3>{letter.favors === "buyer" ? "Buyer requests a refund" : "Seller requests payment"}</h3><span>Received at block {letter.receivedHeight.toLocaleString()}</span></header><p className="ob-case-memo">{letter.memo || "No statement was included in this letter."}</p>{letter.fee && <p className={`ob-case-fee ${letter.fee.overdue ? "is-overdue" : ""}`}>{caseFeeText(letter.fee)}</p>}
-                <footer>{state === "open" && !canDecide(letter) ? <strong className="ob-case-outcome">Waiting for the {partyName(letter.favors)} to pay the filing fee</strong> : state === "open" ? <><button className="ob-secondary" disabled={!unlocked || !!resource.error || ruling} onClick={() => { setError(""); setAction("rule"); setProposal(letter); }}>Review ruling for {partyName(letter.favors)}</button>{letter.fee && <button className="ob-text-link" disabled={!unlocked || !!resource.error || ruling} onClick={() => { setError(""); setAction("deny"); setProposal(letter); }}>Deny this letter</button>}</> : <strong className="ob-case-outcome">{state === "granted" ? `Ruled for the ${partyName(letter.favors)}` : state === "denied" ? "Denied. Final; the filing fee is kept." : "Closed by the ruling for the other party"}</strong>}</footer>
+                <footer>{state === "open" && !canDecide(letter) ? <strong className="ob-case-outcome">Waiting for the {partyName(letter.favors)} to pay the filing fee</strong> : state === "open" ? <><button className="ob-secondary" disabled={!unlocked || !!resource.error || ruling} onClick={() => { setError(""); setAction("rule"); setProposal(letter); }}>Review ruling for {partyName(letter.favors)}</button>{letter.fee && <button className="ob-text-link" disabled={!unlocked || !!resource.error || ruling} onClick={() => { setError(""); setAction("deny"); setProposal(letter); }}>Deny this letter</button>}</> : <strong className="ob-case-outcome">{state === "granted" ? `Ruled for the ${partyName(letter.favors)}` : state === "denied" ? "Denied. Final; the filing fee is kept." : state === "recused" ? "Recused. The filing fee was paid back." : "Closed by the ruling for the other party"}</strong>}</footer>
               </section>;
             })}</div>
+            <CaseRefunds letters={selected.letters} all={resource.data ?? []} unlocked={unlocked && !resource.error} onDone={() => void resource.refresh()}/>
             <DisputeShipment key={selected.id} id={selected.id} tracking={selected.letters.map(letter => letter.tracking).find(Boolean) ?? null} onLooked={() => resource.refresh()}/>
             {!unlocked && !selected.resolved && <p className="ob-moderator-inline-note">Unlock the wallet using the control above before issuing a ruling.</p>}
             {!selected.resolved && <p className="ob-case-final-note">A final ruling applies to this escrow and closes both parties’ letters. A denial closes only the letter it answers.</p>}

@@ -33,11 +33,14 @@
 //! A letter under v5 terms owes the moderator a filing fee ([`fee`]). The
 //! operator can rule on it or deny it (`POST /moderator/disputes/{id}/deny`)
 //! only once the escrow's fee is paid or when the fee is zero. Either one
-//! is signed as a public decision; a denial is final.
+//! is signed as a public decision; a denial is final. Before any decision,
+//! the operator can instead recuse from a paid case and pay the fee back
+//! ([`refund`]).
 
 mod case;
 mod decision;
 mod fee;
+pub(crate) mod refund;
 
 use std::collections::BTreeMap;
 use std::sync::MutexGuard;
@@ -51,7 +54,9 @@ use openbazaar_escrow::{
 use serde_json::{json, Value};
 use tormail::StoreKey;
 
-use self::case::{branch_byte, case_name, check_citation, citation_from_fields, party_name, party_of, Case, CaseFee};
+use self::case::{
+    branch_byte, case_name, check_citation, citation_from_fields, party_name, party_of, refund_script, Case, CaseFee,
+};
 use self::fee::{fee_id, EscrowFee, FeePool};
 use crate::chain::ChainSource;
 use crate::escrow_fixture::{legacy_moderator_record, moderator_keys, moderator_record};
@@ -71,6 +76,8 @@ pub(crate) struct ModeratorDesk {
     fees: BTreeMap<EscrowId, EscrowFee>,
     pool: FeePool,
     fee_tick: u64,
+    /// The tip at which stored refunds were last broadcast again.
+    refunds_checked: u32,
 }
 
 impl ModeratorDesk {
@@ -215,11 +222,9 @@ impl Node {
     /// Review a letter from `writer`, who must be the party it favors.
     fn moderator_review(&self, mail: &Mail, writer: Party) -> Result<(), String> {
         let fields = mail.as_fields();
-        let citation = match fields.len() {
-            3 => None,
-            6 => Some(citation_from_fields(fields)?),
-            _ => return Err("a Dispute message carries 3 fields".into()),
-        };
+        if !matches!(fields.len(), 3 | 4 | 6 | 7) {
+            return Err("a Dispute message carries 3 or 6 fields, or 4 or 7 under v5 terms".into());
+        }
         let reply_mail = key_bytes(&fields[1])?;
         let reply_url = crate::peer_http::sale_base(&String::from_utf8(fields[2].clone()).map_err(|err| err.to_string())?)?;
         let received = self.chain.tip_height()?;
@@ -231,11 +236,20 @@ impl Node {
         if case.favored() != writer {
             return Err("a dispute letter must ask for its writer's branch".into());
         }
+        let fee = case_fee(&case);
+        let (refund_script, cited) = match (fee.is_some(), fields.len()) {
+            (false, 3 | 6) => (None, 3),
+            (true, 4 | 7) => (Some(refund_script(&fields[3], self.network.bitcoin())?), 4),
+            _ => return Err("a dispute letter carries a refund script exactly under v5 terms".into()),
+        };
+        let citation = match fields.get(cited..) {
+            Some(rest) if !rest.is_empty() => Some(citation_from_fields(rest)?),
+            _ => None,
+        };
         if let Some(citation) = citation {
             check_citation(&mail.escrow, case.terms(), &citation)?;
         }
         let key = (mail.escrow, case.favored() as u8);
-        let fee = case_fee(&case);
         let mut desk = self.moderator_desk();
         if desk.cases.contains_key(&key) {
             drop(desk);
@@ -256,6 +270,7 @@ impl Node {
             tracking: None,
             fee,
             decision: None,
+            refund_script,
         };
         self.escrow
             .store
@@ -438,6 +453,9 @@ impl ModeratorDesk {
         }
         if case.decision.is_some() {
             return Err(PayError::Conflict("This letter was denied. A denial is final.".into()));
+        }
+        if self.fees.get(id).is_some_and(|fee| fee.recusal.is_some()) {
+            return Err(PayError::Conflict("This node recused itself from the case. A recusal is final.".into()));
         }
         if !self.fee_settled(id, case) {
             return Err(PayError::Conflict("The filing fee is not paid yet.".into()));

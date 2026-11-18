@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { canDecide, caseFeeText, disputeState, parseDisputes, parseDisputeTracking, partyName } from "./moderator.ts";
+import { canDecide, canRecuse, caseFeeText, disputeState, parseDisputes, parseDisputeTracking, parseRefundQuote, partyName } from "./moderator.ts";
 
 const letter = (favors: string, ruled = false) => ({ id: "ab".repeat(16), favors, memo: "No parcel arrived.", outpoint: `${"cd".repeat(32)}:0`, receivedHeight: 160400, ruled });
 
@@ -25,6 +25,23 @@ test("a filing fee gates the decision until it is paid, and a denial is its own 
   assert.match(caseFeeText(fee("paid", { overdue: true }).fee), /overdue/);
   const denied = { ...fee("paid"), denied: true };
   assert.equal(disputeState(denied, [denied]), "denied");
+});
+
+test("a paid case can be recused until a letter of it is decided, and a recusal closes it", () => {
+  const fee = (state: string, extra: Record<string, unknown> = {}) => parseDisputes({ disputes: [{ ...letter("buyer"), fee: { state, amountSats: 2500, dueHeight: 160600, overdue: false, ...extra } }] })[0];
+  const paid = fee("paid", { paidBy: "buyer" });
+  assert.equal(canRecuse(paid, [paid]), true);
+  assert.equal(canRecuse(fee("requested"), [fee("requested")]), false, "nothing was paid");
+  const ruled = { ...paid, ruled: true };
+  assert.equal(canRecuse(paid, [paid, ruled]), false, "a ruling came first");
+  const recused = fee("paid", { recused: true, refunds: [{ filer: "buyer", amountSats: 2500, txid: "ef".repeat(32) }, { filer: "nobody" }] });
+  assert.deepEqual(recused.fee?.refunds, [{ filer: "buyer", amountSats: 2500, txid: "ef".repeat(32) }]);
+  assert.equal(canRecuse(recused, [recused]), false);
+  assert.equal(canDecide(recused), false);
+  assert.equal(disputeState(recused, [recused]), "recused");
+  assert.equal(caseFeeText(recused.fee), "Recused · 2,500 sats paid back in efefefefefef…");
+  assert.deepEqual(parseRefundQuote({ quote: "q", filer: "buyer", amountSats: 2500, address: "tb1p", feeSats: 200, feeCapSats: 300, totalSats: 2700, expiresInSecs: 120 }), { quote: "q", filer: "buyer", amountSats: 2500, address: "tb1p", feeSats: 200, feeCapSats: 300, totalSats: 2700, expiresInSecs: 120 });
+  assert.throws(() => parseRefundQuote({ quote: "q", filer: "moderator", amountSats: 1, feeSats: 1, feeCapSats: 1 }));
 });
 
 const lookedUp = () => ({

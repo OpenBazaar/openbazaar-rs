@@ -49,6 +49,8 @@ pub(super) struct Case {
     pub fee: Option<CaseFee>,
     /// The signed decision on this letter (`OBDD`): a ruling or a denial.
     pub decision: Option<Vec<u8>>,
+    /// Where a refund to this filer goes, from its v5 letter.
+    pub refund_script: Option<Vec<u8>>,
 }
 
 fn optional_hex(value: &Value) -> Option<Option<Vec<u8>>> {
@@ -77,6 +79,7 @@ impl Case {
             "tracking": self.tracking.clone(),
             "fee": self.fee.map(|fee| json!({ "caseId": hex(&fee.case_id), "amountSats": fee.amount, "dueHeight": fee.due })),
             "decision": self.decision.as_deref().map(hex),
+            "refundScript": self.refund_script.as_deref().map(hex),
         })
     }
 
@@ -107,6 +110,7 @@ impl Case {
             },
             fee,
             decision: optional_hex(&value["decision"])?,
+            refund_script: optional_hex(&value["refundScript"])?,
         })
     }
 
@@ -155,12 +159,23 @@ fn citation_from(value: &Value) -> Option<Citation> {
     })
 }
 
+/// The listing citation: the three fields after the letter's others.
 pub(super) fn citation_from_fields(fields: &[Vec<u8>]) -> Result<Citation, String> {
+    let [listing, key, signature] = fields else {
+        return Err("a citation is a listing id, a store key, and a store signature".into());
+    };
     Ok(Citation {
-        listing_id: fields[3].as_slice().try_into().map_err(|_| "bad listing id")?,
-        store_key: fields[4].as_slice().try_into().map_err(|_| "bad store key")?,
-        store_signature: fields[5].as_slice().try_into().map_err(|_| "bad store signature")?,
+        listing_id: listing.as_slice().try_into().map_err(|_| "bad listing id")?,
+        store_key: key.as_slice().try_into().map_err(|_| "bad store key")?,
+        store_signature: signature.as_slice().try_into().map_err(|_| "bad store signature")?,
     })
+}
+
+/// A refund script from a v5 letter: a standard script of this network.
+pub(super) fn refund_script(bytes: &[u8], network: bitcoin::Network) -> Result<Vec<u8>, String> {
+    bitcoin::Address::from_script(bitcoin::Script::from_bytes(bytes), network)
+        .map(|_| bytes.to_vec())
+        .map_err(|_| "the refund script is not a standard script of this network".into())
 }
 
 pub(super) fn check_citation(
@@ -204,6 +219,7 @@ mod tests {
                 due: 300,
             }),
             decision: Some(vec![5; 10]),
+            refund_script: Some(vec![0x51, 0x20]),
         };
         let own = Case::from_record(&case.to_record()).unwrap();
         assert_eq!(
@@ -217,13 +233,13 @@ mod tests {
             "a case remembers its shipment lookup"
         );
         assert_eq!(own.fee, case.fee, "a v5 case remembers its filing fee");
-        assert_eq!(own.decision, Some(vec![5; 10]));
+        assert_eq!((&own.decision, &own.refund_script), (&Some(vec![5; 10]), &Some(vec![0x51, 0x20])));
         assert!(!own.free());
         case.record = None;
         case.tracking = None;
         case.outcome = None;
         let mut old = case.to_record();
-        for key in ["record", "tracking", "outcome", "fee", "decision"] {
+        for key in ["record", "tracking", "outcome", "fee", "decision", "refundScript"] {
             old.as_object_mut().unwrap().remove(key);
         }
         let old = Case::from_record(&old).unwrap();

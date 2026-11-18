@@ -364,7 +364,7 @@ impl Node {
             Kind::Reply => self.buyer_reply(&order, &mail),
             Kind::ReleaseNonce => self.buyer_release_nonce(&order, &mail),
             Kind::Ruling => self.buyer_ruling(&order, &mail),
-            Kind::FeeRequest | Kind::FeeReceipt | Kind::Denied => self.buyer_fee_mail(&order, &mail),
+            Kind::FeeRequest | Kind::FeeReceipt | Kind::Denied | Kind::Recused => self.buyer_fee_mail(&order, &mail),
             other => Err(format!("a buyer does not take {other:?}")),
         }
     }
@@ -781,7 +781,7 @@ impl Node {
         let letter = self
             .with_buyer_escrow(&order, &escrow_id, |escrow| escrow.dispute_letter(memo.as_bytes()).map_err(failed))
             .map_err(PayError::Failed)?;
-        self.note_buyer_letter(&order, &escrow_id, &letter).map_err(PayError::Failed)?;
+        let refund = self.note_buyer_letter(&order, &escrow_id, &letter).map_err(PayError::Failed)?;
         let was = order.escrow.as_ref().and_then(|escrow| escrow.get("stage")).cloned();
         self.update_escrow(id, Some(DISPUTED), json!({ "stage": "disputed" }))
             .map_err(PayError::Failed)?;
@@ -790,6 +790,7 @@ impl Node {
             self.buyer_mail_secret().public_key().as_bytes().to_vec(),
             reply.into_bytes(),
         ];
+        fields.extend(refund);
         let cited = (
             listing_bytes(order.escrow.as_ref().and_then(|escrow| escrow.get("listingId"))).map_err(PayError::Invalid)?,
             bytes_of(&order, "storeKey", 32).map_err(PayError::Invalid)?,

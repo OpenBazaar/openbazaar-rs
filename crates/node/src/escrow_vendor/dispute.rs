@@ -72,8 +72,9 @@ impl Node {
                 |sale, _| sale.stage = "disputed".into(),
             )
             .map_err(PayError::Failed)?;
-        self.note_dispute_letter(Party::Vendor, &escrow_id, &terms, &letter).map_err(PayError::Failed)?;
+        let refund = self.note_dispute_letter(Party::Vendor, &escrow_id, &terms, &letter).map_err(PayError::Failed)?;
         let mut fields = vec![letter, mail_key.as_bytes().to_vec(), reply.into_bytes()];
+        fields.extend(refund);
         if let (Some((listing, store_signature)), Ok(store_key)) = (citation, self.seller_store_key(&seller)) {
             fields.push(listing.to_vec());
             fields.push(store_key.serialize().to_vec());

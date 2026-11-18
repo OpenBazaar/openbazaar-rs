@@ -21,8 +21,9 @@
 
 use std::collections::BTreeMap;
 
+use bitcoin::consensus::encode::{deserialize_hex, serialize_hex};
 use bitcoin::hashes::Hash;
-use bitcoin::ScriptBuf;
+use bitcoin::{ScriptBuf, Transaction};
 use openbazaar_escrow::{fee_letter_digest, Party};
 use openbazaar_protocol::{
     FeeInvoice, FeePayment, FeeReceipt, FeeRequest, SignedFeeRequest, FAVORED_BUYER, FAVORED_VENDOR,
@@ -89,6 +90,44 @@ pub(super) struct EscrowFee {
     pub receipt_sent: bool,
     /// Past the due height: unpaid scripts went back to the pool.
     pub released: bool,
+    /// The signed recusal (`OBDD`), once the operator stepped away.
+    pub recusal: Option<Vec<u8>>,
+    /// Refunds this node sent from its wallet, stored before broadcast.
+    pub refunds: Vec<Refund>,
+}
+
+/// A refund paid from this node's wallet to a filer's refund script.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct Refund {
+    pub filer: Party,
+    pub amount: u64,
+    pub tx: Transaction,
+}
+
+impl Refund {
+    fn to_record(&self) -> Value {
+        json!({
+            "filer": party_byte(self.filer),
+            "amountSats": self.amount,
+            "tx": serialize_hex(&self.tx),
+        })
+    }
+
+    fn from_record(value: &Value) -> Option<Self> {
+        Some(Self {
+            filer: party_from(value["filer"].as_u64()?)?,
+            amount: value["amountSats"].as_u64()?,
+            tx: deserialize_hex(value["tx"].as_str()?).ok()?,
+        })
+    }
+
+    pub fn value(&self) -> Value {
+        json!({
+            "filer": party_name(self.filer),
+            "amountSats": self.amount,
+            "txid": self.tx.compute_txid().to_string(),
+        })
+    }
 }
 
 fn party_byte(party: Party) -> u8 {
@@ -144,6 +183,8 @@ impl EscrowFee {
             accepted: None,
             receipt_sent: false,
             released: false,
+            recusal: None,
+            refunds: Vec::new(),
         }
     }
 
@@ -176,6 +217,8 @@ impl EscrowFee {
             "accepted": self.accepted.as_deref().map(hex),
             "receiptSent": self.receipt_sent,
             "released": self.released,
+            "recusal": self.recusal.as_deref().map(hex),
+            "refunds": self.refunds.iter().map(Refund::to_record).collect::<Vec<_>>(),
         })
     }
 
@@ -226,6 +269,11 @@ impl EscrowFee {
             accepted: optional("accepted")?,
             receipt_sent: value["receiptSent"].as_bool()?,
             released: value["released"].as_bool()?,
+            recusal: optional("recusal")?,
+            refunds: match value["refunds"].as_array() {
+                Some(list) => list.iter().map(Refund::from_record).collect::<Option<_>>()?,
+                None => Vec::new(),
+            },
         })
     }
 
@@ -357,7 +405,9 @@ impl super::ModeratorDesk {
                 FeePayment::OnChain { .. } => "onchain",
             }),
             "paidHeight": fee.paid.map(|paid| paid.height),
-            "overdue": fee.paid.is_some() && !decided && tip.is_some_and(|tip| tip > fee.due),
+            "overdue": fee.paid.is_some() && !decided && fee.recusal.is_none() && tip.is_some_and(|tip| tip > fee.due),
+            "recused": fee.recusal.is_some(),
+            "refunds": fee.refunds.iter().map(Refund::value).collect::<Vec<_>>(),
         })
     }
 }
@@ -433,6 +483,17 @@ impl Node {
             if let Err(err) = self.fee_step(&id, tip) {
                 eprintln!("ob-node: dispute fee {}: {err}", id_hex(&id));
             }
+        }
+        let refunds: Vec<EscrowFee> = {
+            let mut desk = self.moderator_desk();
+            if desk.refunds_checked == tip {
+                return;
+            }
+            desk.refunds_checked = tip;
+            desk.fees.values().filter(|fee| !fee.refunds.is_empty()).cloned().collect()
+        };
+        for fee in &refunds {
+            self.rebroadcast_refunds(fee);
         }
     }
 

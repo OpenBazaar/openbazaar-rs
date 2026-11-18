@@ -12,7 +12,7 @@ use serde_json::{json, Value};
 
 use super::case::{case_name, party_name};
 use super::favor_of;
-use crate::escrow_mail::{hex, parse_id, Kind, Mail};
+use crate::escrow_mail::{hex, parse_id, EscrowId, Kind, Mail};
 use crate::escrow_store::Role;
 use crate::pay_order::PayError;
 use crate::Node;
@@ -59,10 +59,17 @@ impl Node {
     /// built-in moderator's are left out, as with its rulings.
     pub(crate) fn dispute_decisions_value(&self) -> Vec<Value> {
         let desk = self.moderator_desk();
+        let own = |id: &EscrowId| desk.cases.iter().any(|((case_id, _), case)| case_id == id && case.record.is_some());
+        let recusals = desk
+            .fees
+            .iter()
+            .filter(|(id, _)| own(id))
+            .filter_map(|(_, fee)| fee.recusal.as_deref());
         desk.cases
             .values()
             .filter(|case| case.record.is_some())
             .filter_map(|case| case.decision.as_deref())
+            .chain(recusals)
             .take(crate::moderators::MAX_RULINGS)
             .map(|decision| json!(hex(decision)))
             .collect()

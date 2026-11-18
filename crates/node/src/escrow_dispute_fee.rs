@@ -8,13 +8,19 @@
 //! Nothing in a request can raise the fee or redirect it to another case.
 //!
 //! The party pays from [`pay`] after one passphrase confirmation. The
-//! moderator's signed receipt ([`Kind::FeeReceipt`]) or denial
-//! ([`Kind::Denied`]) is checked the same way and kept beside the request.
+//! moderator's signed receipt ([`Kind::FeeReceipt`]), denial
+//! ([`Kind::Denied`]), or recusal ([`Kind::Recused`]) is checked the same
+//! way and kept beside the request.
+//!
+//! Each v5 letter carries a refund script: a fresh address of this node's
+//! wallet, the same for every letter of one escrow. A moderator that recuses
+//! after payment, or that was paid more than once, pays back to it.
 //! Records are `escrow/filer/{id}-{buyer|vendor}`, sealed like every escrow
 //! record; none holds a secret.
 
 pub(crate) mod pay;
 
+use bitcoin::hashes::Hash;
 use bitcoin::{OutPoint, Txid};
 use openbazaar_escrow::{
     fee_letter_digest, read_dispute_decision, read_fee_receipt, read_fee_request, Decision, EscrowTerms, FeeCase,
@@ -56,6 +62,11 @@ pub(crate) struct FilerFee {
     pub payment: Option<Payment>,
     pub receipt: Option<Vec<u8>>,
     pub denied: Option<Vec<u8>>,
+    /// Where the moderator pays a refund; sent with every v5 letter.
+    pub refund_script: Option<Vec<u8>>,
+    /// The moderator's signed recusal (`OBDD`), and its refund transaction.
+    pub recused: Option<Vec<u8>>,
+    pub refund_txid: Option<Txid>,
 }
 
 fn fixed32(text: &str) -> Option<[u8; 32]> {
@@ -85,6 +96,9 @@ impl FilerFee {
             })),
             "receipt": self.receipt.as_deref().map(hex),
             "denied": self.denied.as_deref().map(hex),
+            "refundScript": self.refund_script.as_deref().map(hex),
+            "recused": self.recused.as_deref().map(hex),
+            "refundTxid": self.refund_txid.map(|txid| txid.to_string()),
         })
     }
 
@@ -121,6 +135,12 @@ impl FilerFee {
             payment,
             receipt: optional(&value["receipt"])?,
             denied: optional(&value["denied"])?,
+            refund_script: optional(&value["refundScript"])?,
+            recused: optional(&value["recused"])?,
+            refund_txid: match value["refundTxid"].as_str() {
+                Some(text) => Some(text.parse().ok()?),
+                None => None,
+            },
         })
     }
 
@@ -140,6 +160,9 @@ impl FilerFee {
 
     /// Where this fee stands, for the order or sale it belongs to.
     pub(crate) fn state(&self) -> &'static str {
+        if self.recused.is_some() {
+            return "recused";
+        }
         match (&self.denied, &self.receipt, &self.payment, self.requests.is_empty()) {
             (Some(_), _, _, _) => "denied",
             (None, Some(_), _, _) => "paid",
@@ -162,6 +185,8 @@ impl FilerFee {
             "txid": self.payment.as_ref().and_then(|payment| match payment.paid { Paid::OnChain { txid, .. } => Some(txid.to_string()), Paid::Lightning { .. } => None }),
             "receipt": self.receipt.as_deref().map(hex),
             "denial": self.denied.as_deref().map(hex),
+            "recusal": self.recused.as_deref().map(hex),
+            "refundTxid": self.refund_txid.map(|txid| txid.to_string()),
         })
     }
 }
@@ -214,19 +239,24 @@ impl Node {
         Ok(())
     }
 
-    /// Remember a letter this node sent, so a request for it is recognized.
-    /// Under v4 terms there is no fee, and nothing is kept.
+    /// Remember a letter this node sent, so a request for it is recognized,
+    /// and return the refund script the letter carries. Under v4 terms there
+    /// is no fee, nothing is kept, and the letter carries no refund script.
     pub(crate) fn note_dispute_letter(
         &self,
         party: Party,
         id: &EscrowId,
         terms: &EscrowTerms,
         letter: &[u8],
-    ) -> Result<(), String> {
+    ) -> Result<Option<Vec<u8>>, String> {
         if terms.moderator.fee_kind != FeeKind::Filing {
-            return Ok(());
+            return Ok(None);
         }
         let mut fee = self.filer_fee(party, id)?;
+        if fee.refund_script.is_none() {
+            let (_, script) = self.buyer_wallet().fee_address().map_err(|err| err.to_string())?;
+            fee.refund_script = Some(script.to_bytes());
+        }
         let digest = fee_letter_digest(letter);
         if !fee.letters.contains(&digest) {
             fee.letters.push(digest);
@@ -234,12 +264,18 @@ impl Node {
                 fee.letters.remove(0);
             }
         }
-        self.save_filer_fee(party, id, &fee)
+        self.save_filer_fee(party, id, &fee)?;
+        Ok(fee.refund_script)
     }
 
-    /// Refuse a new letter from a party whose letter the moderator denied.
+    /// Refuse a new letter from a party whose letter the moderator denied,
+    /// or in a case the moderator recused itself from.
     pub(crate) fn refuse_after_denial(&self, party: Party, id: &EscrowId) -> Result<(), String> {
-        match self.filer_fee(party, id)?.denied {
+        let fee = self.filer_fee(party, id)?;
+        if fee.recused.is_some() {
+            return Err("The moderator recused itself from this dispute.".into());
+        }
+        match fee.denied {
             Some(_) => Err("The moderator denied this dispute. A denial is final.".into()),
             None => Ok(()),
         }
@@ -258,7 +294,10 @@ impl Node {
         if escrow.terms.moderator.fee_kind != FeeKind::Filing {
             return Err("this escrow has no filing fee".into());
         }
-        let bytes = mail.fields(1)?[0].clone();
+        let bytes = match mail.kind {
+            Kind::Recused => mail.as_fields().first().cloned().ok_or("a recusal carries its decision")?,
+            _ => mail.fields(1)?[0].clone(),
+        };
         let mut fee = self.filer_fee(party, &mail.escrow)?;
         match mail.kind {
             Kind::FeeRequest => {
@@ -306,6 +345,22 @@ impl Node {
                     return Err("the denial is not for this party's letter in this escrow".into());
                 }
                 fee.denied = Some(bytes);
+            }
+            Kind::Recused => {
+                let (decision, signed) = read_dispute_decision(&bytes, &escrow.terms.moderator.signing_key)
+                    .map_err(|err| err.to_string())?;
+                if decision != Decision::Recused || signed.case_id != escrow.fee_case(party, [0; 32]).case_id() {
+                    return Err("the recusal is not for this escrow".into());
+                }
+                let txid = match mail.as_fields() {
+                    [_] => None,
+                    [_, txid] => Some(Txid::from_byte_array(
+                        txid.as_slice().try_into().map_err(|_| "a refund txid is 32 bytes")?,
+                    )),
+                    _ => return Err("a recusal carries the decision and, for the payer, its refund".into()),
+                };
+                fee.recused = Some(bytes);
+                fee.refund_txid = txid.or(fee.refund_txid);
             }
             other => return Err(format!("{other:?} is not filing-fee mail")),
         }

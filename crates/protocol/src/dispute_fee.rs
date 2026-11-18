@@ -92,6 +92,8 @@ pub const DECISION_VENDOR: u8 = FAVORED_VENDOR;
 pub const DECISION_DENIED_BUYER: u8 = 3;
 /// Refused the vendor's letter.
 pub const DECISION_DENIED_VENDOR: u8 = 4;
+/// Stepped away from the whole case and paid the filing fee back. Final.
+pub const DECISION_RECUSED: u8 = 5;
 
 /// Public: what the moderator decided for one letter of a case.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -99,7 +101,7 @@ pub struct DisputeDecision {
     pub moderator_key: [u8; PUBKEY_LEN],
     pub case_id: [u8; 32],
     pub decision: u8,
-    /// [`crate::ruling_digest`] of the ruling for a ruled decision; zero for a denial.
+    /// [`crate::ruling_digest`] of the ruling for a ruled decision; zero for a denial or a recusal.
     pub ruling_digest: [u8; 32],
 }
 
@@ -110,7 +112,12 @@ impl DisputeDecision {
         matches!(self.decision, DECISION_DENIED_BUYER | DECISION_DENIED_VENDOR)
     }
 
-    /// The party whose letter this decision answers.
+    pub fn is_recusal(&self) -> bool {
+        self.decision == DECISION_RECUSED
+    }
+
+    /// The party whose letter this decision answers; [`DECISION_RECUSED`]
+    /// for a recusal, which answers every letter of the case.
     pub fn filer(&self) -> u8 {
         match self.decision {
             DECISION_DENIED_BUYER => FAVORED_BUYER,
@@ -335,12 +342,12 @@ impl Terms for DisputeDecision {
 
     fn check(&self) -> Result<(), Error> {
         let ruled = matches!(self.decision, DECISION_BUYER | DECISION_VENDOR);
-        if !ruled && !self.is_denial() {
-            return Err(Error::BadTerms("a decision rules for a party or denies a letter"));
+        if !ruled && !self.is_denial() && !self.is_recusal() {
+            return Err(Error::BadTerms("a decision rules for a party, denies a letter, or recuses"));
         }
         if ruled == (self.ruling_digest == [0; 32]) {
             return Err(Error::BadTerms(
-                "a ruled decision cites its ruling; a denial cites none",
+                "a ruled decision cites its ruling; a denial or a recusal cites none",
             ));
         }
         refuse_private(&self.case_id)?;

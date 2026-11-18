@@ -2,17 +2,19 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
 import { parseBuyerOrder } from './catalog.ts'
-import { disputeFeeText, filingFeeNote, parseDisputeFee, parseDisputeFeeQuote, verifiedDenial, verifiedReceipt } from './disputeFee.ts'
+import { disputeFeeText, filingFeeNote, parseDisputeFee, parseDisputeFeeQuote, verifiedDenial, verifiedReceipt, verifiedRecusal } from './disputeFee.ts'
 
 // Signed by crates/protocol with the secret [7; 32]; see records.test.ts.
 const MODERATOR = '989c0b76cb563971fdc9bef31ec06c3560f3249d6ee9e5d83c57625596e05f6f'
 const RECEIPT = '4f42465201989c0b76cb563971fdc9bef31ec06c3560f3249d6ee9e5d83c57625596e05f6f11111111111111111111111111111111111111111111111111111111111111112222222222222222222222222222222222222222222222222222222222222222014444444444444444444444444444444444444444444444444444444444444444c409000000000000780000002c0100008834a2eceb5b6aa924f38434d6d49b74aee0309b5e33e72c1baebe2ea192e66906eb559d74965c81a9ce6b67ba4dd500217f0c715aaf7aa889e8ebfdd8a5ca4c'
 const DENIAL = '4f42444401989c0b76cb563971fdc9bef31ec06c3560f3249d6ee9e5d83c57625596e05f6f11111111111111111111111111111111111111111111111111111111111111110300000000000000000000000000000000000000000000000000000000000000005e2f1a15d12c2c4e53d01057269ba75c0b8a7ea98556f7991e542331ee990872dbf724ebbdb39a5279094af1e30d89571f940684ba513f7e013f4ca1f91ec64b'
 
+const RECUSAL = '4f42444401989c0b76cb563971fdc9bef31ec06c3560f3249d6ee9e5d83c57625596e05f6f11111111111111111111111111111111111111111111111111111111111111110500000000000000000000000000000000000000000000000000000000000000001fe5b94a7dc4482c35384ae500eccbffe1ba368b026802cf3ac40c5c17a6459476965c5dc6cb8c3964cea30cba6e25d0069a35e9b0102695ed61ad5425bf80a6'
+
 const fee = (extra: Record<string, unknown> = {}) => parseDisputeFee({ state: 'requested', amountSats: 2500, validUntilHeight: 180, dueHeight: 300, expired: false, lightning: true, rail: null, txid: null, receipt: null, denial: null, ...extra })!
 
 test('a dispute fee parses as the node sends it, and an unknown state is no fee', () => {
-  assert.deepEqual(fee(), { state: 'requested', amountSats: 2500, validUntilHeight: 180, dueHeight: 300, expired: false, lightning: true, rail: null, txid: null, receipt: null, denial: null })
+  assert.deepEqual(fee(), { state: 'requested', amountSats: 2500, validUntilHeight: 180, dueHeight: 300, expired: false, lightning: true, rail: null, txid: null, receipt: null, denial: null, recusal: null, refundTxid: null })
   assert.equal(parseDisputeFee(null), null)
   assert.equal(parseDisputeFee({ state: 'refunded' }), null)
   assert.equal(parseDisputeFee({ state: 'paid', amountSats: -1 })?.amountSats, null)
@@ -42,6 +44,8 @@ test('the receipt and the denial count only when the moderator in the terms sign
   assert.equal(verifiedDenial(fee({ state: 'denied', denial: DENIAL }), MODERATOR, 'buyer'), true)
   assert.equal(verifiedDenial(fee({ state: 'denied', denial: DENIAL }), MODERATOR, 'vendor'), false)
   assert.equal(verifiedDenial(fee({ state: 'denied', denial: RECEIPT }), MODERATOR, 'buyer'), false)
+  assert.equal(verifiedRecusal(fee({ state: 'recused', recusal: RECUSAL }), MODERATOR), true)
+  assert.equal(verifiedRecusal(fee({ state: 'recused', recusal: DENIAL }), MODERATOR), false)
 })
 
 test('the filer reads what its fee is waiting on', () => {
@@ -50,6 +54,7 @@ test('the filer reads what its fee is waiting on', () => {
   assert.match(disputeFeeText(fee({ state: 'paid' }), 300), /due by block 300/)
   assert.match(disputeFeeText(fee({ state: 'paid' }), 301), /overdue.*not refunded/)
   assert.match(disputeFeeText(fee({ state: 'denied' })), /final/)
+  assert.match(disputeFeeText(fee({ state: 'recused', refundTxid: 'ab'.repeat(32) })), /paid 2,500 sats back in transaction abab/)
   assert.match(filingFeeNote('filing', 2500), /^Opening a dispute costs 2,500 sats/)
   assert.equal(filingFeeNote('filing', 0), 'This moderator charges no filing fee.')
   assert.match(filingFeeNote('ruling', 1000), /only if it rules/)

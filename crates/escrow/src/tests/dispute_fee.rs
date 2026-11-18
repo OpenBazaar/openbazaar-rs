@@ -207,6 +207,12 @@ fn decisions_cite_their_ruling_and_a_reversed_denial_is_provable() {
     assert!(is_denial_reversed(&denied_vendor, &ruling, &signing_key));
     assert!(!is_denial_reversed(&denied_buyer, &ruling, &signing_key));
     assert!(!is_denial_reversed(&ruled, &ruling, &signing_key));
+    let recused = keys.sign_dispute_decision(case_id, Decision::Recused, None).unwrap();
+    assert_eq!(read_dispute_decision(&recused, &signing_key).unwrap().0, Decision::Recused);
+    assert!(keys
+        .sign_dispute_decision(case_id, Decision::Recused, Some(&ruling))
+        .is_err());
+    assert!(!is_denial_reversed(&recused, &ruling, &signing_key));
     let other_key = ModeratorKeys::from_seed(&OTHER_MODERATOR_SEED)
         .unwrap()
         .signing_public();

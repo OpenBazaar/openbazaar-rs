@@ -8,7 +8,7 @@ import { verifyDisputeDecision, verifyFeeReceipt, type FeeReceiptRecord } from '
 
 export type FeeKind = 'filing' | 'ruling'
 
-export type DisputeFeeState = 'awaiting-request' | 'requested' | 'paying' | 'paid' | 'denied'
+export type DisputeFeeState = 'awaiting-request' | 'requested' | 'paying' | 'paid' | 'denied' | 'recused'
 
 /** Where this node's own filing fee stands, as the order or sale carries it. */
 export type DisputeFee = {
@@ -25,6 +25,9 @@ export type DisputeFee = {
   receipt: string | null
   /** Hex of the moderator's signed denial (`OBDD`). */
   denial: string | null
+  /** Hex of the moderator's signed recusal (`OBDD`), and the refund it sent this node. */
+  recusal: string | null
+  refundTxid: string | null
 }
 
 /** One payment of a fee request, as the node will make it. */
@@ -43,7 +46,7 @@ export type DisputeFeeQuote = {
 
 export type DisputeFeePaid = { rail: 'ln' | 'onchain'; amountSats: number; txid: string | null }
 
-const STATES: readonly DisputeFeeState[] = ['awaiting-request', 'requested', 'paying', 'paid', 'denied']
+const STATES: readonly DisputeFeeState[] = ['awaiting-request', 'requested', 'paying', 'paid', 'denied', 'recused']
 
 const record = (value: unknown) => (value && typeof value === 'object' && !Array.isArray(value) ? value : {}) as Record<string, unknown>
 const count = (value: unknown) => (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null)
@@ -70,6 +73,8 @@ export function parseDisputeFee(value: unknown): DisputeFee | null {
     txid: text(r.txid),
     receipt: text(r.receipt),
     denial: text(r.denial),
+    recusal: text(r.recusal),
+    refundTxid: text(r.refundTxid),
   }
 }
 
@@ -100,6 +105,11 @@ export function verifiedDenial(fee: DisputeFee, moderator: string, filer: 'buyer
   return decision?.decision === `denied-${filer}`
 }
 
+/** Whether the moderator's key signed a recusal from this case. */
+export function verifiedRecusal(fee: DisputeFee, moderator: string): boolean {
+  return (fee.recusal ? verifyDisputeDecision(fee.recusal, moderator) : null)?.decision === 'recused'
+}
+
 /** What the filer reads about its fee. `tip` is the chain height, when known. */
 export function disputeFeeText(fee: DisputeFee, tip?: number): string {
   const sats = fee.amountSats === null ? 'the fee' : `${fee.amountSats.toLocaleString()} sats`
@@ -117,6 +127,10 @@ export function disputeFeeText(fee: DisputeFee, tip?: number): string {
         : `Paid ${sats}; the moderator signed a receipt.${due}`
     case 'denied':
       return 'The moderator denied this letter. A denial is final, and the fee is not returned.'
+    case 'recused':
+      return fee.refundTxid
+        ? `The moderator recused itself from this case and paid ${sats} back in transaction ${fee.refundTxid}. The escrow follows its timelocks.`
+        : 'The moderator recused itself from this case. The escrow follows its timelocks.'
   }
 }
 

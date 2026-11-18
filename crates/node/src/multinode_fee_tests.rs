@@ -13,7 +13,7 @@ use crate::multinode_tests::{funded, funding_tx, sale, spends};
 use crate::{Node, SETTLED};
 
 const SELLER: &str = "Marlow Goods";
-const FEE: u64 = 2_500;
+pub(crate) const FEE: u64 = 2_500;
 
 /// The moderator publishes with `fee`, both parties accept it, and the
 /// buyer funds an escrow under it. Returns the order id and the terms.
@@ -47,7 +47,7 @@ pub(crate) fn funded_with(market: &Market, fee: u64) -> (String, Value) {
     (id, escrow)
 }
 
-fn terms(escrow: &Value) -> openbazaar_escrow::EscrowTerms {
+pub(crate) fn terms(escrow: &Value) -> openbazaar_escrow::EscrowTerms {
     SignedTerms::decode(&unhex(escrow["terms"].as_str().unwrap()).unwrap())
         .unwrap()
         .terms()
@@ -55,7 +55,7 @@ fn terms(escrow: &Value) -> openbazaar_escrow::EscrowTerms {
 }
 
 /// The buyer files; returns the moderator's case for it.
-fn filed(market: &Market, id: &str) -> Value {
+pub(crate) fn filed(market: &Market, id: &str) -> Value {
     let (status, body) = request(
         &market.buyer.node,
         "POST",
@@ -67,16 +67,16 @@ fn filed(market: &Market, id: &str) -> Value {
     case(&market.moderator.node)
 }
 
-fn case(node: &Node) -> Value {
+pub(crate) fn case(node: &Node) -> Value {
     request(node, "GET", "/moderator/disputes", "").1["disputes"][0].clone()
 }
 
-fn act(node: &Node, case: &Value, action: &str, favor: &str) -> (String, Value) {
+pub(crate) fn act(node: &Node, case: &Value, action: &str, favor: &str) -> (String, Value) {
     let path = format!("/moderator/disputes/{}/{action}", case["id"].as_str().unwrap());
     request(node, "POST", &path, &json!({ "favor": favor }).to_string())
 }
 
-fn last_request(node: &Node, case: &Value) -> Option<FeeRequest> {
+pub(crate) fn last_request(node: &Node, case: &Value) -> Option<FeeRequest> {
     let bytes = node.last_fee_request(&parse_id(case["id"].as_str().unwrap()).unwrap())?;
     Some(SignedFeeRequest::decode(&bytes).unwrap().terms)
 }
@@ -261,11 +261,11 @@ fn a_paid_case_left_undecided_past_its_due_height_is_flagged_overdue() {
     pay(&market, &last_request(&moderator, &filed).unwrap());
     let counts = || request(&moderator, "GET", "/moderator/profile", "").1["trackRecord"]["cases"].clone();
     assert_eq!(case(&moderator)["fee"]["overdue"], false);
-    assert_eq!(counts(), json!({ "accepted": 1, "decided": 0, "denied": 0, "overdue": 0 }));
+    assert_eq!(counts(), json!({ "accepted": 1, "decided": 0, "denied": 0, "recused": 0, "overdue": 0 }));
 
     *market.chain.0.tip.lock().unwrap() = terms(&escrow).vendor_claim_height + 1;
     assert_eq!(case(&moderator)["fee"]["overdue"], true, "{}", case(&moderator));
-    assert_eq!(counts(), json!({ "accepted": 1, "decided": 0, "denied": 0, "overdue": 1 }));
+    assert_eq!(counts(), json!({ "accepted": 1, "decided": 0, "denied": 0, "recused": 0, "overdue": 1 }));
 }
 
 #[test]
