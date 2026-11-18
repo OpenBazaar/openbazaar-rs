@@ -47,12 +47,26 @@ All integers are little-endian. \code{str} is a 2-byte length followed by UTF-8 
 \code{OBML} v1 & Onion frame & Letter length (u32), then one \code{OBSL} letter. \\
 \code{OBQR} v1 & Query frame & Kind (u8: 1 head, 2 store, 3 listings, 4 inbox, 5 admission page), id (32: the store id or the admission cursor). The reply is a status (u8: 0 found, 1 none), length (u32), and body. A stream preface; unsigned. \\
 \code{OBSB} v1 & Submit frame & Kind (u8: 1 store, 2 listing, 3 head, 4 admission), length (u32, at most 1~MiB), then the signed record. The reply is one byte: 0 kept, 1 refused. A stream preface; unsigned. \\
-\code{OBET} v4 & Escrow terms & The keys, moderator record (keys, payout, fee, policy), amounts, heights, and payout scripts of \S\ref{sec:escrow-notation}. In this version the presigned claim is the buyer refund at $h_R$. \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\begin{center}\small
+\begin{tabularx}{\textwidth}{@{}lp{0.15\textwidth}X@{}}
+\toprule
+\textbf{Magic} & \textbf{Escrow record} & \textbf{Fields after magic and version} \\
+\midrule
+\code{OBMR} v2 & Moderator record & Signing key (33), encryption key (33), filing fee (u64, satoshis: 0 or at least 330), policy. Version 1, read only for version 4 terms, has a payout script (u32 length and bytes) after the encryption key, and its fee is paid by each dispute outcome. \\
+\code{OBET} v5 & Escrow terms & The keys, moderator record \code{OBMR} v2 (its fields, without magic and version), amounts, heights, and payout scripts of \S\ref{sec:escrow-notation}; digest tag \code{ob-escrow/terms/v5}. Signed terms \code{OBTS} carry the same version. Version 4 carries an \code{OBMR} v1 record; nodes still read it but refuse it for new escrows. In both versions the presigned claim is the buyer refund at $h_R$. \\
 \code{OBEM} v1 & Escrow mail & Message kind (u8), escrow id (16), field count (u8), then fields as u32 length and bytes; sealed as an \code{OBSL} letter between nodes. \\
 \code{OBDL} v3 & Dispute letter & The fields of the dispute letter in \S\ref{sec:escrow}, then the claimant's signature. \\
 \code{OBRU} v2 & Ruling & Terms digest (32), output key (32), funding outpoint, favored party (u8), adaptor point (33), moderator share (32), signature (64) by the moderator's signing key over all preceding fields. \\
 \code{OBPR} v1 & Public ruling & Ruling digest (32: tagged hash \code{ob-escrow/ruling-digest/v1} of the ruling), store key (32), listing id (16), moderator key (32); signature by the moderator key with tag \code{ob/public-ruling/v1}. \\
 \code{OBDO} v1 & Dispute outcome & Ruling digest (32), favored party (u8: 1 buyer, 2 vendor), moderator key (32); signature by the moderator key with tag \code{ob/dispute-outcome/v1}. \\
+\code{OBFQ} v1 & Fee request & Moderator key (32), case id (32: tagged hash \code{ob-escrow/case/v1} of the terms digest, funding txid, and output index), letter digest (32, SHA-256), filer (u8: 1 buyer, 2 vendor), amount (u64, non-zero), invoice flag (u8; if 1: network (str), BOLT 11 invoice (str), payment hash (32)), script (u32 length and bytes, at most 64), valid-until height (u32), due height (u32, not before valid-until); signature with tag \code{ob/dispute-fee-request/v1}. Sent only to the filer. \\
+\code{OBFR} v1 & Fee receipt & Moderator key (32), case id (32), request digest (32), rail (u8: 1 Lightning, then payment hash (32); 2 on chain, then txid (32) and output index (u32)), amount received (u64), paid height (u32), due height (u32); signature with tag \code{ob/dispute-fee-receipt/v1}. Sent only to the filer. \\
+\code{OBCA} v1 & Case accepted & Moderator key (32), case id (32), accepted height (u32), due height (u32); signature with tag \code{ob/case-accepted/v1}. Public. \\
+\code{OBDD} v1 & Decision & Moderator key (32), case id (32), decision (u8: 1 ruled for the buyer, 2 for the vendor, 3 denied the buyer, 4 denied the vendor, 5 recused), ruling digest (32; zero for a denial or recusal); signature with tag \code{ob/dispute-decision/v1}. Public. \\
 \bottomrule
 \end{tabularx}
 \end{center}
