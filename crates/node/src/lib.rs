@@ -129,6 +129,8 @@ mod lock_tests;
 #[cfg(test)]
 mod multinode_durable_tests;
 #[cfg(test)]
+mod multinode_dropped_fee_tests;
+#[cfg(test)]
 mod multinode_fee_tests;
 #[cfg(test)]
 mod multinode_moderator_tests;

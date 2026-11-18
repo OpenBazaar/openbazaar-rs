@@ -314,7 +314,7 @@ fn a_moderator_with_no_filing_fee_decides_at_once() {
 
 /// Quote the fee at `base` (`/orders/{id}` or `/escrow/sales/{id}`), then pay
 /// the quote with the passphrase. Returns the quote and the answer.
-fn quote_and_pay(node: &Node, base: &str) -> (Value, (String, Value)) {
+pub(crate) fn quote_and_pay(node: &Node, base: &str) -> (Value, (String, Value)) {
     let (status, quote) = request(node, "POST", &format!("{base}/dispute-fee/quote"), "");
     assert!(status.contains("200"), "{status} {quote}");
     let body = json!({ "quote": quote["quote"], "passphrase": PASSPHRASE, "confirm": true }).to_string();

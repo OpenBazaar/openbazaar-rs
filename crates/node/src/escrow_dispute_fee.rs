@@ -15,13 +15,19 @@
 //! Each v5 letter carries a refund script: a fresh address of this node's
 //! wallet, the same for every letter of one escrow. A moderator that recuses
 //! after payment, or that was paid more than once, pays back to it.
+//!
+//! An on-chain payment is watched until it confirms ([`watch`]): sent
+//! again while the chain source lacks it, and cleared, so the request can
+//! be paid again, only on evidence that it cannot confirm.
 //! Records are `escrow/filer/{id}-{buyer|vendor}`, sealed like every escrow
 //! record; none holds a secret.
 
 pub(crate) mod pay;
+pub(crate) mod watch;
 
+use bitcoin::consensus::encode::{deserialize_hex, serialize_hex};
 use bitcoin::hashes::Hash;
-use bitcoin::{OutPoint, Txid};
+use bitcoin::{OutPoint, Transaction, Txid};
 use openbazaar_escrow::{
     fee_letter_digest, read_dispute_decision, read_fee_receipt, read_fee_request, Decision, EscrowTerms, FeeCase,
     FeeKind, Party,
@@ -51,6 +57,61 @@ pub(crate) struct Payment {
     pub amount_sats: u64,
     /// The network or routing fee this node paid on top.
     pub fee_sats: u64,
+    /// The signed on-chain payment, stored before its broadcast.
+    pub tx: Option<Transaction>,
+    /// Since when the chain source has not had it.
+    pub unseen: Option<Unseen>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Unseen {
+    /// The tip it was first missed at.
+    pub since: u32,
+    /// How often it was broadcast again since.
+    pub resent: u32,
+}
+
+fn payment_record(payment: &Payment) -> Value {
+    json!({
+        "request": hex(&payment.request),
+        "rail": match payment.paid { Paid::Lightning { .. } => "ln", Paid::OnChain { .. } => "onchain" },
+        "paymentHash": match &payment.paid { Paid::Lightning { payment_hash } => Some(payment_hash.clone()), Paid::OnChain { .. } => None },
+        "txid": match payment.paid { Paid::OnChain { txid, .. } => Some(txid.to_string()), Paid::Lightning { .. } => None },
+        "vout": match payment.paid { Paid::OnChain { vout, .. } => Some(vout), Paid::Lightning { .. } => None },
+        "amountSats": payment.amount_sats,
+        "feeSats": payment.fee_sats,
+        "tx": payment.tx.as_ref().map(serialize_hex),
+        "unseen": payment.unseen.map(|unseen| json!({ "since": unseen.since, "resent": unseen.resent })),
+    })
+}
+
+fn payment_from(payment: &Value) -> Option<Payment> {
+    Some(Payment {
+        request: fixed32(payment["request"].as_str()?)?,
+        paid: match payment["rail"].as_str()? {
+            "ln" => Paid::Lightning {
+                payment_hash: payment["paymentHash"].as_str()?.to_string(),
+            },
+            "onchain" => Paid::OnChain {
+                txid: payment["txid"].as_str()?.parse().ok()?,
+                vout: u32::try_from(payment["vout"].as_u64()?).ok()?,
+            },
+            _ => return None,
+        },
+        amount_sats: payment["amountSats"].as_u64()?,
+        fee_sats: payment["feeSats"].as_u64()?,
+        tx: match payment["tx"].as_str() {
+            Some(text) => Some(deserialize_hex(text).ok()?),
+            None => None,
+        },
+        unseen: match &payment["unseen"] {
+            Value::Null => None,
+            unseen => Some(Unseen {
+                since: u32::try_from(unseen["since"].as_u64()?).ok()?,
+                resent: u32::try_from(unseen["resent"].as_u64()?).ok()?,
+            }),
+        },
+    })
 }
 
 /// One party's filing fee in one escrow.
@@ -67,6 +128,8 @@ pub(crate) struct FilerFee {
     /// The moderator's signed recusal (`OBDD`), and its refund transaction.
     pub recused: Option<Vec<u8>>,
     pub refund_txid: Option<Txid>,
+    /// On-chain payments that could not confirm, newest last.
+    pub cleared: Vec<Payment>,
 }
 
 fn fixed32(text: &str) -> Option<[u8; 32]> {
@@ -85,15 +148,8 @@ impl FilerFee {
         json!({
             "letters": self.letters.iter().map(|digest| hex(digest)).collect::<Vec<_>>(),
             "requests": self.requests.iter().map(|bytes| hex(bytes)).collect::<Vec<_>>(),
-            "payment": self.payment.as_ref().map(|payment| json!({
-                "request": hex(&payment.request),
-                "rail": match payment.paid { Paid::Lightning { .. } => "ln", Paid::OnChain { .. } => "onchain" },
-                "paymentHash": match &payment.paid { Paid::Lightning { payment_hash } => Some(payment_hash.clone()), Paid::OnChain { .. } => None },
-                "txid": match payment.paid { Paid::OnChain { txid, .. } => Some(txid.to_string()), Paid::Lightning { .. } => None },
-                "vout": match payment.paid { Paid::OnChain { vout, .. } => Some(vout), Paid::Lightning { .. } => None },
-                "amountSats": payment.amount_sats,
-                "feeSats": payment.fee_sats,
-            })),
+            "payment": self.payment.as_ref().map(payment_record),
+            "cleared": self.cleared.iter().map(payment_record).collect::<Vec<_>>(),
             "receipt": self.receipt.as_deref().map(hex),
             "denied": self.denied.as_deref().map(hex),
             "refundScript": self.refund_script.as_deref().map(hex),
@@ -105,21 +161,7 @@ impl FilerFee {
     fn from_record(value: &Value) -> Option<Self> {
         let payment = match &value["payment"] {
             Value::Null => None,
-            payment => Some(Payment {
-                request: fixed32(payment["request"].as_str()?)?,
-                paid: match payment["rail"].as_str()? {
-                    "ln" => Paid::Lightning {
-                        payment_hash: payment["paymentHash"].as_str()?.to_string(),
-                    },
-                    "onchain" => Paid::OnChain {
-                        txid: payment["txid"].as_str()?.parse().ok()?,
-                        vout: u32::try_from(payment["vout"].as_u64()?).ok()?,
-                    },
-                    _ => return None,
-                },
-                amount_sats: payment["amountSats"].as_u64()?,
-                fee_sats: payment["feeSats"].as_u64()?,
-            }),
+            payment => Some(payment_from(payment)?),
         };
         Some(Self {
             letters: value["letters"]
@@ -140,6 +182,10 @@ impl FilerFee {
             refund_txid: match value["refundTxid"].as_str() {
                 Some(text) => Some(text.parse().ok()?),
                 None => None,
+            },
+            cleared: match value["cleared"].as_array() {
+                Some(list) => list.iter().map(payment_from).collect::<Option<_>>()?,
+                None => Vec::new(),
             },
         })
     }
@@ -187,6 +233,10 @@ impl FilerFee {
             "denial": self.denied.as_deref().map(hex),
             "recusal": self.recused.as_deref().map(hex),
             "refundTxid": self.refund_txid.map(|txid| txid.to_string()),
+            "clearedTxids": self.cleared.iter().filter_map(|payment| match payment.paid {
+                Paid::OnChain { txid, .. } => Some(txid.to_string()),
+                Paid::Lightning { .. } => None,
+            }).collect::<Vec<_>>(),
         })
     }
 }
@@ -388,8 +438,20 @@ mod tests {
             },
             amount_sats: 5_000,
             fee_sats: 300,
+            tx: Some(Transaction {
+                version: bitcoin::transaction::Version::TWO,
+                lock_time: bitcoin::absolute::LockTime::ZERO,
+                input: vec![bitcoin::TxIn::default()],
+                output: vec![bitcoin::TxOut {
+                    value: bitcoin::Amount::from_sat(1),
+                    script_pubkey: bitcoin::ScriptBuf::new(),
+                }],
+            }),
+            unseen: Some(Unseen { since: 120, resent: 2 }),
         });
         assert_eq!(fee.state(), "paying");
+        assert_eq!(FilerFee::from_record(&fee.to_record()), Some(fee.clone()));
+        fee.cleared = vec![fee.payment.clone().unwrap()];
         assert_eq!(FilerFee::from_record(&fee.to_record()), Some(fee.clone()));
         fee.payment.as_mut().unwrap().paid = Paid::Lightning {
             payment_hash: "ab".into(),

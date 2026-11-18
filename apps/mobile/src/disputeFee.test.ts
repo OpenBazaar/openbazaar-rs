@@ -14,7 +14,7 @@ const RECUSAL = '4f42444401989c0b76cb563971fdc9bef31ec06c3560f3249d6ee9e5d83c576
 const fee = (extra: Record<string, unknown> = {}) => parseDisputeFee({ state: 'requested', amountSats: 2500, validUntilHeight: 180, dueHeight: 300, expired: false, lightning: true, rail: null, txid: null, receipt: null, denial: null, ...extra })!
 
 test('a dispute fee parses as the node sends it, and an unknown state is no fee', () => {
-  assert.deepEqual(fee(), { state: 'requested', amountSats: 2500, validUntilHeight: 180, dueHeight: 300, expired: false, lightning: true, rail: null, txid: null, receipt: null, denial: null, recusal: null, refundTxid: null })
+  assert.deepEqual(fee(), { state: 'requested', amountSats: 2500, validUntilHeight: 180, dueHeight: 300, expired: false, lightning: true, rail: null, txid: null, receipt: null, denial: null, recusal: null, refundTxid: null, clearedTxids: [] })
   assert.equal(parseDisputeFee(null), null)
   assert.equal(parseDisputeFee({ state: 'refunded' }), null)
   assert.equal(parseDisputeFee({ state: 'paid', amountSats: -1 })?.amountSats, null)
@@ -55,6 +55,9 @@ test('the filer reads what its fee is waiting on', () => {
   assert.match(disputeFeeText(fee({ state: 'paid' }), 301), /overdue.*not refunded/)
   assert.match(disputeFeeText(fee({ state: 'denied' })), /final/)
   assert.match(disputeFeeText(fee({ state: 'recused', refundTxid: 'ab'.repeat(32) })), /paid 2,500 sats back in transaction abab/)
+  const cleared = fee({ clearedTxids: ['cd'.repeat(32), 7] })
+  assert.deepEqual(cleared.clearedTxids, ['cd'.repeat(32)])
+  assert.match(disputeFeeText(cleared), /^The earlier payment could not confirm, so it was cleared.*asks 2,500 sats/)
   assert.match(filingFeeNote('filing', 2500), /^Opening a dispute costs 2,500 sats/)
   assert.equal(filingFeeNote('filing', 0), 'This moderator charges no filing fee.')
   assert.match(filingFeeNote('ruling', 1000), /only if it rules/)

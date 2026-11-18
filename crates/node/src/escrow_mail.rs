@@ -265,6 +265,7 @@ pub(crate) struct Escrow {
     pub buyer: Mutex<BuyerDesk>,
     pub vendor: Mutex<VendorDesk>,
     pub moderator: Mutex<ModeratorDesk>,
+    pub filer_tick: Mutex<crate::escrow_dispute_fee::watch::FilerTick>,
     /// The moderator profiles this node knows and the ones its stores accept.
     pub book: Mutex<crate::moderators::Book>,
     /// This node's own moderator identity, once a `--moderate` node has made one.
@@ -299,6 +300,7 @@ impl Escrow {
             buyer: Mutex::new(BuyerDesk::default()),
             vendor: Mutex::new(vendor),
             moderator: Mutex::new(moderator),
+            filer_tick: Mutex::default(),
             book: Mutex::new(crate::moderators::Book::open(dir)?),
             identity: Mutex::new(crate::moderator_identity::Identity::open(dir, vault)?),
             #[cfg(test)]
@@ -420,6 +422,7 @@ impl Node {
             self.retry_escrow_requests(false);
             self.refresh_moderator_identity();
             self.moderator_fee_tick();
+            self.filer_fee_tick();
             std::thread::sleep(MAIL_POLL);
         }
     }

@@ -13,7 +13,9 @@
 //! for a fee already paid or a letter already denied.
 //!
 //! The on-chain payment is recorded before it is broadcast, so a crash in
-//! between cannot lead to a second payment; a broadcast that fails clears it.
+//! between cannot lead to a second payment; a broadcast that fails clears it
+//! ([`super::watch`]), and a payment made after a cleared one spends one of
+//! its coins.
 
 use bitcoin::{Address, FeeRate, ScriptBuf, Transaction};
 use openbazaar_escrow::Party;
@@ -244,6 +246,8 @@ impl Node {
                     },
                     amount_sats: terms.amount_sats,
                     fee_sats: fee_cap_msat.div_ceil(1_000),
+                    tx: None,
+                    unseen: None,
                 });
                 self.save_filer_fee(party, &escrow_id, &fee).map_err(PayError::Failed)?;
             }
@@ -277,7 +281,7 @@ impl Node {
         let _spending = self.spending.lock().unwrap_or_else(|err| err.into_inner());
         let shape = SendShape {
             lock_height: Some(self.chain.tip_height().map_err(PayError::Chain)?),
-            spend: Vec::new(),
+            spend: self.cleared_coins(fee),
         };
         let (tx, network_fee) = self.signed_send(recipient, terms.amount_sats, fee_rate, fee_cap_sats, &shape)?;
         let txid = tx.compute_txid();
@@ -291,10 +295,12 @@ impl Node {
             paid: Paid::OnChain { txid, vout },
             amount_sats: terms.amount_sats,
             fee_sats: network_fee,
+            tx: Some(tx.clone()),
+            unseen: None,
         });
         self.save_filer_fee(party, id, fee).map_err(PayError::Failed)?;
         if let Err(err) = self.chain.broadcast(&tx) {
-            fee.payment = None;
+            fee.clear_payment();
             self.save_filer_fee(party, id, fee).map_err(PayError::Failed)?;
             return Err(PayError::Chain(err));
         }

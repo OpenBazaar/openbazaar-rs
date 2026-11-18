@@ -28,6 +28,8 @@ export type DisputeFee = {
   /** Hex of the moderator's signed recusal (`OBDD`), and the refund it sent this node. */
   recusal: string | null
   refundTxid: string | null
+  /** On-chain payments this node cleared because they could not confirm. */
+  clearedTxids: string[]
 }
 
 /** One payment of a fee request, as the node will make it. */
@@ -75,6 +77,7 @@ export function parseDisputeFee(value: unknown): DisputeFee | null {
     denial: text(r.denial),
     recusal: text(r.recusal),
     refundTxid: text(r.refundTxid),
+    clearedTxids: Array.isArray(r.clearedTxids) ? r.clearedTxids.flatMap(txid => text(txid) ?? []) : [],
   }
 }
 
@@ -117,8 +120,10 @@ export function disputeFeeText(fee: DisputeFee, tip?: number): string {
   switch (fee.state) {
     case 'awaiting-request':
       return 'Waiting for the moderator to review the letter and send its fee request.'
-    case 'requested':
-      return fee.expired ? 'The fee request lapsed. The moderator sends a new one while there is time to decide.' : `The moderator reviewed the letter and asks ${sats} to take the case.`
+    case 'requested': {
+      const cleared = fee.clearedTxids.length ? 'The earlier payment could not confirm, so it was cleared and its coins are back in the wallet. ' : ''
+      return cleared + (fee.expired ? 'The fee request lapsed. The moderator sends a new one while there is time to decide.' : `The moderator reviewed the letter and asks ${sats} to take the case.`)
+    }
     case 'paying':
       return `${sats} sent. Waiting for the moderator's receipt.`
     case 'paid':

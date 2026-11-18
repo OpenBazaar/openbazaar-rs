@@ -45,6 +45,8 @@ pub(crate) struct Chain {
     pub broadcasts: Mutex<Vec<Transaction>>,
     pub fee_rate: Mutex<f64>,
     pub fail_broadcast: AtomicBool,
+    /// Take broadcasts and lose them, like a relay that drops them.
+    pub drop_broadcasts: AtomicBool,
     /// Act like compact block filters: no lookup by txid, and a script is
     /// "still scanning" the first time it is followed.
     pub filters: AtomicBool,
@@ -191,6 +193,9 @@ impl ChainSource for MockChain {
     fn broadcast(&self, tx: &Transaction) -> Result<(), String> {
         if self.0.fail_broadcast.swap(false, Ordering::Relaxed) {
             return Err("mock relay is down".to_string());
+        }
+        if self.0.drop_broadcasts.load(Ordering::Relaxed) {
+            return Ok(());
         }
         let txid = tx.compute_txid();
         let spends = |other: &Transaction| other.input.iter().any(|old| tx.input.iter().any(|new| new.previous_output == old.previous_output));
