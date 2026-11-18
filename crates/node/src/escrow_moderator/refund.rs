@@ -155,6 +155,9 @@ impl Node {
         }
         let address = Address::from_script(&script, self.network.bitcoin())
             .map_err(|_| conflict("The refund script has no address on this network."))?;
+        if self.buyer_wallet().wallet.is_mine(script.clone()) {
+            return Err(conflict("The refund script belongs to this node's own wallet. Nothing was paid."));
+        }
         self.sync_buyer_wallet().map_err(PayError::Chain)?;
         let fee_rate = self.pay_fee_rate()?;
         let (psbt, _) = self.build_send(&address, Some(target.amount), fee_rate, false)?;
@@ -318,6 +321,13 @@ impl Node {
             eprintln!("ob-node: refund {} is stored and will be sent again: {err}", tx.compute_txid());
         }
         Ok(tx)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn rewrite_refund_script(&self, id: &EscrowId, filer: Party, script: Vec<u8>) {
+        if let Some(case) = self.moderator_desk().cases.get_mut(&(*id, filer as u8)) {
+            case.refund_script = Some(script);
+        }
     }
 
     /// Broadcast again every stored refund that is not confirmed and that

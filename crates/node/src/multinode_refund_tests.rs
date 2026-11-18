@@ -117,6 +117,25 @@ fn a_decided_case_cannot_be_recused() {
     assert_eq!(case(&moderator)["fee"]["recused"], false);
 }
 
+#[test]
+fn a_refund_never_goes_to_this_nodes_own_wallet() {
+    let market = Market::new();
+    let (id, _) = funded_with(&market, FEE);
+    let moderator = market.moderator.node.clone();
+    let filed = filed(&market, &id);
+    moderator.moderator_fee_steps();
+    let asked = last_request(&moderator, &filed).unwrap();
+    pay(&market, &asked);
+    fund_node_wallet(&moderator, &market.chain, 50_000);
+    moderator.rewrite_refund_script(&escrow_of(&filed), Party::Buyer, asked.script.clone());
+    let path = format!("/moderator/disputes/{}/recuse/quote", filed["id"].as_str().unwrap());
+    let (status, refused) = request(&moderator, "POST", &path, "");
+    assert!(
+        status.contains("409") && refused["error"].as_str().unwrap().contains("own wallet"),
+        "a refund into one of its own fee scripts would count as a payment: {status} {refused}"
+    );
+}
+
 /// A second funded order under the same moderator. Returns its id.
 fn another_order(market: &Market) -> String {
     let body = json!({ "name": "Ines Varga", "feeSats": FEE });
