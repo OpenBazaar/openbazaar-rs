@@ -4,7 +4,21 @@ import { NO_VARIANT, quote, scaleOf, unitToday, type Quote } from "./pricing.ts"
 import { listingSellable, sellable } from "./variants.ts";
 
 /** `variant` is set for a version 7 listing with options; two variants are two lines. */
-export type CartLine = { hash: string; quantity: number; variant?: string };
+export type CartLine = { hash: string; quantity: number; variant?: string; storeId?: string; title?: string };
+
+/** A bag line whose listing is not in the catalog. `removed` is true only when
+ *  the line's store is in the catalog without it; otherwise the store may just
+ *  be unreachable, or the line predates `storeId`. */
+export type MissingLine = { key: string; quantity: number; title: string; removed: boolean };
+
+export function missingLines(catalog: ShopCatalog, lines: CartLine[]): MissingLine[] {
+  return lines.filter(line => line.quantity >= 1 && !catalog.listings.some(l => l.hash === line.hash)).map(line => ({
+    key: lineKey(line),
+    quantity: line.quantity,
+    title: line.title ?? "An item in your bag",
+    removed: !!line.storeId && catalog.stores.some(s => s.key === line.storeId),
+  }));
+}
 
 export type CartItem = {
   listing: ListingHeader;
