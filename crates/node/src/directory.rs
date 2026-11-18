@@ -1,7 +1,8 @@
 //! Directory replication.
 //!
 //! A peer asks up to three introductions for the head and keeps the highest
-//! sequence that verifies under the shipped key. Stores join with an
+//! sequence that verifies under the shipped key and extends the held fee
+//! terms ([`crate::directory_head`]). Stores join with an
 //! admission, not with a new sequence. Store records are wanted for an
 //! admitted or followed id. Listing bodies are wanted for the own store,
 //! followed ids, and the 50 stores last opened here. A source that is down
@@ -22,6 +23,7 @@ use std::time::Duration;
 use openbazaar_protocol::{Admission, Catalog, Listing, SeedDocument, Store, StoreId, ADMISSION_LEN};
 use serde_json::{json, Value};
 
+use crate::directory_head::Heads;
 use crate::http::{json_body, json_error, local_guard, Client};
 use crate::orders::OrderError;
 use crate::seeds::DOCUMENT_KEY;
@@ -38,6 +40,10 @@ impl Source for Introduction {
     fn seed_bytes(&self) -> Result<Vec<u8>, String> {
         ask(&self.state_dir, &self.onion, tormail::QUERY_SEED, [0u8; 32])?
             .ok_or_else(|| "introduction has no document".into())
+    }
+
+    fn head_bytes(&self) -> Result<Option<Vec<u8>>, String> {
+        ask(&self.state_dir, &self.onion, tormail::QUERY_HEAD, [0u8; 32])
     }
 
     fn store_bytes(&self, id: &[u8; 32]) -> Result<Option<Vec<u8>>, String> {
@@ -112,6 +118,11 @@ fn split_listings(blob: &[u8]) -> Result<Vec<Vec<u8>>, String> {
 /// One introduction, or any other place a signed document and records are read from.
 pub(crate) trait Source {
     fn seed_bytes(&self) -> Result<Vec<u8>, String>;
+    /// The version 3 head. `Ok(None)` means this source does not serve one,
+    /// so the pass asks [`Source::seed_bytes`] instead.
+    fn head_bytes(&self) -> Result<Option<Vec<u8>>, String> {
+        Ok(None)
+    }
     fn store_bytes(&self, id: &[u8; 32]) -> Result<Option<Vec<u8>>, String>;
     fn listing_bytes(&self, id: &[u8; 32]) -> Result<Vec<Vec<u8>>, String>;
     /// One page of admissions with store ids greater than `cursor`.
@@ -130,7 +141,7 @@ fn page_cap() -> usize {
 
 pub(crate) struct Replica {
     dir: PathBuf,
-    document: Option<SeedDocument>,
+    heads: Heads,
     followed: BTreeSet<[u8; 32]>,
     /// Store keys submitted before admissions existed. Not a way to join.
     inbox: BTreeSet<[u8; 32]>,
@@ -173,8 +184,8 @@ impl Replica {
         fs::create_dir_all(dir.join("listings")).map_err(|err| Error::Detail(err.to_string()))?;
         fs::create_dir_all(dir.join("admissions")).map_err(|err| Error::Detail(err.to_string()))?;
         let mut replica = Self {
+            heads: Heads::load(&dir, &DOCUMENT_KEY),
             dir,
-            document: None,
             followed: BTreeSet::new(),
             inbox: BTreeSet::new(),
             admissions: BTreeMap::new(),
@@ -190,13 +201,18 @@ impl Replica {
     }
 
     pub(crate) fn head(&self) -> Option<SeedDocument> {
-        self.document.clone()
+        self.heads.document().cloned()
+    }
+
+    /// The last head this node refused, with the reason.
+    pub(crate) fn head_refused(&self) -> Option<(u64, String)> {
+        self.heads.refused().cloned()
     }
 
     /// Hosts to dial. A saved head supplies its own list. The compiled onions
     /// are only the bootstrap for an empty `document.obsd`.
     pub(crate) fn introduction_hosts(&self) -> Vec<String> {
-        match &self.document {
+        match self.heads.document() {
             Some(document) if !document.introductions.is_empty() => {
                 document.introductions.iter().take(openbazaar_protocol::MAX_INTRODUCTIONS).cloned().collect()
             }
@@ -211,25 +227,12 @@ impl Replica {
     /// follows, and recently opened stores, and only when this node does not
     /// already hold one.
     pub(crate) fn pull(&mut self, sources: &[&dyn Source], key: &[u8; 32], own: [u8; 32]) -> Result<(), String> {
-        pull_into(&RefCell::new(self), sources, key, own)
+        self.pull_at(sources, key, own, None)
     }
 
-    /// Keep the highest sequence among the held head and `fetched`.
-    fn keep_head(&mut self, fetched: Vec<SeedDocument>) -> Result<(), String> {
-        let mut best = self.document.clone();
-        for document in fetched {
-            let newer = best.as_ref().map(|held| document.sequence > held.sequence).unwrap_or(true);
-            if newer {
-                best = Some(document);
-            }
-        }
-        if let Some(document) = best {
-            if self.document.as_ref().map(|held| held.sequence) != Some(document.sequence) {
-                self.document = Some(document);
-                self.save_document()?;
-            }
-        }
-        Ok(())
+    /// [`Replica::pull`] with the chain tip, which a head that drops fee terms needs.
+    pub(crate) fn pull_at(&mut self, sources: &[&dyn Source], key: &[u8; 32], own: [u8; 32], tip: Option<u32>) -> Result<(), String> {
+        pull_into(&RefCell::new(self), sources, key, own, tip)
     }
 
     /// Keep one admission page. `true` asks for the page after it.
@@ -305,7 +308,8 @@ impl Replica {
 
     pub(crate) fn answer(&self, kind: u8, id: &[u8; 32]) -> Option<Vec<u8>> {
         match kind {
-            tormail::QUERY_SEED => self.document.as_ref()?.encode().ok(),
+            tormail::QUERY_SEED => self.heads.seed_bytes(),
+            tormail::QUERY_HEAD => self.heads.head_bytes(),
             tormail::QUERY_STORE => self.stores.get(id)?.encode().ok(),
             tormail::QUERY_ADMISSIONS => Some(self.admission_page(id)),
             tormail::QUERY_INBOX => {
@@ -406,17 +410,15 @@ impl Replica {
         Ok(())
     }
 
-    /// Keep a higher sequence signed by `key`.
+    /// Keep a higher sequence signed by `key` whose fee terms extend the held ones.
     pub(crate) fn accept_document(&mut self, bytes: &[u8], key: &[u8; 32]) -> Result<u64, String> {
+        self.accept_document_at(bytes, key, None)
+    }
+
+    pub(crate) fn accept_document_at(&mut self, bytes: &[u8], key: &[u8; 32], tip: Option<u32>) -> Result<u64, String> {
         let document = SeedDocument::decode(bytes).map_err(|err| err.to_string())?;
         document.verify_signer(key).map_err(|err| err.to_string())?;
-        if self.document.as_ref().is_some_and(|held| document.sequence <= held.sequence) {
-            return Err("an older sequence does not replace the document".into());
-        }
-        let sequence = document.sequence;
-        self.document = Some(document);
-        self.save_document()?;
-        Ok(sequence)
+        self.heads.accept(document, tip)
     }
 
     /// The signed name is shown when this node follows the id, or the admission
@@ -501,19 +503,6 @@ impl Replica {
     }
 
     fn load(&mut self) -> Result<(), String> {
-        let path = self.dir.join("document.obsd");
-        if let Ok(bytes) = fs::read(&path) {
-            match SeedDocument::decode(&bytes) {
-                Ok(document) => match document.verify_signer(&crate::seeds::DOCUMENT_KEY) {
-                    Ok(()) => {
-                        eprintln!("ob-node: directory head sequence {}", document.sequence);
-                        self.document = Some(document);
-                    }
-                    Err(_) => eprintln!("ob-node: directory head at {} is not signed by the shipped key", path.display()),
-                },
-                Err(err) => eprintln!("ob-node: directory head at {}: {err}", path.display()),
-            }
-        }
         if let Ok(text) = fs::read_to_string(self.dir.join("followed")) {
             for line in text.lines() {
                 if let Some(id) = unhex32(line.trim()) {
@@ -571,12 +560,6 @@ impl Replica {
             }
         }
         Ok(())
-    }
-
-    fn save_document(&self) -> Result<(), String> {
-        let Some(document) = &self.document else { return Ok(()) };
-        let bytes = document.encode().map_err(|err| err.to_string())?;
-        atomic(&self.dir.join("document.obsd"), &bytes)
     }
 
     fn save_followed(&self) -> Result<(), String> {
@@ -688,7 +671,11 @@ impl Replica {
 
 impl Source for Replica {
     fn seed_bytes(&self) -> Result<Vec<u8>, String> {
-        self.document.as_ref().ok_or_else(|| "no seed document".to_string())?.encode().map_err(|err| err.to_string())
+        self.heads.seed_bytes().ok_or_else(|| "no seed document".to_string())
+    }
+
+    fn head_bytes(&self) -> Result<Option<Vec<u8>>, String> {
+        Ok(self.heads.head_bytes())
     }
 
     fn store_bytes(&self, id: &[u8; 32]) -> Result<Option<Vec<u8>>, String> {
@@ -730,22 +717,27 @@ fn unhex32(text: &str) -> Option<[u8; 32]> {
 
 /// `http://` plus a v3 onion host. Anything else is not a sale destination.
 /// One pull into `held`. Every fetch runs with the replica free.
-fn pull_into(held: &impl Held, sources: &[&dyn Source], key: &[u8; 32], own: [u8; 32]) -> Result<(), String> {
+fn pull_into(held: &impl Held, sources: &[&dyn Source], key: &[u8; 32], own: [u8; 32], tip: Option<u32>) -> Result<(), String> {
     let sources = &sources[..sources.len().min(PASS_ATTEMPTS)];
-    pull_head(held, sources, key)?;
+    pull_head(held, sources, key, tip)?;
     pull_admissions(held, sources)?;
     pull_stores(held, sources)?;
     pull_wanted_listings(held, sources, own)
 }
 
-fn pull_head(held: &impl Held, sources: &[&dyn Source], key: &[u8; 32]) -> Result<(), String> {
+/// Ask each source for its version 3 head, or its version 2 head when it serves none.
+fn pull_head(held: &impl Held, sources: &[&dyn Source], key: &[u8; 32], tip: Option<u32>) -> Result<(), String> {
     let fetched = sources
         .iter()
-        .filter_map(|source| source.seed_bytes().ok())
+        .filter_map(|source| match source.head_bytes() {
+            Ok(Some(bytes)) => Some(bytes),
+            Ok(None) => source.seed_bytes().ok(),
+            Err(_) => None,
+        })
         .filter_map(|bytes| SeedDocument::decode(&bytes).ok())
         .filter(|document| document.verify_signer(key).is_ok())
         .collect();
-    held.with(|replica| replica.keep_head(fetched))
+    held.with(|replica| replica.heads.keep(fetched, tip))
 }
 
 fn pull_admissions(held: &impl Held, sources: &[&dyn Source]) -> Result<(), String> {
@@ -825,7 +817,7 @@ impl Node {
     pub(crate) fn directory_reply(&self, kind: u8, id: &[u8; 32]) -> Option<Vec<u8>> {
         let from_replica = self.seed_replica.lock().ok()?.answer(kind, id);
         match kind {
-            tormail::QUERY_SEED => from_replica,
+            tormail::QUERY_SEED | tormail::QUERY_HEAD => from_replica,
             tormail::QUERY_STORE => {
                 if from_replica.is_some() {
                     return from_replica;
@@ -856,12 +848,13 @@ impl Node {
 
     /// Keep a signed store, listing, admission, or a higher head.
     pub(crate) fn directory_submit(&self, kind: u8, body: &[u8]) -> bool {
+        let tip = if kind == tormail::SUBMIT_DOCUMENT { self.chain.tip_height().ok() } else { None };
         let accepted = {
             let mut replica = self.seed_replica.lock().unwrap_or_else(|err| err.into_inner());
             match kind {
                 tormail::SUBMIT_STORE => replica.accept_store(body).map(|_| ()),
                 tormail::SUBMIT_LISTING => replica.accept_listing(body),
-                tormail::SUBMIT_DOCUMENT => replica.accept_document(body, &DOCUMENT_KEY).map(|_| ()),
+                tormail::SUBMIT_DOCUMENT => replica.accept_document_at(body, &DOCUMENT_KEY, tip).map(|_| ()),
                 tormail::SUBMIT_ADMISSION => replica.accept_admission(body).map(|_| ()),
                 _ => Err("unknown directory submission".into()),
             }
@@ -995,7 +988,8 @@ impl Node {
 
     pub(crate) fn pull_directory(&self, sources: &[&dyn Source]) -> Result<(), String> {
         let own = *self.own_store.as_bytes();
-        pull_into(&self.seed_replica, sources, &DOCUMENT_KEY, own)?;
+        let tip = self.chain.tip_height().ok();
+        pull_into(&self.seed_replica, sources, &DOCUMENT_KEY, own, tip)?;
         self.recheck_admissions();
         self.refresh_market();
         Ok(())
@@ -1147,6 +1141,10 @@ struct Report<'a> {
 impl Source for Report<'_> {
     fn seed_bytes(&self) -> Result<Vec<u8>, String> {
         self.inner.seed_bytes().inspect_err(|err| eprintln!("ob-node: introduction {}: {err}", self.inner.onion))
+    }
+
+    fn head_bytes(&self) -> Result<Option<Vec<u8>>, String> {
+        self.inner.head_bytes().inspect_err(|err| eprintln!("ob-node: introduction {}: {err}", self.inner.onion))
     }
 
     fn store_bytes(&self, id: &[u8; 32]) -> Result<Option<Vec<u8>>, String> {
@@ -1345,12 +1343,12 @@ mod tests {
         let mut peer = Replica::open(&dir.0).unwrap();
         peer.follow(*store.id.as_bytes()).unwrap();
         peer.pull(&[&stopped, &high], &key, [0u8; 32]).unwrap();
-        assert_eq!(peer.document.as_ref().unwrap().sequence, 5);
+        assert_eq!(peer.head().unwrap().sequence, 5);
         assert_eq!(peer.stores.len(), 1);
         assert!(!peer.listings.is_empty());
 
         peer.pull(&[&low, &stopped], &key, [0u8; 32]).unwrap();
-        assert_eq!(peer.document.as_ref().unwrap().sequence, 5, "an older document and a stopped host do not replace it");
+        assert_eq!(peer.head().unwrap().sequence, 5, "an older document and a stopped host do not replace it");
         assert!(!peer.listings.is_empty(), "a stopped introduction does not clear the listings already held");
 
         drop(high);
@@ -1616,7 +1614,7 @@ mod tests {
         let mut peer = Replica::open(&peer_dir.0).unwrap();
         peer.pull(&[&intro], &key, [0u8; 32]).unwrap();
         assert!(peer.stores.is_empty(), "a peer does not copy a store that has not paid the fee");
-        assert_eq!(peer.document.as_ref().unwrap().sequence, 1);
+        assert_eq!(peer.head().unwrap().sequence, 1);
 
         let other_dir = TempDir::new();
         let mut other = Replica::open(&other_dir.0).unwrap();
@@ -1639,7 +1637,7 @@ mod tests {
         assert!(intro.admissions.contains_key(store.id.as_bytes()));
         let _ = named;
         peer.pull(&[&stopped, &other], &key, [0u8; 32]).unwrap();
-        assert_eq!(peer.document.as_ref().unwrap().sequence, 1, "admitting a store does not change the head sequence");
+        assert_eq!(peer.head().unwrap().sequence, 1, "admitting a store does not change the head sequence");
         assert!(peer.stores.contains_key(store.id.as_bytes()), "a second node shows a store no sequence names");
         assert!(peer.admissions.contains_key(store.id.as_bytes()));
         for n in 0..257u16 {
@@ -1778,7 +1776,7 @@ mod tests {
         let fresh_dir = TempDir::new();
         let mut fresh = Replica::open(&fresh_dir.0).unwrap();
         fresh.pull(&[&down, &up, &up], &key, [0u8; 32]).unwrap();
-        assert_eq!(fresh.document.as_ref().unwrap().sequence, 2, "one of three introductions down still returns the head");
+        assert_eq!(fresh.head().unwrap().sequence, 2, "one of three introductions down still returns the head");
         assert!(fresh.introduction_hosts().contains(&third));
     }
 

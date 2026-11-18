@@ -31,6 +31,7 @@ mod commerce_draft;
 mod commerce_http;
 mod coupons;
 mod directory;
+mod directory_head;
 mod egress;
 mod escrow_bump;
 mod escrow_buyer;
