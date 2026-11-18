@@ -28,7 +28,7 @@ use crate::lightning::FeePaid;
 use crate::lock_http::pay_error;
 use crate::pay_order::{psbt_fee, PayError};
 use crate::spend_tickets::{FEE_CAP_PERCENT, TICKET_TTL};
-use crate::wallet_send::{confirmed_response, paid_to, QUOTE_USED};
+use crate::wallet_send::{confirmed_response, paid_to, SendShape, QUOTE_USED};
 use crate::Node;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -275,7 +275,11 @@ impl Node {
         fee_cap_sats: u64,
     ) -> Result<(String, u64), PayError> {
         let _spending = self.spending.lock().unwrap_or_else(|err| err.into_inner());
-        let (tx, network_fee) = self.signed_send(recipient, terms.amount_sats, fee_rate, fee_cap_sats)?;
+        let shape = SendShape {
+            lock_height: Some(self.chain.tip_height().map_err(PayError::Chain)?),
+            spend: Vec::new(),
+        };
+        let (tx, network_fee) = self.signed_send(recipient, terms.amount_sats, fee_rate, fee_cap_sats, &shape)?;
         let txid = tx.compute_txid();
         let vout = tx
             .output
@@ -314,10 +318,11 @@ impl Node {
         amount: u64,
         fee_rate: FeeRate,
         fee_cap_sats: u64,
+        shape: &SendShape,
     ) -> Result<(Transaction, u64), PayError> {
         let address =
             Address::from_script(recipient, self.network.bitcoin()).map_err(|err| PayError::Failed(err.to_string()))?;
-        let (mut psbt, _) = self.build_send(&address, Some(amount), fee_rate, false)?;
+        let (mut psbt, _) = self.build_send_from(&address, Some(amount), fee_rate, false, shape)?;
         if paid_to(&psbt, recipient) != Some(amount) {
             return Err(conflict(
                 "The wallet's balance changed since the quote. Nothing was paid; review it again.",

@@ -1,12 +1,14 @@
 //! Paying a filing fee back from the moderator's wallet, on the three-node
-//! harness: a recusal before any decision.
+//! harness: a recusal before any decision, and a payment that came too late
+//! for its case after the script was given to another.
 
-use bitcoin::ScriptBuf;
+use bitcoin::absolute::LockTime;
+use bitcoin::{Address, Network, Script, ScriptBuf};
 use openbazaar_escrow::{read_dispute_decision, Decision, Party};
 use serde_json::{json, Value};
 
 use crate::escrow_mail::{parse_id, unhex, EscrowId};
-use crate::harness::{fund_node_wallet, order, request, Market, PASSPHRASE};
+use crate::harness::{fund_node_wallet, hash_of, order, pay as pay_order, request, ship_to, Market, PASSPHRASE};
 use crate::multinode_fee_tests::{act, case, filed, funded_with, last_request, pay, terms, FEE};
 use crate::Node;
 
@@ -115,3 +117,80 @@ fn a_decided_case_cannot_be_recused() {
     assert_eq!(case(&moderator)["fee"]["recused"], false);
 }
 
+/// A second funded order under the same moderator. Returns its id.
+fn another_order(market: &Market) -> String {
+    let body = json!({ "name": "Ines Varga", "feeSats": FEE });
+    let chosen = request(&market.moderator.node, "PUT", "/moderator/profile", &body.to_string()).1["id"].clone();
+    let buyer = &market.buyer.node;
+    fund_node_wallet(buyer, &market.chain, 100_000);
+    let package = json!({ "settlement": "escrow", "moderator": chosen, "lines": [{ "listingHash": hash_of(buyer, "Paperback novel", "Marlow Goods"), "quantity": 1 }] });
+    let (status, placed) = request(buyer, "POST", "/checkout", &json!({ "shipTo": ship_to(), "packages": [package] }).to_string());
+    assert!(status.contains("200"), "{status} {placed}");
+    let id = placed["orders"][0]["orderId"].as_str().unwrap().to_string();
+    market.deliver();
+    let (status, opened) = pay_order(buyer, &id, "{}");
+    assert!(status.contains("202"), "{status} {opened}");
+    market.deliver();
+    assert_eq!(order(buyer, &id)["escrow"]["stage"], "funded");
+    market.mine();
+    id
+}
+
+fn case_of(node: &Node, escrow: &EscrowId) -> Value {
+    let all = request(node, "GET", "/moderator/disputes", "").1["disputes"].clone();
+    all.as_array().unwrap().iter().find(|case| escrow_of(case) == *escrow).unwrap().clone()
+}
+
+#[test]
+fn a_late_payment_after_the_script_moved_on_is_owed_back_and_not_credited_to_the_new_case() {
+    let market = Market::new();
+    let moderator = market.moderator.node.clone();
+    let (first_id, first_escrow) = funded_with(&market, FEE);
+    let first = escrow_of(&filed(&market, &first_id));
+    moderator.moderator_fee_steps();
+    let asked = last_request(&moderator, &case_of(&moderator, &first)).unwrap();
+    let asked_at = market.chain.tip();
+    *market.chain.0.tip.lock().unwrap() = terms(&first_escrow).vendor_claim_height + 7;
+    moderator.moderator_fee_steps();
+
+    let second_id = another_order(&market);
+    let (status, body) = request(&market.buyer.node, "POST", &format!("/orders/{second_id}/dispute"), r#"{"memo": "Wrong size."}"#);
+    assert!(status.contains("200"), "{status} {body}");
+    market.deliver();
+    let second = (request(&moderator, "GET", "/moderator/disputes", "").1["disputes"].as_array().unwrap().iter())
+        .map(escrow_of)
+        .find(|escrow| *escrow != first)
+        .unwrap();
+    moderator.moderator_fee_steps();
+    let reasked = last_request(&moderator, &case_of(&moderator, &second)).unwrap();
+    assert_eq!(reasked.script, asked.script, "the unpaid script went to the next case");
+
+    let address = Address::from_script(Script::from_bytes(&asked.script), Network::Testnet4).unwrap();
+    let late = market.chain.send_to_wallet_locked(&address, FEE, true, LockTime::from_height(asked_at + 1).unwrap());
+    market.chain.confirm_next(late.compute_txid());
+    market.mine();
+    moderator.moderator_fee_steps();
+    assert_eq!(case_of(&moderator, &second)["fee"]["state"], "requested", "made for the first request, it pays nothing now");
+    assert_eq!(case_of(&moderator, &second)["fee"]["owed"], json!([]));
+    let owed = case_of(&moderator, &first)["fee"]["owed"].clone();
+    let payment = format!("{}:0", late.compute_txid());
+    assert_eq!(owed, json!([{ "filer": "buyer", "amountSats": FEE, "payment": payment }]));
+
+    fund_node_wallet(&moderator, &market.chain, 50_000);
+    let path = format!("/moderator/disputes/{}/refund", crate::escrow_mail::id_hex(&first));
+    let body = json!({ "payment": payment }).to_string();
+    let (quote, (status, value)) = quote_and_confirm(&moderator, &path, &body);
+    assert!(status.contains("200"), "{status} {value}");
+    assert_eq!((&quote["amountSats"], &quote["payment"]), (&json!(FEE), &json!(payment)), "{quote}");
+    let script = refund_script(&market.buyer.node, Party::Buyer, &first);
+    let refund = market.chain.broadcasts().last().unwrap().clone();
+    assert!(refund.output.iter().any(|out| out.script_pubkey == script && out.value.to_sat() == FEE), "{refund:?}");
+    let fee = case_of(&moderator, &first)["fee"].clone();
+    assert_eq!((&fee["owed"], &fee["refunds"][0]["owed"]), (&json!([]), &json!(payment)), "{fee}");
+    let (status, again) = request(&moderator, "POST", &format!("{path}/quote"), &body);
+    assert!(status.contains("409"), "sent back once: {status} {again}");
+
+    pay(&market, &reasked);
+    assert_eq!(case_of(&moderator, &second)["fee"]["state"], "paid", "the new case's own payment counts");
+    assert_eq!(case_of(&moderator, &first)["fee"]["owed"], json!([]));
+}

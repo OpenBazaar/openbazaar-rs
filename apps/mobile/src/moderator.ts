@@ -40,9 +40,15 @@ export type CaseFee = {
   recused: boolean;
   /** Payments this node sent back from its wallet. */
   refunds: CaseRefund[];
+  /** Payments the case does not keep (late, short, or extra), owed back to their filer. */
+  owed: OwedPayment[];
 };
 
-export type CaseRefund = { filer: Party; amountSats: number; txid: string };
+/** `owed`: the owed payment it sent back; null for a recusal's refund. */
+export type CaseRefund = { filer: Party; amountSats: number; txid: string; owed: string | null };
+
+/** `payment`: `txid:vout`, or `ln:` and the payment hash. */
+export type OwedPayment = { filer: Party; amountSats: number; payment: string };
 
 /** A refund from this node's wallet, as the operator is asked to confirm it. */
 export type RefundQuote = {
@@ -97,7 +103,12 @@ export function parseCaseFee(value: unknown): CaseFee | null {
     refunds: Array.isArray(r.refunds) ? r.refunds.flatMap(item => {
       const refund = item && typeof item === "object" ? (item as Record<string, unknown>) : {};
       const filer = refund.filer === "buyer" || refund.filer === "vendor" ? refund.filer : null;
-      return filer && typeof refund.txid === "string" ? [{ filer, amountSats: count(refund.amountSats), txid: refund.txid }] : [];
+      return filer && typeof refund.txid === "string" ? [{ filer, amountSats: count(refund.amountSats), txid: refund.txid, owed: typeof refund.owed === "string" ? refund.owed : null }] : [];
+    }) : [],
+    owed: Array.isArray(r.owed) ? r.owed.flatMap(item => {
+      const owed = item && typeof item === "object" ? (item as Record<string, unknown>) : {};
+      const filer = owed.filer === "buyer" || owed.filer === "vendor" ? owed.filer : null;
+      return filer && typeof owed.payment === "string" && owed.payment ? [{ filer, amountSats: count(owed.amountSats), payment: owed.payment }] : [];
     }) : [],
   };
 }
@@ -202,6 +213,12 @@ export function canRecuse(dispute: Dispute, all: Dispute[]): boolean {
 /** The filing fee on a letter in words, or "" for an escrow from before filing fees. */
 export function caseFeeText(fee: CaseFee | null): string {
   if (!fee) return "";
+  const text = feeStanding(fee);
+  const owed = fee.owed.reduce((sum, item) => sum + item.amountSats, 0);
+  return owed ? `${text} · ${owed.toLocaleString()} sats owed back` : text;
+}
+
+function feeStanding(fee: CaseFee): string {
   const sats = `${fee.amountSats.toLocaleString()} sats`;
   const due = `decision due by block ${fee.dueHeight.toLocaleString()}`;
   if (fee.recused) {
@@ -249,6 +266,19 @@ export async function quoteRecusal(dispute: Dispute): Promise<RefundQuote> {
 /** Recuse from the case and pay the fee back. Final. Returns the refund's txid. */
 export async function recuseDispute(dispute: Dispute, quote: string, passphrase: string): Promise<string> {
   const answer = await post(`/moderator/disputes/${dispute.id}/recuse`, { quote, passphrase, confirm: true });
+  const txid = answer && typeof answer === "object" ? (answer as Record<string, unknown>).txid : null;
+  if (typeof txid !== "string") throw new Error("The node returned an unreadable refund.");
+  return txid;
+}
+
+/** What sending `payment` back costs, to confirm with the passphrase. */
+export async function quoteOwedRefund(dispute: Dispute, payment: string): Promise<RefundQuote> {
+  return parseRefundQuote(await post(`/moderator/disputes/${dispute.id}/refund/quote`, { payment }));
+}
+
+/** Send an owed payment back to its filer. Returns the refund's txid. */
+export async function refundOwed(dispute: Dispute, quote: string, passphrase: string): Promise<string> {
+  const answer = await post(`/moderator/disputes/${dispute.id}/refund`, { quote, passphrase, confirm: true });
   const txid = answer && typeof answer === "object" ? (answer as Record<string, unknown>).txid : null;
   if (typeof txid !== "string") throw new Error("The node returned an unreadable refund.");
   return txid;

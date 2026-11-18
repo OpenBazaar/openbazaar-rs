@@ -297,6 +297,14 @@ fn route(node: &Node, request: &Request<'_>, client: Client, origin: Option<&str
             let id = between(path, "/moderator/disputes/", "/recuse").unwrap_or_default();
             escrow_moderator::refund::recuse_response(node, client, head, id, body, origin)
         }
+        ("POST", path) if between(path, "/moderator/disputes/", "/refund/quote").is_some() => {
+            let id = between(path, "/moderator/disputes/", "/refund/quote").unwrap_or_default();
+            escrow_moderator::refund::owed_quote_response(node, client, head, id, body, origin)
+        }
+        ("POST", path) if between(path, "/moderator/disputes/", "/refund").is_some() => {
+            let id = between(path, "/moderator/disputes/", "/refund").unwrap_or_default();
+            escrow_moderator::refund::owed_response(node, client, head, id, body, origin)
+        }
         ("POST", path) if between(path, "/moderator/disputes/", "/deny").is_some() => {
             let id = between(path, "/moderator/disputes/", "/deny").unwrap_or_default();
             escrow_http::action_response(node, client, head, Action::Deny(id), body, origin)

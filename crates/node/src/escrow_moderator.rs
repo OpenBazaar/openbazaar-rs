@@ -40,6 +40,7 @@
 mod case;
 mod decision;
 mod fee;
+mod owed;
 pub(crate) mod refund;
 
 use std::collections::BTreeMap;
@@ -317,6 +318,7 @@ impl Node {
 
     pub(crate) fn disputes_value(&self) -> Value {
         let tip = self.chain.tip_height().ok();
+        let received = self.all_fees_received();
         let desk = self.moderator_desk();
         let decided = |id: &EscrowId| {
             desk.cases
@@ -339,7 +341,7 @@ impl Node {
                     "builtIn": case.record.is_none(),
                     "tracking": case.tracking.clone(),
                     "caseId": case.fee.map(|fee| hex(&fee.case_id)),
-                    "fee": desk.case_fee_value(id, case, tip, decided(id)),
+                    "fee": desk.case_fee_value(id, case, tip, decided(id), &received),
                 })
             })
             .collect();

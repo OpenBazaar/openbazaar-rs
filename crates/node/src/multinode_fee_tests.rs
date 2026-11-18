@@ -2,6 +2,7 @@
 //! three-node harness: the request goes out once a letter passes review,
 //! the operator can decide only once the fee is paid, and a denial is final.
 
+use bitcoin::absolute::LockTime;
 use bitcoin::{Address, Network, Script};
 use openbazaar_escrow::{read_dispute_decision, Decision, Party, SignedTerms, ANCHOR_VALUE};
 use openbazaar_protocol::{FeeRequest, SignedFeeRequest, FAVORED_BUYER};
@@ -85,7 +86,8 @@ pub(crate) fn last_request(node: &Node, case: &Value) -> Option<FeeRequest> {
 pub(crate) fn pay(market: &Market, request: &FeeRequest) {
     let script = Script::from_bytes(&request.script);
     let address = Address::from_script(script, Network::Testnet4).unwrap();
-    market.chain.send_to_wallet(&address, request.amount_sats, true);
+    let tx = market.chain.send_to_wallet_locked(&address, request.amount_sats, true, LockTime::ZERO);
+    market.chain.confirm_next(tx.compute_txid());
     market.mine();
     market.moderator.node.moderator_fee_steps();
 }
@@ -322,7 +324,8 @@ fn quote_and_pay(node: &Node, base: &str) -> (Value, (String, Value)) {
 /// The moderator's wallet sees the newest broadcast, confirmed.
 fn moderator_sees_payment(market: &Market) {
     let tx = market.chain.broadcasts().last().unwrap().clone();
-    market.chain.0.wallet_txs.lock().unwrap().push((tx, true));
+    market.chain.0.wallet_txs.lock().unwrap().push((tx.clone(), true));
+    market.chain.confirm_next(tx.compute_txid());
     market.mine();
     market.moderator.node.moderator_fee_steps();
     market.deliver();

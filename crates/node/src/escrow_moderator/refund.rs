@@ -2,13 +2,17 @@
 //!
 //! The operator can recuse from a paid case before any letter of it is
 //! decided: this node signs a public decision (`OBDD` recused), which is
-//! final, and pays the fee back on-chain. The refund goes to the refund
-//! script in the payer's own v5 letter, and this node pays the network fee.
+//! final, and pays the fee back on-chain. The operator can also send back
+//! a payment the case does not keep ([`super::owed`]). Either refund goes
+//! to the refund script in that filer's own v5 letter, and this node pays
+//! the network fee.
 //!
 //! | route | lock | body | answer |
 //! |---|---|---|---|
 //! | `POST /moderator/disputes/{id}/recuse/quote` | unlocked | none | the refund to confirm, `{quote, ...}` |
 //! | `POST /moderator/disputes/{id}/recuse` | unlocked | `{quote, passphrase, confirm: true}` | `{txid, ...}` |
+//! | `POST /moderator/disputes/{id}/refund/quote` | unlocked | `{payment}`, an owed payment's id | the refund to confirm, `{quote, ...}` |
+//! | `POST /moderator/disputes/{id}/refund` | unlocked | `{quote, passphrase, confirm: true}` | `{txid, ...}` |
 //!
 //! A refund is stored with the fee before it is broadcast, and broadcast
 //! again from the fee tick until the chain source has it, so a crash in
@@ -16,13 +20,16 @@
 
 use bitcoin::{Address, FeeRate, ScriptBuf, Transaction};
 use openbazaar_escrow::{Decision, Party};
+use openbazaar_protocol::FeePayment;
 use serde_json::{json, Value};
 
 use super::case::party_name;
 use super::fee::{EscrowFee, Refund};
+use super::owed::{owed, parse_payment_id, payment_id};
 use crate::buyer_orders::now_secs;
 use crate::escrow_mail::{id_hex, parse_id, EscrowId, Kind, Mail};
 use crate::http::{json_body, local_guard, Client};
+use crate::wallet_send::SendShape;
 use crate::lock_http::pay_error;
 use crate::pay_order::{psbt_fee, PayError};
 use crate::spend_tickets::{FEE_CAP_PERCENT, TICKET_TTL};
@@ -36,6 +43,8 @@ pub(crate) struct RefundTerms {
     pub filer: Party,
     pub script: ScriptBuf,
     pub amount_sats: u64,
+    /// The owed payment it sends back; none for a recusal.
+    pub owed: Option<FeePayment>,
     pub fee_rate: FeeRate,
     pub fee_sats: u64,
     pub fee_cap_sats: u64,
@@ -47,6 +56,7 @@ impl RefundTerms {
             "escrowId": id_hex(&self.escrow),
             "filer": party_name(self.filer),
             "amountSats": self.amount_sats,
+            "payment": self.owed.as_ref().map(payment_id),
             "address": Address::from_script(&self.script, network).ok().map(|address| address.to_string()),
             "feeSats": self.fee_sats,
             "feeCapSats": self.fee_cap_sats,
@@ -66,6 +76,26 @@ struct Target {
     filer: Party,
     script: Vec<u8>,
     amount: u64,
+    owed: Option<FeePayment>,
+}
+
+impl Target {
+    fn of(terms: &RefundTerms) -> Self {
+        Self {
+            filer: terms.filer,
+            script: terms.script.to_bytes(),
+            amount: terms.amount_sats,
+            owed: terms.owed,
+        }
+    }
+}
+
+/// The refund script of `filer`'s letter for escrow `id`.
+fn refund_script(desk: &super::ModeratorDesk, id: &EscrowId, filer: Party) -> Result<Vec<u8>, PayError> {
+    desk.cases
+        .get(&(*id, filer as u8))
+        .and_then(|case| case.refund_script.clone())
+        .ok_or_else(|| conflict("The filer's letter named no refund script."))
 }
 
 impl Node {
@@ -86,15 +116,35 @@ impl Node {
         if decided {
             return Err(conflict("A letter of this case is decided. A recusal must come before any decision."));
         }
-        let script = desk
-            .cases
-            .get(&(*id, paid.filer as u8))
-            .and_then(|case| case.refund_script.clone())
-            .ok_or_else(|| conflict("The payer's letter named no refund script."))?;
         Ok(Target {
             filer: paid.filer,
-            script,
+            script: refund_script(&desk, id, paid.filer)?,
             amount: paid.received_sats,
+            owed: None,
+        })
+    }
+
+    /// The refund of an owed payment of escrow `id`, checked against the
+    /// wallet and the desk now.
+    fn owed_target(&self, id: &EscrowId, payment: FeePayment) -> Result<Target, PayError> {
+        let (scripts, hashes) = {
+            let desk = self.moderator_desk();
+            let fee = desk.fees.get(id).ok_or(PayError::NotFound)?;
+            let scripts: Vec<ScriptBuf> = fee.scripts.iter().map(|script| script.script.clone()).collect();
+            let hashes: Vec<String> = fee.requests.iter().filter_map(|request| request.payment_hash.clone()).collect();
+            (scripts, hashes)
+        };
+        let received = self.fee_received(&scripts, &hashes);
+        let desk = self.moderator_desk();
+        let found = owed(&desk.fees, id, &received)
+            .into_iter()
+            .find(|owed| owed.payment == payment)
+            .ok_or_else(|| conflict("This case owes nothing back for that payment. Nothing was paid."))?;
+        Ok(Target {
+            filer: found.filer,
+            script: refund_script(&desk, id, found.filer)?,
+            amount: found.sats,
+            owed: Some(payment),
         })
     }
 
@@ -114,6 +164,7 @@ impl Node {
             filer: target.filer,
             script,
             amount_sats: target.amount,
+            owed: target.owed,
             fee_rate,
             fee_sats,
             fee_cap_sats: (fee_sats * FEE_CAP_PERCENT).div_ceil(100),
@@ -137,8 +188,7 @@ impl Node {
         let terms = self.take_refund_quote(id, quote)?;
         let lock = self.escrow.locks.get(&terms.escrow);
         let _held = lock.lock().unwrap_or_else(|err| err.into_inner());
-        let now = self.refund_target(&terms.escrow)?;
-        if now != (Target { filer: terms.filer, script: terms.script.to_bytes(), amount: terms.amount_sats }) {
+        if terms.owed.is_some() || self.refund_target(&terms.escrow)? != Target::of(&terms) {
             return Err(conflict("The case changed since the quote. Nothing was paid; review the refund again."));
         }
         let (record, case_id) = {
@@ -187,6 +237,38 @@ impl Node {
         Ok(value)
     }
 
+    /// `POST /moderator/disputes/{id}/refund/quote`: send back an owed payment.
+    pub(crate) fn quote_owed_refund(&self, id: &str, body: &Value) -> Result<Value, PayError> {
+        self.lock.spend_key()?;
+        self.lock.touch();
+        let escrow = parse_id(id).ok_or(PayError::NotFound)?;
+        let payment = body["payment"]
+            .as_str()
+            .and_then(parse_payment_id)
+            .ok_or_else(|| PayError::Invalid("Name the owed payment to send back.".into()))?;
+        let terms = self.quote_refund(escrow, self.owed_target(&escrow, payment)?)?;
+        let mut value = terms.value(self.network.bitcoin());
+        value["quote"] = json!(self.lock.refund_quotes.offer(terms, self.lock.now()));
+        Ok(value)
+    }
+
+    /// `POST /moderator/disputes/{id}/refund`, after the passphrase.
+    pub(crate) fn refund_owed(&self, id: &str, quote: &str) -> Result<Value, PayError> {
+        let terms = self.take_refund_quote(id, quote)?;
+        let lock = self.escrow.locks.get(&terms.escrow);
+        let _held = lock.lock().unwrap_or_else(|err| err.into_inner());
+        let Some(payment) = terms.owed else {
+            return Err(conflict("That quote is for a recusal. Nothing was paid."));
+        };
+        if self.owed_target(&terms.escrow, payment)? != Target::of(&terms) {
+            return Err(conflict("The case changed since the quote. Nothing was paid; review the refund again."));
+        }
+        let tx = self.pay_refund(&terms, |_| {})?;
+        let mut value = terms.value(self.network.bitcoin());
+        value["txid"] = json!(tx.compute_txid().to_string());
+        Ok(value)
+    }
+
     fn take_refund_quote(&self, id: &str, quote: &str) -> Result<RefundTerms, PayError> {
         let terms = self
             .lock
@@ -203,7 +285,13 @@ impl Node {
     /// hand it to the wallet, then broadcast it. The escrow's lock is held.
     fn pay_refund(&self, terms: &RefundTerms, record: impl FnOnce(&mut EscrowFee)) -> Result<Transaction, PayError> {
         let _spending = self.spending.lock().unwrap_or_else(|err| err.into_inner());
-        let (tx, _) = self.signed_send(&terms.script, terms.amount_sats, terms.fee_rate, terms.fee_cap_sats)?;
+        let (tx, _) = self.signed_send(
+            &terms.script,
+            terms.amount_sats,
+            terms.fee_rate,
+            terms.fee_cap_sats,
+            &SendShape::default(),
+        )?;
         let mut fee = self
             .moderator_desk()
             .fees
@@ -214,6 +302,7 @@ impl Node {
         fee.refunds.push(Refund {
             filer: terms.filer,
             amount: terms.amount_sats,
+            owed: terms.owed,
             tx: tx.clone(),
         });
         self.save_fee(&terms.escrow, &fee).map_err(PayError::Failed)?;
@@ -262,4 +351,36 @@ pub(crate) fn recuse_response(
         return response;
     }
     confirmed_response(node, body, origin, |quote| node.recuse_dispute(id, quote))
+}
+
+pub(crate) fn owed_quote_response(
+    node: &Node,
+    client: &Client,
+    head: &str,
+    id: &str,
+    body: &[u8],
+    origin: Option<&str>,
+) -> Vec<u8> {
+    if let Err(response) = local_guard(node, client, head, origin) {
+        return response;
+    }
+    let body: Value = serde_json::from_slice(body).unwrap_or(Value::Null);
+    match node.quote_owed_refund(id, &body) {
+        Ok(value) => json_body("200 OK", &value, origin),
+        Err(err) => pay_error(err, origin),
+    }
+}
+
+pub(crate) fn owed_response(
+    node: &Node,
+    client: &Client,
+    head: &str,
+    id: &str,
+    body: &[u8],
+    origin: Option<&str>,
+) -> Vec<u8> {
+    if let Err(response) = local_guard(node, client, head, origin) {
+        return response;
+    }
+    confirmed_response(node, body, origin, |quote| node.refund_owed(id, quote))
 }

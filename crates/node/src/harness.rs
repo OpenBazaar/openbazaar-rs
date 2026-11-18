@@ -40,6 +40,8 @@ pub(crate) struct Chain {
     pub by_script: Mutex<HashMap<ScriptBuf, Vec<AddressTx>>>,
     /// Coins sent to node wallets, and whether each is confirmed.
     pub wallet_txs: Mutex<Vec<(Transaction, bool)>>,
+    /// Confirmed wallet coins in a block of their own; the rest are in block 50.
+    pub wallet_heights: Mutex<HashMap<Txid, u32>>,
     pub broadcasts: Mutex<Vec<Transaction>>,
     pub fee_rate: Mutex<f64>,
     pub fail_broadcast: AtomicBool,
@@ -116,11 +118,16 @@ impl MockChain {
     }
 
     pub fn send_to_wallet(&self, address: &Address, sats: u64, confirmed: bool) {
+        self.send_to_wallet_locked(address, sats, confirmed, LockTime::ZERO);
+    }
+
+    /// [`Self::send_to_wallet`] in a transaction with lock time `lock`.
+    pub fn send_to_wallet_locked(&self, address: &Address, sats: u64, confirmed: bool, lock: LockTime) -> Transaction {
         static NEXT: AtomicU64 = AtomicU64::new(1);
         let n = NEXT.fetch_add(1, Ordering::Relaxed);
         let tx = Transaction {
             version: Version::TWO,
-            lock_time: LockTime::ZERO,
+            lock_time: lock,
             input: vec![TxIn {
                 previous_output: OutPoint {
                     txid: Txid::from_byte_array([n as u8 ^ 0x5a; 32]),
@@ -135,7 +142,13 @@ impl MockChain {
                 script_pubkey: address.script_pubkey(),
             }],
         };
-        self.0.wallet_txs.lock().unwrap().push((tx, confirmed));
+        self.0.wallet_txs.lock().unwrap().push((tx.clone(), confirmed));
+        tx
+    }
+
+    /// Confirmed wallet transaction `txid` is in the next block mined.
+    pub fn confirm_next(&self, txid: Txid) {
+        self.0.wallet_heights.lock().unwrap().insert(txid, self.tip() + 1);
     }
 
     pub fn broadcasts(&self) -> Vec<Transaction> {
@@ -198,17 +211,27 @@ impl ChainSource for MockChain {
         Ok(())
     }
 
-    /// Confirmed wallet coins are anchored in one fixed block on top of the wallet's own tip.
+    /// Confirmed wallet coins are anchored in block 50, or in the block
+    /// [`MockChain::confirm_next`] gave them, on top of the wallet's own tip.
     fn wallet_update(&self, request: WalletRequest) -> Result<Update, String> {
         let txs = self.0.wallet_txs.lock().unwrap().clone();
+        let heights = self.0.wallet_heights.lock().unwrap().clone();
         let tip = match &request {
             WalletRequest::Full(request) => request.chain_tip(),
             WalletRequest::Sync(request) => request.chain_tip(),
         };
-        let block = BlockId {
-            height: 50,
-            hash: BlockHash::from_byte_array([0x50; 32]),
+        let block_at = |height: u32| {
+            let mut hash = [0x50; 32];
+            if height != 50 {
+                hash = [0x51; 32];
+                hash[..4].copy_from_slice(&height.to_le_bytes());
+            }
+            BlockId {
+                height,
+                hash: BlockHash::from_byte_array(hash),
+            }
         };
+        let block_of = |tx: &Transaction| block_at(heights.get(&tx.compute_txid()).copied().unwrap_or(50));
         let mut tx_update = TxUpdate::default();
         tx_update.seen_ats = txs
             .iter()
@@ -220,17 +243,21 @@ impl ChainSource for MockChain {
             .map(|(tx, _)| {
                 (
                     ConfirmationBlockTime {
-                        block_id: block,
+                        block_id: block_of(tx),
                         confirmation_time: 1,
                     },
                     tx.compute_txid(),
                 )
             })
             .collect();
+        let mut blocks: Vec<BlockId> = tx_update.anchors.iter().map(|(anchor, _)| anchor.block_id).collect();
+        blocks.push(block_at(50));
+        blocks.sort();
+        blocks.dedup();
         tx_update.txs = txs.into_iter().map(|(tx, _)| Arc::new(tx)).collect();
         Ok(Update {
             tx_update,
-            chain: tip.map(|tip| tip.insert(block)),
+            chain: tip.map(|tip| blocks.into_iter().fold(tip, |tip, block| tip.insert(block))),
             ..Default::default()
         })
     }

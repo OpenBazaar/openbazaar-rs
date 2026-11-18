@@ -8,7 +8,8 @@
 //!
 //! [`Node::moderator_fee_tick`] does the rest from the mail loop: it credits
 //! a payment this node sees on its own Lightning node, or a confirmed output
-//! of at least the fee to the request's script in its own wallet; it signs
+//! of at least the fee to the request's script in its own wallet that
+//! answered this escrow's request ([`super::owed`]); it signs
 //! the receipt and the public case-accepted record and sends the receipt;
 //! and it asks the next filer once a request expires. Nothing the filer
 //! sends is trusted as proof of payment.
@@ -31,6 +32,7 @@ use openbazaar_protocol::{
 use serde_json::{json, Value};
 
 use super::case::{fixed, party_name, Case};
+use super::owed::{creditable, owed, payment_id, Owed, Received};
 use crate::escrow_mail::{hex, id_hex, parse_id, unhex, EscrowId, Kind, Mail};
 use crate::escrow_outbox::now_secs;
 use crate::escrow_store::Role;
@@ -41,8 +43,9 @@ pub(super) const REQUEST_BLOCKS: u32 = 72;
 /// No request is issued this close to the due height: the filer needs time
 /// to pay and the operator time to decide.
 pub(super) const REQUEST_MARGIN: u32 = 6;
-/// Fee scripts held by unpaid escrows at once. Below the wallet's recovery
-/// gap of 20, so a restore from the seed still finds every later payment.
+/// Fee scripts nothing paid yet, held by open escrows or the pool, at
+/// once. Below the wallet's recovery gap of 20, so a restore from the seed
+/// still finds every later payment.
 pub(super) const MAX_UNPAID_SCRIPTS: usize = 16;
 const TICK_SECS: u64 = 5;
 const POOL: &str = "fee-pool";
@@ -63,6 +66,8 @@ pub(super) struct FeeScript {
     pub filer: Party,
     pub index: u32,
     pub script: ScriptBuf,
+    /// The tip when it was given to this filer.
+    pub issued: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -88,7 +93,7 @@ pub(super) struct EscrowFee {
     pub receipt: Option<Vec<u8>>,
     pub accepted: Option<Vec<u8>>,
     pub receipt_sent: bool,
-    /// Past the due height: unpaid scripts went back to the pool.
+    /// Past the due height: scripts nothing paid went back to the pool.
     pub released: bool,
     /// The signed recusal (`OBDD`), once the operator stepped away.
     pub recusal: Option<Vec<u8>>,
@@ -101,6 +106,8 @@ pub(super) struct EscrowFee {
 pub(super) struct Refund {
     pub filer: Party,
     pub amount: u64,
+    /// The owed payment it sends back; none for a recusal's refund.
+    pub owed: Option<FeePayment>,
     pub tx: Transaction,
 }
 
@@ -109,6 +116,7 @@ impl Refund {
         json!({
             "filer": party_byte(self.filer),
             "amountSats": self.amount,
+            "owed": self.owed.as_ref().map(payment_value),
             "tx": serialize_hex(&self.tx),
         })
     }
@@ -117,6 +125,10 @@ impl Refund {
         Some(Self {
             filer: party_from(value["filer"].as_u64()?)?,
             amount: value["amountSats"].as_u64()?,
+            owed: match &value["owed"] {
+                Value::Null => None,
+                owed => Some(payment_from(owed)?),
+            },
             tx: deserialize_hex(value["tx"].as_str()?).ok()?,
         })
     }
@@ -125,6 +137,7 @@ impl Refund {
         json!({
             "filer": party_name(self.filer),
             "amountSats": self.amount,
+            "owed": self.owed.as_ref().map(payment_id),
             "txid": self.tx.compute_txid().to_string(),
         })
     }
@@ -197,6 +210,7 @@ impl EscrowFee {
                 "filer": party_byte(script.filer),
                 "index": script.index,
                 "script": hex(script.script.as_bytes()),
+                "issued": script.issued,
             })).collect::<Vec<_>>(),
             "requests": self.requests.iter().map(|request| json!({
                 "filer": party_byte(request.filer),
@@ -228,6 +242,7 @@ impl EscrowFee {
                 filer: party_from(script["filer"].as_u64()?)?,
                 index: height(&script["index"])?,
                 script: ScriptBuf::from_bytes(unhex(script["script"].as_str()?).ok()?),
+                issued: height(&script["issued"]).unwrap_or(0),
             })
         });
         let requests = value["requests"].as_array()?.iter().map(|request| {
@@ -280,15 +295,6 @@ impl EscrowFee {
     /// The request that still takes payment at `tip`, if any.
     pub fn live(&self, tip: u32) -> Option<&Requested> {
         self.requests.last().filter(|request| request.valid_until >= tip)
-    }
-
-    /// Scripts this escrow holds back from the pool while unpaid.
-    fn held(&self) -> usize {
-        if self.paid.is_some() || self.released {
-            0
-        } else {
-            self.scripts.len()
-        }
     }
 
     /// The desk's word for where this fee stands.
@@ -387,7 +393,14 @@ impl super::ModeratorDesk {
 
     /// The fee fields of one case for the desk. `decided`: some letter of
     /// the escrow has a ruling or a denial.
-    pub(super) fn case_fee_value(&self, id: &EscrowId, case: &Case, tip: Option<u32>, decided: bool) -> Value {
+    pub(super) fn case_fee_value(
+        &self,
+        id: &EscrowId,
+        case: &Case,
+        tip: Option<u32>,
+        decided: bool,
+        received: &Received,
+    ) -> Value {
         let Some(terms) = case.fee else { return Value::Null };
         if terms.amount == 0 {
             return json!({ "state": "free", "amountSats": 0, "dueHeight": terms.due, "overdue": false });
@@ -408,6 +421,7 @@ impl super::ModeratorDesk {
             "overdue": fee.paid.is_some() && !decided && fee.recusal.is_none() && tip.is_some_and(|tip| tip > fee.due),
             "recused": fee.recusal.is_some(),
             "refunds": fee.refunds.iter().map(Refund::value).collect::<Vec<_>>(),
+            "owed": owed(&self.fees, id, received).iter().map(Owed::value).collect::<Vec<_>>(),
         })
     }
 }
@@ -507,10 +521,10 @@ impl Node {
         };
         let before = fee.clone();
         if fee.paid.is_none() {
-            fee.paid = self.find_payment(&fee, tip);
+            fee.paid = self.find_payment(id, &fee, tip);
         }
         let result = self.fee_paperwork(id, &mut fee, &filers, tip);
-        if fee.paid.is_none() && tip > fee.due.saturating_add(REQUEST_MARGIN) && !fee.released {
+        if tip > fee.due.saturating_add(REQUEST_MARGIN) && !fee.released {
             self.release_scripts(&mut fee);
         }
         if fee != before {
@@ -521,7 +535,7 @@ impl Node {
     }
 
     /// A payment this node received for one of the escrow's requests.
-    fn find_payment(&self, fee: &EscrowFee, tip: u32) -> Option<Paid> {
+    fn find_payment(&self, id: &EscrowId, fee: &EscrowFee, tip: u32) -> Option<Paid> {
         let want = fee.amount;
         for request in &fee.requests {
             let Some(hash) = &request.payment_hash else { continue };
@@ -540,31 +554,27 @@ impl Node {
                 });
             }
         }
-        let wallet = self.buyer_wallet();
-        for script in &fee.scripts {
-            let Some((outpoint, sats, height)) = wallet.fee_payment(&script.script, want) else {
-                continue;
-            };
-            if height > fee.due {
-                continue;
-            }
-            let request = fee
-                .requests
-                .iter()
-                .rev()
-                .find(|request| request.filer == script.filer)?;
-            return Some(Paid {
-                filer: script.filer,
-                request: request.digest,
-                payment: FeePayment::OnChain {
-                    txid: outpoint.txid.to_byte_array(),
-                    vout: outpoint.vout,
-                },
-                received_sats: sats,
-                height,
-            });
+        let scripts: Vec<ScriptBuf> = fee.scripts.iter().map(|script| script.script.clone()).collect();
+        let received = self.fee_received(&scripts, &[]);
+        if received.onchain.is_empty() {
+            return None;
         }
-        None
+        let (script, output) = creditable(&self.moderator_desk().fees, id, &received)?;
+        let request = fee
+            .requests
+            .iter()
+            .rev()
+            .find(|request| request.filer == script.filer)?;
+        Some(Paid {
+            filer: script.filer,
+            request: request.digest,
+            payment: FeePayment::OnChain {
+                txid: output.outpoint.txid.to_byte_array(),
+                vout: output.outpoint.vout,
+            },
+            received_sats: output.sats,
+            height: output.height,
+        })
     }
 
     /// Everything that needs the ruling key: the receipt and the
@@ -617,15 +627,14 @@ impl Node {
         let script = match fee.scripts.iter().find(|script| script.filer == filer.party) {
             Some(script) => script.script.clone(),
             None => {
-                let held: usize = self.moderator_desk().fees.values().map(EscrowFee::held).sum();
-                if held >= MAX_UNPAID_SCRIPTS {
+                let Some((index, script)) = self.fee_script()? else {
                     return Ok(());
-                }
-                let (index, script) = self.fee_script()?;
+                };
                 fee.scripts.push(FeeScript {
                     filer: filer.party,
                     index,
                     script: script.clone(),
+                    issued: tip,
                 });
                 script
             }
@@ -668,8 +677,9 @@ impl Node {
         .map(|_| ())
     }
 
-    /// A receive script for a request: one from the pool, else a fresh one.
-    fn fee_script(&self) -> Result<(u32, ScriptBuf), String> {
+    /// A receive script for a request: one from the pool, else a fresh one
+    /// while fewer than [`MAX_UNPAID_SCRIPTS`] are held unused.
+    fn fee_script(&self) -> Result<Option<(u32, ScriptBuf)>, String> {
         let pooled = {
             let mut desk = self.moderator_desk();
             let taken = desk.pool.free.pop();
@@ -678,14 +688,25 @@ impl Node {
             }
             taken
         };
-        if let Some(entry) = pooled {
-            return Ok(entry);
+        if pooled.is_some() {
+            return Ok(pooled);
         }
-        self.buyer_wallet().fee_address().map_err(|err| err.to_string())
+        let held: Vec<ScriptBuf> = self
+            .moderator_desk()
+            .fees
+            .values()
+            .filter(|fee| !fee.released)
+            .flat_map(|fee| fee.scripts.iter().map(|script| script.script.clone()))
+            .collect();
+        let mut wallet = self.buyer_wallet();
+        if held.iter().filter(|script| !wallet.script_used(script)).count() >= MAX_UNPAID_SCRIPTS {
+            return Ok(None);
+        }
+        wallet.fee_address().map(Some).map_err(|err| err.to_string())
     }
 
-    /// Return the scripts of an unpaid escrow past its due height to the
-    /// pool, except any that received something. Run a few blocks late, so
+    /// Return the scripts of an escrow past its due height to the pool,
+    /// except any that received something. Run a few blocks late, so
     /// a payment confirmed by the due height has been seen.
     fn release_scripts(&self, fee: &mut EscrowFee) {
         let unused: Vec<(u32, ScriptBuf)> = {
@@ -787,6 +808,7 @@ mod tests {
             filer: Party::Buyer,
             index: 4,
             script: ScriptBuf::new_p2a(),
+            issued: 120,
         });
         asked(&mut fee, Party::Buyer, 190);
         fee.renew.push(Party::Vendor);
@@ -799,6 +821,20 @@ mod tests {
         });
         fee.receipt = Some(vec![9]);
         fee.receipt_sent = true;
+        fee.refunds.push(Refund {
+            filer: Party::Buyer,
+            amount: 6_000,
+            owed: Some(FeePayment::OnChain { txid: [4; 32], vout: 0 }),
+            tx: Transaction {
+                version: bitcoin::transaction::Version::TWO,
+                lock_time: bitcoin::absolute::LockTime::ZERO,
+                input: vec![bitcoin::TxIn::default()],
+                output: vec![bitcoin::TxOut {
+                    value: bitcoin::Amount::from_sat(1),
+                    script_pubkey: bitcoin::ScriptBuf::new(),
+                }],
+            },
+        });
         assert_eq!(EscrowFee::from_record(&fee.to_record()), Some(fee.clone()));
         fee.paid.as_mut().unwrap().payment = FeePayment::Lightning { payment_hash: [5; 32] };
         assert_eq!(EscrowFee::from_record(&fee.to_record()), Some(fee));

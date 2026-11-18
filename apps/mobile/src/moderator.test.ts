@@ -35,13 +35,24 @@ test("a paid case can be recused until a letter of it is decided, and a recusal 
   const ruled = { ...paid, ruled: true };
   assert.equal(canRecuse(paid, [paid, ruled]), false, "a ruling came first");
   const recused = fee("paid", { recused: true, refunds: [{ filer: "buyer", amountSats: 2500, txid: "ef".repeat(32) }, { filer: "nobody" }] });
-  assert.deepEqual(recused.fee?.refunds, [{ filer: "buyer", amountSats: 2500, txid: "ef".repeat(32) }]);
+  assert.deepEqual(recused.fee?.refunds, [{ filer: "buyer", amountSats: 2500, txid: "ef".repeat(32), owed: null }]);
   assert.equal(canRecuse(recused, [recused]), false);
   assert.equal(canDecide(recused), false);
   assert.equal(disputeState(recused, [recused]), "recused");
   assert.equal(caseFeeText(recused.fee), "Recused · 2,500 sats paid back in efefefefefef…");
   assert.deepEqual(parseRefundQuote({ quote: "q", filer: "buyer", amountSats: 2500, address: "tb1p", feeSats: 200, feeCapSats: 300, totalSats: 2700, expiresInSecs: 120 }), { quote: "q", filer: "buyer", amountSats: 2500, address: "tb1p", feeSats: 200, feeCapSats: 300, totalSats: 2700, expiresInSecs: 120 });
   assert.throws(() => parseRefundQuote({ quote: "q", filer: "moderator", amountSats: 1, feeSats: 1, feeCapSats: 1 }));
+});
+
+test("payments a case does not keep are listed as owed back until sent", () => {
+  const payment = `${"aa".repeat(32)}:0`;
+  const parse = (extra: Record<string, unknown>) => parseDisputes({ disputes: [{ ...letter("buyer"), fee: { state: "expired", amountSats: 2500, dueHeight: 160600, overdue: false, ...extra } }] })[0].fee;
+  const owing = parse({ owed: [{ filer: "buyer", amountSats: 2500, payment }, { filer: "buyer", amountSats: 1 }] });
+  assert.deepEqual(owing?.owed, [{ filer: "buyer", amountSats: 2500, payment }]);
+  assert.equal(caseFeeText(owing), "Filing fee 2,500 sats · request lapsed; a new one goes out while there is time · 2,500 sats owed back");
+  const sent = parse({ owed: [], refunds: [{ filer: "buyer", amountSats: 2500, txid: "ef".repeat(32), owed: payment }] });
+  assert.equal(sent?.refunds[0].owed, payment);
+  assert.doesNotMatch(caseFeeText(sent), /owed/);
 });
 
 const lookedUp = () => ({

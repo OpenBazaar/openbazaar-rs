@@ -1,25 +1,39 @@
 import { useState, type FormEvent } from "react";
-import { canRecuse, partyName, quoteRecusal, recuseDispute, type Dispute, type RefundQuote } from "../moderator";
+import { canRecuse, partyName, quoteOwedRefund, quoteRecusal, recuseDispute, refundOwed, type Dispute, type OwedPayment, type RefundQuote } from "../moderator";
 import { Dialog, FormError, Passphrase, useSubmit } from "./WalletLock";
 
 type Pending = { quote: RefundQuote; title: string; note: string; confirm: (quote: string, passphrase: string) => Promise<unknown> };
 
-/** Paying a filing fee back from this node's wallet: a recusal before any decision. */
+/** Paying a filing fee back from this node's wallet: a recusal before any decision, or a payment the case does not keep. */
 export function CaseRefunds({ letters, all, unlocked, onDone }: { letters: Dispute[]; all: Dispute[]; unlocked: boolean; onDone: () => void }) {
   const [pending, setPending] = useState<Pending | null>(null);
   const { busy, error, run } = useSubmit();
   const paid = letters.find(letter => canRecuse(letter, all));
-  if (!paid) return null;
-  const recuse = () => void run(async () => setPending({
-    quote: await quoteRecusal(paid),
+  const withFee = letters.find(letter => letter.fee);
+  const owed = withFee?.fee?.owed ?? [];
+  if (!paid && owed.length === 0) return null;
+  const recuse = (letter: Dispute) => void run(async () => setPending({
+    quote: await quoteRecusal(letter),
     title: "Recuse from this case",
     note: "The recusal is final and public. No letter of this case can be ruled on or denied afterwards; the escrow follows its timelocks.",
-    confirm: (quote, passphrase) => recuseDispute(paid, quote, passphrase),
+    confirm: (quote, passphrase) => recuseDispute(letter, quote, passphrase),
+  }), "The refund could not be quoted.");
+  const sendBack = (letter: Dispute, item: OwedPayment) => void run(async () => setPending({
+    quote: await quoteOwedRefund(letter, item.payment),
+    title: "Send a payment back",
+    note: "This payment came too late, too short, or after the fee was paid, so the case does not keep it.",
+    confirm: (quote, passphrase) => refundOwed(letter, quote, passphrase),
   }), "The refund could not be quoted.");
   return <section className="ob-case-refunds" aria-label="Refunds">
-    <p className="ob-page-intro">Recusing pays the {partyName(paid.fee?.paidBy ?? paid.favors)}’s filing fee back on-chain from this node’s wallet. This node pays the network fee.</p>
+    {paid && <>
+      <p className="ob-page-intro">Recusing pays the {partyName(paid.fee?.paidBy ?? paid.favors)}’s filing fee back on-chain from this node’s wallet. This node pays the network fee.</p>
+      <button className="ob-text-link" disabled={!unlocked || busy} onClick={() => recuse(paid)}>{busy && !pending ? "Checking…" : "Recuse and refund the fee"}</button>
+    </>}
+    {withFee && owed.map(item => <p className="ob-page-intro" key={item.payment}>
+      {item.amountSats.toLocaleString()} sats from the {partyName(item.filer)} arrived for a request it cannot pay and is owed back. This node pays the network fee.{" "}
+      <button className="ob-text-link" disabled={!unlocked || busy} onClick={() => sendBack(withFee, item)}>Send back</button>
+    </p>)}
     <FormError message={pending ? "" : error}/>
-    <button className="ob-text-link" disabled={!unlocked || busy} onClick={recuse}>{busy && !pending ? "Checking…" : "Recuse and refund the fee"}</button>
     {pending && <RefundDialog pending={pending} onCancel={() => setPending(null)} onDone={() => { setPending(null); onDone(); }}/>}
   </section>;
 }

@@ -181,6 +181,13 @@ mod tests {
                 "/moderator/disputes/00/recuse",
                 r#"{"quote":"x","passphrase":"x","confirm":true}"#,
             ),
+            // A refund goes to the script in the filer's letter, not one the caller names.
+            ("POST", "/moderator/disputes/00/refund/quote", r#"{"payment":"x"}"#),
+            (
+                "POST",
+                "/moderator/disputes/00/refund",
+                r#"{"quote":"x","passphrase":"x","confirm":true}"#,
+            ),
             // The same phone names the moderator and chooses the moderators its store accepts.
             ("GET", "/moderator/profile", ""),
             ("PUT", "/moderator/profile", r#"{"name":"x"}"#),
