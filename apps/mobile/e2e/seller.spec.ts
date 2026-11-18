@@ -128,6 +128,20 @@ test('the seller lists, edits, and removes goods', async ({ page }, info) => {
   await page.getByRole('button', { name: 'Save changes' }).click()
   await expect(row).toContainText('4 in stock')
 
+  // The unlock dialog sits inside the listing form; unlocking must not also submit the listing.
+  expect(await page.evaluate(async () => (await fetch('/lock', {
+    method: 'POST',
+    headers: { 'X-Ob-Pair': (globalThis as { __OB_PAIR_TOKEN__?: string }).__OB_PAIR_TOKEN__ ?? '' }
+  })).ok)).toBeTruthy()
+  await page.getByRole('button', { name: 'Edit Ash glaze mug' }).click()
+  await page.getByLabel('In stock').fill('3')
+  await page.getByRole('button', { name: 'Save changes' }).click()
+  const unlock = page.getByRole('dialog', { name: 'Unlock wallet' })
+  await unlock.getByLabel('Wallet passphrase', { exact: true }).fill(PASSPHRASE)
+  await unlock.getByRole('button', { name: 'Unlock wallet' }).click()
+  await expect(unlock).toHaveCount(0)
+  await expect(page.getByText('Listing updated and signed')).toBeVisible()
+
   await page.getByRole('button', { name: 'New listing' }).click()
   await page.getByLabel('Title').fill('Glaze recipe card')
   await page.getByLabel('Category', { exact: true }).fill('Paper')
