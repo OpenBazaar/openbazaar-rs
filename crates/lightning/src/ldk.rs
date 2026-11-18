@@ -360,9 +360,16 @@ impl LightningRail for LdkRail {
         match details.status {
             PaymentStatus::Pending => Outgoing::Pending,
             PaymentStatus::Failed => Outgoing::Failed,
-            PaymentStatus::Succeeded => {
-                Outgoing::Paid { fee_msat: details.fee_paid_msat.unwrap_or(0), at: details.latest_update_timestamp }
-            }
+            PaymentStatus::Succeeded => Outgoing::Paid {
+                fee_msat: details.fee_paid_msat.unwrap_or(0),
+                at: details.latest_update_timestamp,
+                preimage: match details.kind {
+                    PaymentKind::Bolt11 { preimage, .. } | PaymentKind::Bolt11Jit { preimage, .. } => {
+                        preimage.map(|preimage| preimage.0)
+                    }
+                    _ => None,
+                },
+            },
         }
     }
 

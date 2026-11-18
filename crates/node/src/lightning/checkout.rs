@@ -132,7 +132,7 @@ impl Node {
                         payment["lspFeeMsat"] = json!(lsp_fee_msat);
                         payment["paidAt"] = json!(at);
                     }
-                    (_, openbazaar_lightning::Outgoing::Paid { fee_msat, at }) => {
+                    (_, openbazaar_lightning::Outgoing::Paid { fee_msat, at, .. }) => {
                         order.status = PAID.to_string();
                         order.paying = false;
                         payment["routingFeeMsat"] = json!(fee_msat);

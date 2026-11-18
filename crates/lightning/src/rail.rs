@@ -110,7 +110,8 @@ pub enum Incoming {
 pub enum Outgoing {
     Unknown,
     Pending,
-    Paid { fee_msat: u64, at: u64 },
+    /// `preimage` hashes to the payment hash: proof the payee was paid.
+    Paid { fee_msat: u64, at: u64, preimage: Option<[u8; 32]> },
     Failed,
 }
 
