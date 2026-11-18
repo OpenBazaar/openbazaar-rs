@@ -134,7 +134,7 @@ fn parse_quote(body: &Value, network: NetworkMode) -> Result<Request, PayError> 
 }
 
 /// The sats `psbt` pays to `recipient`, when exactly one output does.
-fn paid_to(psbt: &Psbt, recipient: &ScriptBuf) -> Option<u64> {
+pub(crate) fn paid_to(psbt: &Psbt, recipient: &ScriptBuf) -> Option<u64> {
     let mut paying = psbt
         .unsigned_tx
         .output
@@ -170,7 +170,7 @@ fn build_error(err: CreateTxError, held_back: u64) -> PayError {
 impl Node {
     /// An unsigned send of `amount` (or everything) to `address`, and the
     /// sats of linked change it left out.
-    fn build_send(
+    pub(crate) fn build_send(
         &self,
         address: &Address,
         amount: Option<u64>,

@@ -96,6 +96,11 @@ fn a_filer_accepts_only_the_request_its_terms_allow() {
             script: vec![0x6a, 0x01, 0x00],
             ..request(&terms)
         },
+        FeeRequest {
+            due_height: CLAIM + 1,
+            valid_until_height: CLAIM - 1,
+            ..request(&terms)
+        },
     ];
     for bad in refused {
         assert!(

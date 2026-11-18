@@ -184,8 +184,8 @@ impl FeeCase<'_> {
 /// its digest, which the receipt must cite.
 ///
 /// The signer must be the terms' moderator, the amount the terms' non-zero
-/// filing fee, the filer the payer, and the script a standard output for
-/// that amount. Nothing in the request can change who is paid how much
+/// filing fee, the filer the payer, the due height the terms' vendor claim
+/// height, and the script a standard output for that amount. Nothing in the request can change who is paid how much
 /// beyond what both parties signed.
 pub fn read_fee_request(bytes: &[u8], case: &FeeCase<'_>) -> Result<(FeeRequest, [u8; 32]), Error> {
     let fee = case.terms.moderator.filing_fee().ok_or(Error::BadPayload)?;
@@ -198,6 +198,7 @@ pub fn read_fee_request(bytes: &[u8], case: &FeeCase<'_>) -> Result<(FeeRequest,
         || request.letter_digest != case.letter_digest
         || request.favored != favored_code(case.filer)
         || request.amount_sats != fee.to_sat()
+        || request.due_height != case.terms.vendor_claim_height
     {
         return Err(Error::BadPayload);
     }
@@ -209,7 +210,10 @@ pub fn read_fee_request(bytes: &[u8], case: &FeeCase<'_>) -> Result<(FeeRequest,
 /// Check a receipt for the request with `request_digest`.
 pub fn read_fee_receipt(bytes: &[u8], case: &FeeCase<'_>, request_digest: &[u8; 32]) -> Result<FeeReceipt, Error> {
     let signed: SignedFeeReceipt = verified(bytes, &xonly(&case.terms.moderator.signing_key))?;
-    if signed.terms.case_id != case.case_id() || signed.terms.request_digest != *request_digest {
+    if signed.terms.case_id != case.case_id()
+        || signed.terms.request_digest != *request_digest
+        || signed.terms.due_height != case.terms.vendor_claim_height
+    {
         return Err(Error::BadPayload);
     }
     Ok(signed.terms)

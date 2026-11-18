@@ -16,7 +16,7 @@ use crate::watch::{AWAITING_PAYMENT, AWAITING_SELLER, PAID};
 
 const PRICE: u64 = 28_000;
 
-pub(super) fn arm(node: &crate::Node, rail: &Arc<MockRail>) {
+pub(crate) fn arm(node: &crate::Node, rail: &Arc<MockRail>) {
     let mut flags = LnFlags::default();
     let args = [
         "--lightning",

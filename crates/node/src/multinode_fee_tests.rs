@@ -8,8 +8,8 @@ use openbazaar_protocol::{FeeRequest, SignedFeeRequest, FAVORED_BUYER};
 use serde_json::{json, Value};
 
 use crate::escrow_mail::{hex, parse_id, unhex};
-use crate::harness::{fund_node_wallet, hash_of, order, request, ship_to, unlock, Market};
-use crate::multinode_tests::{funded, funding_tx, spends};
+use crate::harness::{fund_node_wallet, hash_of, order, request, ship_to, unlock, Market, PASSPHRASE};
+use crate::multinode_tests::{funded, funding_tx, sale, spends};
 use crate::{Node, SETTLED};
 
 const SELLER: &str = "Marlow Goods";
@@ -232,6 +232,21 @@ fn a_denied_letter_is_final_and_its_fee_is_kept() {
         SETTLED,
         "a denial decrypts nothing"
     );
+    market.deliver();
+    assert_eq!(
+        order(&market.buyer.node, &id)["escrow"]["disputeFee"]["state"],
+        "denied"
+    );
+    let (status, refused) = request(
+        &market.buyer.node,
+        "POST",
+        &format!("/orders/{id}/dispute"),
+        r#"{"memo": "Again."}"#,
+    );
+    assert!(
+        status.contains("409") && refused["error"].as_str().unwrap().contains("final"),
+        "{status} {refused}"
+    );
 }
 
 #[test]
@@ -274,4 +289,173 @@ fn a_moderator_with_no_filing_fee_decides_at_once() {
         1,
         "a free v5 case still signs its decision"
     );
+}
+
+/// Quote the fee at `base` (`/orders/{id}` or `/escrow/sales/{id}`), then pay
+/// the quote with the passphrase. Returns the quote and the answer.
+fn quote_and_pay(node: &Node, base: &str) -> (Value, (String, Value)) {
+    let (status, quote) = request(node, "POST", &format!("{base}/dispute-fee/quote"), "");
+    assert!(status.contains("200"), "{status} {quote}");
+    let body = json!({ "quote": quote["quote"], "passphrase": PASSPHRASE, "confirm": true }).to_string();
+    (quote, request(node, "POST", &format!("{base}/dispute-fee"), &body))
+}
+
+/// The moderator's wallet sees the newest broadcast, confirmed.
+fn moderator_sees_payment(market: &Market) {
+    let tx = market.chain.broadcasts().last().unwrap().clone();
+    market.chain.0.wallet_txs.lock().unwrap().push((tx, true));
+    market.mine();
+    market.moderator.node.moderator_fee_steps();
+    market.deliver();
+}
+
+#[test]
+fn the_buyer_pays_the_fee_it_was_asked_for_once_and_keeps_the_receipt() {
+    let market = Market::new();
+    let (id, _) = funded_with(&market, FEE);
+    let (buyer, moderator) = (market.buyer.node.clone(), market.moderator.node.clone());
+    let base = format!("/orders/{id}");
+    let filed = filed(&market, &id);
+    let (status, early) = request(&buyer, "POST", &format!("{base}/dispute-fee/quote"), "");
+    assert!(
+        status.contains("409"),
+        "nothing to pay before the moderator asks: {status} {early}"
+    );
+    moderator.moderator_fee_steps();
+    market.deliver();
+    let asked = order(&buyer, &id)["escrow"]["disputeFee"].clone();
+    assert_eq!(
+        (&asked["state"], &asked["amountSats"], &asked["lightning"]),
+        (&json!("requested"), &json!(FEE), &json!(false)),
+        "{asked}"
+    );
+
+    fund_node_wallet(&buyer, &market.chain, 50_000);
+    let (quote, (status, paid)) = quote_and_pay(&buyer, &base);
+    let script = last_request(&moderator, &filed).unwrap().script;
+    let address = Address::from_script(Script::from_bytes(&script), Network::Testnet4)
+        .unwrap()
+        .to_string();
+    assert_eq!(
+        (&quote["rail"], &quote["amountSats"], &quote["address"]),
+        (&json!("onchain"), &json!(FEE), &json!(address)),
+        "{quote}"
+    );
+    assert!(status.contains("200"), "{status} {paid}");
+    let tx = market.chain.broadcasts().last().unwrap().clone();
+    assert_eq!(paid["txid"], json!(tx.compute_txid().to_string()));
+    assert!(tx
+        .output
+        .iter()
+        .any(|out| out.script_pubkey.as_bytes() == script.as_slice() && out.value.to_sat() == FEE));
+    let body = json!({ "quote": quote["quote"], "passphrase": PASSPHRASE, "confirm": true }).to_string();
+    assert!(
+        request(&buyer, "POST", &format!("{base}/dispute-fee"), &body)
+            .0
+            .contains("409"),
+        "a quote pays once"
+    );
+    let (status, again) = request(&buyer, "POST", &format!("{base}/dispute-fee/quote"), "");
+    assert!(
+        status.contains("409"),
+        "a paid fee is not quoted again: {status} {again}"
+    );
+    assert_eq!(order(&buyer, &id)["escrow"]["disputeFee"]["state"], "paying");
+
+    moderator_sees_payment(&market);
+    let receipt = order(&buyer, &id)["escrow"]["disputeFee"].clone();
+    assert_eq!(
+        receipt["state"], "paid",
+        "the moderator's signed receipt arrived: {receipt}"
+    );
+    assert_eq!(case(&moderator)["fee"]["paidBy"], "buyer");
+    assert!(act(&moderator, &filed, "rule", "buyer").0.contains("200"));
+    market.deliver();
+    assert_eq!(order(&buyer, &id)["status"], SETTLED);
+}
+
+#[test]
+fn a_locked_vendor_keeps_the_fee_request_and_pays_it_once_unlocked() {
+    let mut market = Market::new();
+    let (id, _) = funded_with(&market, FEE);
+    let sale_id = sale(&market.vendor.node)["id"].as_str().unwrap().to_string();
+    let base = format!("/escrow/sales/{sale_id}");
+    let (status, body) = request(
+        &market.vendor.node,
+        "POST",
+        &format!("{base}/dispute"),
+        r#"{"memo": "Delivered; signed for."}"#,
+    );
+    assert!(status.contains("200"), "{status} {body}");
+    market.deliver();
+    let filed = case(&market.moderator.node);
+    assert_eq!(filed["favors"], "vendor");
+
+    market.vendor.restart(&market.chain.clone(), false);
+    market.moderator.node.moderator_fee_steps();
+    market.deliver();
+    assert_eq!(
+        sale(&market.vendor.node)["disputeFee"]["state"],
+        "requested",
+        "a locked vendor still takes the request"
+    );
+    assert!(
+        request(&market.vendor.node, "POST", &format!("{base}/dispute-fee/quote"), "")
+            .0
+            .contains("423")
+    );
+    unlock(&market.vendor.node);
+    fund_node_wallet(&market.vendor.node, &market.chain, 50_000);
+    let (_, (status, paid)) = quote_and_pay(&market.vendor.node, &base);
+    assert!(status.contains("200"), "{status} {paid}");
+    moderator_sees_payment(&market);
+    assert_eq!(sale(&market.vendor.node)["disputeFee"]["state"], "paid");
+
+    // The buyer answers with its own letter: the escrow's fee is paid, so nobody asks it.
+    let (status, _) = request(
+        &market.buyer.node,
+        "POST",
+        &format!("/orders/{id}/dispute"),
+        r#"{"memo": "Empty box."}"#,
+    );
+    assert!(status.contains("200"));
+    market.deliver();
+    market.moderator.node.moderator_fee_steps();
+    market.deliver();
+    assert_eq!(
+        order(&market.buyer.node, &id)["escrow"]["disputeFee"]["state"],
+        "awaiting-request"
+    );
+    assert!(act(&market.moderator.node, &filed, "rule", "vendor").0.contains("200"));
+    market.deliver();
+    assert_eq!(sale(&market.vendor.node)["stage"], "settled");
+}
+
+#[test]
+fn a_fee_the_moderators_channels_can_take_is_paid_over_lightning() {
+    use openbazaar_lightning::ldk_node::bitcoin::Network as LnNetwork;
+    use openbazaar_lightning::mock::MockRail;
+    use std::sync::Arc;
+
+    let market = Market::new();
+    let moderator_rail = Arc::new(MockRail::new(LnNetwork::Signet));
+    let buyer_rail = Arc::new(moderator_rail.linked());
+    moderator_rail.set_inbound_sats(FEE);
+    buyer_rail.set_lightning_sats(100_000);
+    crate::lightning::sale_tests::arm(&market.moderator.node, &moderator_rail);
+    crate::lightning::sale_tests::arm(&market.buyer.node, &buyer_rail);
+    let (id, _) = funded_with(&market, FEE);
+    let filed = filed(&market, &id);
+    market.moderator.node.moderator_fee_steps();
+    market.deliver();
+    assert!(last_request(&market.moderator.node, &filed).unwrap().invoice.is_some(), "room in a channel: an invoice");
+    assert_eq!(order(&market.buyer.node, &id)["escrow"]["disputeFee"]["lightning"], true);
+
+    let (quote, (status, paid)) = quote_and_pay(&market.buyer.node, &format!("/orders/{id}"));
+    assert_eq!(quote["rail"], "ln", "{quote}");
+    assert!(status.contains("200"), "{status} {paid}");
+    market.moderator.node.moderator_fee_steps();
+    market.deliver();
+    assert_eq!(case(&market.moderator.node)["fee"]["rail"], "ln");
+    assert_eq!(order(&market.buyer.node, &id)["escrow"]["disputeFee"]["state"], "paid");
 }

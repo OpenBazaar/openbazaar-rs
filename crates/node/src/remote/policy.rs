@@ -152,6 +152,10 @@ mod tests {
             ("POST", "/spend-tickets", "{}"),
             // Paying an order and reading or funding the wallet stay open to a device.
             ("POST", "/orders/00/pay", r#"{"ticket":"x"}"#),
+            // So is paying a dispute's filing fee, after the passphrase.
+            ("POST", "/orders/00/dispute-fee/quote", ""),
+            ("POST", "/orders/00/dispute-fee", r#"{"quote":"x","passphrase":"x","confirm":true}"#),
+            ("POST", "/escrow/sales/00/dispute-fee", r#"{"quote":"x","passphrase":"x","confirm":true}"#),
             ("GET", "/wallet", ""),
             ("POST", "/wallet/address", ""),
             ("GET", "/xmr/wallet", ""),

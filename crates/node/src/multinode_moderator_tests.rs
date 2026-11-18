@@ -147,7 +147,7 @@ fn an_escrow_with_the_moderator_the_buyer_chose_is_disputed_and_ruled_by_it() {
     crate::multinode_fee_tests::pay(&market, &openbazaar_protocol::SignedFeeRequest::decode(&asked).unwrap().terms);
     let (status, value) = request(&market.moderator.node, "POST", &rule, r#"{"favor": "buyer"}"#);
     assert!(status.contains("200"), "{status} {value}");
-    assert_eq!(market.deliver(), 1, "the buyer settles with the ruling");
+    assert_eq!(market.deliver(), 3, "the buyer takes the fee request and receipt, then settles with the ruling");
 
     let settled = order(&market.buyer.node, &id);
     assert_eq!(settled["status"], SETTLED, "{settled}");

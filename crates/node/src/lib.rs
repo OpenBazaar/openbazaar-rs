@@ -35,6 +35,7 @@ mod egress;
 mod escrow_bump;
 mod escrow_buyer;
 mod escrow_choice;
+mod escrow_dispute_fee;
 mod escrow_fee;
 mod escrow_fixture;
 mod escrow_http;

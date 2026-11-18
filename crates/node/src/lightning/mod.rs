@@ -34,7 +34,7 @@ pub(crate) mod options;
 mod pay;
 mod sale;
 #[cfg(test)]
-mod sale_tests;
+pub(crate) mod sale_tests;
 mod send;
 #[cfg(test)]
 mod send_tests;
@@ -61,6 +61,7 @@ use crate::wallet_keys;
 use crate::{Error, Node};
 
 pub(crate) use checkout::{add_ln_flags, ln_rail_of};
+pub(crate) use fee::FeePaid;
 pub(crate) use http::response;
 pub(crate) use pay::LnTerms;
 pub(crate) use sale::{add_terms, payment_from_terms};

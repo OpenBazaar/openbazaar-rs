@@ -423,8 +423,9 @@ impl Node {
         let mail = Mail::decode(&opened.body)?;
         let signs = match desk {
             Desk::Buyer => buyer_step_signs(mail.kind),
-            // Every vendor round uses the sale's per-order key.
-            Desk::Vendor(_) => true,
+            // Every vendor round uses the sale's per-order key; filing-fee
+            // mail from the moderator signs nothing.
+            Desk::Vendor(_) => !filing_fee_mail(mail.kind),
             Desk::Moderator => false,
         };
         if signs && !unlocked {
@@ -502,6 +503,10 @@ fn handled(result: Result<(), String>) -> Result<Handled, String> {
 /// Buyer rounds that sign or broadcast: countersigning terms, signing the
 /// funding, signing the release again for a vendor's fresh nonce, and
 /// settling a ruling.
+fn filing_fee_mail(kind: Kind) -> bool {
+    matches!(kind, Kind::FeeRequest | Kind::FeeReceipt | Kind::Denied)
+}
+
 fn buyer_step_signs(kind: Kind) -> bool {
     matches!(kind, Kind::Offer | Kind::Reply | Kind::ReleaseNonce | Kind::Ruling)
 }
