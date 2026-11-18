@@ -10,12 +10,12 @@
 \node[txb] (rel) at (6.8,3.6)  {\textbf{Release} \hfill $\mathsf{lt}=0$\\ $F-f \to$ vendor\\[-1pt]\scriptsize signed after delivery};
 \node[txb] (clm) at (6.8,1.8) {\textbf{Claim} (= refund) \hfill $\mathsf{lt}=h_R$\\ $F-f-a \to$ buyer, anchor\\[-1pt]\scriptsize buyer partial in round 3};
 \node[txb] (ref) at (6.8,0)    {\textbf{Buyer refund} \hfill $\mathsf{lt}=h_R$\\ $F-f-a \to$ buyer, anchor\\[-1pt]\scriptsize vendor partial in round 2};
-\node[txb] (bw)  at (6.8,-1.8){\textbf{Buyer wins} \hfill $\mathsf{lt}=0$\\ $F-f-a-\varphi \to$ buyer, $\varphi\to$ mod., anchor\\[-1pt]\scriptsize adaptor $T_B+U_B$, round 2};
-\node[txb] (vw)  at (6.8,-3.6) {\textbf{Vendor wins} \hfill $\mathsf{lt}=0$\\ $F-f-a-\varphi \to$ vendor, $\varphi\to$ mod., anchor\\[-1pt]\scriptsize adaptor $T_V+U_V$, round 3};
+\node[txb] (bw)  at (6.8,-1.8){\textbf{Buyer wins} \hfill $\mathsf{lt}=0$\\ $F-f-a \to$ buyer, anchor\\[-1pt]\scriptsize adaptor $T_B+U_B$, round 2};
+\node[txb] (vw)  at (6.8,-3.6) {\textbf{Vendor wins} \hfill $\mathsf{lt}=0$\\ $F-f-a \to$ vendor, anchor\\[-1pt]\scriptsize adaptor $T_V+U_V$, round 3};
 \foreach \t in {rel,clm,ref,bw,vw} { \draw[arr] (f.east) -- (\t.west); }
 \node[font=\scriptsize, align=center, text width=3.4cm] at (0,-2.0) {witness of every spend:\\one 64-byte BIP~340 signature};
 \end{tikzpicture}
-\caption{Escrow transaction graph. All five spends are key-path spends of the same output under the MuSig2 aggregate of the buyer's and vendor's per-order keys; the moderator's key is not part of $Q$. Four spends are presigned before funding, and the claim is the same transaction as the refund, so both parties hold it; the release is signed cooperatively later. $f$ is the network fee, $\varphi$ the moderator fee, and $a$ the 240-satoshi pay-to-anchor output, all fixed by the signed terms; $\mathsf{lt}$ is \code{nLockTime}.}
+\caption{Escrow transaction graph. All five spends are key-path spends of the same output under the MuSig2 aggregate of the buyer's and vendor's per-order keys; the moderator's key is not part of $Q$. Four spends are presigned before funding, and the claim is the same transaction as the refund, so both parties hold it; the release is signed cooperatively later. $f$ is the network fee and $a$ the 240-satoshi pay-to-anchor output, both fixed by the signed terms; the moderator's filing fee is paid outside the escrow; $\mathsf{lt}$ is \code{nLockTime}.}
 \label{fig:escrow-graph}
 \end{figure}
 
