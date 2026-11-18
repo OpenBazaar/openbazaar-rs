@@ -23,7 +23,7 @@ fn seller(dir: &TempDir, chain: &MockChain) -> (Node, SeedDocument) {
 }
 
 fn fee_address(node: &Node, head: &SeedDocument) -> Address {
-    store_fee_address(&head.terms.fee_key, node.own_store.as_bytes(), NetworkMode::Testnet4.bitcoin()).unwrap()
+    store_fee_address(&head.schedule.at(0).unwrap().terms.fee_key, node.own_store.as_bytes(), NetworkMode::Testnet4.bitcoin()).unwrap()
 }
 
 /// Someone outside the node, an exchange or a swap, pays `script`.

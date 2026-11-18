@@ -2106,7 +2106,7 @@ mod tests {
         let mut empty = Catalog { stores: vec![], moderator: catalog.moderator.clone(), listings: vec![] };
         bare.apply(&mut empty, StoreId::from_bytes([1u8; 32]), |_| false, &live);
         assert!(empty.stores.is_empty(), "an admission with no store record is not a shop");
-        *chain.0.tip.lock().unwrap() = height.saturating_add(head.terms.epoch_blocks).saturating_add(1);
+        *chain.0.tip.lock().unwrap() = crate::admission::listed_until(&head.schedule, height).saturating_add(1);
         assert!(!crate::admission::fee_confirmed(&chain, NetworkMode::Testnet4, &head, &admission), "an old admission leaves the index");
         bare.accept_store(&store.encode().unwrap()).unwrap();
         bare.follow(store_id).unwrap();

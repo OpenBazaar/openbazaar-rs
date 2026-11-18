@@ -350,7 +350,7 @@ pub struct Node {
     /// Signed seed document and the store records replicated from introductions.
     seed_replica: Mutex<directory::Replica>,
     /// What the last directory pass saw of this store's fee. Requests read it; they do not ask the chain.
-    directory_fee: Mutex<Option<admission::FeeState>>,
+    directory_fee: Mutex<Option<admission::FeeSeen>>,
     pub(crate) escrow: escrow_mail::Escrow,
     pairing_token: String,
     /// True only in the process that created `pairing.token`.

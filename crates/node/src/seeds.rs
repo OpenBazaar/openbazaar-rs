@@ -84,8 +84,10 @@ mod tests {
         let bytes = super::sign_document(1, vec![], secret).unwrap();
         let document = SeedDocument::decode(&bytes).unwrap();
         document.verify_signer(&DOCUMENT_KEY).unwrap();
-        assert_eq!(document.terms, DirectoryTerms::standard(DOCUMENT_KEY));
-        assert_eq!((document.terms.fee_sats, document.terms.fee_confs, document.terms.epoch_blocks), (FEE_SATS, FEE_CONFS, EPOCH_BLOCKS));
+        let terms = document.schedule.at(0).unwrap().terms;
+        assert!(document.schedule.is_single());
+        assert_eq!(terms, DirectoryTerms::standard(DOCUMENT_KEY));
+        assert_eq!((terms.fee_sats, terms.fee_confs, terms.epoch_blocks), (FEE_SATS, FEE_CONFS, EPOCH_BLOCKS));
         assert_eq!(document.introductions.len(), INTRODUCTIONS.len());
     }
 
