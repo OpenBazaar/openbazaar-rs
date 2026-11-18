@@ -410,11 +410,12 @@ impl Replica {
         Ok(())
     }
 
-    /// Keep a higher sequence signed by `key` whose fee terms extend the held ones.
+    #[cfg(test)]
     pub(crate) fn accept_document(&mut self, bytes: &[u8], key: &[u8; 32]) -> Result<u64, String> {
         self.accept_document_at(bytes, key, None)
     }
 
+    /// Keep a higher sequence signed by `key` whose fee terms extend the held ones.
     pub(crate) fn accept_document_at(&mut self, bytes: &[u8], key: &[u8; 32], tip: Option<u32>) -> Result<u64, String> {
         let document = SeedDocument::decode(bytes).map_err(|err| err.to_string())?;
         document.verify_signer(key).map_err(|err| err.to_string())?;
@@ -1115,9 +1116,11 @@ impl Node {
     }
 }
 
-/// Ask `onions` for the seed document and keep the highest sequence that verifies
-/// under the shipped key. `dir` is one network's data directory (`…/testnet4`).
-pub(crate) fn pull_onions(dir: &Path, onions: &[String]) -> Result<u64, String> {
+/// Ask `onions` for the directory head and keep the highest sequence that
+/// verifies under the shipped key and extends the held terms. `dir` is one
+/// network's data directory (`…/testnet4`). No chain is asked, so a head that
+/// drops terms is not taken here.
+pub(crate) fn pull_onions(dir: &Path, onions: &[String]) -> Result<(u64, Vec<String>), String> {
     let mut replica = Replica::open(dir).map_err(|err| err.to_string())?;
     let state_dir = dir.join("tor-client");
     let sources: Vec<Introduction> = onions
@@ -1127,11 +1130,12 @@ pub(crate) fn pull_onions(dir: &Path, onions: &[String]) -> Result<u64, String> 
     let reported: Vec<Report<'_>> = sources.iter().map(|source| Report { inner: source }).collect();
     let refs: Vec<&dyn Source> = reported.iter().map(|source| source as &dyn Source).collect();
     replica.pull(&refs, &DOCUMENT_KEY, [0u8; 32])?;
-    replica
-        .head()
-        .as_ref()
-        .map(|document| document.sequence)
-        .ok_or_else(|| "no introduction returned a document".into())
+    let document = replica.head().ok_or_else(|| "no introduction returned a document".to_string())?;
+    let mut lines = crate::head_plan::describe_head(&document);
+    if let Some((sequence, reason)) = replica.head_refused() {
+        lines.push(format!("refused sequence {sequence}: {reason}"));
+    }
+    Ok((document.sequence, lines))
 }
 
 struct Report<'a> {

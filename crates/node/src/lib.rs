@@ -32,6 +32,7 @@ mod commerce_http;
 mod coupons;
 mod directory;
 mod directory_head;
+mod head_plan;
 mod egress;
 mod escrow_bump;
 mod escrow_buyer;
@@ -201,11 +202,12 @@ pub use network::{resolve_vault_mode, NetworkMode, ServeOptions, VaultChoice};
 pub use onion_mail::{
     deliver_letter, letter_digest, poll_mailbox, PollMail, SendLetter, StoredLetter,
 };
-pub use seeds::sign_document;
+pub use head_plan::{describe_head, sign_head, HeadPlan, SignedHeads, TermsChange};
 pub use tor_socks::TorSocks;
 
-/// Fetch the seed document from `onions` into `data_dir` and return the sequence kept.
-pub fn pull_seed(data_dir: &std::path::Path, onions: &[String]) -> Result<u64, String> {
+/// Fetch the directory head from `onions` into `data_dir`. Returns the
+/// sequence kept and one line per scheduled fee entry.
+pub fn pull_seed(data_dir: &std::path::Path, onions: &[String]) -> Result<(u64, Vec<String>), String> {
     directory::pull_onions(data_dir, onions)
 }
 pub use orders::OrderError;

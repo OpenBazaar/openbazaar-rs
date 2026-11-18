@@ -37,8 +37,8 @@ Chain data comes from BIP 157/158 compact block filters by default.
 --onion listens for one sealed letter on a Tor onion (virtual port 80) and serves the public shop routes on that same onion: GET /public/store, public media, and reviews. It also answers a seed-document query. The clearnet listener stays on 127.0.0.1. Wallet, escrow spend, and mail secrets stay closed. A clearnet sale URL is still refused.
 send-letter dials --to. An onion uses Arti and fails if the dial fails or times out. A loopback http:// URL posts the letter to /escrow/mail. Any other URL is refused.
 poll-mail lists id and sha256 for each letter in the sealed mailbox. With --expect, it exits 1 when that digest is absent.
-sign-seed --key FILE --sequence N [--introductions ONION,ONION] --out FILE signs a directory head with the operator key. The key file is 64 hex characters and must match the public key in this binary. The head names the introduction list and the 20,000 sat fee. It does not name stores. A store joins by paying that fee. Copy the output file onto an introduction, or submit it to one that is already running; do not copy the key.
-fetch-seed --data-dir DIR --from ONION [--from ONION...] asks those introductions and prints the sequence that verified.";
+sign-seed --key FILE --sequence N [--introductions ONION,ONION] [--previous FILE] [--tip H] [--append-terms start=H[,sats=N][,confs=C][,epoch=E]] [--prune] [--v2-out FILE] --out FILE signs a version 3 directory head with the operator key. The key file is 64 hex characters and must match the public key in this binary. The head names the introduction list and a schedule of fee terms, first 20,000 sats, 1 confirmation, and a 2,016-block epoch. It does not name stores. A store joins by paying the fee. --previous is the head introductions serve now; the new head keeps its terms. --append-terms adds terms from block H, keeping any value it leaves out; it needs --tip, the chain tip now, and refuses a start sooner than 1,008 blocks after it (288 when the terms only ask less). The fee key does not change. --prune drops terms no listed store was paid under. --v2-out also writes a version 2 head for nodes that do not read version 3; it refuses terms below the first ones. Publish within 144 blocks of --tip. Copy the output file onto an introduction as directory/document.obsd (the version 2 file as directory/document-v2.obsd), or submit it to one that is already running; do not copy the key.
+fetch-seed --data-dir DIR --from ONION [--from ONION...] asks those introductions and prints the sequence that verified, then its fee terms.";
 const PASSPHRASE_ENV: &str = "OB_VAULT_PASSPHRASE";
 const TRACKING_KEY_ENV: &str = "OB_TRACKING_API_KEY";
 const WEB_KEY_ENV: &str = "OB_WEB_ACCESS_KEY";
@@ -384,8 +384,11 @@ fn fetch_seed(args: &[String]) -> ExitCode {
     }
     let dir = NetworkMode::Testnet4.data_dir(&root);
     match ob_node::pull_seed(&dir, &onions) {
-        Ok(sequence) => {
+        Ok((sequence, schedule)) => {
             println!("{sequence}");
+            for line in schedule {
+                println!("{line}");
+            }
             ExitCode::SUCCESS
         }
         Err(err) => {
@@ -398,16 +401,23 @@ fn fetch_seed(args: &[String]) -> ExitCode {
 fn sign_seed(args: &[String]) -> ExitCode {
     let mut key_path = None;
     let mut sequence = None;
-    let mut introductions = Vec::new();
     let mut out = None;
+    let mut v2_out = None;
+    let mut previous_path = None;
+    let mut plan = ob_node::HeadPlan::default();
     let mut index = 0;
     while index < args.len() {
         let value = args.get(index + 1).map(String::as_str);
         match args[index].as_str() {
+            "--prune" => {
+                plan.prune = true;
+                index += 1;
+                continue;
+            }
             "--key" => key_path = value.map(str::to_string),
             "--sequence" => sequence = value.and_then(|text| text.parse::<u64>().ok()),
             "--introductions" => {
-                introductions = value
+                plan.introductions = value
                     .unwrap_or("")
                     .split(',')
                     .map(str::trim)
@@ -415,6 +425,22 @@ fn sign_seed(args: &[String]) -> ExitCode {
                     .map(str::to_string)
                     .collect();
             }
+            "--previous" => previous_path = value.map(str::to_string),
+            "--tip" => match value.and_then(|text| text.parse::<u32>().ok()) {
+                Some(tip) => plan.tip = Some(tip),
+                None => {
+                    eprintln!("ob-node: --tip is a block height");
+                    return ExitCode::from(2);
+                }
+            },
+            "--append-terms" => match ob_node::TermsChange::parse(value.unwrap_or("")) {
+                Ok(change) => plan.append = Some(change),
+                Err(err) => {
+                    eprintln!("ob-node: --append-terms: {err}");
+                    return ExitCode::from(2);
+                }
+            },
+            "--v2-out" => v2_out = value.map(str::to_string),
             "--stores" | "--inbox" => {
                 eprintln!("ob-node: sign-seed signs a head. A store joins by paying the fee, not by being named here.");
                 return ExitCode::from(2);
@@ -433,6 +459,17 @@ fn sign_seed(args: &[String]) -> ExitCode {
         eprintln!("{USAGE}");
         return ExitCode::from(2);
     };
+    plan.sequence = sequence;
+    plan.v2 = v2_out.is_some();
+    if let Some(path) = previous_path {
+        match fs::read(&path) {
+            Ok(bytes) => plan.previous = Some(bytes),
+            Err(err) => {
+                eprintln!("ob-node: {path}: {err}");
+                return ExitCode::from(1);
+            }
+        }
+    }
     let key_text = match fs::read_to_string(&key_path) {
         Ok(text) => text,
         Err(err) => {
@@ -447,22 +484,25 @@ fn sign_seed(args: &[String]) -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    match ob_node::sign_document(sequence, introductions, secret) {
-        Ok(bytes) => match fs::write(&out, bytes) {
-            Ok(()) => {
-                println!("wrote {out}");
-                ExitCode::SUCCESS
-            }
-            Err(err) => {
-                eprintln!("ob-node: {err}");
-                ExitCode::from(1)
-            }
-        },
+    let heads = match ob_node::sign_head(plan, secret) {
+        Ok(heads) => heads,
         Err(err) => {
             eprintln!("ob-node: {err}");
-            ExitCode::from(1)
+            return ExitCode::from(1);
         }
+    };
+    let writes = std::iter::once((out, heads.v3)).chain(v2_out.zip(heads.v2));
+    for (path, bytes) in writes {
+        if let Err(err) = fs::write(&path, bytes) {
+            eprintln!("ob-node: {err}");
+            return ExitCode::from(1);
+        }
+        println!("wrote {path}");
     }
+    for line in heads.summary {
+        println!("{line}");
+    }
+    ExitCode::SUCCESS
 }
 
 fn unhex32(text: &str) -> Option<[u8; 32]> {
