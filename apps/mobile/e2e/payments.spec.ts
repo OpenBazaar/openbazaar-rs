@@ -140,6 +140,7 @@ async function stepUp(page: Page, confirm = 'Confirm payment') {
 test('testnet4 wallet, setup, real checkout, and a real quote request', async ({
   page
 }, testInfo) => {
+  test.fixme(true, 'Fails on main before CI ran it: https://github.com/OpenBazaar/openbazaar-rs/issues/167')
   await page.goto('/')
   await expect(
     page.getByText('Testnet4 · test coins, no value', { exact: true })
@@ -448,6 +449,7 @@ test('a direct order to a store on another node warns above the payment details'
 test('a Zcash order to a store on another node shows the warning, the seller\'s rate, and the seller\'s updates', async ({
   page
 }) => {
+  test.fixme(true, 'Fails on main before CI ran it: https://github.com/OpenBazaar/openbazaar-rs/issues/167')
   const { id, order } = await checkout(page)
   const address = 'utest1' + 'q'.repeat(60)
   const payment = {

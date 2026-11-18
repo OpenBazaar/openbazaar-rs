@@ -1,4 +1,29 @@
-# Buyer payment browser checks
+# Browser checks
+
+There are two Playwright projects.
+
+**`real`** (`playwright.real.config.ts`, `e2e/real/`): every test starts its own
+disposable nodes (`e2e/nodes.mjs`) on free ports, with a file vault, fixed exchange
+rates and no seed introductions, and drives the shop against them. Nothing is
+mocked: `page.route` throws. Each test also fails on uncaught page errors,
+`console.error`, a node answer of 400 or more that the test did not allow, a page
+load the test did not ask for, and a dialog still open at the end. Failures keep
+a trace, screenshot, video, and each node's log.
+
+```sh
+cd apps/mobile
+npm ci && npx playwright install chromium
+npm run test:ui   # builds ob-node and the web export when stale, then runs the tests
+```
+
+Set `OB_NODE_BIN` to use an existing binary. Seed state through `TestNode` in
+`e2e/real/harness.ts` (`setupWallet`, `openStore`, `addListing`, `follow`, `lock`,
+`unlock`) and keep the UI for what the test is about.
+
+**`mocked`** (`playwright.config.ts`, the rest of `e2e/`): checks of UI states with
+some node answers intercepted, described below. Run with `npm run test:e2e`.
+
+## Mocked checks
 
 From the repository root:
 
