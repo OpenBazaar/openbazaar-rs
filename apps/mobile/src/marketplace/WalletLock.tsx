@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react'
+import { createPortal } from 'react-dom'
 import { shopPairingMessage } from '../catalog'
 import { nodeTarget, servedByHomeNode } from '../homeNode/transport'
 import { bitcoinAmount } from '../nodeWallet'
@@ -453,18 +454,22 @@ export function Dialog({ label, onCancel, children, className = '' }: { label: s
       previous?.focus()
     }
   }, [])
-  return (
+  // Callers render dialogs inside their own forms; the portal keeps the dialog's
+  // form out of theirs, and React still bubbles submit along the component tree.
+  return createPortal(
     <dialog
       ref={dialog}
       className={`ob-pay-confirm ${className}`}
       aria-label={label}
+      onSubmit={e => e.stopPropagation()}
       onCancel={e => {
         e.preventDefault()
         onCancel()
       }}
     >
       {children}
-    </dialog>
+    </dialog>,
+    document.body
   )
 }
 
