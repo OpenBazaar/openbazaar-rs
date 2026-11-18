@@ -328,16 +328,38 @@ impl Node {
             return unavailable("Open your store first.");
         };
         let seen = self.directory_fee.lock().unwrap_or_else(|err| err.into_inner()).clone();
-        let pay = match &seen {
-            Some(seen) => payment_terms(&head.schedule, seen.tip),
-            None => head.schedule.entries().first().map(|entry| entry.terms),
+        let first = head.schedule.entries()[0];
+        let (pay, after) = match &seen {
+            Some(seen) => (payment_terms(&head.schedule, seen.tip), seen.tip.saturating_add(1)),
+            None => (Some(first.terms), first.start_height),
         };
         let Some(pay) = pay else {
             return unavailable("The directory's fee terms have not started yet.");
         };
-        let Ok(address) = store_fee_address(&pay.fee_key, store.id.as_bytes(), self.network.bitcoin()) else {
+        let fee_address = |terms: &DirectoryTerms| store_fee_address(&terms.fee_key, store.id.as_bytes(), self.network.bitcoin()).ok();
+        let Some(address) = fee_address(&pay) else {
             return unavailable("The directory's fee key is not a public key.");
         };
+        let upcoming: Vec<Value> = head
+            .schedule
+            .entries()
+            .iter()
+            .filter(|entry| entry.start_height > after)
+            .filter_map(|entry| {
+                let next = fee_address(&entry.terms)?;
+                Some(json!({
+                    "startHeight": entry.start_height,
+                    "announcedHeight": entry.announced_height,
+                    "address": next.to_string(),
+                    "addressChanges": next != address,
+                    "sats": entry.terms.fee_sats,
+                    "confirmations": entry.terms.fee_confs,
+                    "epochBlocks": entry.terms.epoch_blocks,
+                }))
+            })
+            .collect();
+        let refused = self.seed_replica.lock().unwrap_or_else(|err| err.into_inner()).head_refused();
+        let tip = seen.as_ref().map(|seen| seen.tip);
         let (state, until, error) = match seen.map(|seen| seen.state) {
             Some(FeeState::Listed { until }) => ("listed", Some(until), None),
             Some(FeeState::Confirming) => ("confirming", None, None),
@@ -353,6 +375,9 @@ impl Node {
             "state": state,
             "listedUntilHeight": until,
             "error": error,
+            "tipHeight": tip,
+            "upcoming": upcoming,
+            "headRefused": refused.map(|(sequence, reason)| json!({ "sequence": sequence, "reason": reason })),
         })
     }
 }

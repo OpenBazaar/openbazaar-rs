@@ -4,7 +4,9 @@
 use bitcoin::absolute::LockTime;
 use bitcoin::transaction::Version;
 use bitcoin::{Address, Amount, OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Witness};
-use openbazaar_protocol::{secret_from_label, xonly, Admission, DirectoryTerms, SeedDocument, EPOCH_BLOCKS, FEE_SATS};
+use openbazaar_protocol::{
+    secret_from_label, xonly, Admission, DirectoryTerms, SeedDocument, TermsEntry, TermsSchedule, EPOCH_BLOCKS, FEE_SATS, NOTICE_BLOCKS,
+};
 
 use crate::admission::{fee_confirmed, store_fee_address};
 use crate::chain::ChainSource;
@@ -129,4 +131,45 @@ fn the_fee_route_is_unavailable_on_mainnet() {
     let route = fee_route(&node);
     assert_eq!(route["available"], false);
     assert!(route["reason"].as_str().unwrap().contains("testnet4"));
+}
+
+#[test]
+fn the_fee_route_names_the_next_terms_and_a_refused_head() {
+    let dir = TempDir::new();
+    let chain = MockChain::new();
+    let node = harness::open_node(&dir.0, NetworkMode::Testnet4, &chain, 1, harness::unreachable_escrow());
+    node.set_role(Role::Seller).unwrap();
+    let secret = secret_from_label("store-fee-address-head");
+    let standard = DirectoryTerms::standard(xonly(&secret));
+    let start = chain.tip() + NOTICE_BLOCKS;
+    let raised = TermsEntry { start_height: start, announced_height: chain.tip(), terms: DirectoryTerms { fee_sats: 30_000, ..standard } };
+    let schedule = TermsSchedule::new(vec![TermsEntry::genesis(standard), raised]).unwrap();
+    let head = SeedDocument::sign(5, vec![], schedule, None, &secret).unwrap();
+    node.seed_replica.lock().unwrap().accept_document(&head.encode().unwrap(), &xonly(&secret)).unwrap();
+
+    assert!(node.publish_admission().is_err(), "the empty wallet cannot pay");
+    let route = fee_route(&node);
+    assert_eq!((route["sats"].as_u64(), route["tipHeight"].as_u64()), (Some(FEE_SATS), Some(u64::from(chain.tip()))));
+    let upcoming = route["upcoming"].as_array().unwrap();
+    assert_eq!(upcoming.len(), 1);
+    assert_eq!(upcoming[0]["startHeight"], start);
+    assert_eq!(upcoming[0]["announcedHeight"], chain.tip());
+    assert_eq!(upcoming[0]["sats"], 30_000);
+    assert_eq!(upcoming[0]["epochBlocks"], EPOCH_BLOCKS);
+    assert_eq!((upcoming[0]["address"].clone(), upcoming[0]["addressChanges"].clone()), (route["address"].clone(), false.into()));
+    assert!(route["headRefused"].is_null());
+
+    let edited = TermsSchedule::new(vec![TermsEntry::genesis(DirectoryTerms { fee_sats: 40_000, ..standard }), raised]).unwrap();
+    let rewrite = SeedDocument::sign(6, vec![], edited, None, &secret).unwrap();
+    assert!(node.seed_replica.lock().unwrap().accept_document(&rewrite.encode().unwrap(), &xonly(&secret)).is_err());
+    let route = fee_route(&node);
+    assert_eq!(route["headRefused"]["sequence"], 6);
+    assert!(route["headRefused"]["reason"].as_str().is_some_and(|reason| !reason.is_empty()));
+    assert_eq!(route["sats"], FEE_SATS, "the held head still sets the fee");
+
+    *chain.0.tip.lock().unwrap() = start;
+    assert!(node.publish_admission().is_err());
+    let route = fee_route(&node);
+    assert_eq!(route["sats"], 30_000);
+    assert!(route["upcoming"].as_array().unwrap().is_empty());
 }
