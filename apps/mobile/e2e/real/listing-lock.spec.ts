@@ -12,10 +12,6 @@ async function listings(seller: { api: (m: string, p: string) => Promise<any> })
 
 test('a new listing with photos is published after unlocking mid-edit', async ({ page, seller, guard }) => {
   guard.allowStatus(423, /^\/store\/listings/)
-  // Known bug, fixed on fix/wallet-unlock-modal: the unlock dialog is inside the
-  // listing editor's <form>, so its submit reloads the page (GET /?) instead of
-  // calling /unlock. Remove this line once that fix merges.
-  test.fail()
   await page.goto(seller.ui)
   await page.getByRole('navigation', { name: 'Your store' }).getByRole('button', { name: 'Listings' }).click()
   await page.getByRole('button', { name: 'New listing' }).click()
@@ -41,10 +37,6 @@ test('a new listing with photos is published after unlocking mid-edit', async ({
 
 test('adding photos to an existing listing saves after unlocking mid-edit', async ({ page, seller, guard }) => {
   guard.allowStatus(423, /^\/store\/listings/)
-  // Known bug, fixed on fix/wallet-unlock-modal: the unlock dialog is inside the
-  // listing editor's <form>, so its submit reloads the page (GET /?) instead of
-  // calling /unlock. Remove this line once that fix merges.
-  test.fail()
   await seller.addListing({ title: 'Linen tea towel', currency: 'USD', price: 1800, images: [await seller.uploadImage()] })
   await page.goto(seller.ui)
   await page.getByRole('navigation', { name: 'Your store' }).getByRole('button', { name: 'Listings' }).click()
