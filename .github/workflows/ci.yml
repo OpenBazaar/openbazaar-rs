@@ -29,18 +29,27 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       # The Lightning regtest tests pass without running when there is no
       # bitcoind, so one goes on PATH: the official Bitcoin Core build, checked
-      # against the hash in the SHA256SUMS file published beside it.
+      # against the hash in the SHA256SUMS file published beside it (also in
+      # bitcoin-core/guix.sigs). Cached so a mirror outage only hurts a miss.
+      - id: bitcoind-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/bitcoin-31.0
+          key: bitcoind-31.0-${{ runner.os }}-${{ runner.arch }}
       - name: install bitcoind
+        if: steps.bitcoind-cache.outputs.cache-hit != 'true'
         env:
-          BITCOIN_CORE: "29.0"
-          SHA256: a681e4f6ce524c338a105f214613605bac6c33d58c31dc5135bbc02bc458bb6c
+          BITCOIN_CORE: "31.0"
+          SHA256: d3e4c58a35b1d0a97a457462c94f55501ad167c660c245cb1ffa565641c65074
         run: |
           cd "$RUNNER_TEMP"
           tarball="bitcoin-$BITCOIN_CORE-x86_64-linux-gnu.tar.gz"
-          curl -fsSL --retry 3 -O "https://bitcoincore.org/bin/bitcoin-core-$BITCOIN_CORE/$tarball"
+          for host in https://bitcoincore.org https://bitcoin.org; do
+            curl -fsSL --retry 3 -o "$tarball" "$host/bin/bitcoin-core-$BITCOIN_CORE/$tarball" && break
+          done
           echo "$SHA256  $tarball" | sha256sum --check
           tar -xzf "$tarball"
-          echo "$RUNNER_TEMP/bitcoin-$BITCOIN_CORE/bin" >> "$GITHUB_PATH"
+      - run: echo "$RUNNER_TEMP/bitcoin-31.0/bin" >> "$GITHUB_PATH"
       # Without a bitcoind the job stops here, before those tests can skip.
       - run: bitcoind --version
       # The lockfile pins crates. Do not pass --ignored: the live Arti dial
