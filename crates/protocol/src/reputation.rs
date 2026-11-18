@@ -228,7 +228,7 @@ impl Bond {
 
 impl Terms for Bond {
     const TAG: &'static str = "ob/bond/v1";
-    const MAGIC: [u8; 4] = *b"OBBD";
+    const MAGIC: [u8; 4] = *b"OBBN";
     const VERSION: u8 = 1;
 
     fn signer(&self) -> [u8; PUBKEY_LEN] {

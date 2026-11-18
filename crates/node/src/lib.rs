@@ -146,6 +146,8 @@ mod pay_bump_tests;
 #[cfg(test)]
 mod payment_tests;
 #[cfg(test)]
+mod record_magics_tests;
+#[cfg(test)]
 mod seller_store_tests;
 #[cfg(test)]
 mod wallet_send_tests;
