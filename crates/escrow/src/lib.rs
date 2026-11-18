@@ -158,6 +158,7 @@ mod buyer;
 mod context;
 mod contract;
 mod crypto;
+mod dispute_fee;
 mod error;
 mod funding;
 mod letter;
@@ -177,6 +178,10 @@ mod wire;
 pub use buyer::BuyerEscrow;
 pub use context::Context;
 pub use contract::{SignedClaim, SignedRefund};
+pub use dispute_fee::{
+    fee_letter_digest, is_denial_reversed, read_case_accepted, read_dispute_decision, read_fee_receipt,
+    read_fee_request, Decision, FeeCase,
+};
 pub use error::Error;
 pub use funding::{
     BuyerAwaitingReply, BuyerSession, FundingPlan, VendorAwaitingSignatures, VendorSession,
