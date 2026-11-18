@@ -1,5 +1,6 @@
 import { useState, type FormEvent } from "react";
 import type { CurrencyCode, ListingHeader, RateTable } from "../catalog";
+import { draftListingId } from "../listingDraft";
 import { CONTENT_TAGS, MAX_LISTING_IMAGES, PRICE_CURRENCIES, deleteDraft, draftOf, formatPrice, fromMinorUnits, saveDraft, saveListing, toMinorUnits, type ListingDraft, type PriceCurrency, type SavedDraft } from "../seller";
 import { ImageUpload, MediaImage, useLockedAction } from "./SellerKit";
 import { axesProblem, compareAtText, emptyCommerce, listingFacts, packageFieldsOf, priceTerms, purchaseFields, purchaseTerms, returnsDraft, rowsOf, saleFieldsOf, scheduledSale, shippingTerms, signedTaxonomy, specificRows, tierRows, volumeTiers, withFacts, withPackage, withPrice, withPurchase, withSale, withTaxonomy, withTiers, withVariantWeights, type AvailabilityDraft, type PackageInput, type ReturnsDraft, type SpecificRow, type TierRow } from "../commerceDraft";
@@ -86,6 +87,7 @@ function satsHint(amount: number | null, currency: PriceCurrency, rates: RateTab
 export function ListingEditor({ listing, savedDraft, rates, onSaved, onCancel }: { listing: ListingHeader | null; savedDraft?: SavedDraft | null; rates: RateTable; onSaved: (message: string) => void; onCancel: () => void }) {
   const [form, setForm] = useState<Form>(() => formOf(savedDraft?.listing ?? (listing ? draftOf(listing) : EMPTY)));
   const [draftId, setDraftId] = useState(savedDraft?.draftId ?? null);
+  const listingId = draftListingId(listing, savedDraft);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const { run, dialog } = useLockedAction(setError);
@@ -103,14 +105,14 @@ export function ListingEditor({ listing, savedDraft, rates, onSaved, onCancel }:
     setError("");
     await run(async () => {
       if (!publish) {
-        const saved = await saveDraft(draftId, draft);
+        const saved = await saveDraft(draftId, { ...draft, listingId });
         setDraftId(saved.draftId);
         onSaved("Draft saved");
         return;
       }
-      await saveListing(listing?.listingId ?? null, draft);
+      await saveListing(listingId, draft);
       if (draftId) await deleteDraft(draftId);
-      onSaved(listing ? "Listing updated and signed" : "Listing published");
+      onSaved(listingId ? "Listing updated and signed" : "Listing published");
     });
     setBusy(false);
   }
@@ -198,7 +200,7 @@ export function ListingEditor({ listing, savedDraft, rates, onSaved, onCancel }:
     <div className="ob-form-actions">
       <button type="button" className="ob-secondary" onClick={onCancel}>Cancel</button>
       <button type="submit" data-action="draft" className="ob-secondary" disabled={busy}>Save draft</button>
-      <button type="submit" data-action="publish" className="ob-primary" disabled={busy}>{busy ? "Saving…" : listing ? "Save changes" : "Publish listing"}</button>
+      <button type="submit" data-action="publish" className="ob-primary" disabled={busy}>{busy ? "Saving…" : listingId ? "Save changes" : "Publish listing"}</button>
     </div>
     {dialog}
   </form>;
