@@ -6,7 +6,7 @@ use futures::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use futures::Stream;
 use futures::StreamExt;
 use tor_cell::relaycell::msg::{Connected, End, EndReason};
-use tor_hsservice::{HsNickname, OnionServiceConfig, RendRequest, RunningOnionService};
+use tor_hsservice::{handle_rend_requests, HsNickname, OnionServiceConfig, RendRequest, RunningOnionService, StreamRequest};
 use tor_proto::stream::IncomingStreamRequest;
 use tor_rtcompat::Runtime;
 
@@ -90,15 +90,25 @@ impl OnionListener {
         G: FnOnce(u8, &[u8]) -> bool,
     {
         let rend = self.requests.next().await.ok_or(Error::ListenerClosed)?;
-        serve_request(Incoming(rend), mailbox, shop, answer, ingest).await
+        let mut streams = rend
+            .accept()
+            .await
+            .map_err(|err| Error::Arti(err.to_string()))?;
+        let request = streams
+            .next()
+            .await
+            .ok_or(Error::Listener("rendezvous closed before a stream"))?;
+        serve_request(Incoming(request), mailbox, shop, answer, ingest).await
     }
 
-    /// Hand over the introduced requests, so each can be served on its own
-    /// with [`serve_request`]. Later calls to [`OnionListener::accept_next`]
-    /// see a closed listener.
+    /// Hand over every stream clients open, so each can be served on its own
+    /// with [`serve_request`]. Rendezvous circuits are accepted concurrently
+    /// and every stream on one is yielded: a client such as Tor reuses one
+    /// circuit for its next requests. Later calls to
+    /// [`OnionListener::accept_next`] see a closed listener.
     pub fn take_requests(&mut self) -> Pin<Box<dyn Stream<Item = Incoming> + Send>> {
         let requests = std::mem::replace(&mut self.requests, Box::pin(futures::stream::empty()));
-        Box::pin(requests.map(Incoming))
+        Box::pin(handle_rend_requests(requests).map(Incoming))
     }
 
     /// Short status for the operator log: high-level state, and the current
@@ -112,13 +122,11 @@ impl OnionListener {
     }
 }
 
-/// One introduced client, not yet answered. Building the rendezvous circuit
-/// back to it can take a minute or fail, so serve each one apart from the
-/// others.
-pub struct Incoming(RendRequest);
+/// One stream a client opened on its rendezvous circuit, not yet answered.
+pub struct Incoming(StreamRequest);
 
-/// Serve one introduced client: accept its rendezvous, then read one sealed
-/// letter, relay one public shop request, or answer one directory query.
+/// Serve one stream: read one sealed letter, relay one public shop request,
+/// or answer one directory query.
 /// `shop` is the sale gate. `answer` and `ingest` are as in
 /// [`OnionListener::accept_next`].
 pub async fn serve_request<F, G>(
@@ -132,15 +140,7 @@ where
     F: FnOnce(u8, [u8; 32]) -> Option<Vec<u8>>,
     G: FnOnce(u8, &[u8]) -> bool,
 {
-    let mut streams = incoming
-        .0
-        .accept()
-        .await
-        .map_err(|err| Error::Arti(err.to_string()))?;
-    let request = streams
-        .next()
-        .await
-        .ok_or(Error::Listener("rendezvous closed before a stream"))?;
+    let request = incoming.0;
     let port = match request.request() {
         IncomingStreamRequest::Begin(begin) => Some(begin.port()),
         _ => None,

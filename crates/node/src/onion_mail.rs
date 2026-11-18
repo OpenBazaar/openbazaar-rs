@@ -216,9 +216,8 @@ impl Node {
     }
 }
 
-/// Clients served at once on the onion. Each waits on its own rendezvous
-/// circuit, which can take a minute or fail, so one slow client must not hold
-/// up the rest.
+/// Streams served at once on the onion, so one slow client does not hold up
+/// the rest.
 const ONION_IN_FLIGHT: usize = 32;
 /// A client still unanswered after this is dropped to free its slot.
 const ONION_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
