@@ -116,6 +116,8 @@ mod xmr;
 mod zec;
 
 #[cfg(test)]
+mod admission_tests;
+#[cfg(test)]
 mod checkout_tests;
 #[cfg(test)]
 mod harness;
@@ -349,6 +351,8 @@ pub struct Node {
     advertised_onion: Mutex<Option<String>>,
     /// Signed seed document and the store records replicated from introductions.
     seed_replica: Mutex<directory::Replica>,
+    /// What the last directory pass saw of this store's fee. Requests read it; they do not ask the chain.
+    directory_fee: Mutex<Option<admission::FeeState>>,
     pub(crate) escrow: escrow_mail::Escrow,
     pairing_token: String,
     /// True only in the process that created `pairing.token`.
@@ -528,6 +532,7 @@ impl Node {
             onion_shop: Mutex::new(None),
             advertised_onion: Mutex::new(None),
             seed_replica: Mutex::new(seed_replica),
+            directory_fee: Mutex::new(None),
             escrow: escrow_mail::Escrow::open(
                 config.escrow,
                 escrow_inbox,

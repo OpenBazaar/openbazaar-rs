@@ -71,7 +71,7 @@ pub use shipping::{Service, Shipping, MAX_SERVICES, MAX_SERVICE_REGIONS};
 pub use signed::{Signed, Terms};
 pub use taxonomy::{taxonomy_name, TAXONOMY};
 pub use variants::{Axis, Variant, VariantId, Variants, MAX_AXES, MAX_AXIS_VALUES, MAX_VARIANTS};
-pub use admission::{Admission, ADMISSION_LEN};
+pub use admission::{store_fee_key, store_fee_secret, Admission, ADMISSION_LEN};
 pub use payment::DirectPay;
 pub use seed::{DirectoryTerms, SeedDocument, EPOCH_BLOCKS, FEE_CONFS, FEE_SATS, MAX_INTRODUCTIONS};
 pub use sign::{secret_from_label, xonly};

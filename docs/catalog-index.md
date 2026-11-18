@@ -66,7 +66,7 @@ Tag `ob/admission-index/v1`. It names the head sequence it accompanies, so a
 client can pair it with the head it already verified. With it:
 
 - "not listed" becomes checkable: a store with a valid admission record
-  (`ob/admit/v1`, fee receipt on chain) that is missing from the snapshot is
+  (`ob/admit/v2`, fee receipt on chain) that is missing from the snapshot is
   visible evidence the directory is excluding it, which is the transparency
   the old OB1 model never had;
 - a replica of the directory can be audited the same way a replica of a
@@ -78,7 +78,7 @@ matter what any index says.
 
 ## What this buys against spam
 
-Admission already prices a listing appearance (20,000 sats to the fee key,
+Admission already prices a listing appearance (20,000 sats to the store's fee address,
 one confirmation, 2,016-block epoch), and reputation bonds price moderator
 trust. The index adds the piece neither can: a stable, signed, enumerable
 catalog per store, which gives labelers (`ob/labels/v1`) exact targets, lets
