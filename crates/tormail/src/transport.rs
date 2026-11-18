@@ -18,6 +18,7 @@ pub const QUERY_STORE: u8 = 2;
 pub const QUERY_LISTINGS: u8 = 3;
 pub const QUERY_INBOX: u8 = 4;
 pub const QUERY_ADMISSIONS: u8 = 5;
+pub const QUERY_HEAD: u8 = 6;
 pub(crate) const SUBMIT_MAGIC: &[u8; 4] = b"OBSB";
 pub const SUBMIT_STORE: u8 = 1;
 pub const SUBMIT_LISTING: u8 = 2;
@@ -211,7 +212,9 @@ where
 }
 
 /// Ask one introduction for the seed document (`kind` 1), one store (2),
-/// that store's listings (3), the inbox (4), or one page of admissions (5).
+/// that store's listings (3), the inbox (4), one page of admissions (5), or
+/// the version 3 directory head (6). An introduction older than kind 6
+/// answers it with `Ok(None)`.
 /// The 32-byte id is the store id, or the admission cursor. `Ok(None)` means
 /// the introduction answered and does not have it. An error means it did not answer.
 pub async fn ask_directory<R>(

@@ -15,7 +15,9 @@ use crate::tx::Spend;
 use crate::wire::{Reader, Writer};
 use crate::{Error, EscrowTerms, Party, Phase};
 
-const SNAPSHOT_MAGIC: &[u8; 4] = b"OBSB";
+const SNAPSHOT_MAGIC: &[u8; 4] = b"OBBS";
+/// Read only: snapshots stored while this shared the directory submit frame's magic.
+const LEGACY_SNAPSHOT_MAGIC: &[u8; 4] = b"OBSB";
 
 /// Buyer state after funding round 3.
 ///
@@ -203,7 +205,8 @@ impl BuyerEscrow {
     /// re-verifies the refund, the buyer-wins pre-signature, and the
     /// buyer's adaptor half. Heights are not checked against `ctx.tip`.
     pub fn restore(bytes: &[u8], buyer_secret: &[u8; 32], ctx: &Context) -> Result<Self, Error> {
-        let mut r = Reader::new(bytes, SNAPSHOT_MAGIC, state::VERSION)?;
+        let mut r = Reader::new(bytes, SNAPSHOT_MAGIC, state::VERSION)
+            .or_else(|_| Reader::new(bytes, LEGACY_SNAPSHOT_MAGIC, state::VERSION))?;
         let (contract, secret) = state::read_contract(&mut r, buyer_secret, Party::Buyer, ctx)?;
         let refund = SignedRefund::from_bytes(r.var(usize::MAX)?)?;
         state::check_template(&contract, Spend::Refund, refund.transaction())?;

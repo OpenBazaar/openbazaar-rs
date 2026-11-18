@@ -58,6 +58,18 @@ fn funded_states_restore_and_still_release_and_dispute() {
 }
 
 #[test]
+fn a_buyer_snapshot_stored_under_the_old_magic_still_restores() {
+    let order = order(ORDER_SECRET);
+    let (buyer, _) = funded();
+    let current = buyer.snapshot();
+    assert_eq!(&current[..4], b"OBBS");
+    let mut legacy = current.clone();
+    legacy[..4].copy_from_slice(b"OBSB");
+    let restored = BuyerEscrow::restore(&legacy, &order.buyer_secret, &later()).unwrap();
+    assert_eq!(restored.snapshot(), current, "the next save writes the new magic");
+}
+
+#[test]
 fn a_restore_needs_the_right_secret_and_untouched_bytes() {
     let order = order(ORDER_SECRET);
     let (buyer, vendor) = funded();

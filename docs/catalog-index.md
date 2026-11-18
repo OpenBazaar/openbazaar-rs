@@ -13,7 +13,7 @@ forge them. But a replica can still lie by omission and by staleness:
 
 A buyer fetching from a replica today has no way to tell a complete, fresh
 copy from a curated or stale one. The directory has the mirror-image
-problem: its head (`ob/seed/v2`) names introductions and a fee but no store
+problem: its head (`ob/seed/v3`) names introductions and a fee schedule but no store
 set, so nothing signed says which stores are currently admitted, and a
 buyer cannot distinguish "the directory never heard of this store" from "the
 introduction is hiding it".
@@ -66,7 +66,7 @@ Tag `ob/admission-index/v1`. It names the head sequence it accompanies, so a
 client can pair it with the head it already verified. With it:
 
 - "not listed" becomes checkable: a store with a valid admission record
-  (`ob/admit/v1`, fee receipt on chain) that is missing from the snapshot is
+  (`ob/admit/v2`, fee receipt on chain) that is missing from the snapshot is
   visible evidence the directory is excluding it, which is the transparency
   the old OB1 model never had;
 - a replica of the directory can be audited the same way a replica of a
@@ -78,8 +78,8 @@ matter what any index says.
 
 ## What this buys against spam
 
-Admission already prices a listing appearance (20,000 sats to the fee key,
-one confirmation, 2,016-block epoch), and reputation bonds price moderator
+Admission already prices a listing appearance (20,000 sats to the store's fee address,
+one confirmation, 2,016-block epoch, as scheduled by the head), and reputation bonds price moderator
 trust. The index adds the piece neither can: a stable, signed, enumerable
 catalog per store, which gives labelers (`ob/labels/v1`) exact targets, lets
 a client rate-limit by store rather than by listing, and makes a spam

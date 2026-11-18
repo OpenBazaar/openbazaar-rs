@@ -14,20 +14,34 @@ Spend wallet (BIP 86 Taproot~\citep{bip86}) & \code{m/86'/c'/0'/\{0,1\}/*} \\
 Store signing key & \code{m/1984'/c'/0'/0'} \\
 Escrow key $i$ & \code{m/1984'/c'/1'/i'} \\
 Escrow mail key & \code{m/1984'/c'/2'/0'} \\
+Store mailbox key (X25519) & \code{m/1984'/c'/3'/0'} \\
+Letter root (one key per order, escrow, dispute) & \code{m/1984'/c'/4'/0'} \\
+Monero spend secret & \code{m/1984'/c'/5'/0'} \\
+Lightning node secret & \code{m/1984'/c'/6'/0'} \\
+Moderator ruling and share seed & \code{m/1984'/c'/7'/0'} \\
+Moderator mailbox key (X25519) & \code{m/1984'/c'/7'/1'} \\
+Zcash keys & ZIP~32 from the same seed \\
 BIP 352 scan key & \code{m/352'/c'/0'/1'/0} \\
 BIP 352 spend key & \code{m/352'/c'/0'/0'/0} \\
 \bottomrule
 \end{tabular}
 \end{center}
 
-The coin type $c$ is 0 on mainnet and 1 on test networks, and each network has its own data directory, so a phrase used on both never yields the same key on both. All role keys are pairwise distinct. Escrow keys are indexed, and the index is advanced and persisted before a key is used, so each escrow gets a new key and no key is reused across escrows. Labeler keys and moderator keys are role keys of the same kind, on their own paths, for users who act in those roles.
+The coin type $c$ is 0 on mainnet and 1 on test networks, and each network has its own data directory, so a phrase used on both never yields the same key on both. All role keys are pairwise distinct. Escrow keys are indexed, and the index is advanced and persisted before a key is used, so each escrow gets a new key and no key is reused across escrows. The letter root is never used to sign directly: it is hashed with a conversation identifier into one signing key per order, escrow, or dispute, so a buyer's letters to different stores do not share a key.
 
 \subsection{The mailbox key}
 
-Orders are sealed to an X25519 public key belonging to the vendor (\S\ref{sec:orders}). That key must be bound to the store, so that a buyer who verified a listing also knows which key to seal to. The binding is a field in the signed store record. The record can also carry an onion host; the node does not dial it for orders. The mailbox key is derived from the phrase on its own hardened path under \code{m/1984'} and is never the store signing scalar reinterpreted as an X25519 key: reusing one secret across two groups and two protocols has no known attack in this combination, but there is no reason to rely on that.
+Orders are sealed to an X25519 public key belonging to the vendor (\S\ref{sec:orders}). That key must be bound to the store, so that a buyer who verified a listing also knows which key to seal to. The binding is a field in the signed store record. The record also carries the store's onion address, and a buyer's node delivers order letters there over Tor (\S\ref{sec:transport}), so the address and the key a buyer seals to come from the same signature. The mailbox key is derived from the phrase on its own hardened path under \code{m/1984'} and is never the store signing scalar reinterpreted as an X25519 key: reusing one secret across two groups and two protocols has no known attack in this combination, but there is no reason to rely on that.
 
 \subsection{Encryption at rest}
 
 The node stores the buyer's address book, the buyer's own order records, the backup phrase, the wallet state, and the labeler follow list encrypted with ChaCha20-Poly1305 under a random 256-bit key and a random 96-bit nonce per write. The buyer's order record keeps the label of the address used (for example, ``Home''), not the street.
 
 This protects against the encrypted files being copied or synced on their own, for example by a backup tool that skips key files, and keeps addresses out of logs and the catalog. If the key is stored in the same data directory, it does not protect against anyone who can read that directory; wrapping it with an operating-system keystore or a passphrase does. It is not a defense against a compromised device (A6).
+
+\subsection{The wallet lock}
+\label{sec:wallet-lock}
+
+The node, not the client, decides whether money can move, since anyone at an unlocked operating-system account can reach the node's loopback port. Keys are kept in two tiers. The receive tier (the wallets' public descriptors, the escrow mail and store mailbox keys, the letter root, the silent payment code, and the store's public key) is sealed under the at-rest key and is available while the wallet is locked, so a locked node still watches the chain, hands out receive addresses, takes direct orders, opens letters, and serves the store record it last signed. The spend tier (the backup phrase, and with it the spend keys, the per-escrow keys, and the store signing key) is sealed under a random spend key, which is stored only wrapped with Argon2id (256~MiB, 3 passes) of the user's wallet passphrase and held in memory only while the wallet is unlocked. The node starts locked and locks itself after a period without user actions or when the machine sleeps. Passphrase failures back off exponentially, and the backoff survives a restart.
+
+Each payment also needs a one-time ticket: the node quotes the order, amount, recipient, and a fee cap, the user confirms them with the passphrase, and the ticket expires after 60 seconds. The node checks the built transaction against the ticket before signing, and the client cannot name an amount, recipient, or fee. An escrow release, a dispute, and a moderator's ruling need an unlocked wallet but no ticket, since their destinations are fixed by the signed terms. The lock does not protect against malware running as the same user while the wallet is unlocked, nor against a client that shows the user different terms than the node quoted.

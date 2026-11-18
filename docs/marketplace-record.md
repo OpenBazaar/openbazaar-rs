@@ -5,8 +5,8 @@ Status: design only. Nothing in this document is implemented.
 ## Why
 
 The network already unbundles everything a classic marketplace operator did:
-a signed directory head names introductions and an admission fee
-(`ob/seed/v2`), stores admit themselves with a fee receipt (`ob/admit/v1`),
+a signed directory head names introductions and a schedule of admission fees
+(`ob/seed/v3`), stores admit themselves with a fee receipt (`ob/admit/v2`),
 moderators publish signed profiles with public rulings, dispute outcomes, and
 bonds, labelers publish signed label sets (`ob/labels/v1`), and any node can
 replicate a store it follows. Each role is a key, each product is a signed
@@ -32,7 +32,7 @@ A marketplace record is a signed statement by a curator key:
 - the labeler keys the curator endorses, which the client follows for
   hide/warn decisions while browsing this marketplace;
 - introduction onions that serve the marketplace's records, reusing the
-  introduction mechanics of `ob/seed/v2`.
+  introduction mechanics of `ob/seed/v3`.
 
 Joining a marketplace changes only what the client shows and which defaults
 it offers. Orders, escrow, payments, and letters are exactly what they are
@@ -56,7 +56,7 @@ doc  = body | signature [64]
 
 Tag `ob/marketplace/v1`. A later sequence by the same curator replaces an
 earlier one, like a directory head. Introductions are sorted v3 onion hosts
-with no repeats, like `ob/seed/v2`. Counts are capped (16 moderators, 16
+with no repeats, like `ob/seed/v3`. Counts are capped (16 moderators, 16
 labelers, 64 introductions) so the record stays small enough to paste.
 
 ## What the curator can and cannot do

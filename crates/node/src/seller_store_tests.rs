@@ -91,6 +91,20 @@ fn opening_an_own_store_on_testnet_posts_a_reputation_bond() {
 }
 
 #[test]
+fn a_bond_stored_under_the_old_magic_is_posted_again() {
+    let (_dir, node) = seller();
+    open_store(&node);
+    let path = node.data_dir.join("reputation-bond");
+    let stored: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    let record = stored["record"].as_str().unwrap();
+    assert!(record.starts_with("4f42424e"), "OBBN");
+    std::fs::write(&path, json!({ "record": format!("4f424244{}", &record[8..]) }).to_string()).unwrap();
+    assert!(!node.passing_bond(), "an OBBD bond no longer decodes");
+    node.ensure_testnet_bond();
+    assert!(node.passing_bond(), "the escrow gate posts a fresh bond before it checks");
+}
+
+#[test]
 fn a_new_node_has_no_role_until_the_user_chooses_one() {
     let (_dir, node) = seller();
     let (_, profile) = request(&node, "GET", "/store/profile", "");

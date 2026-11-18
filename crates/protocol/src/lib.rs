@@ -37,6 +37,9 @@ mod reputation;
 mod review;
 mod admission;
 mod seed;
+mod terms;
+#[cfg(test)]
+mod terms_tests;
 mod shipping;
 mod sign;
 mod signed;
@@ -79,8 +82,12 @@ pub use shipping::{Service, Shipping, MAX_SERVICES, MAX_SERVICE_REGIONS};
 pub use signed::{Signed, Terms};
 pub use taxonomy::{taxonomy_name, TAXONOMY};
 pub use variants::{Axis, Variant, VariantId, Variants, MAX_AXES, MAX_AXIS_VALUES, MAX_VARIANTS};
-pub use admission::{Admission, ADMISSION_LEN};
+pub use admission::{store_fee_key, store_fee_secret, Admission, ADMISSION_LEN};
 pub use payment::DirectPay;
-pub use seed::{DirectoryTerms, SeedDocument, EPOCH_BLOCKS, FEE_CONFS, FEE_SATS, MAX_INTRODUCTIONS};
+pub use seed::{SeedDocument, MAX_INTRODUCTIONS};
+pub use terms::{
+    notice_blocks, DirectoryTerms, HeadView, Refusal, TermsEntry, TermsSchedule, EPOCH_BLOCKS, FEE_CONFS, FEE_SATS, MAX_EPOCH_BLOCKS,
+    MAX_TERMS, MIN_FEE_SATS, NOTICE_BLOCKS, RELAX_NOTICE_BLOCKS, SKEW_BLOCKS, TERMS_ENTRY_LEN,
+};
 pub use sign::{secret_from_label, xonly};
 pub use store::{CountryCode, Store, StoreDetails, StoreId, StoreProfile, MAX_NAME};

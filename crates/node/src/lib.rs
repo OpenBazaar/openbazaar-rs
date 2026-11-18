@@ -31,6 +31,8 @@ mod commerce_draft;
 mod commerce_http;
 mod coupons;
 mod directory;
+mod directory_head;
+mod head_plan;
 mod egress;
 mod escrow_bump;
 mod escrow_buyer;
@@ -119,7 +121,11 @@ mod xmr;
 mod zec;
 
 #[cfg(test)]
+mod admission_tests;
+#[cfg(test)]
 mod checkout_tests;
+#[cfg(test)]
+mod fee_schedule_tests;
 #[cfg(test)]
 mod harness;
 #[cfg(test)]
@@ -154,6 +160,8 @@ mod own_store_tests;
 mod pay_bump_tests;
 #[cfg(test)]
 mod payment_tests;
+#[cfg(test)]
+mod record_magics_tests;
 #[cfg(test)]
 mod seller_store_tests;
 #[cfg(test)]
@@ -205,11 +213,12 @@ pub use network::{resolve_vault_mode, NetworkMode, ServeOptions, VaultChoice};
 pub use onion_mail::{
     deliver_letter, letter_digest, poll_mailbox, PollMail, SendLetter, StoredLetter,
 };
-pub use seeds::sign_document;
+pub use head_plan::{describe_head, sign_head, HeadPlan, SignedHeads, TermsChange};
 pub use tor_socks::TorSocks;
 
-/// Fetch the seed document from `onions` into `data_dir` and return the sequence kept.
-pub fn pull_seed(data_dir: &std::path::Path, onions: &[String]) -> Result<u64, String> {
+/// Fetch the directory head from `onions` into `data_dir`. Returns the
+/// sequence kept and one line per scheduled fee entry.
+pub fn pull_seed(data_dir: &std::path::Path, onions: &[String]) -> Result<(u64, Vec<String>), String> {
     directory::pull_onions(data_dir, onions)
 }
 pub use orders::OrderError;
@@ -356,6 +365,8 @@ pub struct Node {
     advertised_onion: Mutex<Option<String>>,
     /// Signed seed document and the store records replicated from introductions.
     seed_replica: Mutex<directory::Replica>,
+    /// What the last directory pass saw of this store's fee. Requests read it; they do not ask the chain.
+    directory_fee: Mutex<Option<admission::FeeSeen>>,
     pub(crate) escrow: escrow_mail::Escrow,
     pairing_token: String,
     /// True only in the process that created `pairing.token`.
@@ -535,6 +546,7 @@ impl Node {
             onion_shop: Mutex::new(None),
             advertised_onion: Mutex::new(None),
             seed_replica: Mutex::new(seed_replica),
+            directory_fee: Mutex::new(None),
             escrow: escrow_mail::Escrow::open(
                 config.escrow,
                 escrow_inbox,
