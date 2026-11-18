@@ -158,7 +158,8 @@ test('the seller lists, edits, and removes goods', async ({ page }, info) => {
   await page.setViewportSize({ width: 1366, height: 900 })
   await page.getByRole('button', { name: 'Edit draft Glaze recipe card', exact: true }).click()
   await page.getByRole('button', { name: 'Publish listing' }).click()
-  await expect(page.locator('.ob-own-listing', { hasText: 'Glaze recipe card' })).toBeVisible()
+  // The draft row can still show for a moment beside the published listing.
+  await expect(page.locator('.ob-own-listing', { hasText: 'Glaze recipe card' })).toHaveCount(1)
   await page.getByRole('button', { name: 'Remove Glaze recipe card' }).click()
   await page.getByRole('button', { name: 'Remove listing' }).click()
   await expect(page.locator('.ob-own-listing', { hasText: 'Glaze recipe card' })).toHaveCount(0)
