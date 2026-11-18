@@ -158,10 +158,20 @@ fn an_escrow_with_the_moderator_the_buyer_chose_is_disputed_and_ruled_by_it() {
     assert_eq!(outcome.output[1].script_pubkey, terms.terms().moderator.payout);
     assert_ne!(FEE, MODERATOR_FEE_SATS);
 
-    // A demo listing has no stable id, so this ruling cites no listing and is
-    // not public: the count stays at what can be verified.
+    // A demo listing has no stable id, so this ruling cites no listing and
+    // the per-store count stays at what can be verified. The signed outcome
+    // needs no citation: the buyer win is public on its own.
     assert_eq!(cases(&market)[0]["ruled"], true);
-    assert_eq!(profile(&market.moderator.node)["trackRecord"], json!({ "rulings": 0, "stores": 0 }));
+    assert_eq!(
+        profile(&market.moderator.node)["trackRecord"],
+        json!({ "rulings": 0, "stores": 0, "buyerWins": 1, "vendorWins": 0 })
+    );
+    let (status, body) = crate::seller_store_tests::peer_request(&market.moderator.node, "/public/moderator");
+    assert!(status.contains("200"), "{status}");
+    let public: Value = serde_json::from_slice(&body).unwrap();
+    let id: [u8; 32] = unhex(&chosen).unwrap().as_slice().try_into().unwrap();
+    let outcomes = public["outcomes"].as_array().unwrap().clone();
+    assert_eq!(crate::moderators::count_outcomes(&id, &outcomes), (1, 0), "one public buyer win: {public}");
     let (_, list) = accept(&market.vendor.node, &market.moderator.url);
     assert_eq!(listed(&list, &chosen)["trackRecord"]["rulings"], 0, "{list}");
     assert_eq!(sale(&market.vendor.node)["stage"], "funded", "the buyer disputed; the vendor's sale waits for the outcome");

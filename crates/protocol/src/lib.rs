@@ -62,8 +62,9 @@ pub use moderator_profile::{
 pub use offer::{Bid, Offer, SignedOffer};
 pub use order::{OrderEnvelope, OrderPlaintext};
 pub use reputation::{
-    accept_bond, bond_script, ruling_digest, Bond, BondLock, PublicRuling, SignedBond, SignedPublicRuling,
-    MAINNET_BOND_REFUSAL, MIN_BOND_LOCK, MIN_BOND_SATS, NETWORK_MAINNET, NETWORK_TESTNET4,
+    accept_bond, bond_script, ruling_digest, Bond, BondLock, DisputeOutcome, PublicRuling, SignedBond,
+    SignedDisputeOutcome, SignedPublicRuling, FAVORED_BUYER, FAVORED_VENDOR, MAINNET_BOND_REFUSAL, MIN_BOND_LOCK,
+    MIN_BOND_SATS, NETWORK_MAINNET, NETWORK_TESTNET4,
 };
 pub use review::{Receipt, Reply, Review, SignedReceipt, SignedReply, SignedReview, MAX_REVIEW_TEXT};
 pub use shipping::{Service, Shipping, MAX_SERVICES, MAX_SERVICE_REGIONS};
