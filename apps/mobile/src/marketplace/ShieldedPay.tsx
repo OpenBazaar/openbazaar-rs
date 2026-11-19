@@ -38,7 +38,7 @@ export function ShieldedPay({
   disabled: boolean
   onDone: () => void
 }) {
-  const { lock } = usePairedNode()
+  const { lock, network } = usePairedNode()
   const [step, setStep] = useState<{ kind: 'unlock' } | { kind: 'confirm'; quote: Quote } | null>(null)
   const [error, setError] = useState('')
   const submitting = useRef(false)
@@ -83,6 +83,9 @@ export function ShieldedPay({
     }
   }
   const quote = step?.kind === 'confirm' ? step.quote : null
+  const backend = rail === 'xmr' ? network.data?.xmrBackend?.backend !== undefined && network.data.xmrBackend.backend !== 'none' : !!network.data?.zecBackend?.enabled
+  if (!backend)
+    return <p className='ob-pay-note'>This node's {name} wallet is off, so pay with another {name} wallet.</p>
   return (
     <>
       <div className='ob-pay-wallet'>

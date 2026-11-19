@@ -107,12 +107,12 @@ function ChoiceRow({ rail, title, detail, offer, busy, onToggle }: { rail: Rail;
       <div className="ob-payment-rail-head">
         <strong className="ob-rail" id={id}><RailMark rail={rail} />{title}</strong>
         <span className="ob-setting-switch">
-          <input type="checkbox" role="switch" aria-labelledby={id} checked={offer.on} disabled={!offer.choosable || busy} onChange={(e) => onToggle(e.target.checked)} />
+          <input type="checkbox" role="switch" aria-labelledby={id} aria-describedby={offer.reason ? `${id}-reason` : undefined} checked={offer.on} disabled={!offer.choosable || busy} onChange={(e) => onToggle(e.target.checked)} />
           <span />
         </span>
       </div>
       <p>{detail}</p>
-      {offer.reason && <p className="ob-form-error" role="alert">{offer.reason}</p>}
+      {offer.reason && <p className="ob-form-error" id={`${id}-reason`}>{offer.reason}</p>}
       {offer.problem && <p className="ob-form-error" role="status">{offer.problem}</p>}
     </li>
   );
