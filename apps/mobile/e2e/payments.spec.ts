@@ -140,7 +140,6 @@ async function stepUp(page: Page, confirm = 'Confirm payment') {
 test('testnet4 wallet, setup, real checkout, and a real quote request', async ({
   page
 }, testInfo) => {
-  test.fixme(true, 'Fails on main before CI ran it: https://github.com/OpenBazaar/openbazaar-rs/issues/167')
   await page.goto('/')
   await expect(
     page.getByText('Testnet4 · test coins, no value', { exact: true })
@@ -148,8 +147,8 @@ test('testnet4 wallet, setup, real checkout, and a real quote request', async ({
   await protect(page)
   await page.locator('.ob-wallet-connection > summary').click()
   await expect(page.getByText('Only your own chain server sees the addresses this wallet follows.')).toBeVisible()
-  await expect(page.locator('.ob-wallet-page')).not.toContainText('--proxy')
-  await page.locator('.ob-wallet-overview').screenshot({ path: testInfo.outputPath('wallet-unlocked.png') })
+  await expect(page.locator('.ob-wallet-hub')).not.toContainText('--proxy')
+  await page.locator('.ob-wallet-hub').screenshot({ path: testInfo.outputPath('wallet-unlocked.png') })
   const receive = page.locator('.ob-wallet-receive code')
   await expect(receive).toHaveText(/^tb1/)
   const original = await receive.innerText()
@@ -411,7 +410,6 @@ test('a direct order to a store on another node warns above the payment details'
 test('a Zcash order to a store on another node shows the warning, the seller\'s rate, and the seller\'s updates', async ({
   page
 }) => {
-  test.fixme(true, 'Fails on main before CI ran it: https://github.com/OpenBazaar/openbazaar-rs/issues/167')
   const { id, order } = await checkout(page)
   const address = 'utest1' + 'q'.repeat(60)
   const payment = {
@@ -451,7 +449,15 @@ test('a Zcash order to a store on another node shows the warning, the seller\'s 
   await expect(warning).toBeVisible()
   await expect(page.getByRole('img', { name: /QR code/ })).toHaveAttribute('data-payment-uri', payment.uri)
   await expect(page.getByText("The seller's node set the amount: 28,000 sats at its rate of 1,229,360 sats for 1 ZEC. It watches this address and tells your node when the payment arrives.", { exact: true })).toBeVisible()
+  // This node's Zcash wallet is off, so it does not offer to pay from it.
   await expect(page.getByRole('button', { name: 'Pay from your node wallet', exact: true })).toHaveCount(0)
+  await expect(page.getByText("This node's Zcash wallet is off, so pay with another Zcash wallet.", { exact: true })).toBeVisible()
+  const network = await (await page.request.get('/network')).json()
+  await page.route('**/network', route => route.fulfill({ json: { ...network, zecBackend: { ...network.zecBackend, enabled: true, backend: 'mock' } } }))
+  await page.reload()
+  await page.getByRole('button', { name: 'Your orders', exact: true }).click()
+  await page.getByRole('button', { name: 'Order from Marlow Goods', exact: true }).click()
+  await expect(page.getByRole('button', { name: 'Pay from your node wallet', exact: true })).toBeVisible()
   state = { ...state, status: 'Payment seen', confirmations: 3, payment: { ...payment, receivedZatoshi: '2277608', seenInTime: true } }
   await page.clock.fastForward(16000)
   await expect(page.getByText('Payment seen. Waiting for 27 more confirmations.', { exact: true })).toBeVisible()

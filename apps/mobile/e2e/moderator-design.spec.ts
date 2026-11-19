@@ -186,7 +186,6 @@ test("this computer's own shop offers the desk when its node moderates", async (
 })
 
 test('a shop that still needs its pairing code offers the desk only once it is paired', async ({ page }) => {
-  test.fixme(true, 'Fails on main before CI ran it: https://github.com/OpenBazaar/openbazaar-rs/issues/167')
   // e2e/server.mjs hands the page its disposable node's token; this page gets it only by pairing.
   let token = ''
   const pairs: unknown[] = []
@@ -194,19 +193,22 @@ test('a shop that still needs its pairing code offers the desk only once it is p
     const response = await route.fetch()
     await route.fulfill({ response, body: (await response.text()).replace(/globalThis\.__OB_PAIR_TOKEN__="([0-9a-f]+)";/, (_, found) => { token = found; return '' }) })
   })
-  await page.route('**/pair', route => { pairs.push(route.request().postDataJSON()); return route.fulfill({ json: pairs.length > 1 ? { token } : {} }) })
+  await page.route('**/pair', route => { const body = route.request().postDataJSON(); pairs.push(body); return route.fulfill({ json: body?.code ? { token } : {} }) })
   await page.route('**/network', route => route.fulfill({ json: { network: 'testnet4', confirmations: 1, moderates: true } }))
+  // The page is on 127.0.0.1, so it first offers to continue on this computer; this node will not start that session.
+  await page.route('**/browser-session**', route => route.fulfill({ status: 403, json: { error: 'no session' } }))
   await page.goto('/')
-  const pair = page.getByRole('button', { name: 'Enter pairing code', exact: true })
+  const pair = page.getByRole('button', { name: 'Continue on this computer', exact: true })
   await expect(pair).toBeVisible()
   await expect(page.getByRole('button', { name: 'Moderator desk', exact: true })).toHaveCount(0)
   // Asking whether the node moderates never asks the node for a pairing code.
   expect(pairs).toEqual([])
   await pair.click()
+  await page.getByRole('dialog').getByRole('button', { name: 'Continue on this computer', exact: true }).click()
   await page.getByLabel('Pairing code', { exact: true }).fill('ABCD-EFGH')
   await page.getByRole('button', { name: 'Pair browser', exact: true }).click()
   await expect(page.getByRole('button', { name: 'Moderator desk', exact: true })).toBeVisible()
-  expect(pairs).toEqual([{}, { code: 'ABCD-EFGH' }])
+  expect(pairs.at(-1)).toEqual({ code: 'ABCD-EFGH' })
 })
 
 test('a device that asks to pair is approved in the pairing dialog that covers the desk', async ({ page }) => {
