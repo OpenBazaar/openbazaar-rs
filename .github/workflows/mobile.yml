@@ -46,6 +46,14 @@ on:
         description: "Attach the signed APK to the GitHub release v<version>"
         type: boolean
         default: false
+      ios:
+        description: "Also run the iOS simulator and App Store builds (they never run on pull requests, pushes or tags)"
+        type: boolean
+        default: false
+      ref:
+        description: "Branch, tag or SHA to build for iOS (e.g. v0.1.0); empty uses the selected branch"
+        required: false
+        default: ""
 
 concurrency:
   group: mobile-${{ github.ref }}
@@ -203,12 +211,15 @@ jobs:
   ios-simulator:
     name: ios simulator build
     needs: test
+    if: github.event_name == 'workflow_dispatch' && inputs.ios
     runs-on: macos-latest
     timeout-minutes: 90
     permissions:
       contents: read
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -243,6 +254,7 @@ jobs:
   ios-ipa:
     name: ios app store build
     needs: test
+    if: github.event_name == 'workflow_dispatch' && inputs.ios
     runs-on: macos-latest
     timeout-minutes: 90
     permissions:
@@ -263,6 +275,8 @@ jobs:
           fi
       - if: steps.secrets.outputs.present == 'true'
         uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
       - if: steps.secrets.outputs.present == 'true'
         uses: actions/setup-node@v4
         with:
