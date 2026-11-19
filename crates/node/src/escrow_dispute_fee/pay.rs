@@ -181,7 +181,10 @@ impl Node {
         });
         let rail = match lightning {
             Some(rail) => rail,
-            None => self.quote_on_chain(&ScriptBuf::from_bytes(request.script.clone()), amount)?,
+            None => {
+                let linked_to = self.escrow_change_scope(party, &escrow_id);
+                self.quote_on_chain(&ScriptBuf::from_bytes(request.script.clone()), amount, linked_to)?
+            }
         };
         let terms = DisputeFeeTerms {
             escrow: escrow_id,
@@ -195,12 +198,29 @@ impl Node {
         Ok(value)
     }
 
-    fn quote_on_chain(&self, recipient: &ScriptBuf, amount: u64) -> Result<Rail, PayError> {
+    /// The escrow output a buyer's change from funding it is linked to. Its
+    /// filing fee may spend that change; the result is linked to both.
+    fn escrow_change_scope(&self, party: Party, id: &EscrowId) -> Option<ScriptBuf> {
+        if party != Party::Buyer {
+            return None;
+        }
+        let outpoint = self.buyer_filed_escrow(id).ok()?.outpoint;
+        let wallet = self.buyer_wallet();
+        let funding = wallet.wallet.get_tx(outpoint.txid)?;
+        let script = funding.tx_node.tx.output.get(outpoint.vout as usize)?.script_pubkey.clone();
+        Some(script)
+    }
+
+    fn quote_on_chain(&self, recipient: &ScriptBuf, amount: u64, linked_to: Option<ScriptBuf>) -> Result<Rail, PayError> {
         let address = Address::from_script(recipient, self.network.bitcoin())
             .map_err(|_| conflict("The moderator's script has no address, and this node cannot pay its invoice."))?;
         self.sync_buyer_wallet().map_err(PayError::Chain)?;
         let fee_rate = self.pay_fee_rate()?;
-        let (psbt, _) = self.build_send(&address, Some(amount), fee_rate, false)?;
+        let shape = SendShape {
+            linked_to,
+            ..SendShape::default()
+        };
+        let (psbt, _) = self.build_send_from(&address, Some(amount), fee_rate, false, &shape)?;
         let fee = psbt_fee(&psbt)?;
         Ok(Rail::OnChain {
             address: address.to_string(),
@@ -282,6 +302,7 @@ impl Node {
         let shape = SendShape {
             lock_height: Some(self.chain.tip_height().map_err(PayError::Chain)?),
             spend: self.cleared_coins(fee),
+            linked_to: self.escrow_change_scope(party, id),
         };
         let (tx, network_fee) = self.signed_send(recipient, terms.amount_sats, fee_rate, fee_cap_sats, &shape)?;
         let txid = tx.compute_txid();

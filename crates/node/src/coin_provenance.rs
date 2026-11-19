@@ -39,13 +39,28 @@ pub(crate) fn blocked_coins(
     allowed: Option<&Script>,
     link_coins: bool,
 ) -> Vec<OutPoint> {
+    blocked_coins_among(wallet, allowed.as_slice(), link_coins)
+}
+
+/// [`blocked_coins`], where change linked to any of `allowed` may be used.
+/// A dispute filing fee allows the escrow it disputes: the moderator already
+/// holds a key to that escrow, and the fee belongs to the same purchase.
+pub(crate) fn blocked_coins_among(
+    wallet: &Wallet,
+    allowed: &[&Script],
+    link_coins: bool,
+) -> Vec<OutPoint> {
     if link_coins {
         return Vec::new();
     }
     wallet
         .list_unspent()
         .filter(|utxo| utxo.keychain == KeychainKind::Internal)
-        .filter(|utxo| !compatible(&provenance(wallet, utxo.outpoint), allowed))
+        .filter(|utxo| {
+            let provenance = provenance(wallet, utxo.outpoint);
+            !allowed.iter().any(|script| compatible(&provenance, Some(script)))
+                && !compatible(&provenance, None)
+        })
         .map(|utxo| utxo.outpoint)
         .collect()
 }

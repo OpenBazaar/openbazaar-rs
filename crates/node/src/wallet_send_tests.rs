@@ -88,8 +88,10 @@ fn a_send_pays_exactly_the_quoted_amount_to_the_quoted_address() {
         );
     }
     drop(wallet);
+    assert_eq!(spendable(&node), 0, "the change is linked to the recipient");
+    let (_, balance) = request(&node, "GET", "/wallet", "");
     assert_eq!(
-        spendable(&node),
+        balance["balance"]["heldBackSats"],
         100_000 - 25_000 - sent["feeSats"].as_u64().unwrap()
     );
 }
@@ -315,8 +317,10 @@ fn change_from_an_order_payment_is_held_back_unless_the_user_links_it() {
     let id = placed[0]["orderId"].as_str().unwrap();
     node.pay_order(id, &json!({ "ticket": ticket(&node, id).unwrap() }))
         .unwrap();
-    let change = spendable(&node);
-    assert!(change > 0);
+    assert_eq!(spendable(&node), 0, "change held back is not spendable to someone new");
+    let (_, wallet) = request(&node, "GET", "/wallet", "");
+    let change = wallet["balance"]["heldBackSats"].as_u64().unwrap();
+    assert!(change > 0, "{wallet}");
 
     let (status, value) = quote(&node, json!({ "address": ELSEWHERE, "max": true }));
     assert!(status.contains("400"), "{status} {value}");

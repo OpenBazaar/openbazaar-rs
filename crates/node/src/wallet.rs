@@ -228,12 +228,22 @@ impl NodeWallet {
 
     pub(crate) fn balance_value(&self) -> Value {
         let balance = self.balance();
+        let blocked = crate::coin_provenance::blocked_coins(&self.wallet, None, false);
+        let held_back: u64 = self
+            .wallet
+            .list_unspent()
+            .filter(|utxo| blocked.contains(&utxo.outpoint))
+            .map(|utxo| utxo.txout.value.to_sat())
+            .sum();
         json!({
             "confirmedSats": balance.confirmed.to_sat(),
-            // Spendable is confirmed mature coins plus this wallet's own
-            // unconfirmed change. Pending adds unconfirmed coins from other
-            // people; those are not spendable.
-            "spendableSats": (balance.confirmed + balance.trusted_pending).to_sat(),
+            // Spendable is what a payment to someone new can use: confirmed
+            // mature coins plus this wallet's own unconfirmed change, less
+            // change held back so earlier payments stay unlinked. Pending
+            // adds unconfirmed coins from other people; those are not
+            // spendable.
+            "spendableSats": (balance.confirmed + balance.trusted_pending).to_sat().saturating_sub(held_back),
+            "heldBackSats": held_back,
             "pendingSats": (balance.trusted_pending + balance.untrusted_pending).to_sat(),
             "immatureSats": balance.immature.to_sat(),
             "totalSats": balance.total().to_sat(),

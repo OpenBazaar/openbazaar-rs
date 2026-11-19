@@ -136,7 +136,7 @@ export class TestNode {
   }
 
   /** The wallet balance the node reports (GET /wallet). */
-  async balance(): Promise<{ spendableSats: number; totalSats: number; confirmedSats: number }> {
+  async balance(): Promise<{ spendableSats: number; heldBackSats: number; totalSats: number; confirmedSats: number }> {
     return (await this.api('GET', '/wallet')).balance
   }
 

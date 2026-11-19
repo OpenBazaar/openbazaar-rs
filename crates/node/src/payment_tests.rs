@@ -270,8 +270,9 @@ fn unconfirmed_coins_from_others_are_not_spent_but_own_change_is() {
     let (_, paid) = pay(&node, id, "{}");
     assert!(paid["payTxid"].is_string(), "{paid}");
     let (_, wallet) = request(&node, "GET", "/wallet", "");
-    let change = wallet["balance"]["spendableSats"].as_u64().unwrap();
-    assert!(change > 0 && wallet["balance"]["confirmedSats"] == 0, "{wallet}");
+    let change = wallet["balance"]["heldBackSats"].as_u64().unwrap();
+    assert!(change > 0 && wallet["balance"]["spendableSats"] == 0, "{wallet}");
+    assert_eq!(wallet["balance"]["confirmedSats"], 0, "{wallet}");
 
     let address = address_for(placed[0]["payment"]["address"].as_str().unwrap(), NetworkMode::Testnet4).unwrap();
     let again = node.build_payment(&address, 1_000, node.pay_fee_rate().unwrap(), false, false).unwrap();

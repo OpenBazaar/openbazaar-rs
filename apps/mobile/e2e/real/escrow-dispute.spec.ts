@@ -23,9 +23,10 @@ async function fundedEscrow(page: Page, { seller, buyer }: Market, chain: Chain,
   await confirm.getByLabel('Wallet passphrase').fill(PASSPHRASE)
   await confirm.getByRole('button', { name: 'Confirm payment', exact: true }).click()
   await expect.poll(() => chain.mempool().length, { timeout: 20000 }).toBe(1)
+  const funding: string = chain.mempool()[0]
   chain.mine(1)
   await expect.poll(async () => (await seller.api('GET', '/escrow/sales')).sales[0]?.stage, { timeout: 30000 }).toBe('funded')
-  return payment
+  return { payment, funding }
 }
 
 async function dispute(page: Page, payment: ReturnType<Page['getByRole']>, { moderator }: Market) {
@@ -42,7 +43,7 @@ async function dispute(page: Page, payment: ReturnType<Page['getByRole']>, { mod
 // settlement confirms on the simulated chain.
 test('an escrow order is disputed, ruled for the buyer, and settled on chain', async ({ page, market, chain }) => {
   const { moderator, buyer } = market
-  const payment = await fundedEscrow(page, market, chain, /Built-in test moderator/)
+  const { payment } = await fundedEscrow(page, market, chain, /Built-in test moderator/)
   await dispute(page, payment, market)
   // https://github.com/OpenBazaar/openbazaar-rs/issues/173: no "waiting for the node" beside a confirmed payment.
   await expect(payment).toContainText('Confirmations: 1 / 1', { timeout: 20000 })
@@ -80,14 +81,15 @@ test('a moderator with a filing fee asks for it, the buyer pays it, and the ruli
   const { moderator, seller, buyer } = market
   const own = await moderator.api('PUT', '/moderator/profile', { name: 'Ridge Arbitration', feeSats: 2000, description: 'Fast answers.', languages: ['en'], terms: 'Evidence first.' })
   await seller.api('POST', '/moderators', { address: own.address })
-  const payment = await fundedEscrow(page, market, chain, /Ridge Arbitration/)
+  const { payment, funding } = await fundedEscrow(page, market, chain, /Ridge Arbitration/)
   await expect(payment).toContainText(own.id.slice(0, 8))
   await dispute(page, payment, market)
 
-  // Change from the escrow payment is held back so payments stay unlinked; the fee comes from another coin.
-  const before = (await buyer.balance()).totalSats
-  chain.fund(await buyer.receiveAddress(), 10000)
-  await expect.poll(async () => (await buyer.balance()).totalSats, { timeout: 20000 }).toBe(before + 10000)
+  // The buyer's only coin funded the escrow. Its change is held back from anyone
+  // else, and the wallet says so, but the filing fee for this escrow may spend it.
+  const held = await buyer.balance()
+  expect(held.spendableSats).toBe(0)
+  expect(held.heldBackSats).toBeGreaterThan(180000)
   const panel = payment.getByRole('region', { name: 'Dispute filing fee' })
   await expect(panel).toContainText('asks 2,000 sats', { timeout: 45000 })
   await panel.getByRole('button', { name: 'Pay 2,000 sats filing fee' }).click({ timeout: 45000 })
@@ -98,7 +100,9 @@ test('a moderator with a filing fee asks for it, the buyer pays it, and the ruli
   await fee.getByRole('button', { name: 'Confirm payment', exact: true }).click()
   await expect(fee).toBeHidden()
   await expect.poll(() => chain.mempool().length, { timeout: 20000 }).toBe(1)
-  expect(chain.tx(chain.mempool()[0]).vout.some((o: { value: number }) => o.value === 2000)).toBe(true)
+  const paid = chain.tx(chain.mempool()[0])
+  expect(paid.vout.some((o: { value: number }) => o.value === 2000)).toBe(true)
+  expect(paid.vin.map((i: { txid: string }) => i.txid)).toEqual([funding])
   chain.mine(1)
   await expect.poll(async () => (await moderator.api('GET', '/moderator/disputes')).disputes[0].fee.state, { timeout: 30000 }).toBe('paid')
 

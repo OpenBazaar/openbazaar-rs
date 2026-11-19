@@ -154,6 +154,8 @@ pub(crate) struct SendShape {
     pub lock_height: Option<u32>,
     /// Coins the send must spend.
     pub spend: Vec<OutPoint>,
+    /// Another recipient whose linked change this send may spend.
+    pub linked_to: Option<ScriptBuf>,
 }
 
 fn build_error(err: CreateTxError, held_back: u64) -> PayError {
@@ -201,11 +203,9 @@ impl Node {
     ) -> Result<(Psbt, u64), PayError> {
         let mut wallet = self.buyer_wallet();
         let recipient = address.script_pubkey();
-        let blocked = crate::coin_provenance::blocked_coins(
-            &wallet.wallet,
-            Some(recipient.as_script()),
-            link_coins,
-        );
+        let mut allowed = vec![recipient.as_script()];
+        allowed.extend(shape.linked_to.as_deref());
+        let blocked = crate::coin_provenance::blocked_coins_among(&wallet.wallet, &allowed, link_coins);
         let held_back: u64 = wallet
             .wallet
             .list_unspent()

@@ -99,3 +99,10 @@ test('no wallet or nothing due gives no balance note', () => {
   assert.equal(view({ wallet: null }).balance, null)
   assert.equal(view({ dueSats: 0, wallet: { spendableSats: 0, totalSats: 0 } }).balance, null)
 })
+
+test('change held back for privacy is not shown as waiting for a confirmation', () => {
+  const note = view({ wallet: { spendableSats: 0, totalSats: 5_000, heldBackSats: 5_000 } }).balance
+  assert.equal(note?.kind, 'short')
+  assert.match(note!.message, /5,000 sats of change from earlier payments is held back/)
+  assert.doesNotMatch(note!.message, /waiting for a confirmation/)
+})
