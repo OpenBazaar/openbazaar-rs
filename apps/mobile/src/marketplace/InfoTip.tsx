@@ -1,5 +1,6 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
+import { portalHost } from './portalHost'
 
 /** Supplemental help, available by hover, keyboard focus, or tap. */
 export function InfoTip({ label, children }: { label: string; children: ReactNode }) {
@@ -53,6 +54,6 @@ export function InfoTip({ label, children }: { label: string; children: ReactNod
     <button ref={trigger} type="button" className="ob-info-tip-trigger" aria-label={label} aria-describedby={open ? id : undefined} onPointerEnter={event => { if (event.pointerType !== 'touch') show() }} onPointerLeave={leave} onFocus={show} onBlur={() => setOpen(false)} onClick={show}>
       <svg viewBox="0 0 20 20" width="16" height="16" fill="none" stroke="currentColor" aria-hidden="true"><circle cx="10" cy="10" r="7.25" strokeWidth="1.4"/><path d="M10 9v5" strokeWidth="1.5"/><circle cx="10" cy="6.2" r=".9" fill="currentColor" stroke="none"/></svg>
     </button>
-    {open && createPortal(<div ref={tip} id={id} role="tooltip" className="ob-info-tip" style={position} onPointerEnter={show} onPointerLeave={leave}>{children}</div>, trigger.current?.closest('dialog') ?? document.body)}
+    {open && createPortal(<div ref={tip} id={id} role="tooltip" className="ob-info-tip" style={position} onPointerEnter={show} onPointerLeave={leave}>{children}</div>, portalHost(trigger.current))}
   </>
 }
