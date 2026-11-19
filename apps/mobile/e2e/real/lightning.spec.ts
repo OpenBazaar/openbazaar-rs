@@ -15,7 +15,8 @@ async function lightningSettings(page: Page) {
 async function lightningOrder(page: Page, { seller, buyer, sellerPeer, bitcoind }: LightningMarket) {
   await page.goto(seller.ui)
   await lightningSettings(page)
-  await page.getByRole('switch', { name: /Your store/ }).click()
+  // https://github.com/OpenBazaar/openbazaar-rs/issues/175: the own store goes by its profile name.
+  await page.getByRole('switch', { name: 'Brook and Pine Your store', exact: true }).click()
   await expect.poll(async () => (await seller.api('GET', '/store/profile')).acceptsLightning).toBe(true)
 
   // The buyer funds its channel; the seller keeps an on-chain reserve, without
@@ -74,8 +75,6 @@ test('a buyer opens a channel to the seller and pays an order over Lightning', a
 })
 
 test('the Order created page offers the Lightning invoice once the seller sends it', async ({ page, lightning, guard }) => {
-  // https://github.com/OpenBazaar/openbazaar-rs/issues/169: the page keeps the on-chain panel. Remove when fixed.
-  test.fail()
   guard.allowOpenDialog()
   await lightningOrder(page, lightning)
   await expect.poll(async () => (await lightning.buyer.api('GET', '/orders')).orders[0]?.payment?.rail, { timeout: 30000 }).toBe('ln')

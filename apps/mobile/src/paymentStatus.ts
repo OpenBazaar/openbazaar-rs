@@ -14,6 +14,8 @@ export type PaymentStatusInput = {
   network: NetworkName
   status: string
   confirmations: number
+  /** What the node has seen arrive; above zero means it saw the payment. */
+  receivedSats?: number
   requiredConfirmations?: number
   dueSats: number
   sending: boolean
@@ -49,7 +51,7 @@ function confirmationsText({ status, confirmations, requiredConfirmations }: Pay
     : `Confirmations: ${confirmations} / ${requiredConfirmations}`
 }
 
-function progressText({ status, confirmations, requiredConfirmations, sending, payTxid }: PaymentStatusInput): string | null {
+function progressText({ status, confirmations, receivedSats = 0, requiredConfirmations, sending, payTxid }: PaymentStatusInput): string | null {
   if (status === 'Shipped' || status === ORDER_STATUS.completed) return null
   if (sending) return 'Sending payment from your node wallet…'
   if (status === ORDER_STATUS.paid) return null
@@ -58,7 +60,7 @@ function progressText({ status, confirmations, requiredConfirmations, sending, p
     const left = Math.max(1, requiredConfirmations - confirmations)
     return `Payment seen. Waiting for ${left} more confirmation${left === 1 ? '' : 's'}.`
   }
-  if (payTxid) return 'Payment sent. Waiting for the node to see it on the chain.'
+  if (payTxid && confirmations === 0 && receivedSats === 0) return 'Payment sent. Waiting for the node to see it on the chain.'
   return null
 }
 

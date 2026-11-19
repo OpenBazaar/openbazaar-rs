@@ -44,6 +44,9 @@ test('an escrow order is disputed, ruled for the buyer, and settled on chain', a
   const { moderator, buyer } = market
   const payment = await fundedEscrow(page, market, chain, /Built-in test moderator/)
   await dispute(page, payment, market)
+  // https://github.com/OpenBazaar/openbazaar-rs/issues/173: no "waiting for the node" beside a confirmed payment.
+  await expect(payment).toContainText('Confirmations: 1 / 1', { timeout: 20000 })
+  await expect(payment).not.toContainText('Waiting for the node to see it')
 
   // The moderator's wallet locked while the case waited: review works, signing needs the passphrase.
   await moderator.lock()

@@ -171,7 +171,7 @@ export async function protectWallet(page: Page, passphrase = PASSPHRASE) {
   return words
 }
 
-type Spawn = (name: string, options?: { role?: 'buyer' | 'seller' | null; args?: string[]; bare?: boolean }) => Promise<TestNode>
+type Spawn = (name: string, options?: { role?: 'buyer' | 'seller' | null; args?: string[]; bare?: boolean; chainUrl?: string }) => Promise<TestNode>
 
 /** The simulated chain every node in a test shares (e2e/chain.mjs). */
 export type Chain = {
@@ -201,7 +201,7 @@ const monerods = import('../monerod.mjs') as Promise<any>
 // Fixed exchange rates and no seed introductions: no outside network calls.
 const DETERMINISTIC_ARGS = ['--fixed-rates', 'BTCUSD=100000,ZECUSD=50,XMRUSD=300', '--no-introductions']
 
-async function freePort(): Promise<number> {
+export async function freePort(): Promise<number> {
   return new Promise((resolve, reject) => {
     const server = createNetServer()
     server.once('error', reject)
@@ -243,7 +243,7 @@ export const test = base.extend<{ chain: Chain; spawn: Spawn; guard: Guard; sell
       const logFile = join(info.outputDir, `node-${name}.log`)
       await mkdir(info.outputDir, { recursive: true })
       const { pairToken, startNode, startUi, waitForNode } = await nodes
-      const node = await startNode({ port, uiPort, role: options.role ?? null, logFile, extraArgs: [...DETERMINISTIC_ARGS, ...(options.args ?? [])], chainUrl: chain.url, pollSecs: 2 })
+      const node = await startNode({ port, uiPort, role: options.role ?? null, logFile, extraArgs: [...DETERMINISTIC_ARGS, ...(options.args ?? [])], chainUrl: options.chainUrl ?? chain.url, pollSecs: 2 })
       const server = startUi({ uiPort, nodePort: port, data: node.data })
       await waitForNode(node)
       const token = await pairToken(node.data)

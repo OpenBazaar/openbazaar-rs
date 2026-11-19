@@ -98,6 +98,20 @@ fn pay(node: &Node, id: &str, ticket: &str) -> (String, Value) {
 }
 
 #[test]
+fn the_own_store_is_listed_under_its_profile_name() {
+    let dir = TempDir::new();
+    let btc = MockChain::new();
+    let rail = Arc::new(MockRail::new(Network::Signet));
+    let node = open(&dir.0, &btc, &rail);
+    unlock(&node);
+    crate::seller_store_tests::open_store(&node);
+    let (_, stores) = request(&node, "GET", "/ln/stores", "");
+    let own: Vec<&Value> = stores["stores"].as_array().unwrap().iter().filter(|store| store["own"] == true).collect();
+    assert_eq!(own.len(), 1, "{stores}");
+    assert_eq!(own[0]["seller"], "Brook and Pine", "{stores}");
+}
+
+#[test]
 fn a_store_takes_lightning_only_after_the_lsp_notice_and_signs_it() {
     let dir = TempDir::new();
     let btc = MockChain::new();
