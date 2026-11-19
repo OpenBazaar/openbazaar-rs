@@ -163,7 +163,7 @@ export function HomeDevicesCard({ presentation = "default" }: { presentation?: "
       {status.webShop && <button className="ob-secondary" disabled={busy} onClick={() => setNaming("Tor Browser")}>Set up Tor Browser</button>}
       <button className="ob-secondary" disabled={busy} onClick={() => void refresh()}>Refresh</button>
     </div>}
-    {presentation === "desk" ? (naming !== null || offer || credential) && <Dialog label={credential ? "Browser access keys" : offer ? "Pair a new device" : "Set up Tor Browser"} onCancel={() => { if (!busy) { setNaming(null); setOffer(null); setCredential(null); } }}>
+    {presentation === "desk" ? (naming !== null || offer || credential) && <Dialog className="ob-moderator-dialog" label={credential ? "Browser access keys" : offer ? "Pair a new device" : "Set up Tor Browser"} onCancel={() => { if (!busy) { setNaming(null); setOffer(null); setCredential(null); } }}>
       {setupFlow}
       {offer && requests}
       {error && <p className="ob-form-error" role="alert">{error}</p>}

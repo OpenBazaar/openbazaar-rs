@@ -344,8 +344,8 @@ export function WalletPanel({ currency, onOrders, embedded = false }: {
         </aside>
       </div>
       {network.data && <ConnectionCard info={network.data} />}
-      {settings && <Dialog label='Wallet settings' onCancel={() => setSettings(false)}><h2>Wallet settings</h2><WalletLockPanel lock={lock} /><div className='ob-form-actions'><button type='button' className='ob-secondary' onClick={() => setSettings(false)}>Done</button></div></Dialog>}
-      {receive && !receiveBlocked && address && <Dialog label='Receive bitcoin' onCancel={() => setReceive(false)}>
+      {settings && <Dialog label='Wallet settings' className='ob-wallet-dialog' onCancel={() => setSettings(false)}><h2>Wallet settings</h2><WalletLockPanel lock={lock} /><div className='ob-form-actions'><button type='button' className='ob-secondary' onClick={() => setSettings(false)}>Done</button></div></Dialog>}
+      {receive && !receiveBlocked && address && <Dialog label='Receive bitcoin' className='ob-wallet-dialog' onCancel={() => setReceive(false)}>
         <div className='ob-wallet-receive-dialog'><h2>Receive bitcoin</h2><p>{current?.network === 'testnet4' ? 'Testnet4 only · test coins, no value' : 'Bitcoin mainnet only'}</p><PaymentQr value={bitcoinUri(address)} paper /><CopyAddress value={address} label='Copy receive address'/><p>Scan this code from the wallet sending your funds.</p></div>
         <div className='ob-form-actions'><button className='ob-secondary' type='button' onClick={() => setReceive(false)}>Done</button></div>
       </Dialog>}

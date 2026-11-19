@@ -36,5 +36,19 @@ for (const dark of [false, true]) {
     const status = await dialog.getByText(/payments require passphrase/).boundingBox()
     const lockNow = await dialog.getByRole('button', { name: 'Lock now', exact: true }).boundingBox()
     expect(status!.x + status!.width <= lockNow!.x || status!.y + status!.height <= lockNow!.y || lockNow!.y + lockNow!.height <= status!.y, 'status does not collide with Lock now').toBeTruthy()
+    expect(await dialog.locator('.ob-lock-line').evaluate(el => getComputedStyle(el).columnGap), 'wallet dialog lock-line gap').toBe('12px')
+    expect(await dialog.locator('> h2').evaluate(el => getComputedStyle(el).marginBottom), 'wallet dialog heading margin').toBe('20px')
+    expect(await dialog.getByRole('button', { name: 'Lock now', exact: true }).evaluate(el => getComputedStyle(el).whiteSpace)).toBe('nowrap')
   })
 }
+
+test('receive dialog keeps the wallet QR size', async ({ page }) => {
+  await fixture(page)
+  await page.goto('/')
+  await page.getByRole('button', { name: 'Wallet', exact: true }).click()
+  await page.getByRole('button', { name: 'Receive bitcoin', exact: true }).click()
+  const dialog = page.getByRole('dialog', { name: 'Receive bitcoin', exact: true })
+  await expect(dialog).toBeVisible()
+  if (process.env.OB_RECEIVE_SHOT) await page.screenshot({ path: process.env.OB_RECEIVE_SHOT })
+  expect(await dialog.locator('.ob-payment-qr').first().evaluate(el => el.getBoundingClientRect().width)).toBeCloseTo(224, 0)
+})

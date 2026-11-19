@@ -78,7 +78,7 @@ export function WalletPage({ currency, onOrders, onSales, onManage, onTor }: Pro
     {network.data?.zecBackend?.enabled && <div id='ob-wallet-panel-zcash' className='ob-wallet-tabpanel' role='tabpanel' aria-labelledby='ob-wallet-tab-zcash' hidden={active !== 'zcash'}>
       <ZcashPanel backend={network.data.zecBackend} waiting={waiting} onManage={() => onManage('zcash')} onSales={onSales}/>
     </div>}
-    {settings && <Dialog label='Wallet settings' onCancel={() => setSettings(false)}><h2>Wallet settings</h2><WalletLockPanel lock={lock}/><div className='ob-form-actions'><button type='button' className='ob-secondary' onClick={() => setSettings(false)}>Done</button></div></Dialog>}
+    {settings && <Dialog label='Wallet settings' className='ob-wallet-dialog' onCancel={() => setSettings(false)}><h2>Wallet settings</h2><WalletLockPanel lock={lock}/><div className='ob-form-actions'><button type='button' className='ob-secondary' onClick={() => setSettings(false)}>Done</button></div></Dialog>}
   </section>
 }
 
@@ -147,7 +147,7 @@ function MoneroPanel({ resource, waiting, backend, fiatRate, currency, onManage,
       {error && <p className='ob-form-error' role='alert'>{error}</p>}
     </section>
     <details className='ob-wallet-connection'><summary>Connection and privacy<span>Monero details</span></summary><div className='ob-wallet-detail-disclosure'><p>{backend.reveals}</p><p>{current?.scannedHeight != null ? `Scanned block ${current.scannedHeight.toLocaleString()}${current.tip != null ? ` of ${current.tip.toLocaleString()}` : ''}.` : 'Waiting for the first sync.'}</p></div></details>
-    {receive && address && !receiveBlocked && <Dialog label='Receive Monero' onCancel={() => setReceive(false)}><div className='ob-wallet-receive-dialog'><h2>Receive Monero</h2><p>Monero {current?.network} only</p><PaymentQr value={`monero:${address}`} label='Monero receive QR code' paper/><CopyAddress value={address} label='Copy Monero receive address'/></div><div className='ob-form-actions'><button type='button' className='ob-secondary' onClick={() => setReceive(false)}>Done</button></div></Dialog>}
+    {receive && address && !receiveBlocked && <Dialog label='Receive Monero' className='ob-wallet-dialog' onCancel={() => setReceive(false)}><div className='ob-wallet-receive-dialog'><h2>Receive Monero</h2><p>Monero {current?.network} only</p><PaymentQr value={`monero:${address}`} label='Monero receive QR code' paper/><CopyAddress value={address} label='Copy Monero receive address'/></div><div className='ob-form-actions'><button type='button' className='ob-secondary' onClick={() => setReceive(false)}>Done</button></div></Dialog>}
   </div>
 }
 
