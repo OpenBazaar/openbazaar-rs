@@ -36,6 +36,10 @@ struct State {
     key_images: HashSet<[u8; 32]>,
     published: Vec<Transaction>,
     offline: bool,
+    /// Only the pool routes fail.
+    pool_offline: bool,
+    /// Pool transactions handed out so far.
+    pool_fetched: usize,
     fee_per_weight: u64,
 }
 
@@ -57,6 +61,8 @@ impl MockChain {
                 key_images: HashSet::new(),
                 published: Vec::new(),
                 offline: false,
+                pool_offline: false,
+                pool_fetched: 0,
                 fee_per_weight: 20_000,
             }),
         };
@@ -114,6 +120,14 @@ impl MockChain {
 
     pub fn set_offline(&self, offline: bool) {
         self.state.lock().unwrap().offline = offline;
+    }
+
+    pub fn set_pool_offline(&self, offline: bool) {
+        self.state.lock().unwrap().pool_offline = offline;
+    }
+
+    pub fn pool_fetched(&self) -> usize {
+        self.state.lock().unwrap().pool_fetched
     }
 
     pub fn set_fee_per_weight(&self, fee: u64) {
@@ -248,5 +262,27 @@ impl XmrChain for MockChain {
         state.pool.push(tx.clone());
         state.published.push(tx.clone());
         Ok(())
+    }
+
+    fn pool_hashes(&self) -> Result<Vec<[u8; 32]>, String> {
+        let state = self.state()?;
+        if state.pool_offline {
+            return Err("the mock Monero node refused the pool request".into());
+        }
+        Ok(state.pool.iter().map(Transaction::hash).collect())
+    }
+
+    fn pool_transactions(&self, hashes: &[[u8; 32]]) -> Result<Vec<([u8; 32], Transaction<Pruned>)>, String> {
+        let mut state = self.state()?;
+        if state.pool_offline {
+            return Err("the mock Monero node refused the pool request".into());
+        }
+        state.pool_fetched += hashes.len();
+        Ok(state
+            .pool
+            .iter()
+            .filter(|tx| hashes.contains(&tx.hash()))
+            .map(|tx| (tx.hash(), Transaction::<Pruned>::from(tx.clone())))
+            .collect())
     }
 }

@@ -2,7 +2,7 @@
 //!
 //! | route | lock | body | answer |
 //! |---|---|---|---|
-//! | `GET /xmr/wallet` | any | | balance, primary address, sync state |
+//! | `GET /xmr/wallet` | any | | balance, incoming unconfirmed (mempool, not in the balance), primary address, sync state |
 //! | `POST /xmr/wallet/subaddress` | any | | a fresh subaddress of the node wallet |
 //! | `GET /xmr/stores` | any | | which stores accept Monero |
 //! | `PUT /xmr/stores` | any (the node's own store: unlocked) | `{seller, accept}` | the same, after the store's record is signed again |
@@ -111,6 +111,8 @@ fn wallet(node: &Node, origin: Option<&str>) -> Vec<u8> {
         );
     };
     let balance = wallet.balance();
+    let incoming = slot.pool.incoming(wallet);
+    let unconfirmed = slot.pool.total(wallet);
     json_body(
         "200 OK",
         &json!({
@@ -123,6 +125,17 @@ fn wallet(node: &Node, origin: Option<&str>) -> Vec<u8> {
                 "pendingPiconero": balance.pending.to_string(),
                 "unlockedXmr": openbazaar_xmr::amount::format_xmr(balance.unlocked),
                 "pendingXmr": openbazaar_xmr::amount::format_xmr(balance.pending),
+            },
+            // In the mempool: shown only, never part of the balance or of an order's payment.
+            "unconfirmed": {
+                "incomingPiconero": unconfirmed.to_string(),
+                "incomingXmr": openbazaar_xmr::amount::format_xmr(unconfirmed),
+                "entries": incoming.iter().map(|entry| json!({
+                    "txid": bitcoin::hex::DisplayHex::to_lower_hex_string(&entry.txid[..]),
+                    "amountPiconero": entry.amount.to_string(),
+                    "amountXmr": openbazaar_xmr::amount::format_xmr(entry.amount),
+                    "subaddressIndex": entry.subaddress,
+                })).collect::<Vec<_>>(),
             },
             "scannedHeight": wallet.scanned(),
             "tip": wallet.tip(),

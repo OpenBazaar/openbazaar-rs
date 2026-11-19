@@ -167,10 +167,7 @@ impl XmrWallet {
             if blocks.len() as u64 != to - from + 1 {
                 return Err("the Monero node sent the wrong number of blocks".into());
             }
-            let mut scanner = Scanner::new(self.keys.view_pair());
-            for index in 1..self.next_subaddress {
-                scanner.register_subaddress(SubaddressIndex::new(0, index).expect("index is above 0"));
-            }
+            let mut scanner = self.scanner();
             let mut known: HashSet<[u8; 32]> = self.outputs.iter().map(|owned| owned.output.key().compress().to_bytes()).collect();
             for (number, block) in (from..=to).zip(blocks) {
                 let hash = block.block.hash();
@@ -197,6 +194,29 @@ impl XmrWallet {
         }
         self.tip = Some(tip);
         Ok(SyncStep { tip, scanned: self.scanned.unwrap_or(tip), found, rolled_back })
+    }
+
+    /// A scanner for the primary address and every subaddress handed out.
+    pub(crate) fn scanner(&self) -> Scanner {
+        let mut scanner = Scanner::new(self.keys.view_pair());
+        for index in 1..self.next_subaddress {
+            scanner.register_subaddress(SubaddressIndex::new(0, index).expect("index is above 0"));
+        }
+        scanner
+    }
+
+    pub(crate) fn next_subaddress(&self) -> u32 {
+        self.next_subaddress
+    }
+
+    /// Whether a scanned block paid this wallet in `txid`.
+    pub fn holds_transaction(&self, txid: &[u8; 32]) -> bool {
+        self.outputs.iter().any(|owned| owned.output.transaction() == *txid)
+    }
+
+    /// Whether this node spent the wallet's outputs in `txid`.
+    pub fn spent_in(&self, txid: &[u8; 32]) -> bool {
+        self.outputs.iter().any(|owned| owned.spent_by.as_ref() == Some(txid))
     }
 
     /// Drop blocks no longer on the daemon's chain. Returns how many.

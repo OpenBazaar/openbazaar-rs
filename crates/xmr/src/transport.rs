@@ -19,6 +19,7 @@ pub const ROUTES: &[&str] = &[
     "json_rpc",
     "get_height",
     "get_transactions",
+    "get_transaction_pool_hashes",
     "send_raw_transaction",
     "get_blocks.bin",
     "get_o_indexes.bin",
@@ -33,7 +34,8 @@ pub const JSON_RPC_METHODS: &[&str] = &["on_get_block_hash", "get_block", "get_f
 /// circuit per node, so a scan does not build a circuit for each request (an
 /// onion service took about 9 s per block that way). Decoy and broadcast
 /// routes still get a circuit of their own.
-const CHAIN_ROUTES: &[&str] = &["json_rpc", "get_height", "get_transactions", "get_blocks.bin", "get_o_indexes.bin"];
+const CHAIN_ROUTES: &[&str] =
+    &["json_rpc", "get_height", "get_transactions", "get_transaction_pool_hashes", "get_blocks.bin", "get_o_indexes.bin"];
 
 fn shares_circuit(url: &reqwest::Url) -> bool {
     url.path_segments().and_then(|mut segments| segments.next_back()).is_some_and(|route| CHAIN_ROUTES.contains(&route))

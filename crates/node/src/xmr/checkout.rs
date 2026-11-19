@@ -11,8 +11,8 @@
 //! Awaiting payment (nothing, or less than due: `receivedPiconero` shows
 //! what arrived) -> Payment seen (all of it, under 10 confirmations) -> Paid
 //! (10 confirmations). More than due is Paid with `overpaidPiconero`. The
-//! node has no view of the mempool, so a payment is seen from its first
-//! confirmation.
+//! wallet shows mempool payments as incoming, but an order only sees a
+//! payment from its first confirmation: status reads mined blocks only.
 
 use openbazaar_xmr::amount::{format_xmr, piconero_for_sats};
 use openbazaar_xmr::{monero_uri, CONFIRMATIONS};

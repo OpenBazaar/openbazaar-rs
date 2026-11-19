@@ -14,8 +14,8 @@ use crate::spend_tickets::TICKET_TTL;
 use crate::{Egress, Node};
 
 const SATS_PER_XMR: u64 = 300_000;
-const XMR: u64 = 1_000_000_000_000;
-const NET: XmrNetwork = XmrNetwork::Stagenet;
+pub(super) const XMR: u64 = 1_000_000_000_000;
+pub(super) const NET: XmrNetwork = XmrNetwork::Stagenet;
 
 #[test]
 fn fixed_rates_with_an_xmr_price_price_monero_orders_without_kraken() {
@@ -30,11 +30,11 @@ fn fixed_rates_with_an_xmr_price_price_monero_orders_without_kraken() {
     assert!(rates["xmr"].is_null(), "no XMR figure, no XMR price: {}", rates["xmr"]);
 }
 
-struct Setup {
-    node: Node,
-    xmr: Arc<XmrChainMock>,
-    btc: MockChain,
-    dir: TempDir,
+pub(super) struct Setup {
+    pub(super) node: Node,
+    pub(super) xmr: Arc<XmrChainMock>,
+    pub(super) btc: MockChain,
+    pub(super) dir: TempDir,
 }
 
 fn open(dir: &Path, btc: &MockChain, xmr: &Arc<XmrChainMock>) -> Node {
@@ -45,7 +45,7 @@ fn open(dir: &Path, btc: &MockChain, xmr: &Arc<XmrChainMock>) -> Node {
 }
 
 /// A node with Monero on, Marlow Goods accepting it, every wallet synced.
-fn setup() -> Setup {
+pub(super) fn setup() -> Setup {
     let dir = TempDir::new();
     let btc = MockChain::new();
     let xmr = Arc::new(XmrChainMock::new(NET));
@@ -62,18 +62,18 @@ fn place(node: &Node, title: &str, seller: &str, settlement: &str, rail: &str) -
 }
 
 /// One Monero order from Marlow Goods. Returns its id and payment.
-fn xmr_order(node: &Node) -> (String, Value) {
+pub(super) fn xmr_order(node: &Node) -> (String, Value) {
     let (status, value) = place(node, "Paperback novel", "Marlow Goods", "direct", "xmr");
     assert!(status.contains("200"), "{status} {value}");
     let placed = &value["orders"][0];
     (placed["orderId"].as_str().unwrap().to_string(), placed["payment"].clone())
 }
 
-fn subaddress(payment: &Value) -> MoneroAddress {
+pub(super) fn subaddress(payment: &Value) -> MoneroAddress {
     address_for(payment["subaddress"].as_str().unwrap(), NET).unwrap()
 }
 
-fn piconero(value: &Value) -> u64 {
+pub(super) fn piconero(value: &Value) -> u64 {
     value.as_str().unwrap().parse().unwrap()
 }
 

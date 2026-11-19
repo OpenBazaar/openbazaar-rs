@@ -25,6 +25,8 @@
 mod checkout;
 mod http;
 mod pay;
+#[cfg(test)]
+mod pool_tests;
 mod rate;
 mod sale;
 #[cfg(test)]
@@ -43,7 +45,7 @@ use std::time::{Duration, Instant};
 
 use bitcoin::secp256k1::SecretKey;
 use openbazaar_protocol::{Catalog, Store};
-use openbazaar_xmr::{BackendStatus, SpendKey, ViewKeys, XmrChain, XmrNetwork, XmrWallet};
+use openbazaar_xmr::{BackendStatus, PoolWatch, SpendKey, ViewKeys, XmrChain, XmrNetwork, XmrWallet};
 use serde_json::{json, Value};
 
 use crate::buyer_orders::now_secs;
@@ -78,6 +80,8 @@ pub(crate) struct Slot {
     pub(crate) wallet: Option<XmrWallet>,
     pub(crate) last_sync: Option<u64>,
     pub(crate) error: Option<String>,
+    /// Incoming payments in the mempool. Memory only, never saved, never counted.
+    pub(crate) pool: PoolWatch,
 }
 
 impl Slot {
@@ -90,7 +94,7 @@ impl Slot {
             }
             None => None,
         };
-        let mut slot = Self { dir: dir.to_path_buf(), wallet: None, last_sync: None, error: None };
+        let mut slot = Self { dir: dir.to_path_buf(), wallet: None, last_sync: None, error: None, pool: PoolWatch::default() };
         if let Some(keys) = keys {
             slot.load(keys, vault, network)?;
         }
@@ -425,17 +429,36 @@ impl Node {
                 }
             }
         }
-        let mut slot = guard(slot);
-        match &result {
-            Ok(()) => {
-                slot.last_sync = Some(now_secs());
-                slot.error = None;
+        {
+            let mut slot = guard(slot);
+            match &result {
+                Ok(()) => {
+                    slot.last_sync = Some(now_secs());
+                    slot.error = None;
+                }
+                // The backend reports itself as connecting; a chain error here is not news yet.
+                Err(_) if chain.status().connecting => slot.error = None,
+                Err(err) => slot.error = Some(err.clone()),
             }
-            // The backend reports itself as connecting; a chain error here is not news yet.
-            Err(_) if chain.status().connecting => slot.error = None,
-            Err(err) => slot.error = Some(err.clone()),
+        }
+        if result.is_ok() {
+            self.refresh_pool(slot, chain);
         }
         result
+    }
+
+    /// Check the mempool for incoming payments. A failure is logged and
+    /// changes nothing else: not the sync error, not the next block scan.
+    fn refresh_pool(&self, slot: &Mutex<Slot>, chain: &dyn XmrChain) {
+        let (mut pool, wallet) = {
+            let mut slot = guard(slot);
+            let Some(wallet) = slot.wallet.clone() else { return };
+            (std::mem::take(&mut slot.pool), wallet)
+        };
+        if let Err(err) = pool.refresh(&wallet, chain) {
+            eprintln!("ob-node: Monero mempool: {err}");
+        }
+        guard(slot).pool = pool;
     }
 
     /// Sync and pay on one thread until `stop`: payments as they are queued, a sync every `every`.
