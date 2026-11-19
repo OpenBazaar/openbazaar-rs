@@ -104,11 +104,16 @@ fn the_own_store_is_listed_under_its_profile_name() {
     let rail = Arc::new(MockRail::new(Network::Signet));
     let node = open(&dir.0, &btc, &rail);
     unlock(&node);
+    let own = |node: &Node| {
+        let (_, stores) = request(node, "GET", "/ln/stores", "");
+        stores["stores"].as_array().unwrap().iter().filter(|store| store["own"] == true).cloned().collect::<Vec<Value>>()
+    };
+    assert_eq!(own(&node), Vec::<Value>::new(), "a store that was never set up is not offered");
     crate::seller_store_tests::open_store(&node);
-    let (_, stores) = request(&node, "GET", "/ln/stores", "");
-    let own: Vec<&Value> = stores["stores"].as_array().unwrap().iter().filter(|store| store["own"] == true).collect();
-    assert_eq!(own.len(), 1, "{stores}");
-    assert_eq!(own[0]["seller"], "Brook and Pine", "{stores}");
+    assert_eq!(own(&node), [json!({"seller": "Brook and Pine", "own": true, "acceptsLightning": false})]);
+    let (status, stores) = accept(&node, "Brook and Pine", true);
+    assert!(status.contains("200"), "{status} {stores}");
+    assert_eq!(own(&node)[0]["acceptsLightning"], true);
 }
 
 #[test]

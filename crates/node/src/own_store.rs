@@ -209,6 +209,12 @@ impl Node {
         self.catalog().store(&self.own_store).cloned()
     }
 
+    /// Whether the seller has saved the storefront once (`setUp` in `GET /store/profile`).
+    /// Until then the rail settings do not offer the default store.
+    pub(crate) fn own_store_set_up(&self) -> bool {
+        read_profile(&self.data_dir).is_ok_and(|profile| profile["setUp"] == true)
+    }
+
     /// Sign the own store again if its inputs changed, after an unlock. Also
     /// upgrades a `watch.obv` from before the store mailbox key.
     pub(crate) fn refresh_own_store(&self) -> Result<(), Error> {

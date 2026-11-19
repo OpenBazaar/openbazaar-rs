@@ -29,6 +29,9 @@ async function lightningOrder(page: Page, { seller, buyer, sellerPeer, bitcoind 
 
   await page.goto(buyer.ui)
   await lightningSettings(page)
+  // The buyer never set up a store, so there is no store of its own to switch on.
+  await expect(page.getByText('Your store shows here once it is open.')).toBeVisible()
+  await expect(page.getByRole('switch', { name: /Your store/ })).toHaveCount(0)
   const channels = page.getByRole('region', { name: 'Channels' })
   await channels.getByRole('textbox', { name: 'Peer' }).fill(sellerPeer)
   await channels.getByRole('spinbutton', { name: 'Sats' }).fill('1000000')

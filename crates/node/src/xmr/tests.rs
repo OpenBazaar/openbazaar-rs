@@ -273,7 +273,7 @@ fn network_and_rates_say_what_the_monero_backend_sees() {
     assert_eq!(rates["xmr"]["satsPerXmr"], SATS_PER_XMR);
     assert_eq!(rates["xmr"]["decimals"], 12);
     let (_, stores) = request(&node, "GET", "/xmr/stores", "");
-    assert_eq!(stores["stores"][0], json!({"seller": "My store", "own": true, "acceptsXmr": false, "problem": null}));
+    assert!(!stores["stores"].as_array().unwrap().iter().any(|store| store["own"] == true), "a store that was never set up is not offered: {stores}");
     assert!(stores["stores"].as_array().unwrap().iter().any(|store| store == &json!({"seller": "Hale Paper", "acceptsXmr": false})));
     let (status, _) = request(&node, "PUT", "/xmr/stores", &json!({"seller": "Nobody", "accept": true}).to_string());
     assert!(status.contains("404"));
