@@ -334,6 +334,7 @@ export function NativeOrderPayment({
     network: orderNet ?? net ?? 'testnet4',
     status: order.status,
     confirmations: order.confirmations,
+    receivedSats: order.receivedSats,
     requiredConfirmations: confirmationTarget(
       kind,
       (monero ?? zcash)?.confirmationsNeeded,

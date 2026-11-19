@@ -51,6 +51,10 @@ const NET_UNPROBED: u8 = 3;
 /// Returned before any request when a public server would otherwise be told an address.
 const PUBLIC_ADDRESSES: &str =
     "a public Esplora server is not asked which addresses this wallet follows";
+/// A wallet scan that failed against the server, for the wallet page.
+const UNREACHABLE: &str = "Your chain server could not be reached. Check that it is running, then try again.";
+/// A wallet scan refused because the server's genesis block is another network.
+const WRONG_NETWORK: &str = "Your chain server is on a different bitcoin network.";
 /// Returned before any request when a public server would otherwise see this machine's IP.
 const PUBLIC_CLEARNET: &str =
     "a public Esplora server is not contacted without --proxy; it would see this machine's IP";
@@ -330,16 +334,23 @@ impl EsploraChain {
     }
 
     /// Wallet scans consume their request, so they use one server per call
-    /// and move to the next server after a failure.
+    /// and move to the next server after a failure. The error is shown to the
+    /// user as is; the client's details go to the log.
     fn scan<T>(&self, run: impl FnOnce(&AsyncClient) -> Result<T, String>) -> Result<T, String> {
         let index = self.preferred.load(Ordering::Relaxed);
         let server = &self.servers[index];
-        let result = self.check(server).and_then(|()| run(&server.client));
+        let result = match self.check(server) {
+            Err(_) => Err(WRONG_NETWORK.to_string()),
+            Ok(()) => run(&server.client).map_err(|err| {
+                eprintln!("ob-node: wallet sync from {}: {err}", server.url);
+                UNREACHABLE.to_string()
+            }),
+        };
         if result.is_err() {
             self.preferred
                 .store((index + 1) % self.servers.len(), Ordering::Relaxed);
         }
-        result.map_err(|err| format!("{}: {err}", server.url))
+        result
     }
 }
 
@@ -851,6 +862,24 @@ mod tests {
             .recv_timeout(Duration::from_secs(5))
             .expect("the tip query did not reach the proxy");
         assert_eq!((kind, host.as_str()), (3, "mempool.space"));
+    }
+
+    #[test]
+    fn a_wallet_scan_against_an_unreachable_server_says_so_plainly() {
+        use bdk_wallet::Wallet;
+        let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let chain = EsploraChain::new(&[format!("http://127.0.0.1:{port}/chain")], Network::Testnet4).unwrap();
+        let wallet = Wallet::create(
+            "tr([7d94197e/86'/1'/0']tpubDCyQVJj8KzjiQsFjmb3KwECVXPvMwvAxxZGCP9XmWSopmjW3bCV3wD7TgxrUhiGSueDS1MU5X1Vb1YjYcp8jitXc5fXfdC1z68hDDEyKRNr/0/*)",
+            "tr([7d94197e/86'/1'/0']tpubDCyQVJj8KzjiQsFjmb3KwECVXPvMwvAxxZGCP9XmWSopmjW3bCV3wD7TgxrUhiGSueDS1MU5X1Vb1YjYcp8jitXc5fXfdC1z68hDDEyKRNr/1/*)",
+        )
+        .network(Network::Testnet4)
+        .create_wallet_no_persist()
+        .unwrap();
+        let err = chain
+            .wallet_update(WalletRequest::Full(wallet.start_full_scan().build()))
+            .unwrap_err();
+        assert_eq!(err, UNREACHABLE);
     }
 
     fn sample_tx() -> Transaction {

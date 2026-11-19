@@ -43,6 +43,13 @@ test('confirmations before Paid show progress against the requirement', () => {
   assert.equal(view({ requiredConfirmations: undefined }).confirmations, 'Confirmations: 0')
 })
 
+test('a sent payment the node has seen no longer waits for the chain, whatever the order status', () => {
+  for (const status of ['Disputed', 'Funded', 'Awaiting payment']) {
+    assert.equal(view({ status, payTxid: 'ab', confirmations: 1 }).progress, null)
+    assert.equal(view({ status, payTxid: 'ab', receivedSats: 15_496 }).progress, null)
+  }
+})
+
 test('progress follows sending, sent, and seen', () => {
   assert.equal(view({ sending: true }).progress, 'Sending payment from your node wallet…')
   assert.equal(view({ payTxid: 'ab' }).progress, 'Payment sent. Waiting for the node to see it on the chain.')

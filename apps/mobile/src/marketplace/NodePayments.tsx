@@ -43,6 +43,7 @@ import {
 } from '../orderState'
 import { useNodeResource } from '../useNodeResource'
 import { fetchWalletRates } from '../walletFiat'
+import { LightningOrderPayment } from './LightningPayment'
 import { FiatEstimate } from './FiatEstimate'
 import { isLocked, lockWallet, quotePayment, type LockStatus, type Quote, type Ticket } from '../walletLock'
 import { RailMark } from './RailMark'
@@ -316,7 +317,7 @@ export function WalletPanel({ currency, onOrders, embedded = false }: {
             <button type='button' className='ob-text-link' disabled={refreshing || wallet.loading} onClick={() => void refresh()}>{refreshing ? 'Refreshing…' : 'Refresh wallet'}</button>
           </div>
         </div>
-        {current?.syncError && <p className='ob-wallet-sync-error' role='alert'>Balance may be out of date. {current.syncError}{checkedAt ? ` Checked again at ${new Date(checkedAt).toLocaleTimeString(undefined, { timeStyle: 'short' })}.` : ''}</p>}
+        {current?.syncError && <p className='ob-wallet-sync-error' role='alert'>Balance may be out of date. {current.syncError}{checkedAt ? ` Checked again at ${new Date(checkedAt).toLocaleTimeString(undefined, { timeStyle: 'short' })}.` : ''} <button type='button' className='ob-text-link' disabled={refreshing || wallet.loading} onClick={() => void refresh()}>Try again</button></p>}
       </section>
       {status && (status.state === 'setup' || !status.backupConfirmed) && <div className='ob-wallet-alert' role='status'>
         <p>{status.state === 'setup' ? 'Protect your wallet before making a payment.' : 'Your wallet backup has not been confirmed.'}</p>
@@ -385,6 +386,8 @@ export function OrderPayment({
     orderPollingDone
   )
   const order = resource.data ?? initial
+  // A Lightning order has no invoice until the seller's node answers.
+  if (order.payment?.ln) return <LightningOrderPayment id={id} initial={order} invoice={order.payment.ln} />
   const fulfilled = order.status === 'Shipped' || order.status === ORDER_STATUS.completed
   const kind = payKind(order)
   const due =
@@ -408,6 +411,7 @@ export function OrderPayment({
     network: orderNetwork ?? net ?? 'testnet4',
     status: order.status,
     confirmations: order.confirmations,
+    receivedSats: order.receivedSats,
     requiredConfirmations: confirmationTarget(
       kind,
       (monero ?? zcash)?.confirmationsNeeded,
