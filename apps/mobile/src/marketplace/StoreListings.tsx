@@ -1,7 +1,8 @@
 import { useState } from "react";
 import type { CurrencyCode, ListingHeader, RateTable } from "../catalog";
 import { purchaseTerms, type AvailabilityDraft } from "../commerceDraft";
-import { bulkEditListings, deleteListing, fetchDrafts, fetchOwnListings, formatPrice, type SavedDraft, type SellerProfile } from "../seller";
+import { inventoryCount } from "../inventoryCount";
+import { bulkEditListings, deleteDraft, deleteListing, fetchDrafts, fetchOwnListings, formatPrice, type SavedDraft, type SellerProfile } from "../seller";
 import { useNodeResource } from "../useNodeResource";
 import { ListingEditor } from "./ListingEditor";
 import { Empty } from "./Marketplace";
@@ -84,6 +85,14 @@ export function StoreListings({ profile, rates, currency, startNew = false, onCh
       await changed("Listing removed");
     });
   }
+  async function removeDraft(draft: SavedDraft) {
+    setError("");
+    await run(async () => {
+      await deleteDraft(draft.draftId);
+      setConfirm(null);
+      await changed("Draft removed");
+    });
+  }
   const savedDraft = editing && editing !== "new" && "draftId" in editing ? editing : null;
   const published = editing && editing !== "new" && !("draftId" in editing) ? editing : null;
   if (editing) return <section className="ob-store-listings">
@@ -95,20 +104,18 @@ export function StoreListings({ profile, rates, currency, startNew = false, onCh
     {listings.length > 0 && <div className="ob-inventory-toolbar">
       <label className="ob-field"><span>Search</span><input type="search" value={query} placeholder="Title, category, SKU" onChange={event => setQuery(event.target.value)}/></label>
       <label className="ob-field"><span>Stock</span><select value={stockFilter} onChange={event => setStockFilter(event.target.value)}><option value="all">All listings</option><option value="available">In stock</option><option value="low">Low, 1–5</option><option value="empty">Out of stock</option></select></label>
-      <p role="status">{visible.length === listings.length ? `${listings.length} ${listings.length === 1 ? "listing" : "listings"}` : `${visible.length} of ${listings.length}`}{selected.length ? ` · ${selected.length} selected` : ""}</p>
+      <p role="status">{inventoryCount(listings.length, visible.length, (drafts.data ?? []).length)}</p>
     </div>}
     {(error || resource.error) && <p className="ob-form-error" role="alert">{error || resource.error}</p>}
-    {!!listings.length && <div className="ob-store-section">
-      <p className="ob-shipping-note">One price or one availability, for the goods you select. A draft stays a draft.</p>
-      <div className="ob-field-grid">
-        <label className="ob-field"><span>Change</span><select value={bulk} onChange={e => setBulk(e.target.value as "price" | "availability")}><option value="price">Regular price</option><option value="availability">Availability</option></select></label>
-        {bulk === "price" ? <label className="ob-field"><span>Price{priceCurrency ? ` (${priceCurrency === "SAT" ? "sats" : priceCurrency})` : ""}</span><input inputMode="decimal" value={bulkPrice} disabled={!priceCurrency} placeholder={priceCurrency === "SAT" || priceCurrency === "JPY" ? "25000" : "25.00"} onChange={e => setBulkPrice(e.target.value)}/><small className="ob-field-hint">{priceCurrency ? "Replaces the price on each selected listing" : "Select listings priced in one currency"}</small></label> : <>
-          <label className="ob-field"><span>Availability</span><select value={bulkAvailability.kind} onChange={e => setBulkAvailability({ ...bulkAvailability, kind: e.target.value })}><option value="in-stock">In stock</option><option value="pre-order">Pre-order</option><option value="made-to-order">Made to order</option><option value="away">Away</option></select></label>
-          {bulkAvailability.kind === "pre-order" && <label className="ob-field"><span>Ships on</span><input type="date" value={bulkAvailability.shipsOn} onChange={e => setBulkAvailability({ ...bulkAvailability, shipsOn: e.target.value })}/></label>}
-          {bulkAvailability.kind === "made-to-order" && <label className="ob-field"><span>Ready in (days)</span><input inputMode="numeric" value={bulkAvailability.days} placeholder="14" onChange={e => setBulkAvailability({ ...bulkAvailability, days: e.target.value })}/></label>}
-        </>}
-      </div>
-      <button className="ob-secondary" disabled={!selected.length} onClick={() => void applyBulk()}>Apply to selected</button>
+    {selected.length > 0 && <div className="ob-bulk-bar" role="group" aria-label="Change selected listings">
+      <p className="ob-bulk-count">{selected.length} selected <button className="ob-text-link" onClick={() => setSelected([])}>Clear</button></p>
+      <label className="ob-field"><span>Change</span><select value={bulk} onChange={e => setBulk(e.target.value as "price" | "availability")}><option value="price">Price</option><option value="availability">Availability</option></select></label>
+      {bulk === "price" ? <label className="ob-field"><span>Price{priceCurrency ? ` (${priceCurrency === "SAT" ? "sats" : priceCurrency})` : ""}</span><input inputMode="decimal" value={bulkPrice} disabled={!priceCurrency} placeholder={priceCurrency === "SAT" || priceCurrency === "JPY" ? "25000" : "25.00"} onChange={e => setBulkPrice(e.target.value)}/>{!priceCurrency && <small className="ob-field-hint">Select listings priced in one currency</small>}</label> : <>
+        <label className="ob-field"><span>Availability</span><select value={bulkAvailability.kind} onChange={e => setBulkAvailability({ ...bulkAvailability, kind: e.target.value })}><option value="in-stock">In stock</option><option value="pre-order">Pre-order</option><option value="made-to-order">Made to order</option><option value="away">Away</option></select></label>
+        {bulkAvailability.kind === "pre-order" && <label className="ob-field"><span>Ships on</span><input type="date" value={bulkAvailability.shipsOn} onChange={e => setBulkAvailability({ ...bulkAvailability, shipsOn: e.target.value })}/></label>}
+        {bulkAvailability.kind === "made-to-order" && <label className="ob-field"><span>Ready in (days)</span><input inputMode="numeric" value={bulkAvailability.days} placeholder="14" onChange={e => setBulkAvailability({ ...bulkAvailability, days: e.target.value })}/></label>}
+      </>}
+      <button className="ob-secondary" onClick={() => void applyBulk()}>Apply</button>
     </div>}
     {resource.loading ? <p role="status">Loading your listings…</p> : !profile.setUp ? <Empty icon="bag" title="Open your store first" text="Choose Go to store settings, check the name buyers will see, then choose Open my store. If the wallet is locked, unlock it so the node can sign the store. New listing turns on after that."><button className="ob-primary" onClick={onOpenSettings}>Go to store settings</button></Empty> : !listings.length ? <Empty icon="bag" title="No listings yet" text="Publish a listing and it shows on your store"/> : !visible.length ? <p className="ob-shipping-note">No listings match these filters <button className="ob-text-link" onClick={() => { setQuery(""); setStockFilter("all"); }}>Clear filters</button></p> : <ul className="ob-own-listings">{visible.map(listing => {
       const estimate = displayEstimate(listing.priceSats, rates, currency, listing.price?.currency);
@@ -136,21 +143,30 @@ export function StoreListings({ profile, rates, currency, startNew = false, onCh
           <button className="ob-danger" onClick={() => void remove(listing)}>Remove listing</button>
         </> : <>
           <button className="ob-secondary" onClick={() => setEditing(listing)} aria-label={`Edit ${listing.title}`}>Edit</button>
-          <button className="ob-text-link" onClick={() => setConfirm(listing.hash)} aria-label={`Remove ${listing.title}`}>Remove</button>
+          <button className="ob-secondary" onClick={() => setConfirm(listing.hash)} aria-label={`Remove ${listing.title}`}>Remove</button>
         </>}
       </span>
     </li>;
     })}</ul>}
-    {(drafts.data ?? []).length > 0 && <ul className="ob-own-listings">{(drafts.data ?? []).map(draft => <li key={draft.draftId} className="ob-own-listing is-draft">
-      <span className="ob-own-listing-image" aria-hidden="true">{(draft.listing.title || "Untitled draft").charAt(0)}</span>
+    {(drafts.data ?? []).length > 0 && <ul className="ob-own-listings">{(drafts.data ?? []).map(draft => {
+      const title = draft.listing.title || "Untitled draft";
+      return <li key={draft.draftId} className="ob-own-listing is-draft">
+      <span className="ob-own-listing-image">{draft.listing.images[0] ? <MediaImage hash={draft.listing.images[0]} alt={title}/> : <span aria-hidden="true">{title.charAt(0)}</span>}</span>
       <span className="ob-own-listing-copy">
-        <strong>{draft.listing.title || "Untitled draft"}</strong>
+        <strong>{title}</strong>
         <span className="ob-own-listing-status">Draft, not published</span>
       </span>
       <span className="ob-own-listing-actions">
-        <button className="ob-secondary" onClick={() => setEditing(draft)} aria-label={`Edit draft ${draft.listing.title || "listing"}`}>Edit draft</button>
+        {confirm === draft.draftId ? <>
+          <button className="ob-secondary" onClick={() => setConfirm(null)}>Keep</button>
+          <button className="ob-danger" onClick={() => void removeDraft(draft)}>Remove draft</button>
+        </> : <>
+          <button className="ob-secondary" onClick={() => setEditing(draft)} aria-label={`Edit draft ${draft.listing.title || "listing"}`}>Edit draft</button>
+          <button className="ob-secondary" onClick={() => setConfirm(draft.draftId)} aria-label={`Remove draft ${draft.listing.title || "listing"}`}>Remove</button>
+        </>}
       </span>
-    </li>)}</ul>}
+    </li>;
+    })}</ul>}
     {dialog}
   </section>;
 }

@@ -116,7 +116,7 @@
 .ob-own-listing-price { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; font-variant-numeric: tabular-nums; }
 .ob-own-listing-sats { font-size: 16px; line-height: 20px; font-weight: 500; color: var(--ob-ink); }
 .ob-own-listing-sats small { margin-left: 4px; font-size: 12px; line-height: 16px; font-weight: 400; color: var(--ob-secondary); }
-.ob-own-listing-ask, .ob-own-listing-estimate { font-size: 12px; line-height: 16px; font-weight: 400; color: var(--ob-muted); }
+.ob-own-listing-ask, .ob-own-listing-estimate { font-size: 12px; line-height: 20px; font-weight: 400; color: var(--ob-muted); }
 .ob-own-listing-actions { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
 .ob-own-listings + .ob-own-listings { margin-top: 8px; }
 .ob-own-listing.is-draft { grid-template-columns: 44px 64px minmax(0,1fr) auto; }
@@ -227,9 +227,14 @@
 .ob-inventory-toolbar { display: flex; flex-wrap: wrap; align-items: end; gap: 16px; margin-bottom: 16px; }
 .ob-inventory-toolbar .ob-field { flex: 1 1 220px; max-width: 420px; }
 .ob-inventory-toolbar .ob-field + .ob-field { flex: 0 1 180px; }
-.ob-inventory-toolbar > p { margin: 0; padding-bottom: 8px; color: var(--ob-muted); font-family: ui-monospace, Menlo, monospace; font-size: 12px; line-height: 16px; font-variant-numeric: tabular-nums; }
-.is-merchant .ob-store-listings > .ob-store-section { padding: 20px; border-radius: 12px; margin-bottom: 16px; }
-.is-merchant .ob-store-listings > .ob-store-section > .ob-shipping-note { margin-top: 0 !important; margin-bottom: 16px; font-size: 14px; line-height: 20px; max-width: 62ch; }
+.ob-inventory-toolbar > p { margin: 0; padding-bottom: 10px; color: var(--ob-muted); font-size: 13px; line-height: 20px; font-variant-numeric: tabular-nums; }
+.ob-store-listings :is(.ob-inventory-toolbar, .ob-bulk-bar) .ob-field select { width: 100%; padding-right: 32px; border: 1px solid var(--ob-line); background: var(--ob-surface) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' fill='none' stroke='%238b8b93' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m3 4.5 3 3 3-3'/%3E%3C/svg%3E") no-repeat right 12px center; color: var(--ob-ink); -webkit-appearance: none; appearance: none; }
+.ob-bulk-bar { display: flex; flex-wrap: wrap; align-items: end; gap: 12px 16px; margin-bottom: 16px; padding: 12px 16px; border: 1px solid var(--ob-line); border-radius: 12px; background: var(--ob-surface); }
+.ob-bulk-bar .ob-field { flex: 0 1 200px; min-width: 0; }
+.ob-bulk-bar .ob-field-hint { font-size: 12px; line-height: 16px; color: var(--ob-muted); }
+.ob-bulk-count { display: flex; align-items: center; gap: 12px; margin: 0 8px 0 0; min-height: 40px; color: var(--ob-ink); font-size: 14px; font-weight: 500; font-variant-numeric: tabular-nums; }
+.ob-bulk-count .ob-text-link { font-weight: 400; }
+.ob-bulk-bar:has(.ob-field-hint) > :is(.ob-bulk-count, .ob-secondary) { margin-bottom: 24px; }
 .ob-merchant-table { border-collapse: collapse; width: 100%; text-align: left; font-size: 14px; }
 .ob-merchant-table th { padding: 10px 14px; border-bottom: 1px solid var(--ob-line); color: var(--ob-secondary); font-size: 13px; font-weight: 600; }
 .ob-merchant-table td { padding: 14px; border-bottom: 1px solid var(--ob-line); line-height: 1.5; }
@@ -240,7 +245,7 @@
 .is-merchant .ob-empty { min-height: 160px; padding: 28px 20px; }
 .is-merchant .ob-empty h2 { font-size: 20px; }
 @media (min-width: 960px) {
-  .is-merchant :is(.ob-store-section, .ob-variant-editor, .ob-inventory-toolbar) .ob-field :is(input,select),
+  .is-merchant :is(.ob-store-section, .ob-variant-editor, .ob-inventory-toolbar, .ob-bulk-bar) .ob-field :is(input,select),
   .is-merchant .ob-variant-row :is(input:not([type="checkbox"]),select) { min-height: 38px; padding: 7px 10px; font-size: 14px; line-height: 1.5; }
   .is-merchant .ob-store-section .ob-field textarea { min-height: 100px; padding: 10px 12px; font-size: 14px; }
   .is-merchant :is(.ob-primary,.ob-secondary,.ob-danger) { min-height: 38px; padding: 8px 14px; font-size: 14px; gap: 8px; }
@@ -279,14 +284,13 @@
 @media (prefers-reduced-motion: reduce) {
   .ob-own-listing { transition: none; }
 }
-.is-merchant .ob-store-listings > .ob-inventory-toolbar .ob-field :is(input, select),
-.is-merchant .ob-store-listings > .ob-store-section .ob-field :is(input, select) {
+.is-merchant .ob-store-listings > :is(.ob-inventory-toolbar, .ob-bulk-bar) .ob-field :is(input, select) {
   min-height: 40px;
   padding: 8px 12px;
   border-radius: 8px;
 }
 .is-merchant .ob-store-listings > .ob-page-heading .ob-primary,
-.is-merchant .ob-store-listings > .ob-store-section > .ob-secondary {
+.is-merchant .ob-store-listings > .ob-bulk-bar > .ob-secondary {
   min-height: 40px;
   padding: 8px 16px;
   border-radius: 8px;
