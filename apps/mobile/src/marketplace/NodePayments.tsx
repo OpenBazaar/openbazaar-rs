@@ -297,6 +297,7 @@ export function WalletPanel({ currency, onOrders, embedded = false }: {
             <h2>{stale && current ? 'Last known spendable balance' : 'Spendable balance'}</h2>
             {current ? <WalletAmount sats={current.balance.spendableSats} currency={currency} testCoins={testCoins} />
               : <p className='ob-wallet-loading' role='status'>{wallet.loading ? 'Loading balance…' : 'Balance unavailable'}</p>}
+            {!!current?.balance.heldBackSats && <p>{current.balance.heldBackSats.toLocaleString('en-US')} sats of change from earlier payments is held back so those payments stay unlinked on chain. Paying the same recipient again can use it; a send can include it if you choose.</p>}
           </article>
           <article className='ob-wallet-pending'>
             <h2>Pending confirmation</h2>

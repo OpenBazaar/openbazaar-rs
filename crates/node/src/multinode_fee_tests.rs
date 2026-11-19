@@ -396,6 +396,42 @@ fn the_buyer_pays_the_fee_it_was_asked_for_once_and_keeps_the_receipt() {
     assert_eq!(order(&buyer, &id)["status"], SETTLED);
 }
 
+/// A buyer whose only coin funded the escrow pays the fee from that change:
+/// the moderator already holds a key to the escrow. The change of the fee
+/// stays held back from anyone else, and the balance says so.
+#[test]
+fn a_buyer_pays_the_fee_from_the_escrow_funding_change_and_nothing_else_may() {
+    let market = Market::new();
+    let (id, escrow) = funded_with(&market, FEE);
+    let (buyer, moderator) = (market.buyer.node.clone(), market.moderator.node.clone());
+    let base = format!("/orders/{id}");
+    filed(&market, &id);
+    moderator.moderator_fee_steps();
+    market.deliver();
+    let (_, wallet) = request(&buyer, "GET", "/wallet", "");
+    assert_eq!(wallet["balance"]["spendableSats"], 0, "{wallet}");
+    assert!(wallet["balance"]["heldBackSats"].as_u64().unwrap() > FEE, "{wallet}");
+
+    let (_, (status, paid)) = quote_and_pay(&buyer, &base);
+    assert!(status.contains("200"), "{status} {paid}");
+    let (funding, _) = funding_tx(&market, &escrow);
+    let tx = market.chain.broadcasts().last().unwrap().clone();
+    assert!(
+        tx.input.iter().all(|input| input.previous_output.txid == funding.compute_txid()),
+        "the fee spends the escrow funding change"
+    );
+
+    let (_, wallet) = request(&buyer, "GET", "/wallet", "");
+    assert_eq!(wallet["balance"]["spendableSats"], 0, "{wallet}");
+    let elsewhere = buyer.buyer_wallet().fresh_address().unwrap();
+    let body = json!({ "address": elsewhere.to_string(), "amountSats": 1_000 }).to_string();
+    let (status, refused) = request(&buyer, "POST", "/wallet/send/quote", &body);
+    assert!(
+        status.contains("400") && refused["error"].as_str().unwrap().contains("held back"),
+        "{status} {refused}"
+    );
+}
+
 #[test]
 fn a_locked_vendor_keeps_the_fee_request_and_pays_it_once_unlocked() {
     let mut market = Market::new();

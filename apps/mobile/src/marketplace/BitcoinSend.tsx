@@ -57,7 +57,7 @@ export function BitcoinSendButton() {
   const [open, setOpen] = useState(false)
   const current = wallet.data
   const mismatch = !!current && !!network.data && current.network !== network.data.network
-  const empty = !!current && current.balance.spendableSats === 0
+  const empty = !!current && current.balance.spendableSats + current.balance.heldBackSats === 0
   const blocked = !current || mismatch || empty || !!wallet.error || !!network.error
   return <>
     <button type='button' className='ob-secondary' disabled={blocked} title={empty ? 'Nothing to send yet.' : undefined} onClick={() => setOpen(true)}>Send</button>

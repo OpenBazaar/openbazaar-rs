@@ -61,6 +61,7 @@ export type NodeWallet = {
     confirmedSats: number
     pendingSats: number
     spendableSats: number
+    heldBackSats: number
   }
   receiveAddress: string
   lastSync: number | null
@@ -140,7 +141,8 @@ export async function fetchWallet(): Promise<NodeWallet> {
         totalSats: number(balance.totalSats),
         confirmedSats: number(balance.confirmedSats),
         pendingSats: number(balance.pendingSats),
-        spendableSats: number(balance.spendableSats)
+        spendableSats: number(balance.spendableSats),
+        heldBackSats: number(balance.heldBackSats ?? 0)
       },
       receiveAddress: r.receiveAddress,
       lastSync: r.lastSync == null ? null : number(r.lastSync),

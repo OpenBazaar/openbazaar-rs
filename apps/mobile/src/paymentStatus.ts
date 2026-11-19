@@ -18,7 +18,7 @@ export type PaymentStatusInput = {
   dueSats: number
   sending: boolean
   payTxid?: string | null
-  wallet?: { spendableSats: number; totalSats: number } | null
+  wallet?: { spendableSats: number; totalSats: number; heldBackSats?: number } | null
 }
 
 /** Why the node wallet cannot pay yet. `pending` clears once coins confirm. */
@@ -69,14 +69,17 @@ function balanceNote({ network, status, dueSats, wallet }: PaymentStatusInput): 
   const needed = dueSats + reserve
   if (wallet.spendableSats >= needed) return null
   // Coins from other wallets count only once they confirm; the wallet's own
-  // unconfirmed change is already part of the spendable balance.
-  const unconfirmed = Math.max(0, wallet.totalSats - wallet.spendableSats)
+  // unconfirmed change is already part of the spendable balance, and change
+  // held back for privacy will not confirm into it.
+  const heldBack = wallet.heldBackSats ?? 0
+  const unconfirmed = Math.max(0, wallet.totalSats - wallet.spendableSats - heldBack)
   if (wallet.spendableSats + unconfirmed >= needed)
     return {
       kind: 'pending',
       message: `${sats(unconfirmed)} sats are waiting for a confirmation. You can pay once they confirm.`
     }
-  const waiting = unconfirmed > 0 ? ` ${sats(unconfirmed)} more sats are waiting for a confirmation.` : ''
+  const waiting = (unconfirmed > 0 ? ` ${sats(unconfirmed)} more sats are waiting for a confirmation.` : '')
+    + (heldBack > 0 ? ` ${sats(heldBack)} sats of change from earlier payments is held back so those payments stay unlinked on chain.` : '')
   return {
     kind: 'short',
     message: `Your wallet has ${sats(wallet.spendableSats)} spendable sats. This payment needs about ${sats(needed)}, including up to ${sats(reserve)} sats kept for the network fee.${waiting}`
