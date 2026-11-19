@@ -24,7 +24,49 @@ const ZEC_INDEXER_FILE: &str = "zec-indexer";
 const DEFAULT_XMR_DAEMONS: &str = "default";
 const XMR_DAEMON_FILE: &str = "xmr-daemon";
 
-const READY_TIMEOUT: Duration = Duration::from_secs(20);
+/// How long the node may go without writing to its log, and without waiting
+/// on the OS keychain, before startup counts as stuck. Longer than Tor's own
+/// two-minute connect patience, so a slow Tor bootstrap is not cut short.
+const STALL_TIMEOUT: Duration = Duration::from_secs(180);
+
+/// Must match the node's lines around an OS keystore call (`vault_key.rs`).
+/// Between them the node is blocked on a Keychain prompt the user has not
+/// answered, which has no time limit.
+const KEYSTORE_WAIT_LINE: &str = "ob-node: waiting for the OS keychain";
+const KEYSTORE_DONE_LINE: &str = "ob-node: the OS keychain answered";
+
+pub const KEYCHAIN_WAIT_MESSAGE: &str =
+    "Waiting for macOS Keychain access. Click Always Allow in the system prompt.";
+
+/// What the shell should do on one look at a starting node.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Startup {
+    Ready,
+    Exited,
+    Stalled,
+    /// Blocked on an OS keychain prompt: wait without a limit.
+    Keychain,
+    Starting,
+}
+
+pub(crate) fn assess(exited: bool, listening: bool, log: &str, idle: Duration, stall: Duration) -> Startup {
+    if exited {
+        Startup::Exited
+    } else if listening {
+        Startup::Ready
+    } else if waiting_on_keychain(log) {
+        Startup::Keychain
+    } else if idle >= stall {
+        Startup::Stalled
+    } else {
+        Startup::Starting
+    }
+}
+
+fn waiting_on_keychain(log: &str) -> bool {
+    let wait = log.rfind(KEYSTORE_WAIT_LINE);
+    wait.is_some() && wait > log.rfind(KEYSTORE_DONE_LINE)
+}
 
 /// Present when the user chose "Run this computer as a home node".
 const HOME_MODE_FILE: &str = "home-node-mode";
@@ -77,11 +119,14 @@ impl Sidecar {
     /// also opens the LAN channel for paired devices. `file_vault` keeps the
     /// node's keys in a file in the data folder instead of the OS keychain
     /// (for a disposable profile).
+    /// `on_keychain` is called once each time the node starts waiting on a
+    /// Keychain prompt, so the user can be told what to click.
     pub fn start(
         app_data_dir: &Path,
         port: Option<u16>,
         file_vault: bool,
         shop: Option<&Path>,
+        on_keychain: &dyn Fn(),
     ) -> Result<Self, String> {
         create_private_dir(app_data_dir)
             .map_err(|err| format!("Could not create {}: {err}", app_data_dir.display()))?;
@@ -119,39 +164,20 @@ impl Sidecar {
             origin: format!("http://127.0.0.1:{port}"),
             token: String::new(),
         };
-        sidecar.wait_until_listening(port, &log_path, log_from)?;
+        let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
+        wait_for_node(
+            &mut sidecar.child,
+            &log_path,
+            log_from,
+            STALL_TIMEOUT,
+            || TcpStream::connect_timeout(&addr, Duration::from_millis(200)).is_ok(),
+            on_keychain,
+        )?;
         sidecar.token = read_token(&data_dir.join("pairing.token")).map_err(|err| {
             sidecar.stop();
             format!("Could not read the node's pairing token: {err}")
         })?;
         Ok(sidecar)
-    }
-
-    fn wait_until_listening(&mut self, port: u16, log_path: &Path, log_from: u64) -> Result<(), String> {
-        let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
-        let deadline = Instant::now() + READY_TIMEOUT;
-        loop {
-            if let Ok(Some(status)) = self.child.try_wait() {
-                return Err(match launch_error(log_path, log_from) {
-                    Some(error) => format!("The OpenBazaar node stopped during startup ({status}): {error}"),
-                    None => format!(
-                        "The OpenBazaar node stopped during startup ({status}). Details are in {}.",
-                        log_path.display()
-                    ),
-                });
-            }
-            if TcpStream::connect_timeout(&addr, Duration::from_millis(200)).is_ok() {
-                return Ok(());
-            }
-            if Instant::now() >= deadline {
-                self.stop();
-                return Err(format!(
-                    "The OpenBazaar node did not start in time. Details are in {}.",
-                    log_path.display()
-                ));
-            }
-            thread::sleep(Duration::from_millis(100));
-        }
     }
 
     pub fn stop(&mut self) {
@@ -164,6 +190,72 @@ impl Drop for Sidecar {
     fn drop(&mut self) {
         self.stop();
     }
+}
+
+/// Wait until `listening` says the node is up. The node is killed only when it
+/// made no progress (log growth) for `stall` while not on a Keychain prompt.
+fn wait_for_node(
+    child: &mut Child,
+    log_path: &Path,
+    log_from: u64,
+    stall: Duration,
+    mut listening: impl FnMut() -> bool,
+    on_keychain: &dyn Fn(),
+) -> Result<(), String> {
+    let mut log_len = log_from;
+    let mut last_progress = Instant::now();
+    let mut was_on_keychain = false;
+    loop {
+        let status = child.try_wait().ok().flatten();
+        let len = fs::metadata(log_path).map(|meta| meta.len()).unwrap_or(log_len);
+        if len != log_len {
+            log_len = len;
+            last_progress = Instant::now();
+        }
+        let log = launch_log(log_path, log_from).unwrap_or_default();
+        let ready = status.is_none() && listening();
+        match assess(status.is_some(), ready, &log, last_progress.elapsed(), stall) {
+            Startup::Ready => return Ok(()),
+            Startup::Exited => {
+                let status = status.expect("exited");
+                return Err(match launch_error(log_path, log_from) {
+                    Some(error) => format!("The OpenBazaar node stopped during startup ({status}): {error}"),
+                    None => format!(
+                        "The OpenBazaar node stopped during startup ({status}). Details are in {}.",
+                        log_path.display()
+                    ),
+                });
+            }
+            Startup::Stalled => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!(
+                    "The OpenBazaar node stopped making progress during startup. Details are in {}.",
+                    log_path.display()
+                ));
+            }
+            Startup::Keychain => {
+                if !was_on_keychain {
+                    on_keychain();
+                }
+                was_on_keychain = true;
+                last_progress = Instant::now();
+            }
+            Startup::Starting => was_on_keychain = false,
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// The last 64 KiB this launch wrote to the log.
+fn launch_log(log_path: &Path, from: u64) -> Option<String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut file = File::open(log_path).ok()?;
+    let len = file.metadata().ok()?.len();
+    file.seek(SeekFrom::Start(from.max(len.saturating_sub(64 * 1024)))).ok()?;
+    let mut raw = Vec::new();
+    file.read_to_end(&mut raw).ok()?;
+    Some(String::from_utf8_lossy(&raw).into_owned())
 }
 
 /// Arguments after the binary: `serve`, the loopback port, and the flags this
@@ -552,6 +644,77 @@ mod tests {
         assert!(file_vault_chosen(&dir));
         let args = sidecar_args(18787, &dir, false, None);
         assert!(has_flag(&args, "--vault", "file"), "{args:?}");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn startup_waits_on_the_keychain_and_fails_only_on_exit_or_stall() {
+        let stall = Duration::from_secs(180);
+        let quiet = Duration::from_secs(600);
+        let on_prompt = format!("ob-node: built-in Tor connected\n{KEYSTORE_WAIT_LINE}\n");
+        let answered = format!("{on_prompt}{KEYSTORE_DONE_LINE}\n");
+        assert_eq!(assess(false, false, "", Duration::ZERO, stall), Startup::Starting);
+        assert_eq!(assess(false, false, &on_prompt, quiet, stall), Startup::Keychain, "an unanswered prompt never times out");
+        assert_eq!(assess(false, false, &answered, quiet, stall), Startup::Stalled);
+        assert_eq!(assess(false, false, &answered, Duration::from_secs(5), stall), Startup::Starting);
+        let asked_again = format!("{answered}{KEYSTORE_WAIT_LINE}\n");
+        assert_eq!(assess(false, false, &asked_again, quiet, stall), Startup::Keychain);
+        assert_eq!(assess(true, false, &on_prompt, Duration::ZERO, stall), Startup::Exited);
+        assert_eq!(assess(false, true, &on_prompt, quiet, stall), Startup::Ready);
+    }
+
+    #[cfg(unix)]
+    fn fake_node(dir: &Path, script: &str) -> (Child, PathBuf) {
+        let log_path = dir.join("node.log");
+        let log = open_private_log(&log_path).unwrap();
+        let child = Command::new("sh")
+            .arg("-c")
+            .arg(script)
+            .stdout(log.try_clone().unwrap())
+            .stderr(log)
+            .spawn()
+            .unwrap();
+        (child, log_path)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_slow_keychain_prompt_outlasts_the_stall_limit() {
+        use std::cell::Cell;
+        let dir = temp_dir("slow-vault");
+        let script = format!(
+            "echo '{KEYSTORE_WAIT_LINE}' >&2; sleep 3; echo '{KEYSTORE_DONE_LINE}' >&2; echo listening; sleep 30"
+        );
+        let (mut child, log_path) = fake_node(&dir, &script);
+        let prompts = Cell::new(0);
+        let started = Instant::now();
+        let result = wait_for_node(
+            &mut child,
+            &log_path,
+            0,
+            Duration::from_secs(1),
+            || fs::read_to_string(&log_path).unwrap_or_default().contains("listening"),
+            &|| prompts.set(prompts.get() + 1),
+        );
+        assert_eq!(result, Ok(()));
+        assert!(started.elapsed() >= Duration::from_secs(3));
+        assert_eq!(prompts.get(), 1, "the user is told once per prompt");
+        let _ = child.kill();
+        let _ = child.wait();
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_silent_node_is_stopped_and_an_exited_one_reported() {
+        let dir = temp_dir("stalled-node");
+        let (mut child, log_path) = fake_node(&dir, "echo starting; sleep 30");
+        let error = wait_for_node(&mut child, &log_path, 0, Duration::from_secs(1), || false, &|| {}).unwrap_err();
+        assert!(error.contains("stopped making progress"), "{error}");
+        assert!(child.try_wait().unwrap().is_some(), "a stuck node is killed");
+        let (mut child, log_path) = fake_node(&dir, "echo 'ob-node: bad flag' >&2; exit 2");
+        let error = wait_for_node(&mut child, &log_path, 0, Duration::from_secs(60), || false, &|| {}).unwrap_err();
+        assert!(error.contains("stopped during startup") && error.ends_with("bad flag"), "{error}");
         fs::remove_dir_all(dir).unwrap();
     }
 

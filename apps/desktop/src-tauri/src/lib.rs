@@ -80,7 +80,8 @@ fn start(app: AppHandle) {
         Ok(dir) => dir,
         Err(message) => return fail(&app, message),
     };
-    let mut started = node::Sidecar::start(&dir, None, profile.is_some(), Some(&shop));
+    let on_keychain = || tell_keychain_wait(&app);
+    let mut started = node::Sidecar::start(&dir, None, profile.is_some(), Some(&shop), &on_keychain);
     // No Secret Service (plain Qubes templates, minimal Linux): offer to keep
     // the vault key in a file in the data folder, remember the choice, and
     // start again. Only for this error; a missing keystore entry, for one,
@@ -93,12 +94,17 @@ fn start(app: AppHandle) {
             if let Err(err) = node::choose_file_vault(&dir) {
                 return fail(&app, format!("Could not save the vault choice: {err}"));
             }
-            started = node::Sidecar::start(&dir, None, profile.is_some(), Some(&shop));
+            started = node::Sidecar::start(&dir, None, profile.is_some(), Some(&shop), &on_keychain);
         }
     }
     let sidecar = match started {
         Ok(sidecar) => sidecar,
-        Err(message) => return fail(&app, message),
+        Err(message) => {
+            if try_again(&app, message) {
+                return start(app);
+            }
+            return app.exit(1);
+        }
     };
     let origin = sidecar.origin.clone();
     *app.state::<NodeState>().0.lock().unwrap() = Some(sidecar);
@@ -153,7 +159,8 @@ fn set_home_node_mode(app: AppHandle, on: bool) -> Result<bool, String> {
         old.stop();
     }
     let shop = shop_dir(&app).ok_or_else(|| "The shop files are missing from this app.".to_string())?;
-    let started = node::Sidecar::start(&dir, port, separate_profile().is_some(), Some(&shop))?;
+    let on_keychain = || tell_keychain_wait(&app);
+    let started = node::Sidecar::start(&dir, port, separate_profile().is_some(), Some(&shop), &on_keychain)?;
     let origin = started.origin.clone();
     *slot = Some(started);
     tray::set_running(&app, true, Some(&origin));
@@ -243,6 +250,29 @@ fn agree_to_file_vault(app: &AppHandle, message: &str) -> bool {
             "Keep the key in a file".into(),
             "Quit".into(),
         ))
+        .blocking_show()
+}
+
+/// The node is blocked on a Keychain prompt. Say so in the menu bar and in a
+/// notice that does not hold up startup; the node is not stopped meanwhile.
+fn tell_keychain_wait(app: &AppHandle) {
+    tray::set_status(app, node::KEYCHAIN_WAIT_MESSAGE);
+    app.dialog()
+        .message(node::KEYCHAIN_WAIT_MESSAGE)
+        .title("OpenBazaar is starting")
+        .kind(MessageDialogKind::Info)
+        .show(|_| {});
+}
+
+/// The node could not start. Show why and offer to start it again.
+fn try_again(app: &AppHandle, message: String) -> bool {
+    stop_node(app);
+    tray::set_running(app, false, None);
+    app.dialog()
+        .message(message)
+        .title("OpenBazaar could not start")
+        .kind(MessageDialogKind::Error)
+        .buttons(MessageDialogButtons::OkCancelCustom("Try again".into(), "Quit".into()))
         .blocking_show()
 }
 
