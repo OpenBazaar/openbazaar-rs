@@ -83,11 +83,27 @@ pub(crate) trait KeyStore {
 
 pub(crate) struct OsKeyStore;
 
+/// Logged around every OS keystore call, which can block for as long as an
+/// unanswered macOS Keychain prompt is up. The desktop shell matches these
+/// exact lines to keep waiting instead of treating the node as stuck.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+const KEYSTORE_WAIT_LINE: &str = "ob-node: waiting for the OS keychain";
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+const KEYSTORE_DONE_LINE: &str = "ob-node: the OS keychain answered";
+
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+fn asking_keystore<T>(call: impl FnOnce() -> T) -> T {
+    eprintln!("{KEYSTORE_WAIT_LINE}");
+    let result = call();
+    eprintln!("{KEYSTORE_DONE_LINE}");
+    result
+}
+
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 impl KeyStore for OsKeyStore {
     fn get(&self, account: &str) -> Result<Option<[u8; 32]>, String> {
         let entry = keyring::Entry::new(KEYRING_SERVICE, account).map_err(|err| err.to_string())?;
-        match entry.get_password() {
+        match asking_keystore(|| entry.get_password()) {
             Ok(hex) => decode_hex_key(&hex).map(Some),
             Err(keyring::Error::NoEntry) => Ok(None),
             Err(err) => Err(err.to_string()),
@@ -96,12 +112,12 @@ impl KeyStore for OsKeyStore {
 
     fn set(&self, account: &str, key: &[u8; 32]) -> Result<(), String> {
         let entry = keyring::Entry::new(KEYRING_SERVICE, account).map_err(|err| err.to_string())?;
-        entry.set_password(&encode_hex(key)).map_err(|err| err.to_string())
+        asking_keystore(|| entry.set_password(&encode_hex(key))).map_err(|err| err.to_string())
     }
 
     fn delete(&self, account: &str) -> Result<(), String> {
         let entry = keyring::Entry::new(KEYRING_SERVICE, account).map_err(|err| err.to_string())?;
-        match entry.delete_credential() {
+        match asking_keystore(|| entry.delete_credential()) {
             Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
             Err(err) => Err(err.to_string()),
         }

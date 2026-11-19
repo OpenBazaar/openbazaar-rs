@@ -94,6 +94,18 @@ pub fn set_running(app: &AppHandle, running: bool, origin: Option<&str>) {
     });
 }
 
+pub fn set_status(app: &AppHandle, text: &str) {
+    let Some(tray) = app.try_state::<TrayState>() else {
+        return;
+    };
+    let status = tray.status.clone();
+    let text = text.to_string();
+    drop(tray);
+    std::thread::spawn(move || {
+        let _ = status.set_text(text);
+    });
+}
+
 pub(crate) fn status_label(running: bool, origin: Option<&str>) -> String {
     match (
         running,

@@ -102,6 +102,11 @@ fn serve(args: &[String]) -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    // Before anything that can block (Tor, a Keychain prompt), so a node whose
+    // app quit mid-startup does not linger.
+    if env::var_os("OB_EXIT_ON_STDIN_EOF").is_some() {
+        ob_node::exit_when_stdin_closes();
+    }
     // Lives until serve returns; every client below reads `options.proxy`.
     let _tor = if options.tor {
         match ob_node::TorSocks::start(&options.data_dir().join("tor-socks")) {
@@ -310,9 +315,6 @@ fn serve(args: &[String]) -> ExitCode {
     }
     if options.onion {
         node.listen_onion(options.data_dir().join("tor"));
-    }
-    if env::var_os("OB_EXIT_ON_STDIN_EOF").is_some() {
-        ob_node::exit_when_stdin_closes();
     }
     if let Err(err) = node.serve(options.port, Duration::from_secs(options.poll_secs)) {
         eprintln!("ob-node: {err}");
