@@ -3814,14 +3814,14 @@ button.ob-detail-seller:hover strong { color: var(--ob-link); }
   border: 1px solid color-mix(in srgb, var(--ob-ink) 8%, transparent);
   background: var(--ob-surface);
 }
-.ob-wallet-page .ob-wallet-lock h2 {
+:is(.ob-wallet-page, dialog.ob-wallet-dialog) .ob-wallet-lock h2 {
   font-family: "Instrument Sans", Arial, sans-serif;
   font-size: 18px;
   font-weight: 500;
   line-height: 24px;
   letter-spacing: 0;
 }
-.ob-wallet-page .ob-wallet-lock > p {
+:is(.ob-wallet-page, dialog.ob-wallet-dialog) .ob-wallet-lock > p {
   max-width: 40rem;
   font-size: 14px;
   line-height: 22px;
@@ -3835,13 +3835,13 @@ button.ob-detail-seller:hover strong { color: var(--ob-link); }
   color: var(--ob-secondary);
 }
 .ob-wallet-page .ob-field input,
-.ob-wallet-page .ob-wallet-lock .ob-field select {
+:is(.ob-wallet-page, dialog.ob-wallet-dialog) .ob-wallet-lock .ob-field select {
   min-height: 44px;
   padding: 12px;
   border-radius: 8px;
   font-size: 16px;
 }
-.ob-wallet-page .ob-wallet-lock .ob-form-actions {
+:is(.ob-wallet-page, dialog.ob-wallet-dialog) .ob-wallet-lock .ob-form-actions {
   margin-top: 8px;
   gap: 12px;
 }
@@ -4009,7 +4009,7 @@ button.ob-detail-seller:hover strong { color: var(--ob-link); }
   margin-top: 20px;
   min-width: 0;
 }
-.ob-wallet-page .ob-payment-qr {
+:is(.ob-wallet-page, dialog.ob-wallet-dialog) .ob-payment-qr {
   flex: 0 0 auto;
   width: 224px;
   max-width: 100%;
@@ -4170,8 +4170,8 @@ button.ob-detail-seller:hover strong { color: var(--ob-link); }
 .ob-privacy-rows div { display: grid; gap: 2px; }
 .ob-privacy-rows dt { font-size: 13px; line-height: 18px; color: var(--ob-secondary); }
 .ob-privacy-rows dd { margin: 0; max-width: 40rem; font-size: 15px; line-height: 22px; }
-.ob-wallet-page .ob-lock-line { align-items: center; flex-wrap: wrap; }
-.ob-wallet-page .ob-lock-line h2 { flex: 1 1 16rem; font-size: 16px; line-height: 22px; }
+:is(.ob-wallet-page, dialog.ob-wallet-dialog) .ob-lock-line { align-items: center; flex-wrap: wrap; }
+:is(.ob-wallet-page, dialog.ob-wallet-dialog) .ob-lock-line h2 { flex: 1 1 16rem; font-size: 16px; line-height: 22px; }
 .ob-lock-details {
   margin-top: 8px;
   border-top: 1px solid color-mix(in srgb, var(--ob-ink) 8%, transparent);
@@ -4191,7 +4191,7 @@ button.ob-detail-seller:hover strong { color: var(--ob-link); }
   font-size: 14px;
   line-height: 20px;
 }
-.ob-wallet-page .ob-lock-details .ob-wallet-lock {
+:is(.ob-wallet-page, dialog.ob-wallet-dialog) .ob-lock-details .ob-wallet-lock {
   margin: 12px 0 0;
   padding: 0;
   border: 0;
@@ -4291,13 +4291,14 @@ button.ob-detail-seller:hover strong { color: var(--ob-link); }
 .ob-wallet-connection>summary span { flex:1; text-align:right; font-size:13px; }
 .ob-wallet-connection .ob-privacy-rows { margin:0; padding:4px 0 20px; grid-template-columns:repeat(3,minmax(0,1fr)); gap:24px; }
 .ob-wallet-connection .ob-privacy-rows dd { font-size:14px; line-height:1.6; overflow-wrap:anywhere; }
-.ob-wallet-overview dialog>h2 { margin:0 0 20px; }
-.ob-wallet-overview dialog .ob-wallet-fund { padding:0; border:0; background:none; }
-.ob-wallet-overview dialog .ob-lock-line { gap:12px; }
+dialog.ob-wallet-dialog>h2 { margin:0 0 20px; }
+dialog.ob-wallet-dialog .ob-wallet-fund { padding:0; border:0; background:none; }
+dialog.ob-wallet-dialog .ob-lock-line { gap:12px; }
+.ob-lock-line>button { white-space:nowrap; }
 .ob-wallet-receive-dialog { display:grid; justify-items:center; gap:14px; text-align:center; }
 .ob-wallet-receive-dialog p { font-size:14px; color:var(--ob-secondary); line-height:1.6; margin:0; }
 .ob-wallet-receive-dialog .ob-wallet-dialog-address { font-family:ui-monospace,Menlo,monospace; font-size:14px; word-break:break-all; color:var(--ob-ink); }
-.ob-wallet-overview .ob-wallet-receive-dialog .ob-payment-qr { width:224px; margin:0; }
+dialog.ob-wallet-dialog .ob-wallet-receive-dialog .ob-payment-qr { width:224px; margin:0; }
 .ob-wallet-overview :is(button,summary,select):focus-visible { outline:2px solid var(--ob-link); outline-offset:4px; }
 @container workspace (max-width:820px) {
   .ob-wallet-workspace { grid-template-columns:minmax(0,1fr); }
@@ -4323,7 +4324,7 @@ button.ob-detail-seller:hover strong { color: var(--ob-link); }
   .ob-wallet-overview .ob-activity-amount { flex:1; text-align:left; margin-left:40px; }
   .ob-wallet-transaction-details { padding-left:0; }
   .ob-wallet-connection>summary span { flex-basis:100%; text-align:left; order:2; }
-  .ob-wallet-overview dialog .ob-wallet-lock .ob-field { max-width:100%; }
+  dialog.ob-wallet-dialog .ob-wallet-lock .ob-field { max-width:100%; }
 }
 @media (max-width:640px) {
   .ob-wallet-overview .ob-page-heading { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:8px 12px; align-items:center; }
@@ -4418,13 +4419,13 @@ button.ob-detail-seller:hover strong { color: var(--ob-link); }
 .ob-moderator-devices .ob-device-list li { padding:18px 0; gap:20px; }
 .ob-moderator-devices .ob-device-list code { font-size:13px; }
 .ob-moderator-devices>.ob-copy-value { max-width:720px; margin-block:20px; }
-.ob-moderator-workspace dialog .ob-wallet-fund { margin:0; border:0; background:none; padding:0; }
-.ob-moderator-workspace dialog .ob-wallet-lock { padding:18px 0; margin:0; background:none; border:0; border-top:1px solid var(--ob-line); }
-.ob-moderator-workspace dialog .ob-lock-line { display:flex; align-items:center; flex-wrap:wrap; gap:12px; }
-.ob-moderator-workspace dialog .ob-lock-line h2 { flex:1 1 200px; font-size:16px; line-height:1.5; }
-.ob-moderator-workspace dialog .ob-field { max-width:100%; }
-.ob-moderator-workspace dialog .ob-pairing-offer { margin:0; padding:0; border:0; background:none; }
-.ob-moderator-workspace dialog .ob-pairing-offer .ob-copy-value { padding:12px; }
+dialog.ob-moderator-dialog .ob-wallet-fund { margin:0; border:0; background:none; padding:0; }
+dialog.ob-moderator-dialog .ob-wallet-lock { padding:18px 0; margin:0; background:none; border:0; border-top:1px solid var(--ob-line); }
+dialog.ob-moderator-dialog .ob-lock-line { display:flex; align-items:center; flex-wrap:wrap; gap:12px; }
+dialog.ob-moderator-dialog .ob-lock-line h2 { flex:1 1 200px; font-size:16px; line-height:1.5; }
+dialog.ob-moderator-dialog .ob-field { max-width:100%; }
+dialog.ob-moderator-dialog .ob-pairing-offer { margin:0; padding:0; border:0; background:none; }
+dialog.ob-moderator-dialog .ob-pairing-offer .ob-copy-value { padding:12px; }
 .ob-moderator-workspace :is(button,summary,select):focus-visible { outline:2px solid var(--ob-link); outline-offset:4px; }
 @media (max-width:900px) {
   .ob-case-workspace { grid-template-columns:220px minmax(0,1fr); }
@@ -4452,7 +4453,7 @@ button.ob-detail-seller:hover strong { color: var(--ob-link); }
   .ob-moderator-devices { padding:18px; }
   .ob-moderator-devices .ob-device-list li { flex-wrap:wrap; align-items:flex-start; }
   .ob-moderator-devices .ob-form-actions { justify-content:flex-start; gap:10px; }
-  .ob-moderator-workspace dialog input:not([type="checkbox"]),.ob-moderator-workspace dialog select { font-size:16px; }
+  dialog.ob-moderator-dialog input:not([type="checkbox"]),dialog.ob-moderator-dialog select { font-size:16px; }
 }
 .ob-moderator-mobile-menu { display:none; }
 @media (max-width:640px) {

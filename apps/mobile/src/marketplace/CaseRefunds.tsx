@@ -42,7 +42,7 @@ function RefundDialog({ pending, onCancel, onDone }: { pending: Pending; onCance
   const [passphrase, setPassphrase] = useState("");
   const { busy, error, run } = useSubmit();
   const { quote } = pending;
-  return <Dialog label={pending.title} onCancel={onCancel}>
+  return <Dialog label={pending.title} className="ob-moderator-dialog" onCancel={onCancel}>
     <form className="ob-spend-confirm" onSubmit={(e: FormEvent) => { e.preventDefault(); void run(async () => { await pending.confirm(quote.quote, passphrase); onDone(); }, "Nothing was paid back."); }}>
       <h2>{pending.title}</h2>
       <dl className="ob-spend-terms">
