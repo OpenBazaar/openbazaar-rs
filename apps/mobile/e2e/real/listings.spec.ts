@@ -53,6 +53,30 @@ test('photos are added to and removed from an existing listing', async ({ page, 
   expect(towel.images).not.toContain(first)
 })
 
+test('the list counts drafts, shows bulk changes only for a selection, and removes a draft', async ({ page, seller }) => {
+  const photo = await seller.uploadImage()
+  await seller.addListing({ title: 'Linen tea towel', images: [photo] })
+  await seller.api('POST', '/store/drafts', { title: 'Oak trivet', description: 'Oiled oak.', category: 'Home', kind: 'physical', shipFrom: 'US', stock: 2, images: [photo], currency: 'SAT', price: 9000, shipping: 0, contentRating: 'general', contentTags: [] })
+  await page.goto(seller.ui)
+  await openListings(page)
+  await expect(page.getByRole('status').filter({ hasText: 'published' })).toHaveText('1 published · 1 draft')
+  const draft = page.locator('.ob-own-listing.is-draft', { hasText: 'Oak trivet' })
+  await expect(draft.getByRole('img', { name: 'Oak trivet' })).toBeVisible()
+
+  const bulk = page.getByRole('group', { name: 'Change selected listings' })
+  await expect(bulk).toHaveCount(0)
+  await page.getByRole('checkbox', { name: 'Select Linen tea towel' }).check()
+  await expect(bulk).toContainText('1 selected')
+  await bulk.getByRole('button', { name: 'Clear', exact: true }).click()
+  await expect(bulk).toHaveCount(0)
+
+  await page.getByRole('button', { name: 'Remove draft Oak trivet' }).click()
+  await page.getByRole('button', { name: 'Remove draft', exact: true }).click()
+  await expect(draft).toHaveCount(0)
+  await expect(page.getByRole('status').filter({ hasText: 'published' })).toHaveText('1 published')
+  expect((await seller.api('GET', '/store/drafts')).drafts).toEqual([])
+})
+
 test('publishing a saved draft leaves one listing and no draft', async ({ page, seller }) => {
   await page.goto(seller.ui)
   await openListings(page)
