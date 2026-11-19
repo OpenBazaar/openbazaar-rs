@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
+import { portalHost } from './portalHost'
 import { shopPairingMessage } from '../catalog'
 import { nodeTarget, servedByHomeNode } from '../homeNode/transport'
 import { bitcoinAmount } from '../nodeWallet'
@@ -444,7 +445,11 @@ export function WalletLockPanel({
 
 export function Dialog({ label, onCancel, children, className = '' }: { label: string; onCancel: () => void; children: ReactNode; className?: string }) {
   const dialog = useRef<HTMLDialogElement>(null)
+  const anchor = useRef<HTMLSpanElement>(null)
+  const [host, setHost] = useState<Element | null>(null)
+  useLayoutEffect(() => setHost(anchor.current?.closest('.ob-app') ?? portalHost(null)), [])
   useEffect(() => {
+    if (!host) return
     const previous = document.activeElement as HTMLElement | null
     const current = dialog.current
     current?.showModal()
@@ -453,7 +458,8 @@ export function Dialog({ label, onCancel, children, className = '' }: { label: s
       current?.close()
       previous?.focus()
     }
-  }, [])
+  }, [host])
+  if (!host) return <span ref={anchor} hidden />
   // Callers render dialogs inside their own forms; the portal keeps the dialog's
   // form out of theirs, and React still bubbles submit along the component tree.
   return createPortal(
@@ -469,7 +475,7 @@ export function Dialog({ label, onCancel, children, className = '' }: { label: s
     >
       {children}
     </dialog>,
-    document.body
+    host
   )
 }
 
