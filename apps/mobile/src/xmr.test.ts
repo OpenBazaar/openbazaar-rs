@@ -75,6 +75,10 @@ test("terms, wallet, backend and rate keep the node's values", () => {
     syncError: null,
   });
   assert.equal(wallet.balance!.unlocked, 5n * 1_000_000_000_000n);
+  assert.equal(wallet.unconfirmed, 0n, "an older node sends no mempool figure");
+  const incoming = parseXmrWallet({ ...wallet, balance: { unlockedPiconero: "0", pendingPiconero: "0" }, unconfirmed: { incomingPiconero: "500000000000", entries: [] } });
+  assert.equal(incoming.unconfirmed, 500_000_000_000n);
+  assert.deepEqual(incoming.balance, { unlocked: 0n, pending: 0n }, "the mempool stays out of the balance");
 
   const off = parseXmrBackend({ backend: "none", network: "stagenet", privacy: "none", reveals: "Monero is off.", nodes: [], proxied: false, tip: null, error: null });
   assert.equal(off.backend, "none");

@@ -27,6 +27,7 @@ pub mod keys;
 #[cfg(feature = "mock")]
 pub mod mock;
 mod network;
+mod pool;
 mod send;
 pub mod transport;
 mod uri;
@@ -37,6 +38,7 @@ pub use chain::XmrChain;
 pub use daemon::DaemonChain;
 pub use keys::{SpendKey, ViewKeys};
 pub use network::XmrNetwork;
+pub use pool::{Incoming, PoolWatch};
 pub use send::{quote_payment, sign_payment, PaymentQuote, SendError, SignedPayment, RING_LEN};
 pub use uri::monero_uri;
 pub use wallet::{Balance, Received, SyncStep, XmrWallet, CONFIRMATIONS};

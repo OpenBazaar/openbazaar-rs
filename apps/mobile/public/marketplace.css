@@ -4770,6 +4770,7 @@ body:has(.ob-sales-detail-dialog[open]) .ob-content { overflow:hidden; }
 .ob-wallet-state .ob-status-dot { flex:none; margin:0; }
 .ob-wallet-state.needs-attention .ob-status-dot { background:#b18a46; }
 .ob-wallet-metrics { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); }
+.ob-wallet-metrics.has-incoming { grid-template-columns:repeat(3,minmax(0,1fr)); }
 .ob-wallet-metric { min-width:0; padding:24px 22px; }
 .ob-wallet-metric+article { border-left:1px solid var(--ob-line); }
 .ob-wallet-metric h3 { display:flex; align-items:center; gap:6px; min-height:32px; margin:0 0 12px; font-size:14px; line-height:1.5; font-weight:500; color:var(--ob-secondary); }
@@ -4826,7 +4827,7 @@ body:has(.ob-sales-detail-dialog[open]) .ob-content { overflow:hidden; }
   .ob-wallet-choice-name>svg { width:16px; height:16px; }
   .ob-wallet-choice-check { display:none; }
   .ob-wallet-heading-actions { gap:4px 12px; }
-  .ob-wallet-metrics { grid-template-columns:minmax(0,1fr); }
+  .ob-wallet-metrics,.ob-wallet-metrics.has-incoming { grid-template-columns:minmax(0,1fr); }
   .ob-wallet-metric { padding:18px; }
   .ob-wallet-metric+article { padding-top:0; border-left:0; }
   .ob-wallet-detail-heading,.ob-wallet-asset-footer,.ob-wallet-support-row { padding:16px 18px; }

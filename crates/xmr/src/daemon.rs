@@ -14,9 +14,9 @@ use std::time::{Duration, Instant};
 use monero_daemon_rpc::MoneroDaemon;
 use monero_wallet::interface::{
     FeePriority, FeeRate, ProvidesBlockchain, ProvidesBlockchainMeta, ProvidesFeeRates, ProvidesScannableBlocks,
-    PublishTransaction, PublishTransactionError, ScannableBlock,
+    ProvidesTransactions, PublishTransaction, PublishTransactionError, ScannableBlock, TransactionsError,
 };
-use monero_wallet::transaction::Transaction;
+use monero_wallet::transaction::{Pruned, Transaction};
 use monero_wallet::{OutputWithDecoys, WalletOutput};
 use rand_core::OsRng;
 
@@ -210,6 +210,40 @@ impl DaemonChain {
         status.failing_since.get_or_insert_with(Instant::now);
         Err(summary)
     }
+
+    /// Run `call` against the current node only, and leave no trace if it
+    /// fails: no backend error, no node rested. The pool is a nicety; its
+    /// failure must not hold up the next block scan.
+    fn quietly<R, F, Fut>(&self, call: F) -> Result<R, String>
+    where
+        F: FnOnce(Daemon) -> Fut,
+        Fut: Future<Output = Result<R, String>>,
+    {
+        let index = self.current.load(Ordering::Relaxed) % self.slots.len();
+        if !self.ready(index) {
+            return Err(format!("{} failed recently", self.slots[index].url));
+        }
+        let daemon = self.connect(&self.slots[index])?;
+        self.drive(call(daemon))?
+    }
+}
+
+/// `get_transaction_pool_hashes` lists hashes only, about 70 bytes each.
+const POOL_HASHES_LIMIT: usize = 2 * 1024 * 1024;
+
+fn pool_hashes_from(text: &str) -> Result<Vec<[u8; 32]>, String> {
+    let value: serde_json::Value = serde_json::from_str(text).map_err(|_| "monerod sent an unreadable pool".to_string())?;
+    // An empty pool has no `tx_hashes` at all.
+    let Some(list) = value.get("tx_hashes") else { return Ok(Vec::new()) };
+    list.as_array()
+        .ok_or("monerod sent an unreadable pool")?
+        .iter()
+        .map(|hash| {
+            let mut out = [0u8; 32];
+            hex::decode_to_slice(hash.as_str().unwrap_or_default(), &mut out).map_err(|_| "monerod sent a bad pool hash".to_string())?;
+            Ok(out)
+        })
+        .collect()
 }
 
 /// Indexes to dial, starting at `start`, leaving out nodes `ready` rejects.
@@ -310,6 +344,35 @@ impl XmrChain for DaemonChain {
             }
         })
     }
+
+    fn pool_hashes(&self) -> Result<Vec<[u8; 32]>, String> {
+        let text = self.quietly(|daemon| async move {
+            daemon.rpc_call("get_transaction_pool_hashes", None, POOL_HASHES_LIMIT).await.map_err(|err| err.to_string())
+        })?;
+        pool_hashes_from(&text)
+    }
+
+    fn pool_transactions(&self, hashes: &[[u8; 32]]) -> Result<Vec<([u8; 32], Transaction<Pruned>)>, String> {
+        let hashes = hashes.to_vec();
+        self.quietly(|daemon| async move {
+            match ProvidesTransactions::pruned_transactions(&daemon, &hashes).await {
+                Ok(txs) => Ok(hashes.into_iter().zip(txs).collect()),
+                // One left the pool between the two requests: ask one at a time and skip it.
+                Err(TransactionsError::TransactionNotFound) => {
+                    let mut out = Vec::new();
+                    for hash in hashes {
+                        match ProvidesTransactions::pruned_transaction(&daemon, hash).await {
+                            Ok(tx) => out.push((hash, tx)),
+                            Err(TransactionsError::TransactionNotFound) => {}
+                            Err(err) => return Err(err.to_string()),
+                        }
+                    }
+                    Ok(out)
+                }
+                Err(err) => Err(err.to_string()),
+            }
+        })
+    }
 }
 
 #[cfg(test)]
@@ -343,6 +406,23 @@ mod tests {
         assert_eq!(chunks(10, 20, u64::MAX).collect::<Vec<_>>(), [(10, 20)]);
         assert_eq!(chunks(u64::MAX - 1, u64::MAX, 4).collect::<Vec<_>>(), [(u64::MAX - 1, u64::MAX)]);
         assert_eq!(chunks(11, 10, 4).count(), 0);
+    }
+
+    #[test]
+    fn pool_hashes_are_read_and_an_empty_pool_has_none() {
+        let hash = "ab".repeat(32);
+        assert_eq!(pool_hashes_from(&format!(r#"{{"status":"OK","tx_hashes":["{hash}"]}}"#)).unwrap(), vec![[0xab; 32]]);
+        assert!(pool_hashes_from(r#"{"status":"OK"}"#).unwrap().is_empty());
+        assert!(pool_hashes_from(r#"{"tx_hashes":["zz"]}"#).is_err());
+    }
+
+    #[test]
+    fn a_failed_pool_request_rests_no_node_and_sets_no_error() {
+        let (first, _) = fake_daemon(Fake::Close);
+        let chain = local_chain(&[first]);
+        assert!(chain.pool_hashes().is_err());
+        assert!(chain.status().error.is_none(), "{:?}", chain.status().error);
+        assert!(chain.ready(0), "the next block scan may still use the node");
     }
 
     fn local_chain(urls: &[String]) -> DaemonChain {

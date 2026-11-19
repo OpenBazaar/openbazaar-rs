@@ -21,6 +21,8 @@ export type XmrWallet = {
   keys: 'ready' | 'unlock-to-create'
   primaryAddress: string | null
   balance: XmrBalance | null
+  /** Piconero in the mempool, waiting for a first confirmation. Never part of `balance`. */
+  unconfirmed: bigint
   scannedHeight: number | null
   tip: number | null
   lastSync: number | null
@@ -143,6 +145,7 @@ export function parseXmrWallet(value: unknown): XmrWallet {
       unlocked: parsePiconero(balance.unlockedPiconero),
       pending: parsePiconero(balance.pendingPiconero)
     },
+    unconfirmed: r.unconfirmed == null ? 0n : parsePiconero(record(r.unconfirmed).incomingPiconero),
     scannedHeight: countOrNull(r.scannedHeight),
     tip: countOrNull(r.tip),
     lastSync: countOrNull(r.lastSync),

@@ -1,7 +1,7 @@
 //! What the wallet needs from a Monero daemon.
 
 use monero_wallet::interface::{FeeRate, ScannableBlock};
-use monero_wallet::transaction::Transaction;
+use monero_wallet::transaction::{Pruned, Transaction};
 use monero_wallet::{OutputWithDecoys, WalletOutput};
 
 use crate::BackendStatus;
@@ -20,4 +20,8 @@ pub trait XmrChain: Send + Sync {
     /// A ring of [`crate::RING_LEN`] members for each output, as of block `height`.
     fn decoys(&self, outputs: Vec<WalletOutput>, height: u64) -> Result<Vec<OutputWithDecoys>, String>;
     fn publish(&self, tx: &Transaction) -> Result<(), String>;
+    /// Hashes of the transactions in the daemon's mempool.
+    fn pool_hashes(&self) -> Result<Vec<[u8; 32]>, String>;
+    /// The pool transactions with these hashes. One that left the pool meanwhile is left out.
+    fn pool_transactions(&self, hashes: &[[u8; 32]]) -> Result<Vec<([u8; 32], Transaction<Pruned>)>, String>;
 }
