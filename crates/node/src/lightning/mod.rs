@@ -331,11 +331,14 @@ impl Node {
             "enabled": self.ln.config().is_some(),
             "lspAcknowledged": self.ln.lsp_acknowledged(),
             "lspNotice": self.ln.config().and_then(|config| config.lsp.as_ref()).map(|_| LSP_NOTICE),
-            "stores": self.ln_sellers().iter().map(|seller| json!({
-                "seller": seller,
-                "own": self.catalog().stores.iter().any(|store| store.name == *seller && store.id == self.own_store),
-                "acceptsLightning": self.accepts_lightning(seller),
-            })).collect::<Vec<_>>(),
+            "stores": self.ln_sellers().iter().filter_map(|seller| {
+                let own = self.catalog().stores.iter().any(|store| store.name == *seller && store.id == self.own_store);
+                (!own || self.own_store_set_up()).then(|| json!({
+                    "seller": seller,
+                    "own": own,
+                    "acceptsLightning": self.accepts_lightning(seller),
+                }))
+            }).collect::<Vec<_>>(),
         })
     }
 

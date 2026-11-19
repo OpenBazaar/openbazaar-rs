@@ -65,6 +65,7 @@ export function LightningSettings() {
                 <h2 id='ob-ln-stores'>Stores that take Lightning</h2>
                 <p>Turning Lightning on signs your store record again so buyers see it at checkout.</p>
               </header>
+              {!stores.data.stores.some(store => store.own) && <p className='ob-page-intro'>Your store shows here once it is open. Open it in Store settings.</p>}
               {stores.data.stores.map(store => (
                 <div className='ob-setting-row' key={store.seller}>
                   <label htmlFor={`ob-ln-${store.seller}`}>

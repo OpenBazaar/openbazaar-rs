@@ -293,8 +293,11 @@ impl Node {
         })
     }
 
-    /// The own store's row in `GET /xmr/stores`, once it has a record.
+    /// The own store's row in `GET /xmr/stores`, once it is set up and has a record.
     fn own_xmr_value(&self) -> Option<Value> {
+        if !self.own_store_set_up() {
+            return None;
+        }
         let store = self.own_record()?;
         let accepts = store.details.is_some_and(|details| details.accepts_xmr);
         let problem = (accepts && self.xmr.chain().is_none()).then_some(NEEDS_DAEMON);

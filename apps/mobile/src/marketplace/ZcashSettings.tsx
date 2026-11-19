@@ -71,6 +71,7 @@ function StoresCard({ stores, busy, error, onAccept }: { stores: ZecStores['stor
         <p>Turning Zcash on signs the store record again so buyers see it at checkout.</p>
       </header>
       {stores.length === 0 && <p className='ob-page-intro'>No store on this node can take Zcash yet.</p>}
+      {!stores.some(store => store.own) && <p className='ob-page-intro'>Your store shows here once it is open. Open it in Store settings.</p>}
       {stores.map(store => (
         <div className='ob-setting-row' key={store.seller}>
           <label htmlFor={`ob-zec-${store.seller}`}>

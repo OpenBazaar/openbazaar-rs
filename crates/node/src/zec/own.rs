@@ -88,6 +88,9 @@ impl Node {
 
     /// The own store's row in `GET /zec/stores`, once it has a record. `problem` is why a store with Zcash on would decline a Zcash order now.
     pub(super) fn own_zec_value(&self) -> Option<Value> {
+        if !self.own_store_set_up() {
+            return None;
+        }
         let store = self.own_record()?;
         let accepts = store.details.is_some_and(|details| details.accepts_zec);
         let problem = accepts.then(|| self.own_zec_ready().err()).flatten().map(NotReady::vendor);
