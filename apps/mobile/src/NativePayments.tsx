@@ -49,6 +49,24 @@ import {
   type Quote
 } from './walletLock'
 import { usePairedNode } from './marketplace/NodePayments'
+import {
+  fetchXmrWallet,
+  formatXmr,
+  issueXmrTicket,
+  payXmrOrder,
+  quoteXmrPayment,
+  type XmrQuote,
+  type XmrWallet
+} from './xmr'
+import {
+  fetchZecWallet,
+  formatZec,
+  issueZecTicket,
+  payZecOrder,
+  quoteZecPayment,
+  type ZecQuote,
+  type ZecWallet
+} from './zec'
 
 function Action({
   label,
@@ -208,6 +226,15 @@ export function NativeWallet({
   currency: CurrencyCode
 }) {
   const { wallet, network, lock } = usePairedNode()
+  const moneroEnabled =
+    !!network.data?.xmrBackend && network.data.xmrBackend.backend !== 'none'
+  const zcashEnabled = !!network.data?.zecBackend?.enabled
+  const monero = useNodeResource<XmrWallet>(
+    fetchXmrWallet,
+    20000,
+    moneroEnabled
+  )
+  const zcash = useNodeResource<ZecWallet>(fetchZecWallet, 20000, zcashEnabled)
   const [error, setError] = useState(''),
     [busy, setBusy] = useState(false),
     [fresh, setFresh] = useState<{ network: string; address: string } | null>(
@@ -236,7 +263,16 @@ export function NativeWallet({
   return (
     <ScrollView contentContainerStyle={s.page}>
       <Text style={s.heading}>Node wallet</Text>
-      <Action label='Refresh wallet' onPress={() => void wallet.refresh()} />
+      <Action
+        label='Refresh wallet'
+        onPress={() =>
+          void Promise.all([
+            wallet.refresh(),
+            monero.refresh(),
+            zcash.refresh()
+          ])
+        }
+      />
       {lock.data?.state === 'setup' && (
         <Text style={s.error}>
           Set a wallet passphrase on the desktop or web wallet page. Until then
@@ -291,11 +327,285 @@ export function NativeWallet({
           {current.syncError && (
             <Text style={s.error}>Wallet sync: {current.syncError}</Text>
           )}
+          {moneroEnabled && (
+            <CoinBalance
+              name='Monero'
+              unit='XMR'
+              network={
+                network.data?.xmrBackend?.network === 'stagenet'
+                  ? 'Stagenet'
+                  : 'Mainnet'
+              }
+              keys={monero.data?.keys}
+              loading={monero.loading}
+              error={monero.error}
+              confirmed={
+                monero.data?.balance
+                  ? formatXmr(monero.data.balance.unlocked)
+                  : null
+              }
+              pending={
+                monero.data?.balance
+                  ? formatXmr(monero.data.balance.pending)
+                  : null
+              }
+              address={monero.data?.primaryAddress ?? null}
+              uriPrefix='monero:'
+            />
+          )}
+          {zcashEnabled && (
+            <CoinBalance
+              name='Zcash'
+              unit='ZEC'
+              network={
+                network.data?.zecBackend?.network === 'testnet'
+                  ? 'Testnet'
+                  : 'Mainnet'
+              }
+              keys={zcash.data?.keys}
+              loading={zcash.loading}
+              error={zcash.error}
+              confirmed={
+                zcash.data?.balance
+                  ? formatZec(zcash.data.balance.confirmed)
+                  : null
+              }
+              pending={
+                zcash.data?.balance
+                  ? formatZec(zcash.data.balance.pending)
+                  : null
+              }
+              extra={
+                zcash.data?.balance && zcash.data.balance.orchard > 0n
+                  ? `${formatZec(zcash.data.balance.orchard)} ZEC still in notes this wallet is scanning`
+                  : null
+              }
+              address={zcash.data?.receiveAddress ?? null}
+              uriPrefix='zcash:'
+            />
+          )}
         </>
       ) : (
         <Text style={s.body}>Loading node wallet…</Text>
       )}
     </ScrollView>
+  )
+}
+
+function CoinBalance({
+  name,
+  unit,
+  network,
+  keys,
+  loading,
+  error,
+  confirmed,
+  pending,
+  extra,
+  address,
+  uriPrefix
+}: {
+  name: string
+  unit: string
+  network: string
+  keys?: string
+  loading: boolean
+  error?: string | null
+  confirmed: string | null
+  pending: string | null
+  extra?: string | null
+  address: string | null
+  uriPrefix: string
+}) {
+  return (
+    <View>
+      <Text style={s.section}>{name}</Text>
+      <Text style={s.body}>{network}</Text>
+      {error ? <Text style={s.error}>{error}</Text> : null}
+      <Text style={s.balance}>
+        {confirmed != null
+          ? `${confirmed} ${unit}`
+          : loading
+            ? 'Loading balance…'
+            : 'Balance unavailable'}
+      </Text>
+      <Text style={s.body}>
+        {pending != null ? `${pending} ${unit} pending` : ''}
+      </Text>
+      {extra ? <Text style={s.body}>{extra}</Text> : null}
+      {keys === 'unlock-to-create' ? (
+        <Text style={s.body}>
+          Unlock the wallet to create the {name} keys and receive address.
+        </Text>
+      ) : address ? (
+        <>
+          <Qr value={`${uriPrefix}${address}`} />
+          <Copy label={`${name} receive address`} value={address} />
+        </>
+      ) : (
+        <Text style={s.body}>
+          A receive address will appear when this wallet is ready.
+        </Text>
+      )}
+    </View>
+  )
+}
+
+function NativeShieldedPay({
+  id,
+  seller,
+  rail,
+  paying,
+  disabled,
+  onDone
+}: {
+  id: string
+  seller: string
+  rail: 'xmr' | 'zec'
+  paying: boolean
+  disabled: boolean
+  onDone: () => void
+}) {
+  const { lock } = usePairedNode()
+  const [step, setStep] = useState<'unlock' | XmrQuote | ZecQuote | null>(null)
+  const [passphrase, setPassphrase] = useState('')
+  const [error, setError] = useState('')
+  const [busy, setBusy] = useState(false)
+  const held = useRef(false)
+  const name = rail === 'xmr' ? 'Monero' : 'Zcash'
+  async function run(task: () => Promise<void>, fallback: string) {
+    if (held.current) return
+    held.current = true
+    setBusy(true)
+    setError('')
+    try {
+      await task()
+    } catch (e) {
+      if (isLocked(e)) {
+        void lock.refresh()
+        setStep('unlock')
+      }
+      setError(passphraseError(e, fallback))
+    } finally {
+      held.current = false
+      setBusy(false)
+    }
+  }
+  function start(status = lock.data) {
+    if (disabled || paying || busy) return
+    if (status?.state !== 'unlocked') {
+      setStep('unlock')
+      return
+    }
+    void run(
+      async () =>
+        setStep(
+          rail === 'xmr' ? await quoteXmrPayment(id) : await quoteZecPayment(id)
+        ),
+      `The ${name} payment could not be quoted.`
+    )
+  }
+  const quote = step && step !== 'unlock' ? step : null
+  const amount = quote
+    ? rail === 'xmr'
+      ? `${formatXmr((quote as XmrQuote).amount)} XMR`
+      : `${formatZec((quote as ZecQuote).amount)} ZEC`
+    : ''
+  const fee = quote
+    ? rail === 'xmr'
+      ? `${formatXmr((quote as XmrQuote).feeCap)} XMR`
+      : `${formatZec((quote as ZecQuote).feeCap)} ZEC`
+    : ''
+  return (
+    <View>
+      {error ? <Text style={s.error}>{error}</Text> : null}
+      {step === 'unlock' ? (
+        <View>
+          <Text style={s.body}>
+            Unlock the wallet to pay {seller} in {name}.
+          </Text>
+          <TextInput
+            accessibilityLabel='Wallet passphrase'
+            secureTextEntry
+            autoFocus
+            value={passphrase}
+            onChangeText={setPassphrase}
+            style={s.input}
+          />
+          <Action
+            label={busy ? 'Unlocking…' : 'Unlock wallet'}
+            disabled={busy || !passphrase}
+            onPress={() =>
+              void run(async () => {
+                const status = await unlockWallet(passphrase)
+                lock.update(status)
+                setPassphrase('')
+                setStep(
+                  rail === 'xmr'
+                    ? await quoteXmrPayment(id)
+                    : await quoteZecPayment(id)
+                )
+              }, 'The wallet could not be unlocked')
+            }
+          />
+          <Action label='Cancel' onPress={() => setStep(null)} />
+        </View>
+      ) : quote ? (
+        <View>
+          <Text style={s.section}>
+            {quote.network === 'mainnet'
+              ? `Send real ${name}?`
+              : `Confirm ${name} payment`}
+          </Text>
+          <Text style={s.body}>
+            Pay {amount} to {seller}. Fee cap {fee}. This confirmation expires
+            in {quote.expiresInSecs} seconds.
+          </Text>
+          <TextInput
+            accessibilityLabel='Wallet passphrase'
+            secureTextEntry
+            autoFocus
+            value={passphrase}
+            onChangeText={setPassphrase}
+            style={s.input}
+          />
+          <Action
+            label={busy ? 'Confirming…' : 'Confirm payment'}
+            disabled={busy || !passphrase}
+            onPress={() =>
+              void run(async () => {
+                const ticket =
+                  rail === 'xmr'
+                    ? await issueXmrTicket(quote.quote, passphrase)
+                    : await issueZecTicket(quote.quote, passphrase)
+                setPassphrase('')
+                setStep(null)
+                if (rail === 'xmr')
+                  await payXmrOrder(
+                    id,
+                    ticket.ticket,
+                    ticket.network === 'mainnet'
+                  )
+                else
+                  await payZecOrder(
+                    id,
+                    ticket.ticket,
+                    ticket.network === 'mainnet'
+                  )
+                onDone()
+              }, `The ${name} payment could not be started.`)
+            }
+          />
+          <Action label='Cancel' onPress={() => setStep(null)} />
+        </View>
+      ) : (
+        <Action
+          label={paying ? `Paying ${name}…` : 'Pay from your node wallet'}
+          disabled={disabled || paying || busy}
+          onPress={() => start()}
+        />
+      )}
+    </View>
   )
 }
 export function NativeOrderPayment({
@@ -473,6 +783,14 @@ export function NativeOrderPayment({
               <Text style={s.body}>
                 Send only {monero.network} Monero to this subaddress.
               </Text>
+              <NativeShieldedPay
+                id={id}
+                seller={order.seller}
+                rail='xmr'
+                paying={busy}
+                disabled={!!network.error}
+                onDone={() => void resource.refresh()}
+              />
             </>
           ) : monero ? null : (
             <Text style={s.body}>This Monero payment could not be read.</Text>
@@ -496,6 +814,14 @@ export function NativeOrderPayment({
                 {zcash.expiresAt != null ? ` The quote expires ${new Date(zcash.expiresAt * 1000).toLocaleTimeString(undefined, { timeStyle: 'short' })}.` : ''}
               </Text>
               {sellerZcashNote(order) ? <Text style={s.body}>{sellerZcashNote(order)}</Text> : null}
+              <NativeShieldedPay
+                id={id}
+                seller={order.seller}
+                rail='zec'
+                paying={busy}
+                disabled={!!network.error}
+                onDone={() => void resource.refresh()}
+              />
             </>
           ) : zcash ? null : (
             <Text style={s.body}>This Zcash payment could not be read.</Text>
