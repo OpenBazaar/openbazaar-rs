@@ -99,6 +99,7 @@ function satsHint(amount: number | null, currency: PriceCurrency, rates: RateTab
 export function ListingEditor({ listing, savedDraft, rates, onSaved, onCancel }: { listing: ListingHeader | null; savedDraft?: SavedDraft | null; rates: RateTable; onSaved: (message: string) => void; onCancel: () => void }) {
   const [form, setForm] = useState<Form>(() => formOf(savedDraft?.listing ?? (listing ? draftOf(listing) : EMPTY)));
   const [draftId, setDraftId] = useState(savedDraft?.draftId ?? null);
+  const listingId = draftListingId(listing, savedDraft);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<Problem | null>(null);
   const [saleOn, setSaleOn] = useState(() => Boolean(form.salePrice || form.saleStarts || form.saleEnds));
@@ -117,7 +118,6 @@ export function ListingEditor({ listing, savedDraft, rates, onSaved, onCancel }:
     e.preventDefault();
     if (busy) return;
     const publish = (e.nativeEvent as SubmitEvent).submitter?.getAttribute("data-action") !== "draft";
-    const listingId = draftListingId(listing, savedDraft);
     const draft = draftFrom(form);
     if ("message" in draft) {
       setError(draft);
@@ -272,7 +272,7 @@ export function ListingEditor({ listing, savedDraft, rates, onSaved, onCancel }:
       <div className="ob-form-actions">
         <button type="button" className="ob-secondary" onClick={onCancel}>Cancel</button>
         <button type="submit" data-action="draft" className="ob-secondary" disabled={busy}>Save draft</button>
-        <button type="submit" data-action="publish" className="ob-primary" disabled={busy}>{busy ? "Saving…" : listing ? "Save changes" : "Publish listing"}</button>
+        <button type="submit" data-action="publish" className="ob-primary" disabled={busy}>{busy ? "Saving…" : listingId ? "Save changes" : "Publish listing"}</button>
       </div>
     </div>
     {dialog}
