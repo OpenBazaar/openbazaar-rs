@@ -3,7 +3,7 @@ import type { CurrencyCode } from '../catalog'
 import { fetchLnStatus, lnNetworkLabel, type LnStatus } from '../lightning'
 import { fetchXmrWallet, formatXmr, newXmrSubaddress, type XmrSubaddress, type XmrBackend, type XmrWallet } from '../xmr'
 import type { CoinRate } from '../walletFiat'
-import type { ZecBackend } from '../zec'
+import { fetchZecWallet, formatZec, type ZecBackend, type ZecWallet } from '../zec'
 import { useNodeResource } from '../useNodeResource'
 import { torIndicator, waitingForTor } from '../torStatus'
 import { CopyAddress, CopyButton } from './CopyAddress'
@@ -32,6 +32,8 @@ export function WalletPage({ currency, onOrders, onSales, onManage, onTor }: Pro
   const lightning = useNodeResource(fetchLnStatus, 20000)
   const moneroEnabled = !!network.data?.xmrBackend && network.data.xmrBackend.backend !== 'none'
   const monero = useNodeResource(fetchXmrWallet, 20000, moneroEnabled)
+  const zcashEnabled = !!network.data?.zecBackend?.enabled
+  const zcash = useNodeResource(fetchZecWallet, 20000, zcashEnabled)
   const { rates: fiatRates } = usePairedNode()
   const [selected, setSelected] = useState<Rail>('bitcoin')
   const [settings, setSettings] = useState(false)
@@ -40,7 +42,7 @@ export function WalletPage({ currency, onOrders, onSales, onManage, onTor }: Pro
   const choices: WalletChoice[] = [{ rail: 'bitcoin', name: 'Bitcoin', network: wallet.data?.network === 'testnet4' ? 'Testnet4' : wallet.data?.network === 'mainnet' ? 'Mainnet' : 'On chain', balance: wallet.data ? `${wallet.data.balance.spendableSats.toLocaleString('en-US')} sats` : 'Balance unavailable' }]
   if (lightning.data?.enabled) choices.push({ rail: 'lightning', name: 'Lightning', network: lightning.data.network === 'signet' ? 'Mutinynet signet' : lightning.data.network === 'bitcoin' ? 'Mainnet' : lightning.data.network ?? 'Starting', balance: lightning.data.balances ? `${lightning.data.balances.lightningSats.toLocaleString('en-US')} sats` : 'Balance unavailable' })
   if (moneroEnabled) choices.push({ rail: 'monero', name: 'Monero', network: network.data!.xmrBackend!.network === 'stagenet' ? 'Stagenet' : 'Mainnet', balance: monero.data?.balance ? `${formatXmr(monero.data.balance.unlocked)} XMR` : monero.loading ? 'Loading balance…' : 'Balance unavailable' })
-  if (network.data?.zecBackend?.enabled) choices.push({ rail: 'zcash', name: 'Zcash', network: network.data.zecBackend.network === 'testnet' ? 'Testnet' : 'Mainnet', balance: 'Shielded receiving' })
+  if (zcashEnabled) choices.push({ rail: 'zcash', name: 'Zcash', network: network.data!.zecBackend!.network === 'testnet' ? 'Testnet' : 'Mainnet', balance: zcash.data?.balance ? `${formatZec(zcash.data.balance.confirmed)} ZEC` : zcash.loading ? 'Loading balance…' : 'Balance unavailable' })
   const active = choices.some(choice => choice.rail === selected) ? selected : 'bitcoin'
   function keyDown(event: KeyboardEvent<HTMLButtonElement>, index: number) {
     const next = event.key === 'ArrowRight' ? (index + 1) % choices.length : event.key === 'ArrowLeft' ? (index + choices.length - 1) % choices.length : event.key === 'Home' ? 0 : event.key === 'End' ? choices.length - 1 : null
@@ -52,7 +54,7 @@ export function WalletPage({ currency, onOrders, onSales, onManage, onTor }: Pro
   async function refresh() {
     if (refreshing) return
     setRefreshing(true)
-    try { await Promise.all([wallet.refresh(), network.refresh(), lightning.refresh(), monero.refresh(), fiatRates.refresh()]) }
+    try { await Promise.all([wallet.refresh(), network.refresh(), lightning.refresh(), monero.refresh(), zcash.refresh(), fiatRates.refresh()]) }
     finally { setRefreshing(false) }
   }
   return <section className='ob-wallet-page ob-wallet-overview ob-wallet-hub'>
@@ -75,8 +77,8 @@ export function WalletPage({ currency, onOrders, onSales, onManage, onTor }: Pro
     {moneroEnabled && <div id='ob-wallet-panel-monero' className='ob-wallet-tabpanel' role='tabpanel' aria-labelledby='ob-wallet-tab-monero' hidden={active !== 'monero'}>
       <MoneroPanel resource={monero} waiting={waiting} backend={network.data!.xmrBackend!} fiatRate={fiatRates.data?.xmr} currency={currency} onManage={() => onManage('monero')} onOrders={onOrders}/>
     </div>}
-    {network.data?.zecBackend?.enabled && <div id='ob-wallet-panel-zcash' className='ob-wallet-tabpanel' role='tabpanel' aria-labelledby='ob-wallet-tab-zcash' hidden={active !== 'zcash'}>
-      <ZcashPanel backend={network.data.zecBackend} waiting={waiting} onManage={() => onManage('zcash')} onSales={onSales}/>
+    {zcashEnabled && <div id='ob-wallet-panel-zcash' className='ob-wallet-tabpanel' role='tabpanel' aria-labelledby='ob-wallet-tab-zcash' hidden={active !== 'zcash'}>
+      <ZcashPanel resource={zcash} backend={network.data!.zecBackend!} waiting={waiting} onManage={() => onManage('zcash')} onSales={onSales}/>
     </div>}
     {settings && <Dialog label='Wallet settings' className='ob-wallet-dialog' onCancel={() => setSettings(false)}><h2>Wallet settings</h2><WalletLockPanel lock={lock}/><div className='ob-form-actions'><button type='button' className='ob-secondary' onClick={() => setSettings(false)}>Done</button></div></Dialog>}
   </section>
@@ -151,15 +153,34 @@ function MoneroPanel({ resource, waiting, backend, fiatRate, currency, onManage,
   </div>
 }
 
-function ZcashPanel({ backend, waiting, onManage, onSales }: { backend: ZecBackend; waiting: boolean; onManage: () => void; onSales?: () => void }) {
-  const behind = backend.tip != null && backend.scannedHeight != null ? Math.max(0, backend.tip - backend.scannedHeight) : null
+function ZcashPanel({ resource, waiting, backend, onManage, onSales }: { resource: ReturnType<typeof useNodeResource<ZecWallet>>; waiting: boolean; backend: ZecBackend; onManage: () => void; onSales?: () => void }) {
+  const current = resource.data
+  const [receive, setReceive] = useState(false)
+  const mismatch = !!current && current.network !== backend.network
+  const address = current?.receiveAddress ?? null
+  const stale = !!resource.error || !!current?.syncError || !!backend.error
+  const scanned = current?.scannedHeight ?? backend.scannedHeight
+  const tip = current?.tip ?? backend.tip
+  const behind = tip != null && scanned != null ? Math.max(0, tip - scanned) : null
+  const receiveBlocked = !address || stale || mismatch || !current?.enabled || current.keys !== 'ready'
+  const orchard = current?.balance?.orchard ?? 0n
+  function amount(value: bigint) {
+    return <div className='ob-wallet-amount'><strong>{formatZec(value)} <small>ZEC</small></strong></div>
+  }
   return <div className='ob-wallet-detail'>
-    <section className='ob-wallet-asset-summary' aria-label='Zcash receiving'>
-      <WalletHeader rail='zcash' title='Zcash' network={backend.network === 'testnet' ? 'Testnet · test coins, no value' : 'Mainnet'} status={waiting ? 'Waiting for Tor' : backend.error ? 'Needs attention' : behind === 0 ? 'Synced' : 'Syncing'} attention={!!backend.error || behind !== 0}/>
-      <div className='ob-wallet-receiving-state'><div><span className='ob-wallet-capability'>Shielded order payments</span><h3>Receive through your store</h3><p>Each order gets its own shielded address. Track received amounts and confirmations in Sales.</p><p className='ob-wallet-capability-note'>A wallet balance and general receive address aren’t available here yet. Pay for Zcash purchases from another wallet.</p></div><dl><div><dt>Scanned block</dt><dd>{backend.scannedHeight?.toLocaleString() ?? 'Not synced yet'}</dd></div><div><dt>Chain tip</dt><dd>{backend.tip?.toLocaleString() ?? 'Unavailable'}</dd></div></dl></div>
-      <div className='ob-wallet-asset-footer'>{onSales && <button type='button' className='ob-primary' onClick={onSales}>View sales</button>}<button type='button' className='ob-secondary' onClick={onManage}>Zcash settings</button><button type='button' className='ob-secondary' disabled aria-describedby='ob-zec-send-note'>Send</button><span id='ob-zec-send-note'>Sending Zcash isn’t available yet.</span></div>
-      {!waiting && backend.error && <p className='ob-wallet-sync-error' role='alert'>{backend.error}</p>}
+    <section className='ob-wallet-asset-summary' aria-label='Zcash balances'>
+      <WalletHeader rail='zcash' title='Zcash' network={backend.network === 'testnet' ? 'Testnet · test coins, no value' : 'Mainnet'} status={mismatch ? 'Network mismatch' : waiting ? 'Waiting for Tor' : stale ? 'Needs attention' : current?.keys === 'unlock-to-create' ? 'Setup required' : behind === 0 ? 'Synced' : 'Syncing'} attention={mismatch || stale || behind !== 0}/>
+      <div className='ob-wallet-metrics'>
+        <Metric title={stale ? 'Last known confirmed balance' : 'Confirmed'} note='Shielded funds with the confirmations this wallet requires.'>{current?.balance ? amount(current.balance.confirmed) : <p className='ob-wallet-unavailable'>{resource.loading ? 'Loading balance…' : 'Balance unavailable'}</p>}</Metric>
+        <Metric title='Pending confirmation' note={orchard > 0n ? `${formatZec(orchard)} ZEC is still in notes this wallet is scanning.` : 'Arrived, waiting to become spendable.'}>{current?.balance ? amount(current.balance.pending) : <p className='ob-wallet-unavailable'>Balance unavailable</p>}</Metric>
+      </div>
+      <div className='ob-wallet-asset-footer'><button type='button' className='ob-primary' disabled={receiveBlocked} onClick={() => setReceive(true)}>Receive Zcash</button>{onSales && <button type='button' className='ob-secondary' onClick={onSales}>View sales</button>}<button type='button' className='ob-secondary' onClick={onManage}>Zcash settings</button><button type='button' className='ob-secondary' disabled aria-describedby='ob-zec-send-note'>Send</button><span id='ob-zec-send-note'>Sending Zcash isn’t available yet.</span><span>{current?.lastSync ? `Last synced ${new Date(current.lastSync * 1000).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}` : 'Not synced yet'}</span></div>
+      {(mismatch || (!waiting && (resource.error || current?.syncError || backend.error))) && <p className='ob-wallet-sync-error' role='alert'>{mismatch ? 'Wallet and Zcash networks do not match. Receiving is disabled.' : resource.error || current?.syncError || backend.error}{stale && current?.balance ? ' Showing the last available balance.' : ''}</p>}
     </section>
-    <details className='ob-wallet-connection'><summary>Connection and privacy<span>Zcash details</span></summary><div className='ob-wallet-detail-disclosure'><p>{backend.reveals}</p></div></details>
+    <section className='ob-wallet-asset-receive'><header><div><h2>Receive Zcash</h2><p>This address receives shielded funds into the node wallet. Each order still gets its own address.</p></div><button type='button' className='ob-text-link' onClick={onManage}>Zcash settings</button></header>
+      {address && !mismatch ? <><CopyPaymentValue label='Receive address' value={address}/><div className='ob-wallet-receive-actions'><button type='button' className='ob-secondary' disabled={receiveBlocked} onClick={() => setReceive(true)}>Show QR code</button></div></> : <p className='ob-wallet-empty'>{current?.keys === 'unlock-to-create' ? 'Unlock your wallet in Settings to create the Zcash keys and receive address.' : 'A receive address will appear when this wallet is ready.'}</p>}
+    </section>
+    <details className='ob-wallet-connection'><summary>Connection and privacy<span>Zcash details</span></summary><div className='ob-wallet-detail-disclosure'><p>{backend.reveals}</p><p>{scanned != null ? `Scanned block ${scanned.toLocaleString()}${tip != null ? ` of ${tip.toLocaleString()}` : ''}.` : 'Waiting for the first sync.'}</p></div></details>
+    {receive && address && !receiveBlocked && <Dialog label='Receive Zcash' className='ob-wallet-dialog' onCancel={() => setReceive(false)}><div className='ob-wallet-receive-dialog'><h2>Receive Zcash</h2><p>Zcash {current?.network} only</p><PaymentQr value={`zcash:${address}`} label='Zcash receive QR code' paper/><CopyAddress value={address} label='Copy Zcash receive address'/></div><div className='ob-form-actions'><button type='button' className='ob-secondary' onClick={() => setReceive(false)}>Done</button></div></Dialog>}
   </div>
 }

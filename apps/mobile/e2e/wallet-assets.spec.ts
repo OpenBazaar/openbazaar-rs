@@ -1,6 +1,7 @@
 import { test, expect, type Page } from '@playwright/test'
 
 const btcAddress = `tb1p${'q'.repeat(58)}`
+const zecAddress = `utest1${'q'.repeat(40)}`
 const xmrAddress = `5${'a'.repeat(94)}`
 const freshXmrAddress = `7${'b'.repeat(94)}`
 const peer = `02${'a'.repeat(64)}`
@@ -14,6 +15,7 @@ async function fixture(page: Page) {
   await page.route('**/lock',route=>route.fulfill({json:{state:'locked',autoLockMinutes:15,autoLockRange:[1,60],lockInSecs:0,failedAttempts:0,retryAfterSecs:0,rememberDevice:false,rememberAvailable:true,backupConfirmed:true,minPassphraseChars:8}}))
   await page.route('**/ln/status',route=>route.fulfill({json:ln}))
   await page.route('**/xmr/wallet',route=>route.fulfill({json:xmr}))
+  await page.route('**/zec/wallet',route=>route.fulfill({json:{network:'testnet',enabled:true,keys:'ready',receiveAddress:zecAddress,balance:{confirmedZatoshi:'150000000',pendingZatoshi:'0',orchardZatoshi:'0'},scannedHeight:4000000,tip:4000000,lastSync:1794560000,syncError:null}}))
   await page.route('**/orders',route=>route.fulfill({json:{orders:[]}}))
   await page.route('**/store/profile',route=>route.fulfill({json:{role:'seller',storeKey:'c'.repeat(64),name:'Trial Store',setUp:true,network:'testnet4'}}))
 }
@@ -78,9 +80,12 @@ for (const [width,dark] of [[320,false],[812,true],[1440,false],[1920,true]] as 
   await expect.poll(()=>page.evaluate(()=>navigator.clipboard.readText())).toBe(freshXmrAddress)
   await qr.getByRole('button',{name:'Done',exact:true}).click()
   await page.getByRole('tab',{name:/^Zcash/}).click()
-  await expect(panel.getByRole('region',{name:'Zcash receiving'})).toContainText('Receive through your store')
-  await expect(panel).toContainText('balance and general receive address aren’t available here yet')
-  await expect(panel.getByRole('button',{name:/Receive/})).toHaveCount(0)
+  await expect(panel.getByRole('region',{name:'Zcash balances'})).toContainText('1.5 ZEC')
+  await expect(panel.getByRole('button',{name:'Receive Zcash',exact:true})).toBeEnabled()
+  await panel.getByRole('button',{name:'Receive Zcash',exact:true}).click()
+  const zcashQr=page.getByRole('dialog',{name:'Receive Zcash',exact:true})
+  await expect(zcashQr.getByRole('img',{name:'Zcash receive QR code'})).toHaveAttribute('data-payment-uri',`zcash:${zecAddress}`)
+  await zcashQr.getByRole('button',{name:'Done',exact:true}).click()
   await fits(page)
   await page.screenshot({path:info.outputPath(`wallet-zcash-${width}.png`)})
   await page.getByRole('tab',{name:/^Zcash/}).press('Home')
