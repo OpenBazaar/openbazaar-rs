@@ -26,6 +26,7 @@ mod listing_details;
 #[cfg(test)]
 mod listing_v6_tests;
 mod moderator_profile;
+pub mod plain_text;
 pub mod public_text;
 mod offer;
 mod order;

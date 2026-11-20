@@ -88,7 +88,7 @@ test('the seller lists, edits, and removes goods', async ({ page }, info) => {
   await page.getByRole('button', { name: 'New listing' }).click()
   await page.getByLabel('Title').fill('Ash glaze mug')
   await page.getByLabel('Description').fill('Wheel-thrown, 12 oz.')
-  await page.getByLabel('Category', { exact: true }).fill('Home')
+  await page.getByLabel('Category', { exact: true }).selectOption({ label: 'Home and kitchen' })
   // Sats keep this test off live exchange rates; fiat pricing is covered by the node tests.
   await page.getByLabel('Price currency').selectOption('SAT')
   await page.getByLabel('Price (sats)').fill('25000')
@@ -159,7 +159,7 @@ test('the seller lists, edits, and removes goods', async ({ page }, info) => {
 
   await page.getByRole('button', { name: 'New listing' }).click()
   await page.getByLabel('Title').fill('Glaze recipe card')
-  await page.getByLabel('Category', { exact: true }).fill('Paper')
+  await page.getByLabel('Category', { exact: true }).selectOption({ label: 'Tools and supplies' })
   await page.getByRole('radio', { name: 'Digital good', exact: true }).check()
   await page.getByLabel('Price currency').selectOption('SAT')
   await page.getByLabel('Price (sats)').fill('2000')

@@ -8,6 +8,7 @@ import { ListingEditor } from "./ListingEditor";
 import { Empty } from "./Marketplace";
 import { PageHeading } from "./PageHeading";
 import { MediaImage, useLockedAction } from "./SellerKit";
+import { categoryLabel } from "../listingFields";
 import { merchantBulkPrice } from "../bulkEdit";
 
 /** Fiat estimate of a sat price, hidden when it repeats the currency the seller already set. */
@@ -126,7 +127,7 @@ export function StoreListings({ profile, rates, currency, startNew = false, onCh
       <span className="ob-own-listing-copy">
         <strong>{listing.title}</strong>
         <span className="ob-own-listing-meta">
-          <span>{listing.category}</span>
+          <span>{categoryLabel(listing)}</span>
           {listing.kind === "digital" ? <span>Digital</span> : listing.shipFrom ? <span className="ob-own-listing-from">Ships from {listing.shipFrom}</span> : null}
           <span className="ob-own-listing-stock">{stock}</span>
           {listing.contentRating !== "general" ? <span>{listing.contentRating}</span> : null}
