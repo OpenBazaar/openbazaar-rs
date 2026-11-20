@@ -1,77 +1,89 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import type { CurrencyCode, ListingHeader, RateTable } from "../catalog";
-import { draftListingId } from "../listingDraft";
+import type { Commerce } from "../commerce";
 import { CONTENT_TAGS, MAX_LISTING_IMAGES, PRICE_CURRENCIES, deleteDraft, draftOf, formatPrice, fromMinorUnits, saveDraft, saveListing, toMinorUnits, type ListingDraft, type PriceCurrency, type SavedDraft } from "../seller";
 import { ImageUpload, MediaImage, useLockedAction } from "./SellerKit";
-import { axesProblem, compareAtText, emptyCommerce, listingFacts, packageFieldsOf, priceTerms, purchaseFields, purchaseTerms, returnsDraft, rowsOf, saleFieldsOf, scheduledSale, shippingTerms, specificRows, TAXONOMY, tierRows, volumeTiers, withFacts, withPackage, withPrice, withPurchase, withSale, withTaxonomy, withTiers, withVariantWeights, type AvailabilityDraft, type PackageInput, type ReturnsDraft, type SpecificRow, type TierRow } from "../commerceDraft";
-import { categoryFieldsOf, signedCategory } from "../listingFields";
-import { CommerceFields } from "./CommerceFields";
+import { TAXONOMY, axesProblem, compareAtText, emptyCommerce, listingFacts, packageFieldsOf, priceTerms, purchaseFields, purchaseTerms, returnsDraft, rowsOf, saleFieldsOf, scheduledSale, shippingTerms, specificRows, tierRows, volumeTiers, withPackage, withVariantWeights, type AvailabilityDraft, type ReturnsDraft, type SpecificRow, type TierRow } from "../commerceDraft";
+import { draftListingId } from "../listingDraft";
+import { categoryFieldsOf, filledSpecifics, filledTiers, signedCategory } from "../listingFields";
+import { ItemDetails, OptionFields, ReturnsFields, ShippingServices, type PackageFields } from "./CommerceFields";
+import { CountrySelect, Field, Reveal, WholeNumber, type Problem } from "./EditorFields";
 
-type PackageFields = Omit<PackageInput, "regions">;
 type Form = Omit<ListingDraft, "price" | "shipping" | "stock"> & PackageFields & { price: string; shipping: string; stock: string; salePrice: string; saleStarts: string; saleEnds: string; compareAt: string; acceptsOffers: boolean; lotSize: string; availability: AvailabilityDraft; tiers: TierRow[]; variantWeights: string[]; taxonomy: string; subcategory: string; specifics: SpecificRow[]; returns: ReturnsDraft };
 
 const EMPTY: ListingDraft = { title: "", description: "", category: "", kind: "physical", shipFrom: "", stock: 1, images: [], currency: "USD", price: 0, shipping: 0, contentRating: "general", contentTags: [] };
+const MAX_TIERS = 4;
+
+// Section ids, in page order, and the section each field sits in.
+const BASICS = "ob-listing-details", PHOTOS = "ob-listing-photos", PRICING = "ob-listing-pricing", DISCOUNTS = "ob-listing-discounts", ITEM = "ob-listing-item", OPTIONS = "ob-listing-options", SHIPPING = "ob-listing-shipping", RETURNS = "ob-listing-returns", CONTENT = "ob-listing-content";
+const TITLE = "ob-f-title", CATEGORY = "ob-f-category", SUBCATEGORY = "ob-f-subcategory", CURRENCY = "ob-f-currency", PRICE = "ob-f-price", STOCK = "ob-f-stock", SHIP_FROM = "ob-f-ship-from", FLAT_SHIPPING = "ob-f-shipping";
+const SECTION_OF: Record<string, string> = { [TITLE]: BASICS, [CATEGORY]: BASICS, [SUBCATEGORY]: BASICS, [CURRENCY]: PRICING, [PRICE]: PRICING, [STOCK]: PRICING, [SHIP_FROM]: SHIPPING, [FLAT_SHIPPING]: SHIPPING };
 
 function formOf(draft: ListingDraft): Form {
   const sale = saleFieldsOf(draft.price, draft.commerce?.sale ?? null, draft.currency);
   const purchase = purchaseFields(draft.commerce);
   const rows = draft.commerce ? rowsOf(draft.commerce) : [];
-  return { ...draft, ...packageFieldsOf(draft.commerce?.shipping, draft.currency), ...categoryFieldsOf(draft.category, draft.commerce?.taxonomy ?? 0), specifics: specificRows(draft.commerce?.specifics), returns: returnsDraft(draft.commerce?.returns), price: draft.price ? fromMinorUnits(draft.price, draft.currency) : "", shipping: draft.shipping ? fromMinorUnits(draft.shipping, draft.currency) : "", stock: String(draft.stock), salePrice: sale.price, saleStarts: sale.startsOn, saleEnds: sale.endsOn, compareAt: compareAtText(draft.commerce?.compareAt ?? 0, draft.currency), acceptsOffers: draft.commerce?.acceptsOffers ?? false, lotSize: purchase.lotSize, availability: purchase.availability, tiers: tierRows(draft.price, draft.commerce?.tiers ?? [], draft.currency), variantWeights: rows.map(row => row.weightG ? String(row.weightG) : "") };
+  return { ...draft, ...packageFieldsOf(draft.commerce?.shipping, draft.currency), ...categoryFieldsOf(draft.category, draft.commerce?.taxonomy ?? 0), specifics: filledSpecifics(specificRows(draft.commerce?.specifics)), returns: returnsDraft(draft.commerce?.returns), price: draft.price ? fromMinorUnits(draft.price, draft.currency) : "", shipping: draft.shipping ? fromMinorUnits(draft.shipping, draft.currency) : "", stock: String(draft.stock), salePrice: sale.price, saleStarts: sale.startsOn, saleEnds: sale.endsOn, compareAt: compareAtText(draft.commerce?.compareAt ?? 0, draft.currency), acceptsOffers: draft.commerce?.acceptsOffers ?? false, lotSize: purchase.lotSize, availability: purchase.availability, tiers: filledTiers(tierRows(draft.price, draft.commerce?.tiers ?? [], draft.currency)), variantWeights: rows.map(row => row.weightG ? String(row.weightG) : "") };
 }
 
-/// The draft the node takes, or what to fix first.
-function draftFrom(form: Form): ListingDraft | string {
+/// The draft the node takes, or what to fix first and where.
+function draftFrom(form: Form): ListingDraft | Problem {
+  const fail = (at: string, message: string): Problem => ({ at, message });
+  const fiat = form.currency !== "SAT";
+  const { salePrice: _salePrice, saleStarts: _saleStarts, saleEnds: _saleEnds, compareAt: _compareAt, acceptsOffers: _acceptsOffers, lotSize: _lotSize, availability: _availability, tiers: _tiers, variantWeights: _variantWeights, taxonomy: _taxonomy, subcategory: _subcategory, weightG: _weightG, lengthMm: _lengthMm, widthMm: _widthMm, heightMm: _heightMm, handlingDays: _handlingDays, freeOver: _freeOver, specifics: _specifics, returns: _returns, ...rest } = form;
+  if (!form.title.trim()) return fail(TITLE, "Give the listing a title.");
+  const category = signedCategory(form, fiat);
+  if (typeof category === "string") return fail(category.startsWith("A subcategory") ? SUBCATEGORY : CATEGORY, category);
   const price = toMinorUnits(form.price, form.currency);
-  const shipping = form.kind === "digital" || !form.shipping.trim() ? 0 : toMinorUnits(form.shipping, form.currency);
+  if (!price) return fail(PRICE, fiat ? `Enter a price in ${form.currency}, like 12.50.` : "Enter a price in whole sats.");
   const stock = Number(form.stock);
-  if (!form.title.trim()) return "Give the listing a title.";
-  const category = signedCategory(form, form.currency !== "SAT");
-  if (typeof category === "string") return category;
-  if (!price) return form.currency === "SAT" ? "Enter a price in whole sats." : `Enter a price in ${form.currency}, like 12.50.`;
-  if (shipping === null) return "Enter shipping as a plain amount, or leave it empty for free shipping.";
-  if (!Number.isInteger(stock) || stock < 0 || stock > 1_000_000) return "Enter how many you have, from 0 to 1,000,000.";
-  if (form.kind === "physical" && !form.shipFrom.trim()) return "Say where it ships from.";
+  if (!Number.isInteger(stock) || stock < 0 || stock > 1_000_000) return fail(STOCK, "Enter how many you have, from 0 to 1,000,000.");
+  if (form.kind === "physical" && !form.shipFrom.trim()) return fail(SHIP_FROM, "Choose the country it ships from.");
+  const shipping = form.kind === "digital" || !form.shipping.trim() ? 0 : toMinorUnits(form.shipping, form.currency);
+  if (shipping === null) return fail(FLAT_SHIPPING, "Enter shipping as a plain amount, or leave it empty for free shipping.");
+  if (!fiat) {
+    // A sats price is signed without the version 7 block, so the terms that live there are left off.
+    if (form.commerce?.variants.length || form.commerce?.shipping.services.length) return fail(CURRENCY, "Options and shipping services need a price in USD, EUR, GBP or JPY. Switch the price currency back, or remove them first.");
+    return { ...rest, category: category.category, price, shipping, stock, commerce: null };
+  }
+  let commerce: Commerce = { ...(form.commerce ?? emptyCommerce()), taxonomy: category.taxonomy };
   const sale = scheduledSale(price, form.currency, { price: form.salePrice, startsOn: form.saleStarts, endsOn: form.saleEnds });
-  if (typeof sale === "string") return sale;
-  let commerce = withSale(form.commerce ?? null, sale);
-  if (commerce && form.kind === "physical") {
+  if (typeof sale === "string") return fail(DISCOUNTS, sale);
+  commerce = { ...commerce, sale };
+  if (form.kind === "physical") {
     const terms = shippingTerms(form.currency, {
       weightG: form.weightG, lengthMm: form.lengthMm, widthMm: form.widthMm, heightMm: form.heightMm,
       handlingDays: form.handlingDays, freeOver: form.freeOver,
       regions: commerce.shipping.services.map(service => service.regions.join(", ")),
     });
-    if (typeof terms === "string") return terms;
-    commerce = withPackage(commerce, terms);
+    if (typeof terms === "string") return fail(SHIPPING, terms);
+    commerce = withPackage(commerce, terms) ?? commerce;
+    const names = commerce.shipping.services.map(service => service.name.trim().toLowerCase());
+    if (commerce.shipping.services.some(s => !s.name.trim() || s.daysMin > s.daysMax)) return fail(SHIPPING, "Name each shipping service and give its delivery days, fastest first.");
+    if (new Set(names).size !== names.length) return fail(SHIPPING, "Give each shipping service its own name.");
+    if (commerce.shipping.services.some(s => s.extraItem > s.price)) return fail(SHIPPING, "An extra item costs no more to ship than the first.");
   }
-  if (form.commerce) {
-    const facts = listingFacts(form.specifics, form.returns);
-    if (typeof facts === "string") return facts;
-    commerce = withFacts(commerce, facts);
-  }
-  const priced = priceTerms(price, form.currency, form.compareAt, form.acceptsOffers, (commerce ?? form.commerce)?.variants.map(variant => variant.price) ?? []);
-  if (typeof priced === "string") return priced;
-  commerce = withPrice(commerce, priced);
+  const facts = listingFacts(form.specifics, form.returns);
+  if (typeof facts === "string") return fail(facts.startsWith("A returns") ? RETURNS : ITEM, facts);
+  commerce = { ...commerce, specifics: facts.specifics, returns: facts.returns };
+  const priced = priceTerms(price, form.currency, form.compareAt, form.acceptsOffers, commerce.variants.map(variant => variant.price));
+  if (typeof priced === "string") return fail(DISCOUNTS, priced);
+  commerce = { ...commerce, compareAt: priced.compareAt, acceptsOffers: priced.acceptsOffers };
   const purchase = purchaseTerms(form.lotSize, form.availability);
-  if (typeof purchase === "string") return purchase;
-  commerce = withPurchase(commerce, purchase);
+  if (typeof purchase === "string") return fail(PRICING, purchase);
+  commerce = { ...commerce, lotSize: purchase.lotSize, availability: purchase.availability };
   const tiers = volumeTiers(price, form.currency, form.tiers);
-  if (typeof tiers === "string") return tiers;
-  commerce = withTiers(commerce, tiers);
-  if (commerce?.variants.length) {
-    const rows = rowsOf(commerce);
+  if (typeof tiers === "string") return fail(DISCOUNTS, tiers);
+  commerce = { ...commerce, tiers };
+  const rows = rowsOf(commerce);
+  if (commerce.variants.length) {
     const weights = form.variantWeights.length === rows.length ? rows.flatMap((row, index) => (row.offered ? [form.variantWeights[index] ?? ""] : [])) : form.variantWeights;
     const variants = withVariantWeights(commerce.variants, weights);
-    if (typeof variants === "string") return variants;
+    if (typeof variants === "string") return fail(OPTIONS, variants);
     commerce = { ...commerce, variants };
   }
-  commerce = withTaxonomy(commerce, category.taxonomy);
-  if (commerce && form.currency === "SAT") return "Price a listing with options or shipping services in USD, EUR, GBP, or JPY.";
-  if (commerce) {
-    const problem = axesProblem(commerce.axes, rowsOf(commerce));
-    if (problem) return problem;
-    if (commerce.shipping.services.some(s => !s.name.trim() || s.daysMin > s.daysMax)) return "Name each shipping service and give its delivery days, fastest first.";
-  }
-  const { salePrice: _salePrice, saleStarts: _saleStarts, saleEnds: _saleEnds, compareAt: _compareAt, acceptsOffers: _acceptsOffers, lotSize: _lotSize, availability: _availability, tiers: _tiers, variantWeights: _variantWeights, taxonomy: _taxonomy, subcategory: _subcategory, weightG: _weightG, lengthMm: _lengthMm, widthMm: _widthMm, heightMm: _heightMm, handlingDays: _handlingDays, freeOver: _freeOver, specifics: _specifics, returns: _returns, ...rest } = form;
+  const problem = axesProblem(commerce.axes, rows);
+  if (problem) return fail(OPTIONS, problem);
   return { ...rest, category: category.category, price, shipping, stock, commerce };
 }
 
@@ -89,20 +101,30 @@ export function ListingEditor({ listing, savedDraft, rates, onSaved, onCancel }:
   const [draftId, setDraftId] = useState(savedDraft?.draftId ?? null);
   const listingId = draftListingId(listing, savedDraft);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
-  const { run, dialog } = useLockedAction(setError);
-  const set = <K extends keyof Form>(key: K, value: Form[K]) => setForm(f => ({ ...f, [key]: value }));
+  const [error, setError] = useState<Problem | null>(null);
+  const [saleOn, setSaleOn] = useState(() => Boolean(form.salePrice || form.saleStarts || form.saleEnds));
+  const [compareOn, setCompareOn] = useState(() => Boolean(form.compareAt));
+  const { run, dialog } = useLockedAction(message => setError(message ? { at: "", message } : null));
+  const patch = (change: Partial<Form>) => { setError(null); setForm(f => ({ ...f, ...change })); };
+  const set = <K extends keyof Form>(key: K, value: Form[K]) => patch({ [key]: value } as unknown as Partial<Form>);
+  // Take the seller to the field or section the editor refused.
+  useEffect(() => {
+    const target = error?.at ? document.getElementById(error.at) : null;
+    if (!target) return;
+    target.scrollIntoView({ block: "center" });
+    if (target instanceof HTMLInputElement || target instanceof HTMLSelectElement || target instanceof HTMLTextAreaElement) target.focus({ preventScroll: true });
+  }, [error]);
   async function save(e: FormEvent) {
     e.preventDefault();
     if (busy) return;
     const publish = (e.nativeEvent as SubmitEvent).submitter?.getAttribute("data-action") !== "draft";
     const draft = draftFrom(form);
-    if (typeof draft === "string") {
+    if ("message" in draft) {
       setError(draft);
       return;
     }
     setBusy(true);
-    setError("");
+    setError(null);
     await run(async () => {
       if (!publish) {
         const saved = await saveDraft(draftId, { ...draft, listingId });
@@ -112,29 +134,51 @@ export function ListingEditor({ listing, savedDraft, rates, onSaved, onCancel }:
       }
       await saveListing(listingId, draft);
       if (draftId) await deleteDraft(draftId);
-      onSaved(listingId ? "Listing updated and signed" : "Listing published");
+      onSaved(listing ? "Listing updated and signed" : "Listing published");
     });
     setBusy(false);
   }
-  const unit = form.currency === "SAT" ? "sats" : form.currency;
-  const variants = (form.commerce?.variants.length ?? 0) > 0;
-  const services = (form.commerce?.shipping.services.length ?? 0) > 0;
-  function configure(section = "ob-listing-options") {
-    setForm(current => current.commerce ? current : { ...current, commerce: emptyCommerce(), ...packageFieldsOf(emptyCommerce().shipping, current.currency) });
-    requestAnimationFrame(() => document.getElementById(section)?.scrollIntoView({ block: "start" }));
-  }
-  return <form id="ob-listing-form" className="ob-listing-editor" onSubmit={e => void save(e)} aria-label={listing ? `Edit ${listing.title}` : "New listing"}>
+  const fiat = form.currency !== "SAT";
+  const physical = form.kind === "physical";
+  const unit = fiat ? form.currency : "sats";
+  const commerce = form.commerce ?? emptyCommerce();
+  const setCommerce = (next: Commerce) => set("commerce", next);
+  const variants = fiat && commerce.variants.length > 0;
+  const services = fiat && commerce.shipping.services.length > 0;
+  const at = (id: string) => (error?.at === id ? error.message : null);
+  const errorSection = error ? SECTION_OF[error.at] ?? error.at : "";
+  const sections: [string, string][] = [[BASICS, "Basics"], [PHOTOS, "Photos"], [PRICING, "Price and stock"]];
+  if (fiat) sections.push([DISCOUNTS, "Offers and discounts"], [ITEM, "Item details"], [OPTIONS, "Options"]);
+  if (physical) sections.push([SHIPPING, "Shipping"]);
+  if (fiat) sections.push([RETURNS, "Returns"]);
+  sections.push([CONTENT, "Content rating"]);
+  const sectionError = (id: string) => at(id) && <p className="ob-section-error">{at(id)}</p>;
+  return <form id="ob-listing-form" className="ob-listing-editor" noValidate onSubmit={e => void save(e)} aria-label={listing ? `Edit ${listing.title}` : "New listing"}>
     <nav className="ob-editor-sections" aria-label="Listing sections">
-      <a href="#ob-listing-details">Details</a>
-      <a href="#ob-listing-pricing">Pricing & inventory</a>
-      <a href="#ob-listing-photos">Media</a>
-      {form.commerce ? <a href="#ob-listing-options">Variants & specifications</a> : <button type="button" disabled={form.currency === "SAT"} onClick={() => configure()}>Variants & specifications</button>}
-      {form.kind === "physical" && (form.commerce ? <a href="#ob-listing-shipping">Shipping</a> : <button type="button" disabled={form.currency === "SAT"} onClick={() => configure("ob-listing-shipping")}>Shipping</button>)}
-      {form.commerce ? <a href="#ob-listing-returns">Returns</a> : <button type="button" disabled={form.currency === "SAT"} onClick={() => configure("ob-listing-returns")}>Returns</button>}
-      <a href="#ob-listing-content">Content rating</a>
+      {sections.map(([id, label]) => <a key={id} href={`#${id}`} className={errorSection === id ? "has-error" : undefined}>{label}</a>)}
     </nav>
-    <fieldset className="ob-store-section" id="ob-listing-photos">
-      <legend>Product media</legend>
+
+    <fieldset className="ob-store-section" id={BASICS}>
+      <legend>Basics</legend>
+      <div className="ob-field-grid">
+        <Field label="Title" wide error={at(TITLE)}><input id={TITLE} value={form.title} maxLength={120} aria-invalid={at(TITLE) ? true : undefined} onChange={e => set("title", e.target.value)}/></Field>
+        <Field label="Description" wide><textarea value={form.description} maxLength={5000} onChange={e => set("description", e.target.value)}/></Field>
+        <div className="ob-field ob-field-wide" role="radiogroup" aria-label="Type of good"><span>Type of good</span><div className="ob-kind-choice">
+          {(["physical", "digital"] as const).map(kind => <label key={kind} className={form.kind === kind ? "is-selected" : ""}><input type="radio" name="kind" checked={form.kind === kind} onChange={() => set("kind", kind)}/>{kind === "physical" ? "Physical item" : "Digital good"}</label>)}
+        </div></div>
+        <Field label="Category" error={at(CATEGORY)}>
+          <select id={CATEGORY} value={form.taxonomy} aria-invalid={at(CATEGORY) ? true : undefined} onChange={e => set("taxonomy", e.target.value)}>
+            <option value="" disabled>Choose a category…</option>
+            {TAXONOMY.map(entry => <option key={entry.id} value={String(entry.id)}>{entry.name}</option>)}
+          </select>
+        </Field>
+        {fiat && <Field label="Subcategory" hint="Optional. A few words buyers would search for, such as “Wool blankets”." error={at(SUBCATEGORY)}><input id={SUBCATEGORY} value={form.subcategory} maxLength={40} autoCapitalize="off" aria-invalid={at(SUBCATEGORY) ? true : undefined} onChange={e => set("subcategory", e.target.value)}/></Field>}
+      </div>
+    </fieldset>
+
+    <fieldset className="ob-store-section" id={PHOTOS} aria-label="Product media">
+      <legend>Photos</legend>
+      <p className="ob-field-hint">Up to {MAX_LISTING_IMAGES}. The first photo is the cover.</p>
       <div className="ob-listing-photos">
         {form.images.map((hash, i) => <figure key={hash} className="ob-listing-photo">
           <MediaImage hash={hash} alt={`Photo ${i + 1}`}/>
@@ -143,65 +187,93 @@ export function ListingEditor({ listing, savedDraft, rates, onSaved, onCancel }:
         {form.images.length < MAX_LISTING_IMAGES && <ImageUpload label="Add photos" multiple onUploaded={hash => setForm(f => f.images.includes(hash) || f.images.length >= MAX_LISTING_IMAGES ? f : { ...f, images: [...f.images, hash] })}/>}
       </div>
     </fieldset>
-    <fieldset className="ob-store-section" id="ob-listing-details">
-      <legend>Listing details</legend>
+
+    <fieldset className="ob-store-section" id={PRICING}>
+      <legend>Price and stock</legend>
+      {sectionError(PRICING)}
       <div className="ob-field-grid">
-        <label className="ob-field ob-field-wide"><span>Title</span><input value={form.title} maxLength={120} onChange={e => set("title", e.target.value)}/></label>
-        <label className="ob-field ob-field-wide"><span>Description</span><textarea value={form.description} maxLength={5000} onChange={e => set("description", e.target.value)}/></label>
-        <div className="ob-field"><label htmlFor="ob-listing-category">Category</label><select id="ob-listing-category" value={form.taxonomy} onChange={e => set("taxonomy", e.target.value)}><option value="">Choose a category…</option>{TAXONOMY.map(({ id, name }) => <option key={id} value={String(id)}>{name}</option>)}</select></div>
-        {form.currency !== "SAT" && <label className="ob-field"><span>Subcategory</span><input value={form.subcategory} maxLength={40} placeholder="Wool blankets" autoCapitalize="off" onChange={e => set("subcategory", e.target.value)}/><small className="ob-field-hint">Optional. A few words buyers would search for.</small></label>}
-        <div className="ob-field" role="radiogroup" aria-label="Type of good"><span>Type of good</span><div className="ob-kind-choice">
-          {(["physical", "digital"] as const).map(kind => <label key={kind} className={form.kind === kind ? "is-selected" : ""}><input type="radio" name="kind" checked={form.kind === kind} onChange={() => set("kind", kind)}/>{kind === "physical" ? "Physical item" : "Digital good"}</label>)}
-        </div></div>
-      </div>
-    </fieldset>
-    <fieldset className="ob-store-section" id="ob-listing-pricing">
-      <legend>Pricing and inventory</legend>
-      <div className="ob-field-grid">
-        <label className="ob-field"><span>Price currency</span><select value={form.currency} onChange={e => set("currency", e.target.value as PriceCurrency)}>{PRICE_CURRENCIES.map(c => <option key={c} value={c}>{c === "SAT" ? "Bitcoin (sats)" : c}</option>)}</select></label>
-        <label className="ob-field"><span>Price ({unit})</span><input inputMode="decimal" value={form.price} placeholder={form.currency === "SAT" ? "25000" : "12.50"} onChange={e => set("price", e.target.value)}/><small className="ob-field-hint">{satsHint(toMinorUnits(form.price, form.currency), form.currency, rates) ?? (form.currency === "SAT" ? "Buyers pay exactly this many sats." : "Buyers pay the sats this is worth when they order.")}</small></label>
-        {form.kind === "physical" && !services && <label className="ob-field"><span>Shipping ({unit})</span><input inputMode="decimal" value={form.shipping} placeholder="Free" onChange={e => set("shipping", e.target.value)}/></label>}
-        {form.kind === "physical" && <label className="ob-field"><span>Ships from</span><input value={form.shipFrom} maxLength={40} placeholder="Portland" autoCapitalize="off" onChange={e => set("shipFrom", e.target.value)}/></label>}
-        {!variants && <label className="ob-field"><span>In stock</span><input inputMode="numeric" value={form.stock} onChange={e => set("stock", e.target.value)}/></label>}
-        {form.currency !== "SAT" && <>
-          <label className="ob-field"><span>Sale price ({unit})</span><input inputMode="decimal" value={form.salePrice} placeholder="Optional" onChange={e => set("salePrice", e.target.value)}/></label>
-          <label className="ob-field"><span>Sale starts</span><input type="date" value={form.saleStarts} onChange={e => set("saleStarts", e.target.value)}/></label>
-          <label className="ob-field"><span>Sale ends</span><input type="date" value={form.saleEnds} onChange={e => set("saleEnds", e.target.value)}/></label>
-          <label className="ob-field"><span>Compare-at ({unit})</span><input inputMode="decimal" value={form.compareAt} placeholder="Optional" onChange={e => set("compareAt", e.target.value)}/><small className="ob-field-hint">A struck-through price, above the price buyers pay.</small></label>
-          <p className="ob-shipping-note ob-field-wide">Leave the sale empty to sell at the regular price. Buyers pay the sale price on those days, and it is signed with the listing.</p>
-          <label className="ob-default-address"><input type="checkbox" checked={form.acceptsOffers} onChange={e => set("acceptsOffers", e.target.checked)}/>Accept offers</label>
-          <label className="ob-field"><span>Lot size</span><input inputMode="numeric" value={form.lotSize} placeholder="1" onChange={e => set("lotSize", e.target.value)}/><small className="ob-field-hint">Pieces in one unit. One is a single piece.</small></label>
-          <label className="ob-field"><span>Availability</span><select value={form.availability.kind} onChange={e => set("availability", { ...form.availability, kind: e.target.value })}><option value="in-stock">In stock</option><option value="pre-order">Pre-order</option><option value="made-to-order">Made to order</option><option value="away">Away</option></select></label>
-          {form.availability.kind === "pre-order" && <label className="ob-field"><span>Ships on</span><input type="date" value={form.availability.shipsOn} onChange={e => set("availability", { ...form.availability, shipsOn: e.target.value })}/></label>}
-          {form.availability.kind === "made-to-order" && <label className="ob-field"><span>Ready in (days)</span><input inputMode="numeric" value={form.availability.days} placeholder="14" onChange={e => set("availability", { ...form.availability, days: e.target.value })}/></label>}
-          {form.tiers.map((tier, index) => <div className="ob-service-row ob-volume-tier ob-field-wide" key={index}>
-            <label className="ob-field"><span>Buy at least</span><input inputMode="numeric" value={tier.qty} placeholder="3" onChange={e => set("tiers", form.tiers.map((item, at) => at === index ? { ...item, qty: e.target.value } : item))}/></label>
-            <label className="ob-field"><span>Each ({unit})</span><input inputMode="decimal" value={tier.price} placeholder="20.00" onChange={e => set("tiers", form.tiers.map((item, at) => at === index ? { ...item, price: e.target.value } : item))}/></label>
-            {form.tiers.length > 1 && <button type="button" className="ob-text-link" onClick={() => set("tiers", form.tiers.filter((_, at) => at !== index))}>Remove</button>}
-          </div>)}
-          {form.tiers.length < 4 && <button type="button" className="ob-secondary" onClick={() => set("tiers", [...form.tiers, { qty: "", price: "" }])}>Add a volume tier</button>}
-          <p className="ob-shipping-note ob-field-wide">A blank tier row is left off the listing. Each price is below the regular price, and each quantity is higher than the one before it.</p>
+        <Field label="Price currency" error={at(CURRENCY)} hint={fiat ? null : "Sales, options, shipping services and returns need USD, EUR, GBP or JPY. Buyers pay in bitcoin either way."}><select id={CURRENCY} value={form.currency} onChange={e => set("currency", e.target.value as PriceCurrency)}>{PRICE_CURRENCIES.map(c => <option key={c} value={c}>{c === "SAT" ? "Bitcoin (sats)" : c}</option>)}</select></Field>
+        <Field label={`Price (${unit})`} error={at(PRICE)} hint={satsHint(toMinorUnits(form.price, form.currency), form.currency, rates) ?? (fiat ? "Buyers pay the sats this is worth when they order." : "Buyers pay exactly this many sats.")}><input id={PRICE} inputMode="decimal" value={form.price} aria-invalid={at(PRICE) ? true : undefined} onChange={e => set("price", e.target.value)}/></Field>
+        {variants ? <p className="ob-shipping-note">Stock is set for each variant under <a href={`#${OPTIONS}`}>Options</a>.</p> : <Field label="In stock" error={at(STOCK)}><WholeNumber id={STOCK} value={form.stock} max={1_000_000} invalid={Boolean(at(STOCK))} onChange={stock => set("stock", stock)}/></Field>}
+        {fiat && <>
+          <Field label="Availability"><select value={form.availability.kind} onChange={e => set("availability", { ...form.availability, kind: e.target.value })}><option value="in-stock">In stock</option><option value="pre-order">Pre-order</option><option value="made-to-order">Made to order</option><option value="away">Away</option></select></Field>
+          {form.availability.kind === "pre-order" && <Field label="Ships on"><input type="date" value={form.availability.shipsOn} onChange={e => set("availability", { ...form.availability, shipsOn: e.target.value })}/></Field>}
+          {form.availability.kind === "made-to-order" && <Field label="Ready in (days)" hint="At most 365."><WholeNumber value={form.availability.days} max={365} onChange={days => set("availability", { ...form.availability, days })}/></Field>}
+          <Field label="Lot size" hint="Pieces sold together as one unit. One is a single piece."><WholeNumber value={form.lotSize} min={1} max={65_535} onChange={lotSize => set("lotSize", lotSize)}/></Field>
+          <Field label="Most per order" hint="Leave empty for no limit."><WholeNumber value={commerce.maxPerOrder ? String(commerce.maxPerOrder) : ""} min={1} max={999} onChange={value => setCommerce({ ...commerce, maxPerOrder: Math.min(999, Number(value) || 0) })}/></Field>
         </>}
       </div>
-      {!form.commerce && <div className="ob-listing-configuration">
-        <div><strong>Specifications and fulfillment</strong><p>{form.currency === "SAT" ? "Choose a fiat price currency to use variants and service-based shipping. Customers still pay in bitcoin." : "Configure item condition, variants, SKUs, package dimensions, delivery services and returns."}</p></div>
-        <button type="button" className="ob-secondary" disabled={form.currency === "SAT"} onClick={() => configure()}>Configure fulfillment</button>
-      </div>}
     </fieldset>
-    {form.commerce && <CommerceFields commerce={form.commerce} kind={form.kind} currency={form.currency === "SAT" ? "USD" : form.currency} basePrice={toMinorUnits(form.price, form.currency) ?? 0} images={form.images} packageFields={form} onPackage={patch => setForm(current => ({ ...current, ...patch }))} specifics={form.specifics} onSpecifics={specifics => set("specifics", specifics)} returns={form.returns} onReturns={patch => setForm(current => ({ ...current, returns: { ...current.returns, ...patch } }))} variantWeights={form.variantWeights} onVariantWeights={variantWeights => set("variantWeights", variantWeights)} onChange={c => set("commerce", c)}/>}
-    <fieldset className="ob-store-section" id="ob-listing-content">
+
+    {fiat && <fieldset className="ob-store-section" id={DISCOUNTS}>
+      <legend>Offers and discounts</legend>
+      {sectionError(DISCOUNTS)}
+      <Reveal label="Accept offers" hint="Buyers can propose a price. You accept or decline each one." on={form.acceptsOffers} onToggle={on => set("acceptsOffers", on)}/>
+      <Reveal label="Run a sale" hint="Buyers pay the sale price on the days you choose." on={saleOn} onToggle={on => { setSaleOn(on); if (!on) patch({ salePrice: "", saleStarts: "", saleEnds: "" }); }}>
+        <div className="ob-field-grid ob-field-grid-3">
+          <Field label={`Sale price (${unit})`} hint="Below the regular price."><input inputMode="decimal" value={form.salePrice} onChange={e => set("salePrice", e.target.value)}/></Field>
+          <Field label="Sale starts"><input type="date" value={form.saleStarts} onChange={e => set("saleStarts", e.target.value)}/></Field>
+          <Field label="Sale ends"><input type="date" value={form.saleEnds} min={form.saleStarts || undefined} onChange={e => set("saleEnds", e.target.value)}/></Field>
+        </div>
+      </Reveal>
+      <Reveal label="Show a compare-at price" hint="A struck-through price shown above the price buyers pay." on={compareOn} onToggle={on => { setCompareOn(on); if (!on) set("compareAt", ""); }}>
+        <div className="ob-field-grid"><Field label={`Compare-at (${unit})`} hint="Above every price on this listing."><input inputMode="decimal" value={form.compareAt} onChange={e => set("compareAt", e.target.value)}/></Field></div>
+      </Reveal>
+      <Reveal label="Volume pricing" hint="A lower price for each piece when a buyer orders more." on={form.tiers.length > 0} onToggle={on => set("tiers", on ? [{ qty: "", price: "" }] : [])}>
+        {form.tiers.map((tier, index) => <div className="ob-service-row ob-volume-tier" key={index}>
+          <Field label="Buy at least" hint="Two or more."><WholeNumber value={tier.qty} min={2} max={65_535} onChange={qty => set("tiers", form.tiers.map((item, n) => n === index ? { ...item, qty } : item))}/></Field>
+          <Field label={`Each (${unit})`} hint="Below the regular price."><input inputMode="decimal" value={tier.price} onChange={e => set("tiers", form.tiers.map((item, n) => n === index ? { ...item, price: e.target.value } : item))}/></Field>
+          <button type="button" className="ob-text-link" aria-label={`Remove volume tier ${index + 1}`} onClick={() => set("tiers", form.tiers.filter((_, n) => n !== index))}>Remove</button>
+        </div>)}
+        {form.tiers.length < MAX_TIERS && <button type="button" className="ob-secondary" onClick={() => set("tiers", [...form.tiers, { qty: "", price: "" }])}>Add a volume tier</button>}
+        <p className="ob-shipping-note">Each tier needs a higher quantity and a lower price than the one before it.</p>
+      </Reveal>
+    </fieldset>}
+
+    {fiat && <fieldset className="ob-store-section" id={ITEM}>
+      <legend>Item details</legend>
+      {sectionError(ITEM)}
+      <ItemDetails commerce={commerce} onChange={setCommerce} specifics={form.specifics} onSpecifics={specifics => set("specifics", specifics)}/>
+    </fieldset>}
+
+    {fiat && <fieldset className="ob-store-section" id={OPTIONS}>
+      <legend>Options</legend>
+      {sectionError(OPTIONS)}
+      <OptionFields commerce={commerce} onChange={setCommerce} currency={form.currency} basePrice={toMinorUnits(form.price, form.currency) ?? 0} images={form.images} variantWeights={form.variantWeights} onVariantWeights={variantWeights => set("variantWeights", variantWeights)}/>
+    </fieldset>}
+
+    {physical && <fieldset className="ob-store-section" id={SHIPPING}>
+      <legend>Shipping</legend>
+      {sectionError(SHIPPING)}
+      <div className="ob-field-grid">
+        <CountrySelect id={SHIP_FROM} label="Ships from" value={form.shipFrom} error={at(SHIP_FROM)} hint="Only the country is published." onChange={name => set("shipFrom", name)}/>
+        {!services && <Field label={`Shipping (${unit})`} error={at(FLAT_SHIPPING)} hint="One flat price for a package. Leave empty for free shipping."><input id={FLAT_SHIPPING} inputMode="decimal" value={form.shipping} aria-invalid={at(FLAT_SHIPPING) ? true : undefined} onChange={e => set("shipping", e.target.value)}/></Field>}
+      </div>
+      {fiat && <ShippingServices commerce={commerce} onChange={setCommerce} currency={form.currency} packageFields={form} onPackage={change => patch(change)}/>}
+    </fieldset>}
+
+    {fiat && <fieldset className="ob-store-section" id={RETURNS}>
+      <legend>Returns</legend>
+      {sectionError(RETURNS)}
+      <ReturnsFields returns={form.returns} onReturns={change => patch({ returns: { ...form.returns, ...change } })}/>
+    </fieldset>}
+
+    <fieldset className="ob-store-section" id={CONTENT}>
       <legend>Content rating</legend>
       <div className="ob-field-grid">
-        <label className="ob-field"><span>Rating</span><select value={form.contentRating} onChange={e => set("contentRating", e.target.value as ListingDraft["contentRating"])}><option value="general">General</option><option value="sensitive">Sensitive</option><option value="adult">Adult</option></select></label>
-        <div className="ob-field"><span>Contains</span><div className="ob-tag-choice">{CONTENT_TAGS.map(tag => <label key={tag}><input type="checkbox" checked={form.contentTags.includes(tag)} onChange={e => set("contentTags", e.target.checked ? [...form.contentTags, tag] : form.contentTags.filter(t => t !== tag))}/>{tag.charAt(0).toUpperCase() + tag.slice(1)}</label>)}</div></div>
+        <Field label="Rating"><select value={form.contentRating} onChange={e => set("contentRating", e.target.value as ListingDraft["contentRating"])}><option value="general">General</option><option value="sensitive">Sensitive</option><option value="adult">Adult</option></select></Field>
+        <div className="ob-field" role="group" aria-label="Contains"><span>Contains</span><div className="ob-tag-choice">{CONTENT_TAGS.map(tag => <label key={tag}><input type="checkbox" checked={form.contentTags.includes(tag)} onChange={e => set("contentTags", e.target.checked ? [...form.contentTags, tag] : form.contentTags.filter(t => t !== tag))}/>{tag.charAt(0).toUpperCase() + tag.slice(1)}</label>)}</div></div>
       </div>
     </fieldset>
-    {listing?.price && <p className="ob-page-intro">Signed at {formatPrice(listing.price.amount, listing.price.currency)} ({listing.priceSats.toLocaleString("en-US")} sats that day).</p>}
-    {error && <p className="ob-form-error" role="alert">{error}</p>}
-    <div className="ob-form-actions">
-      <button type="button" className="ob-secondary" onClick={onCancel}>Cancel</button>
-      <button type="submit" data-action="draft" className="ob-secondary" disabled={busy}>Save draft</button>
-      <button type="submit" data-action="publish" className="ob-primary" disabled={busy}>{busy ? "Saving…" : listingId ? "Save changes" : "Publish listing"}</button>
+
+    <div className="ob-editor-actions">
+      {listing?.price && <p className="ob-page-intro">Signed at {formatPrice(listing.price.amount, listing.price.currency)} ({listing.priceSats.toLocaleString("en-US")} sats that day).</p>}
+      {error && <p className="ob-form-error" role="alert">{error.message}</p>}
+      <div className="ob-form-actions">
+        <button type="button" className="ob-secondary" onClick={onCancel}>Cancel</button>
+        <button type="submit" data-action="draft" className="ob-secondary" disabled={busy}>Save draft</button>
+        <button type="submit" data-action="publish" className="ob-primary" disabled={busy}>{busy ? "Saving…" : listingId ? "Save changes" : "Publish listing"}</button>
+      </div>
     </div>
     {dialog}
   </form>;

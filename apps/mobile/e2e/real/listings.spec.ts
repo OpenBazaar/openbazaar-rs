@@ -19,7 +19,7 @@ test('a listing is published with several photos, one removed before publishing'
   await page.getByLabel('Category', { exact: true }).selectOption({ label: 'Home and kitchen' })
   await page.getByLabel('Price currency').selectOption('SAT')
   await page.getByRole('textbox', { name: /^Price \(sats\)/ }).fill('25000')
-  await page.getByLabel('Ships from', { exact: true }).fill('US')
+  await page.getByLabel('Ships from', { exact: true }).selectOption({ label: 'United States' })
   await page.locator('input[type=file][aria-label="Add photos"]').setInputFiles(photos(4, 'mug'))
   const media = page.getByRole('group', { name: 'Product media' })
   await expect(media.getByRole('img')).toHaveCount(4)
