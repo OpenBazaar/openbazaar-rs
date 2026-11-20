@@ -77,7 +77,7 @@ test('the mobile drawer keeps utilities accessible and preferences fit a narrow 
     expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(320)
   }
   await page.getByRole('button', { name: 'Open navigation', exact: true }).click()
-  await page.getByRole('button', { name: 'Tools', exact: true }).click()
+  await page.getByRole('button', { name: 'Tools and supplies', exact: true }).click()
   await expect(page.getByRole('heading', { name: /^Tools/ })).toBeVisible()
 })
 

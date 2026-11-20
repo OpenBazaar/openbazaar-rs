@@ -3,7 +3,8 @@ import { Alert, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 
 import { File } from "expo-file-system";
 
 import type { ListingHeader } from "../../catalog.ts";
-import { compareAtText, listingFacts, packageFieldsOf, priceTerms, purchaseFields, purchaseTerms, returnsDraft, saleFieldsOf, scheduledSale, shippingTerms, signedTaxonomy, specificRows, tierRows, volumeTiers, withFacts, withPackage, withPrice, withPurchase, withSale, withTaxonomy, withTiers, withVariantWeights, type AvailabilityDraft, type PackageInput, type ReturnsDraft, type SpecificRow, type TierRow } from "../../commerceDraft.ts";
+import { compareAtText, listingFacts, packageFieldsOf, priceTerms, purchaseFields, purchaseTerms, returnsDraft, saleFieldsOf, scheduledSale, shippingTerms, specificRows, TAXONOMY, tierRows, volumeTiers, withFacts, withPackage, withPrice, withPurchase, withSale, withTaxonomy, withTiers, withVariantWeights, type AvailabilityDraft, type PackageInput, type ReturnsDraft, type SpecificRow, type TierRow } from "../../commerceDraft.ts";
+import { categoryFieldsOf, signedCategory } from "../../listingFields.ts";
 import { draftListingId } from "../../listingDraft.ts";
 import { CONTENT_TAGS, MAX_LISTING_IMAGES, PRICE_CURRENCIES, deleteDraft, deleteListing, draftOf, fromMinorUnits, saveDraft, saveListing, toMinorUnits, uploadImage, type ListingDraft, type PriceCurrency, type SavedDraft } from "../../seller.ts";
 import { isLocked, passphraseError, unlockWallet } from "../../walletLock.ts";
@@ -12,7 +13,7 @@ import { ListingPhoto } from "../ListingPhoto.tsx";
 import { Button, Card, NAVY, Notice, SOFT, ui } from "../ui.tsx";
 
 type PackageFields = Omit<PackageInput, "regions">;
-type Fields = Omit<ListingDraft, "price" | "shipping" | "stock"> & PackageFields & { price: string; shipping: string; stock: string; salePrice: string; saleStarts: string; saleEnds: string; compareAt: string; acceptsOffers: boolean; lotSize: string; availability: AvailabilityDraft; tiers: TierRow[]; variantWeights: string[]; taxonomy: string; shipsTo: string[]; specifics: SpecificRow[]; returns: ReturnsDraft };
+type Fields = Omit<ListingDraft, "price" | "shipping" | "stock"> & PackageFields & { price: string; shipping: string; stock: string; salePrice: string; saleStarts: string; saleEnds: string; compareAt: string; acceptsOffers: boolean; lotSize: string; availability: AvailabilityDraft; tiers: TierRow[]; variantWeights: string[]; taxonomy: string; subcategory: string; shipsTo: string[]; specifics: SpecificRow[]; returns: ReturnsDraft };
 
 const EMPTY: ListingDraft = {
   title: "",
@@ -48,7 +49,7 @@ function fieldsOf(listing: ListingHeader | null, saved?: ListingDraft): Fields {
     availability: purchaseFields(draft.commerce).availability,
     tiers: tierRows(draft.price, draft.commerce?.tiers ?? [], draft.currency),
     variantWeights: draft.commerce?.variants.map(variant => (variant.weightG ? String(variant.weightG) : "")) ?? [],
-    taxonomy: String(draft.commerce?.taxonomy ?? 0),
+    ...categoryFieldsOf(draft.category, draft.commerce?.taxonomy ?? 0),
     shipsTo: draft.commerce?.shipping.services.map(service => service.regions.join(", ")) ?? [],
     specifics: specificRows(draft.commerce?.specifics),
     returns: returnsDraft(draft.commerce?.returns),
@@ -60,7 +61,8 @@ function draftFrom(form: Fields): ListingDraft | string {
   const shipping = form.kind === "digital" || !form.shipping.trim() ? 0 : toMinorUnits(form.shipping, form.currency);
   const stock = Number(form.stock);
   if (!form.title.trim()) return "Give the listing a title.";
-  if (!form.category.trim()) return "Give the listing a category.";
+  const category = signedCategory(form, form.currency !== "SAT");
+  if (typeof category === "string") return category;
   if (!price) return form.currency === "SAT" ? "Enter a price in whole sats." : `Enter a price in ${form.currency}, like 12.50.`;
   if (shipping === null) return "Enter shipping as a plain amount, or leave it empty for free shipping.";
   if (!Number.isInteger(stock) || stock < 0 || stock > 1_000_000) return "Enter how many you have, from 0 to 1,000,000.";
@@ -94,14 +96,12 @@ function draftFrom(form: Fields): ListingDraft | string {
     if (typeof variants === "string") return variants;
     commerce = { ...commerce, variants };
   }
-  const taxonomy = signedTaxonomy(form.taxonomy);
-  if (typeof taxonomy === "string") return taxonomy;
-  commerce = withTaxonomy(commerce, taxonomy);
+  commerce = withTaxonomy(commerce, category.taxonomy);
   if (commerce && form.currency === "SAT") return "Price a listing with options or shipping services in USD, EUR, GBP, or JPY.";
   return {
     title: form.title.trim(),
     description: form.description.trim(),
-    category: form.category.trim(),
+    category: category.category,
     kind: form.kind,
     shipFrom: form.shipFrom.trim(),
     stock,
@@ -232,7 +232,13 @@ export function ListingEdit({ listing, unpublished, onClose }: { listing: Listin
       <Card title="Details">
         <Field label="Title" value={form.title} onChangeText={(title) => set("title", title)} />
         <Field label="Description" value={form.description} onChangeText={(description) => set("description", description)} multiline />
-        <Field label="Category" value={form.category} placeholder="Wool blankets" capitalize="none" onChangeText={(category) => set("category", category)} />
+        <Text style={ui.muted}>Category</Text>
+        <View style={styles.choices}>
+          {TAXONOMY.map(({ id, name }) => (
+            <Chip key={id} label={name} selected={form.taxonomy === String(id)} onPress={() => set("taxonomy", String(id))} />
+          ))}
+        </View>
+        {form.currency !== "SAT" ? <Field label="Subcategory (optional)" value={form.subcategory} placeholder="Wool blankets" capitalize="none" onChangeText={(subcategory) => set("subcategory", subcategory)} /> : null}
         <Text style={ui.muted}>Type of good</Text>
         <View style={styles.choices}>
           <Chip label="Physical item" selected={form.kind === "physical"} onPress={() => set("kind", "physical")} />

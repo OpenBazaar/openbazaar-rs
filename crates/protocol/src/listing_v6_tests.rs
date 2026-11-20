@@ -123,6 +123,45 @@ fn resign_needs_the_store_key_and_checks_public_text() {
     assert!(matches!(leaky.resign(&secret()), Err(Error::PrivateText { .. })));
 }
 
+/// `listing` with the text field `from` swapped for `to` and signed with the
+/// store key, as a client that skips the checks at signing would produce.
+fn forged(listing: &Listing, from: &str, to: &str) -> Vec<u8> {
+    let field = |text: &str| [&(text.len() as u16).to_le_bytes()[..], text.as_bytes()].concat();
+    let bytes = listing.encode().unwrap();
+    let body = &bytes[..bytes.len() - sign::SIG_LEN];
+    let (old, new) = (field(from), field(to));
+    let at = body.windows(old.len()).position(|window| window == old).unwrap();
+    let mut forged = [&body[..at], &new[..], &body[at + old.len()..]].concat();
+    let signature = sign::sign("ob/listing/v1", &forged, &secret());
+    forged.extend_from_slice(&signature);
+    forged
+}
+
+#[test]
+fn a_received_listing_with_hostile_text_does_not_verify() {
+    let honest = Listing::decode(&forged(&v6(), "Home", "Home and kitchen")).unwrap();
+    honest.verify().unwrap();
+    for category in ["Ho\u{202e}me", "Books\nBUY NOW", "nul\u{0}", &"x".repeat(161)] {
+        let listing = Listing::decode(&forged(&v6(), "Home", category)).unwrap();
+        assert!(matches!(listing.verify(), Err(Error::BadListing(_))), "{category:?}");
+    }
+    let title = Listing::decode(&forged(&v6(), "Hand-thrown bowl", &"x".repeat(513))).unwrap();
+    assert!(matches!(title.verify(), Err(Error::BadListing(_))));
+}
+
+#[test]
+fn signing_holds_the_category_to_forty_bytes_of_plain_text() {
+    let mut long = v6();
+    long.category = "x".repeat(41);
+    assert_eq!(long.resign(&secret()), Err(Error::BadListing("the category is at most 40 bytes")));
+    let mut flipped = v6();
+    flipped.category = "Ho\u{202e}me".into();
+    assert!(matches!(flipped.resign(&secret()), Err(Error::BadListing(_))));
+    let mut description = v6();
+    description.description = "Line one.\nLine two.".into();
+    description.resign(&secret()).unwrap().verify().unwrap();
+}
+
 #[test]
 fn fiat_scale_follows_the_currency() {
     assert_eq!(FiatPrice::scale("USD"), 100);

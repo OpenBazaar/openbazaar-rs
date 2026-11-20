@@ -46,6 +46,7 @@ import { bundledPhotoCount } from "./src/native/bundledGoods";
 import { NativeIcon } from "./src/native/icons";
 import { ListingPhoto } from "./src/native/ListingPhoto";
 import { filterListings } from "./src/search";
+import { CATEGORY_NAMES, categoryLabel, topCategory } from "./src/listingFields";
 import { CONTENT_TAGS, parseKeywords, safetyVerdict, toggleHidden, visibleListings, type SafetySettings } from "./src/safety/filter";
 import { readSafety, writeSafety } from "./src/safety/storage";
 
@@ -537,7 +538,7 @@ function Shop({
   const columns = width >= 1280 ? 3 : width >= 900 ? 2 : 1;
   const visible = useMemo(() => {
     let listings = savedOnly ? catalog.listings.filter((listing) => saved.includes(listing.hash)) : catalog.listings;
-    if (filters.category) listings = listings.filter((listing) => listing.category === filters.category);
+    if (filters.category) listings = listings.filter((listing) => topCategory(listing) === filters.category);
     if (filters.seller) listings = listings.filter((listing) => listing.seller === filters.seller);
     if (filters.kind) listings = listings.filter((listing) => listing.kind === filters.kind);
     if (filters.shipFrom) listings = listings.filter((listing) => listing.shipFrom === filters.shipFrom);
@@ -653,7 +654,8 @@ function FilterRail({
   hasRate: boolean;
   onFilters: (filters: Filters) => void;
 }) {
-  const categories = unique(catalog.listings.map((listing) => listing.category));
+  const present = new Set(catalog.listings.map(topCategory));
+  const categories = CATEGORY_NAMES.filter((name) => present.has(name));
   const sellers = unique(catalog.listings.map((listing) => listing.seller));
   const regions = unique(catalog.listings.map((listing) => listing.shipFrom));
   return (
@@ -782,7 +784,7 @@ function Detail({
             ))}
           </View>
         ) : null}
-        <Text style={styles.kicker}>{listing.category}</Text>
+        <Text style={styles.kicker}>{categoryLabel(listing)}</Text>
         <Text style={styles.pageTitle}>{listing.title}</Text>
         <Text style={styles.seller}>{listing.seller}</Text>
         <Text style={styles.body}>{listing.description}</Text>

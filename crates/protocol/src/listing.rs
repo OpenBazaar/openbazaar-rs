@@ -4,12 +4,19 @@ use crate::content::{ContentLabel, ContentRating, ContentTags};
 use crate::encode::{self, Reader, Writer};
 use crate::commerce::{Commerce, Context};
 use crate::listing_details::ListingDetails;
-use crate::public_text;
+use crate::{plain_text, public_text};
 use crate::sign::{self, SIG_LEN};
 use crate::store::StoreId;
 use crate::Error;
 
 const TAG: &str = "ob/listing/v1";
+
+/// The most bytes a listing signs into its category text.
+const MAX_CATEGORY: usize = 40;
+
+/// The most bytes a received listing may carry in each text field. Roomier
+/// than what a client signs, which counted characters before it counted bytes.
+const RECEIVED_LIMITS: [(&str, usize); 6] = [("title", 512), ("category", 160), ("ship-from", 160), ("description", 20_000), ("seller", 256), ("product", 128)];
 const MAGIC: [u8; 4] = *b"OBLS";
 /// Signed before content labels existed. Still decoded and verified.
 const VERSION_UNLABELED: u8 = 4;
@@ -190,8 +197,38 @@ impl Listing {
         Ok(Self { signature, ..listing })
     }
 
-    /// The free-text fields must not carry contact or location data.
+    fn text_fields(&self) -> [(&'static str, &str); 6] {
+        [
+            ("title", &self.title),
+            ("category", &self.category),
+            ("ship-from", &self.ship_from),
+            ("description", &self.description),
+            ("seller", &self.seller),
+            ("product", &self.product),
+        ]
+    }
+
+    /// Text any node will lay out: bounded, and free of control and direction
+    /// characters. Checked on every verify, so a hostile record is dropped.
+    fn check_received_text(&self) -> Result<(), Error> {
+        for ((field, text), (_, max)) in self.text_fields().into_iter().zip(RECEIVED_LIMITS) {
+            if text.len() > max {
+                return Err(Error::BadListing("a text field is too long"));
+            }
+            if !plain_text::is_plain(text, field == "description") {
+                return Err(Error::BadListing("a text field carries control or direction characters"));
+            }
+        }
+        Ok(())
+    }
+
+    /// The free-text fields must not carry contact or location data, and the
+    /// category must fit what buyers' clients show.
     fn check_public_text(&self) -> Result<(), Error> {
+        self.check_received_text()?;
+        if self.category.len() > MAX_CATEGORY {
+            return Err(Error::BadListing("the category is at most 40 bytes"));
+        }
         public_text::check_region("ship-from", &self.ship_from)?;
         for (field, text) in [
             ("title", &self.title),
@@ -262,6 +299,7 @@ impl Listing {
     }
 
     pub fn verify(&self) -> Result<(), Error> {
+        self.check_received_text()?;
         let body = self.encode_body()?;
         sign::verify(TAG, &body, self.store_id.as_bytes(), &self.signature)
     }
