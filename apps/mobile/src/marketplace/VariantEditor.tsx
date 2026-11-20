@@ -2,6 +2,8 @@ import { useState } from "react";
 import type { Axis } from "../commerce";
 import { MAX_AXES, axesProblem, parseValues, syncRows, type VariantRow } from "../commerceDraft";
 import { formatMinor, fromMinor, toMinor } from "../pricing";
+import { OPTION_NAMES } from "../listingFields";
+import { ChoiceOrOther } from "./EditorFields";
 import { useListingStyles } from "./VariantPicker";
 
 type Props = { axes: Axis[]; rows: VariantRow[]; currency: string; basePrice: number; images: string[]; onChange: (axes: Axis[], rows: VariantRow[]) => void };
@@ -27,13 +29,11 @@ export function VariantEditor({ axes, rows, currency, basePrice, images, onChang
       </header>
       {axes.map((axis, a) => (
         <div className="ob-axis-row" key={a}>
-          <label className="ob-field">Option name
-            <input value={axis.name} placeholder="Size" onChange={e => setAxes(axes.map((x, b) => (b === a ? { ...x, name: e.target.value } : x)))}/>
-          </label>
+          <ChoiceOrOther label="Option name" value={axis.name} options={OPTION_NAMES} maxLength={32} onChange={name => setAxes(axes.map((x, b) => (b === a ? { ...x, name } : x)))}/>
           <label className="ob-field">Values, separated by commas
             <input
               value={drafts[a] ?? ""}
-              placeholder="S, M, L"
+              placeholder="For example: S, M, L"
               onChange={e => {
                 const texts = drafts.map((t, b) => (b === a ? e.target.value : t));
                 setAxes(axes.map((x, b) => (b === a ? { ...x, values: parseValues(e.target.value) } : x)), texts);

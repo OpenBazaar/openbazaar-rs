@@ -51,9 +51,8 @@ for (const [width, dark] of [[320, false], [768, true], [1280, false], [1920, tr
 
     await navigation(page, 'Listings', 'Your store')
     await page.getByRole('button', { name: 'New listing', exact: true }).click()
-    await page.getByRole('button', { name: 'Configure fulfillment', exact: true }).click()
     await page.getByRole('button', { name: 'Add option', exact: true }).click()
-    await page.getByLabel('Option name', { exact: true }).fill('Size')
+    await page.getByLabel('Option name', { exact: true }).selectOption('Size')
     await page.getByLabel('Values, separated by commas', { exact: true }).fill('Small, Medium, Large')
     const variant = page.locator('.ob-variant-row').first()
     await expect(variant).toBeVisible()

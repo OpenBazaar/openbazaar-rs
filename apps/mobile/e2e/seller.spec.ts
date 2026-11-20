@@ -93,7 +93,7 @@ test('the seller lists, edits, and removes goods', async ({ page }, info) => {
   await page.getByLabel('Price currency').selectOption('SAT')
   await page.getByLabel('Price (sats)').fill('25000')
   await page.getByLabel('Shipping (sats)').fill('3000')
-  await page.getByLabel('Ships from').fill('US')
+  await page.getByLabel('Ships from').selectOption({ label: 'United States' })
   await page.getByLabel('In stock').fill('5')
   await page.locator('input[type=file][aria-label="Add photos"]').setInputFiles(image('mug.png'))
   await expect(page.getByRole('img', { name: 'Photo 1' })).toBeVisible()

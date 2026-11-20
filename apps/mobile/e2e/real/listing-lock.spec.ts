@@ -19,7 +19,7 @@ test('a new listing with photos is published after unlocking mid-edit', async ({
   await page.getByLabel('Description', { exact: true }).fill('Stoneware, 12 oz.')
   await page.getByLabel('Category', { exact: true }).selectOption({ label: 'Home and kitchen' })
   await page.getByRole('textbox', { name: /^Price \(USD\)/ }).fill('24')
-  await page.getByLabel('Ships from', { exact: true }).fill('Portland')
+  await page.getByLabel('Ships from', { exact: true }).selectOption({ label: 'United States' })
 
   await seller.lock()
   await page.locator('input[type=file][aria-label="Add photos"]').setInputFiles(photos(3, 'mug'))
