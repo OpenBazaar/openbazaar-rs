@@ -201,6 +201,7 @@ fn serve(args: &[String]) -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    eprintln!("ob-node: verifying the fixture catalog");
     let catalog = match ob_node::load_catalog(network) {
         Ok(catalog) => catalog,
         Err(err) => {
