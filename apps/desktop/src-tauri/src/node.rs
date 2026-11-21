@@ -118,7 +118,8 @@ impl Sidecar {
     /// Always `--remote` so order and escrow mail get a store onion. Home mode
     /// also opens the LAN channel for paired devices. `file_vault` keeps the
     /// node's keys in a file in the data folder instead of the OS keychain
-    /// (for a disposable profile).
+    /// (for a disposable profile); a choice saved with [`choose_file_vault`]
+    /// does the same on every later launch.
     /// `on_keychain` is called once each time the node starts waiting on a
     /// Keychain prompt, so the user can be told what to click.
     pub fn start(
@@ -290,7 +291,7 @@ fn sidecar_args(
         args.push("--lan".into());
     }
     args.extend(["--onion".into(), "--tor".into()]);
-    if file_vault {
+    if file_vault || file_vault_chosen(app_data_dir) {
         args.extend(["--vault".into(), "file".into()]);
     }
     if let Some(shop) = shop {
