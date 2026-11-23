@@ -9,6 +9,7 @@
 //! [`FiatPrice`]: crate::FiatPrice
 
 use crate::encode::{Reader, Writer};
+use crate::plain_text;
 use crate::public_text;
 use crate::shipping::Shipping;
 use crate::variants::Variants;
@@ -165,6 +166,9 @@ impl Commerce {
         if self.condition_note.len() > MAX_CONDITION_NOTE {
             return Err(Error::BadListing("a condition note is at most 280 bytes"));
         }
+        if !plain_text::is_plain(&self.condition_note, false) {
+            return Err(Error::BadListing(plain_text::REFUSAL));
+        }
         self.check_specifics()?;
         self.variants.check(context.images)?;
         self.check_pricing(context.price)?;
@@ -195,6 +199,9 @@ impl Commerce {
             }
             if value.trim().is_empty() || value.len() > MAX_SPECIFIC_VALUE {
                 return Err(Error::BadListing("an item specific value is empty or too long"));
+            }
+            if !plain_text::is_plain(value, false) {
+                return Err(Error::BadListing(plain_text::REFUSAL));
             }
             if is_code_key(key) && !valid_code(key, value) {
                 return Err(Error::BadListing("a product code's check digit is wrong"));

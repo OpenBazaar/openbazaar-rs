@@ -6,6 +6,7 @@
 //! name the variant it bought after the listing has been re-signed.
 
 use crate::encode::{self, Reader, Writer};
+use crate::plain_text;
 use crate::public_text;
 use crate::Error;
 
@@ -116,6 +117,9 @@ impl Variants {
             if variant.sku.len() > MAX_SKU {
                 return Err(Error::BadListing("a SKU is at most 40 bytes"));
             }
+            if !plain_text::is_plain(&variant.sku, false) {
+                return Err(Error::BadListing(plain_text::REFUSAL));
+            }
             if variant.image as usize > images {
                 return Err(Error::BadListing("a variant names an image the listing does not have"));
             }
@@ -206,6 +210,9 @@ impl Variants {
 fn check_label(text: &str, max: usize, message: &'static str) -> Result<(), Error> {
     if text.trim().is_empty() || text.len() > max || text.trim() != text {
         return Err(Error::BadListing(message));
+    }
+    if !plain_text::is_plain(text, false) {
+        return Err(Error::BadListing(plain_text::REFUSAL));
     }
     Ok(())
 }

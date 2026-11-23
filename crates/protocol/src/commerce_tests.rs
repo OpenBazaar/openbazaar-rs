@@ -228,6 +228,35 @@ fn specifics_are_sorted_checked_and_private() {
 }
 
 #[test]
+fn commerce_free_text_refuses_direction_overrides_and_keeps_emoji() {
+    let emoji = with(|c| {
+        c.condition_note = "Soft 👨‍👩‍👧 ❤️".into();
+        c.specifics[0].1 = "Marlow 👨‍👩‍👧".into();
+        c.variants.axes[0].values[0] = "S ❤️".into();
+    });
+    let listing = emoji.expect("emoji, joiners, and variation selectors stay");
+    listing.verify().unwrap();
+
+    let refused = |result: Result<Listing, Error>| result.err() == Some(Error::BadListing(crate::plain_text::REFUSAL));
+    assert!(refused(with(|c| c.condition_note = "note\u{202e}exe".into())));
+    assert!(refused(with(|c| c.specifics[0].1 = "wool\u{2066}".into())));
+    assert!(refused(with(|c| c.variants.axes[0].name = "Size\u{202e}".into())));
+    assert!(refused(with(|c| c.variants.variants[0].sku = "TEE\u{0007}".into())));
+    assert!(refused(with(|c| c.shipping.services[0].name = "Post\u{202e}".into())));
+    assert!(refused(with(|c| c.shipping.pickup = Some("Oregon\u{200f}".into()))));
+
+    assert!(with(|c| c.condition_note = "a".repeat(280)).is_ok(), "the existing note limit still signs");
+    assert_eq!(
+        with(|c| c.condition_note = "a".repeat(281)).err(),
+        Some(Error::BadListing("a condition note is at most 280 bytes")),
+    );
+
+    let mut received = tee();
+    received.commerce.as_mut().unwrap().condition_note = "note\u{202e}".into();
+    assert_eq!(received.verify().err(), Some(Error::BadListing(crate::plain_text::REFUSAL)));
+}
+
+#[test]
 fn older_versions_still_decode() {
     let listing = tee();
     let v6 = Listing { commerce: None, ..listing }.resign(&store_secret()).unwrap();

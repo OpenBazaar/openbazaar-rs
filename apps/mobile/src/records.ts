@@ -10,6 +10,7 @@ import { sha256 } from "@noble/hashes/sha2.js";
 
 import type { ContentRating, ListingHeader, ListingKind } from "./catalog";
 import { readCommerce, type Commerce } from "./commerce.ts";
+import { plainLabel } from "./safeText.ts";
 
 const STORE_TAG = "ob/store/v1";
 const LISTING_TAG = "ob/listing/v1";
@@ -329,6 +330,24 @@ export function verifiedStore(value: unknown): StoreSummary | null {
   };
 }
 
+/// Commerce text the buyer filters and reads, without control or direction characters.
+function plainCommerce(commerce: Commerce | null): Commerce | null {
+  if (!commerce) return null;
+  const shipping = commerce.shipping;
+  return {
+    ...commerce,
+    conditionNote: plainLabel(commerce.conditionNote),
+    specifics: Object.fromEntries(Object.entries(commerce.specifics).map(([key, value]) => [key, plainLabel(value)])),
+    axes: commerce.axes.map((axis) => ({ name: plainLabel(axis.name), values: axis.values.map(plainLabel) })),
+    variants: commerce.variants.map((variant) => ({ ...variant, sku: plainLabel(variant.sku) })),
+    shipping: {
+      ...shipping,
+      services: shipping.services.map((service) => ({ ...service, name: plainLabel(service.name) })),
+      pickup: shipping.pickup === null ? null : plainLabel(shipping.pickup),
+    },
+  };
+}
+
 /// A listing header built from its verified record, or null when the record
 /// fails, its hash is not the one the node named, or its store is not in `storeKeys`.
 /// `acceptsModerator` is the node's check against its moderator, and only
@@ -353,14 +372,14 @@ export function verifiedListing(
     title: record.title,
     category: record.category,
     priceSats: record.priceSats,
-    shipFrom: record.shipFrom,
+    shipFrom: plainLabel(record.shipFrom),
     kind: record.kind,
     acceptsModerator: item.acceptsModerator === true && record.moderated,
     acceptsXmr: item.acceptsXmr === true && xmrStores.has(record.storeId),
     acceptsLightning: item.acceptsLightning === true && lnStores.has(record.storeId),
     acceptsZec: item.acceptsZec === true && zecStores.has(record.storeId),
     description: description || undefined,
-    seller: record.seller,
+    seller: plainLabel(record.seller),
     stock: record.stock,
     listedOn: record.listedOn,
     product: record.product,
@@ -372,7 +391,7 @@ export function verifiedListing(
     listingId: record.listingId,
     images: record.images,
     price: record.price,
-    commerce: record.commerce,
+    commerce: plainCommerce(record.commerce),
   };
 }
 
