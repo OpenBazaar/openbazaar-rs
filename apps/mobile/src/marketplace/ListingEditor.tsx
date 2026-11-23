@@ -6,8 +6,10 @@ import { ImageUpload, MediaImage, useLockedAction } from "./SellerKit";
 import { TAXONOMY, axesProblem, compareAtText, emptyCommerce, listingFacts, packageFieldsOf, priceTerms, purchaseFields, purchaseTerms, returnsDraft, rowsOf, saleFieldsOf, scheduledSale, shippingTerms, specificRows, tierRows, volumeTiers, withPackage, withVariantWeights, type AvailabilityDraft, type ReturnsDraft, type SpecificRow, type TierRow } from "../commerceDraft";
 import { draftListingId } from "../listingDraft";
 import { categoryFieldsOf, filledSpecifics, filledTiers, signedCategory } from "../listingFields";
+import { movePhoto } from "../photoOrder";
 import { ItemDetails, OptionFields, ReturnsFields, ShippingServices, type PackageFields } from "./CommerceFields";
 import { CountrySelect, Field, Reveal, WholeNumber, type Problem } from "./EditorFields";
+import { Dialog } from "./WalletLock";
 
 type Form = Omit<ListingDraft, "price" | "shipping" | "stock"> & PackageFields & { price: string; shipping: string; stock: string; salePrice: string; saleStarts: string; saleEnds: string; compareAt: string; acceptsOffers: boolean; lotSize: string; availability: AvailabilityDraft; tiers: TierRow[]; variantWeights: string[]; taxonomy: string; subcategory: string; specifics: SpecificRow[]; returns: ReturnsDraft };
 
@@ -101,6 +103,7 @@ export function ListingEditor({ listing, savedDraft, rates, onSaved, onCancel }:
   const [draftId, setDraftId] = useState(savedDraft?.draftId ?? null);
   const listingId = draftListingId(listing, savedDraft);
   const [busy, setBusy] = useState(false);
+  const [larger, setLarger] = useState<number | null>(null);
   const [error, setError] = useState<Problem | null>(null);
   const [saleOn, setSaleOn] = useState(() => Boolean(form.salePrice || form.saleStarts || form.saleEnds));
   const [compareOn, setCompareOn] = useState(() => Boolean(form.compareAt));
@@ -178,14 +181,19 @@ export function ListingEditor({ listing, savedDraft, rates, onSaved, onCancel }:
 
     <fieldset className="ob-store-section" id={PHOTOS} aria-label="Product media">
       <legend>Photos</legend>
-      <p className="ob-field-hint">Up to {MAX_LISTING_IMAGES}. The first photo is the cover.</p>
+      <p className="ob-field-hint">Up to {MAX_LISTING_IMAGES}. The first photo is the cover. Move a photo to change the cover.</p>
       <div className="ob-listing-photos">
         {form.images.map((hash, i) => <figure key={hash} className="ob-listing-photo">
-          <MediaImage hash={hash} alt={`Photo ${i + 1}`}/>
-          <button type="button" className="ob-icon-button" aria-label={`Remove photo ${i + 1}`} onClick={() => set("images", form.images.filter(h => h !== hash))}>×</button>
+          <button type="button" className="ob-photo-open" aria-label={`View photo ${i + 1} larger`} onClick={() => setLarger(i)}><MediaImage hash={hash} alt={`Photo ${i + 1}`}/></button>
+          <button type="button" className="ob-icon-button" aria-label={`Remove photo ${i + 1}`} onClick={() => { if (larger === i) setLarger(null); set("images", form.images.filter(h => h !== hash)); }}>×</button>
+          <span className="ob-photo-moves">
+            <button type="button" aria-label={`Move photo ${i + 1} earlier`} disabled={i === 0} onClick={() => set("images", movePhoto(form.images, i, -1))}>Earlier</button>
+            <button type="button" aria-label={`Move photo ${i + 1} later`} disabled={i === form.images.length - 1} onClick={() => set("images", movePhoto(form.images, i, 1))}>Later</button>
+          </span>
         </figure>)}
         {form.images.length < MAX_LISTING_IMAGES && <ImageUpload label="Add photos" multiple onUploaded={hash => setForm(f => f.images.includes(hash) || f.images.length >= MAX_LISTING_IMAGES ? f : { ...f, images: [...f.images, hash] })}/>}
       </div>
+      {larger !== null && form.images[larger] ? <Dialog label={`Photo ${larger + 1}`} className="ob-photo-dialog" onCancel={() => setLarger(null)}><div className="ob-photo-large"><MediaImage hash={form.images[larger]} alt={`Photo ${larger + 1}`}/></div><div className="ob-form-actions"><button type="button" className="ob-secondary" onClick={() => setLarger(null)}>Close</button></div></Dialog> : null}
     </fieldset>
 
     <fieldset className="ob-store-section" id={PRICING}>

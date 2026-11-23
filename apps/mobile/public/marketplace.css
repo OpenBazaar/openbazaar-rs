@@ -779,6 +779,20 @@ svg {
 .ob-gallery>.ob-product-image {
   aspect-ratio: 1.03;
 }
+.ob-gallery .ob-photo-zoom {
+  position: absolute;
+  z-index: 1;
+  left: 12px;
+  bottom: 12px;
+  min-height: 36px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  background: rgba(9, 22, 38, .8);
+  color: #fff;
+  font-size: 13px;
+}
+.ob-photo-large { display: flex; justify-content: center; }
+.ob-photo-large img { width: min(72vw, 720px); max-height: 70vh; object-fit: contain; background: var(--ob-subtle); }
 .ob-thumbnails {
   display: flex;
   gap: 10px;
