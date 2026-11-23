@@ -3,6 +3,8 @@
 //! `vectors/pricing.json` holds signed records (hex), the lines and the
 //! expected quote or error. Regenerate it with `OB_UPDATE_VECTORS=1`.
 
+use std::borrow::Cow;
+
 use serde_json::{json, Value};
 
 use crate::commerce_tests::{coupon, offer, store_secret, tee_commerce, v7};
@@ -214,6 +216,39 @@ fn vector(name: &str, lines: &[Line<'_>], coupon: Option<&SignedCoupon>, today: 
     })
 }
 
+/// A checkout may hand the fixture back with CRLF (`core.autocrlf`). That is a
+/// transport detail, not a change to the vectors.
+fn line_endings_unix(text: &str) -> Cow<'_, str> {
+    if text.contains('\r') {
+        Cow::Owned(text.replace("\r\n", "\n"))
+    } else {
+        Cow::Borrowed(text)
+    }
+}
+
+/// Compare the text this build generates with the version on disk.
+fn assert_vectors_match(on_disk: &str, generated: &str) {
+    assert_eq!(
+        line_endings_unix(on_disk).as_ref(),
+        generated,
+        "pricing vectors changed; regenerate with OB_UPDATE_VECTORS=1 and update the client"
+    );
+}
+
+#[test]
+fn a_crlf_checkout_of_the_vectors_matches_the_generated_text() {
+    let generated = "{\n  \"vectors\": []\n}\n";
+    assert_vectors_match(&generated.replace('\n', "\r\n"), generated);
+}
+
+#[test]
+#[should_panic(expected = "pricing vectors changed")]
+fn a_changed_vector_still_fails() {
+    let generated = "{\n  \"today\": 20261107\n}\n";
+    let changed = generated.replace("20261107", "20261108");
+    assert_vectors_match(&changed, generated);
+}
+
 #[test]
 fn golden_vectors_match_the_file() {
     let (tee, mug, ebook) = (tee(), mug(), ebook());
@@ -244,5 +279,5 @@ fn golden_vectors_match_the_file() {
         std::fs::write(path, &text).unwrap();
     }
     let on_disk = std::fs::read_to_string(path).expect("vectors/pricing.json; run with OB_UPDATE_VECTORS=1");
-    assert_eq!(on_disk, text, "pricing vectors changed; regenerate with OB_UPDATE_VECTORS=1 and update the client");
+    assert_vectors_match(&on_disk, &text);
 }
