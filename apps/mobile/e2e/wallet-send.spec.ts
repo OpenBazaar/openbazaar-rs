@@ -82,9 +82,11 @@ test('bitcoin send: not enough funds is explained before review', async ({ page 
   await expect(dialog.getByRole('button', { name: 'Review', exact: true })).toBeVisible()
 })
 
-test('zcash says sending is not available yet', async ({ page }, info) => {
+test('zcash send opens on testnet', async ({ page }, info) => {
+  const zecWallet = { network: 'testnet', enabled: true, keys: 'ready', receiveAddress: 'utest1exampleaddress', balance: { confirmedZatoshi: '100000000', pendingZatoshi: '0', orchardZatoshi: '0' }, scannedHeight: 4000000, tip: 4000000, lastSync: 1794272400, syncError: null }
   await page.route('**/network', route => route.fulfill({ json: { network: 'testnet4', confirmations: 1, publicChainServer: false, lightning: 'unavailable', silentPayments: 'code-only', zecBackend: { enabled: true, backend: 'own-node', network: 'testnet', privacy: 'own-node', reveals: 'Your own indexer reads the shielded chain.', servers: ['http://127.0.0.1:8137'], active: null, software: null, proxied: false, tip: 4000000, scannedHeight: 4000000, error: null } } }))
   await page.route('**/wallet', route => route.fulfill({ json: wallet }))
+  await page.route('**/zec/wallet', route => route.fulfill({ json: zecWallet }))
   for (const path of ['**/lock', '**/lock/activity']) await page.route(path, route => route.fulfill({ json: lock }))
   await page.route('**/orders', route => route.fulfill({ json: { orders: [] } }))
   await page.goto('/')
@@ -93,7 +95,10 @@ test('zcash says sending is not available yet', async ({ page }, info) => {
   await page.getByRole('button', { name: 'Wallet', exact: true }).click()
   await page.getByRole('tab', { name: /^Zcash/ }).click()
   const send = page.getByRole('tabpanel').getByRole('button', { name: 'Send', exact: true })
-  await expect(send).toBeDisabled()
-  await expect(send).toHaveAccessibleDescription('Sending Zcash isn’t available yet.')
-  await page.getByRole('tabpanel').screenshot({ path: info.outputPath('send-zcash-unavailable.png') })
+  await expect(send).toBeEnabled()
+  await send.click()
+  const dialog = page.getByRole('dialog', { name: 'Send Zcash' })
+  await expect(dialog).toContainText('Testnet · test coins, no value')
+  await expect(dialog).not.toContainText('Sending Zcash isn’t available yet.')
+  await page.getByRole('tabpanel').screenshot({ path: info.outputPath('send-zcash.png') })
 })
