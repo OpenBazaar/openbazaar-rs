@@ -124,8 +124,8 @@ test("buying and selling stay on the node's download", () => {
   assert.equal(buy.text, NODE_REQUIRED);
   assert.equal(sell.text, NODE_REQUIRED);
   assert.match(buy.text, /Buying and selling run on your own node/);
-  assert.equal(buy.href, "https://github.com/OpenBazaar/openbazaar-rs/releases/download/v0.1.0-alpha.12/OpenBazaar_0.1.0-alpha.12_universal.dmg");
-  assert.equal(sell.href, "https://github.com/OpenBazaar/openbazaar-rs/releases/download/v0.1.0-alpha.12/OpenBazaar_0.1.0-alpha.12_x64-setup.exe");
+  assert.equal(buy.href, "https://github.com/OpenBazaar/openbazaar-rs/releases/download/v0.1.0-alpha.13/OpenBazaar_0.1.0-alpha.13_universal.dmg");
+  assert.equal(sell.href, "https://github.com/OpenBazaar/openbazaar-rs/releases/download/v0.1.0-alpha.13/OpenBazaar_0.1.0-alpha.13_x64-setup.exe");
   assert.equal(buy.title, "Buying runs on your node");
   assert.equal(sell.title, "Selling runs on your node");
   const onion = "yc546t4ecasnoollz3voqrrqsevup3wk25g4d7mxaryfomtu7xh37ead.onion";
