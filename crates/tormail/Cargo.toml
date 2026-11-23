@@ -8,9 +8,10 @@ publish = false
 description = "Sealed OpenBazaar order letters carried to a vendor onion mailbox"
 
 [dependencies]
-arti-client = { version = "0.48", features = ["onion-service-client", "onion-service-service", "static-sqlite", "experimental-api", "keymgr", "restricted-discovery"] }
+arti-client = { version = "0.48", default-features = false, features = ["tokio", "rustls", "compression", "onion-service-client", "onion-service-service", "static-sqlite", "experimental-api", "keymgr", "restricted-discovery"] }
 # Keep liblzma inside the binary; see crates/node/Cargo.toml.
 liblzma = { version = "0.4", features = ["static"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 async-trait = "0.1"
 bitcoin = "0.32.7"
 futures = "0.3"
@@ -25,7 +26,7 @@ tor-hsservice = { version = "0.48", features = ["restricted-discovery"] }
 tor-keymgr = "0.48"
 tor-llcrypto = "0.48"
 tor-proto = { version = "0.48", features = ["hs-service"] }
-tor-rtcompat = "0.48"
+tor-rtcompat = { version = "0.48", default-features = false, features = ["tokio", "rustls"] }
 tokio = { version = "1", default-features = false, features = ["net", "io-util", "rt"] }
 zeroize = { version = "1", features = ["derive"] }
 

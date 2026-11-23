@@ -14,14 +14,24 @@ path = "src/lib.rs"
 name = "ob-node"
 path = "src/main.rs"
 
+# The desktop shell already static-links the CRT; the bundled ob-node sidecar
+# did not, so a clean Windows install without the VC++ redistributable failed
+# to load VCRUNTIME140.dll. build.rs calls metabuild only for windows-msvc.
+[build-dependencies]
+static_vcruntime = "2"
+
 [dependencies]
 argon2 = "0.5"
-arti-client = { version = "0.48", features = ["onion-service-client", "onion-service-service", "static-sqlite", "experimental-api", "keymgr", "restricted-discovery"] }
+# default-features off so we do not pull native-tls → OpenSSL. That would make
+# Linux releases need libssl.so.3 (missing from the .deb Depends today, and from
+# many minimal/hardened templates). rustls matches crates/mobile-tor.
+arti-client = { version = "0.48", default-features = false, features = ["tokio", "rustls", "compression", "onion-service-client", "onion-service-service", "static-sqlite", "experimental-api", "keymgr", "restricted-discovery"] }
 # Arti's directory client pulls liblzma through async-compression. Without the
 # static feature, a macOS build on a Homebrew runner links
 # /opt/homebrew/opt/xz/lib/liblzma.5.dylib and the shipped app aborts on
 # machines that do not have that path (SIGABRT at startup).
 liblzma = { version = "0.4", features = ["static"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 bip157 = "0.8.1"
 bip39 = "2.2"
 bdk_esplora = { version = "0.22.3", default-features = false, features = ["std", "async-https-rustls", "tokio"] }
@@ -50,7 +60,7 @@ rpassword = "7.4"
 serde_json = "1"
 sha2 = "0.10"
 tokio = { version = "1", default-features = false, features = ["macros", "rt-multi-thread", "time", "net", "io-util"] }
-tor-rtcompat = "0.48"
+tor-rtcompat = { version = "0.48", default-features = false, features = ["tokio", "rustls"] }
 tormail = { path = "../tormail" }
 tracing = "0.1"
 ureq = { version = "2.12", features = ["socks-proxy"] }
