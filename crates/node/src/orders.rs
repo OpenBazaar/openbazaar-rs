@@ -691,6 +691,8 @@ fn seal_letter(
     }
     if let Some(url) = reply_url {
         options.insert("replyUrl".to_string(), url.to_string());
+    } else if settlement == Settlement::Direct {
+        options.insert("replyMode".to_string(), "pull".to_string());
     }
     // Asks a store on another node for Zcash, Monero, or Lightning terms. A node from before those sales ignores it and answers in bitcoin.
     if let Some(rail) = rail {

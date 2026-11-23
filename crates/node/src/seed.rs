@@ -45,6 +45,15 @@ pub(crate) struct Seed {
 }
 
 impl Seed {
+    /// Generate a fresh 12-word BIP 39 backup phrase from OS randomness.
+    pub(crate) fn generate_phrase() -> Result<String, Error> {
+        let mut entropy = [0u8; 16];
+        StdRng::from_os_rng().fill_bytes(&mut entropy);
+        Mnemonic::from_entropy(&entropy)
+            .map(|mnemonic| mnemonic.to_string())
+            .map_err(|err| Error::Detail(err.to_string()))
+    }
+
     /// Load the phrase in `path`, or create one if the file does not exist.
     pub(crate) fn load_or_create(
         path: &Path,
@@ -55,11 +64,7 @@ impl Seed {
             Some(bytes) => String::from_utf8(bytes)
                 .map_err(|_| Error::Detail("the backup phrase could not be read".to_string()))?,
             None => {
-                let mut entropy = [0u8; 16];
-                StdRng::from_os_rng().fill_bytes(&mut entropy);
-                let phrase = Mnemonic::from_entropy(&entropy)
-                    .map_err(|err| Error::Detail(err.to_string()))?
-                    .to_string();
+                let phrase = Self::generate_phrase()?;
                 vault.write_sealed(path, phrase.as_bytes())?;
                 phrase
             }
@@ -99,6 +104,16 @@ impl Seed {
             format!("tr({xprv}/86'/{coin}'/0'/0/*)"),
             format!("tr({xprv}/86'/{coin}'/0'/1/*)"),
         )
+    }
+
+    /// Deterministic BIP 86 Taproot receive address at `m/86'/coin'/0'/0/{index}`.
+    /// Matches the external descriptor in [`Self::wallet_descriptors`].
+    pub(crate) fn receive_address(&self, index: u32) -> bitcoin::Address {
+        let path = format!("m/86'/{}'/0'/0/{index}", self.network.coin_type());
+        let secret = self.derive(&path);
+        let secp = Secp256k1::new();
+        let (xonly, _) = secret.x_only_public_key(&secp);
+        bitcoin::Address::p2tr(&secp, xonly, None, self.network.bitcoin())
     }
 
     pub(crate) fn store_signing_key(&self) -> SecretKey {

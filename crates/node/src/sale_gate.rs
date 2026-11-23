@@ -47,7 +47,7 @@ pub(crate) fn allowed(method: &str, path: &str) -> bool {
         ("GET", "/public/store" | "/public/admission-index" | "/public/admission-addresses" | "/public/moderator" | "/public/moderators") => true,
         ("GET", path) if media(path) => true,
         ("GET" | "POST", "/public/reviews") => true,
-        ("POST", "/mail" | "/mail/reply" | "/escrow/mail") => true,
+        ("POST", "/mail" | "/mail/reply" | "/mail/pull" | "/escrow/mail") => true,
         _ => false,
     }
 }
@@ -180,6 +180,9 @@ mod tests {
         assert!(allowed("GET", "/public/reviews"));
         assert!(allowed("POST", "/mail"));
         assert!(allowed("POST", "/mail/reply"));
+        assert!(allowed("POST", "/mail/pull"));
+        assert!(!allowed("GET", "/mail/pull"));
+        assert!(!catalog_read("POST", "/mail/pull"));
         assert!(allowed("POST", "/escrow/mail"));
         assert!(!allowed("GET", "/escrow/mail"));
         assert!(!allowed("GET", "/escrow/sales"));

@@ -39,12 +39,15 @@ use crate::{Error, Node};
 const KEY_TAG: &[u8] = b"ob-node/order-mail/v1";
 pub(crate) const STORE_MAIL: &str = "/mail";
 pub(crate) const REPLY_MAIL: &str = "/mail/reply";
+pub(crate) const PULL_MAIL: &str = "/mail/pull";
 
 /// Why a peer's mail was not taken. A refusal is a 4xx (the sender drops
-/// it); a retry is a 503 (the sender's outbox tries again).
+/// it); an unauthorized pull is a uniform 403; a retry is a 503 (the
+/// sender's outbox tries again).
 #[derive(Debug)]
 pub(crate) enum MailError {
     Refused(String),
+    Unauthorized(String),
     Retry(String),
 }
 

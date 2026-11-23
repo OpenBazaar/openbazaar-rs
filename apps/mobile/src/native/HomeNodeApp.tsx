@@ -7,6 +7,7 @@ import { ActivityIndicator, AppState, Image, Linking, Pressable, StyleSheet, Tex
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 
 import { scheduleBackgroundChecks } from "./background.ts";
+import { BuyerLightApp } from "./BuyerLightApp.tsx";
 import { ConnectionBadge } from "./ConnectionBadge.tsx";
 import { Onboarding } from "./Onboarding.tsx";
 import { listenForWakes } from "./push.ts";
@@ -74,18 +75,21 @@ export function HomeNodeApp({ Market }: { Market: ComponentType<{ withoutNode?: 
   const { locked, unlock } = useAppLock(session.status === "loading" ? null : session.status === "paired");
   const link = usePairingLink();
   const [tab, setTab] = useState<Tab>("shop");
-  const [guest, setGuest] = useState(false);
+  const [unpairedMode, setUnpairedMode] = useState<"pair" | "buyer-light" | "browse">("pair");
   useEffect(() => void boot(), []);
   useSyncWhileOpen(session.status === "paired" && !locked);
 
   let body;
   if (session.status === "loading") body = <ActivityIndicator style={styles.center} color={NAVY} />;
   else if (locked) body = <Locked onUnlock={() => void unlock()} />;
-  else if (session.status === "unpaired" && guest) body = (
+  else if (session.status === "unpaired" && unpairedMode === "buyer-light") body = (
+    <BuyerLightApp onPairHomeNode={() => setUnpairedMode("pair")} />
+  );
+  else if (session.status === "unpaired" && unpairedMode === "browse") body = (
     <View style={styles.fill}>
       <Text style={styles.remote}>{remoteRoleNotice(false)}</Text>
       <View style={styles.fill}><Market withoutNode /></View>
-      <Pressable accessibilityRole="button" accessibilityLabel="Pair with your home node" onPress={() => setGuest(false)} style={styles.guestBack}>
+      <Pressable accessibilityRole="button" accessibilityLabel="Pair with your home node" onPress={() => setUnpairedMode("pair")} style={styles.guestBack}>
         <Text style={styles.guestBackText}>Pair with your home node</Text>
       </Pressable>
     </View>
@@ -93,8 +97,11 @@ export function HomeNodeApp({ Market }: { Market: ComponentType<{ withoutNode?: 
   else if (session.status === "unpaired") body = (
     <View style={styles.fill}>
       <View style={styles.fill}><Onboarding initialLink={link} /></View>
-      <Pressable accessibilityRole="button" accessibilityLabel="Open a store address" onPress={() => setGuest(true)} style={styles.guestBack}>
-        <Text style={styles.guestBackText}>Open a store address</Text>
+      <Pressable accessibilityRole="button" accessibilityLabel="Buy without a home node (Buyer-only mode)" onPress={() => setUnpairedMode("buyer-light")} style={styles.guestBack}>
+        <Text style={styles.guestBackText}>Buy without a home node (Buyer-only mode)</Text>
+      </Pressable>
+      <Pressable accessibilityRole="button" accessibilityLabel="Open a store address" onPress={() => setUnpairedMode("browse")} style={styles.guestBack}>
+        <Text style={styles.guestBackText}>Browse a store address only</Text>
       </Pressable>
     </View>
   );
