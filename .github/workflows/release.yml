@@ -304,6 +304,18 @@ jobs:
           for app in apps/desktop/src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app; do
             python3 scripts/check-macos-dylibs.py "$app/Contents/MacOS/"*
           done
+      # Arti defaults to OpenSSL; without rustls the Linux sidecar needs
+      # libssl.so.3 and dies on minimal templates. Refuse that link.
+      - name: refuse OpenSSL-linked Linux sidecars
+        if: runner.os == 'Linux'
+        shell: bash
+        run: python3 scripts/check-linux-so.py apps/desktop/src-tauri/binaries/ob-node-*
+      # The shell is static-CRT; the sidecar must be too, or clean Windows
+      # installs fail on VCRUNTIME140.dll.
+      - name: refuse MSVC-runtime Windows sidecars
+        if: runner.os == 'Windows'
+        shell: bash
+        run: python3 scripts/check-pe-imports.py apps/desktop/src-tauri/binaries/ob-node-*.exe
       - name: collect installers
         shell: bash
         run: |
@@ -418,6 +430,10 @@ jobs:
         if: runner.os == 'macOS'
         shell: bash
         run: python3 scripts/check-macos-dylibs.py target/release/ob-node
+      - name: refuse OpenSSL-linked Linux home nodes
+        if: runner.os == 'Linux'
+        shell: bash
+        run: python3 scripts/check-linux-so.py target/release/ob-node
       - name: package
         shell: bash
         run: |
