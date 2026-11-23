@@ -7,6 +7,7 @@
 //! order messages and never published.
 
 use crate::encode::{Reader, Writer};
+use crate::plain_text;
 use crate::public_text;
 use crate::store::CountryCode;
 use crate::Error;
@@ -68,6 +69,9 @@ impl Shipping {
             if service.name.trim().is_empty() || service.name.len() > MAX_SERVICE_NAME {
                 return Err(Error::BadListing("a shipping service name is empty or too long"));
             }
+            if !plain_text::is_plain(&service.name, false) {
+                return Err(Error::BadListing(plain_text::REFUSAL));
+            }
             if self.services[..i].iter().any(|other| other.name.eq_ignore_ascii_case(&service.name)) {
                 return Err(Error::BadListing("a shipping service name is used twice"));
             }
@@ -84,6 +88,9 @@ impl Shipping {
         if let Some(area) = &self.pickup {
             if area.trim().is_empty() || area.len() > MAX_PICKUP_AREA {
                 return Err(Error::BadListing("a pickup area is empty or too long"));
+            }
+            if !plain_text::is_plain(area, false) {
+                return Err(Error::BadListing(plain_text::REFUSAL));
             }
         }
         Ok(())

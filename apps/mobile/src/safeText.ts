@@ -6,6 +6,16 @@
 // C0 and C1 controls, bidi embeddings, overrides and isolates, zero-width and
 // other invisible format characters, line and paragraph separators, and BOM.
 const HIDDEN = /[\u0000-\u001f\u007f-\u009f\u00ad\u061c\u115f\u1160\u17b4\u17b5\u180e\u200b-\u200f\u2028-\u202e\u2060-\u206f\u3164\ufe00-\ufe0f\ufeff\uffa0\ufff0-\ufffb]|\udb40[\udc00-\udfff]/g;
+
+// The same characters `plain_text::is_plain` refuses. Zero-width joiners and
+// variation selectors stay, so an emoji survives in a filter label.
+const DIRECTION = /[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u2028-\u202e\u2066-\u2069]/g;
+
+/// `text` with control and direction-override characters removed.
+/// Joiners and variation selectors are kept.
+export function plainLabel(text: string): string {
+  return text.replace(DIRECTION, "");
+}
 const MARK = /\p{M}/u;
 const MAX_MARKS = 2;
 

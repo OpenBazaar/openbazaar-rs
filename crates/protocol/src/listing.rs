@@ -216,7 +216,7 @@ impl Listing {
                 return Err(Error::BadListing("a text field is too long"));
             }
             if !plain_text::is_plain(text, field == "description") {
-                return Err(Error::BadListing("a text field carries control or direction characters"));
+                return Err(Error::BadListing(plain_text::REFUSAL));
             }
         }
         Ok(())

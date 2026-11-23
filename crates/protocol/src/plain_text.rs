@@ -7,6 +7,9 @@
 //! is signed, so a node drops a hostile record instead of passing it on.
 //! Zero-width joiners and variation selectors pass: emoji are built from them.
 
+/// What a record is told when its text would reorder the line around it.
+pub const REFUSAL: &str = "a text field carries control or direction characters";
+
 /// True when `text` is free of control and direction-override characters.
 /// `multiline` lets a description keep tabs and line breaks.
 pub fn is_plain(text: &str, multiline: bool) -> bool {
