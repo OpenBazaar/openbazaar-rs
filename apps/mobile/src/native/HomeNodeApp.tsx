@@ -16,6 +16,7 @@ import { OrdersScreen } from "./screens/OrdersScreen.tsx";
 import { SettingsScreen } from "./screens/SettingsScreen.tsx";
 import { StoreScreen } from "./screens/StoreScreen.tsx";
 import { WalletScreen } from "./screens/WalletScreen.tsx";
+import { remoteRoleNotice } from "./remoteRole.ts";
 import { boot, sync, useSession } from "./session.ts";
 import { Button, LINE, MUTED, NAVY, PAGE, ui } from "./ui.tsx";
 import { useAppLock } from "./useAppLock.ts";
@@ -87,7 +88,8 @@ export function HomeNodeApp({ Market }: { Market: ComponentType }) {
         <ConnectionBadge />
         <View style={styles.fill}>
           <View style={[styles.fill, tab !== "shop" && styles.hidden]}>
-            <Market />
+            <Text style={styles.remote}>{remoteRoleNotice(session.lastSyncAt != null)}</Text>
+            <View style={styles.fill}><Market /></View>
           </View>
           {tab === "store" ? <StoreScreen onRefresh={refresh} /> : null}
           {tab === "orders" ? <OrdersScreen onRefresh={refresh} /> : null}
@@ -123,6 +125,7 @@ const styles = StyleSheet.create({
   page: { flex: 1, backgroundColor: PAGE },
   fill: { flex: 1 },
   hidden: { display: "none" },
+  remote: { color: MUTED, fontSize: 13, lineHeight: 18, paddingHorizontal: 16, paddingTop: 8 },
   center: { flex: 1, alignItems: "center", justifyContent: "center", gap: 18, padding: 24 },
   logo: { width: 96, height: 96 },
   tabs: { flexDirection: "row", borderTopWidth: 1, borderTopColor: LINE, backgroundColor: "#fff" },
