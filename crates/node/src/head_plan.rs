@@ -10,7 +10,7 @@
 
 use bitcoin::secp256k1::{Secp256k1, SecretKey};
 use openbazaar_protocol::{
-    notice_blocks, DirectoryTerms, HeadView, SeedDocument, TermsEntry, TermsSchedule, EPOCH_BLOCKS, FEE_CONFS, FEE_SATS, MAX_TERMS,
+    notice_blocks, AdmissionIndex, DirectoryTerms, HeadView, SeedDocument, TermsEntry, TermsSchedule, EPOCH_BLOCKS, FEE_CONFS, FEE_SATS, MAX_TERMS,
     SKEW_BLOCKS,
 };
 
@@ -181,6 +181,38 @@ fn plan_schedule(plan: &HeadPlan, previous: Option<&SeedDocument>, key: [u8; 32]
         entries.push(TermsEntry { start_height: change.start_height, announced_height: tip, terms });
     }
     TermsSchedule::new(entries).map_err(|err| err.to_string())
+}
+
+/// One `sign-admission-index` run.
+#[derive(Clone, Debug, Default)]
+pub struct AdmissionIndexPlan {
+    pub sequence: u64,
+    pub head_sequence: u64,
+    pub signed_on: u32,
+    pub stores: Vec<[u8; 32]>,
+}
+
+/// Sign an admission snapshot (`OBAX`) with the operator secret. Refuses a
+/// secret whose public key is not [`DOCUMENT_KEY`].
+pub fn sign_admission_index(plan: AdmissionIndexPlan, secret_bytes: [u8; 32]) -> Result<Vec<u8>, String> {
+    let secret = SecretKey::from_slice(&secret_bytes).map_err(|_| "the document key is not a secret key".to_string())?;
+    if secret.x_only_public_key(&Secp256k1::new()).0.serialize() != DOCUMENT_KEY {
+        return Err("this key does not match the public key shipped in the binary".into());
+    }
+    sign_admission_index_with(&plan, &secret)
+}
+
+pub(crate) fn sign_admission_index_with(plan: &AdmissionIndexPlan, secret: &SecretKey) -> Result<Vec<u8>, String> {
+    if plan.sequence == 0 {
+        return Err("the snapshot sequence must be at least 1".into());
+    }
+    if plan.head_sequence == 0 {
+        return Err("the head sequence must be at least 1".into());
+    }
+    let signed_on = if plan.signed_on == 0 { crate::own_store::today_yyyymmdd() } else { plan.signed_on };
+    let index = AdmissionIndex::sign(plan.sequence, signed_on, plan.head_sequence, plan.stores.clone(), secret)
+        .map_err(|err| err.to_string())?;
+    index.encode().map_err(|err| err.to_string())
 }
 
 #[cfg(test)]

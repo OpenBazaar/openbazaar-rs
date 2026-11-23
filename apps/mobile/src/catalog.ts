@@ -1,6 +1,6 @@
 import { verifiedListings, verifiedStore, type StoreSummary } from "./records.ts";
 import type { LabelerLabel } from "./safety/filter";
-import { homeFetch, servedByHomeNode, servedByLocalShop, signedFetch, targetPrefix } from "./homeNode/transport.ts";
+import { hasSession, homeFetch, servedByHomeNode, servedByLocalShop, signedFetch, targetPrefix } from "./homeNode/transport.ts";
 import { lnBlockedReason, lnCatalogNetwork, lnStoreKeys, parseLnInvoice, type LnInvoice, type LnNetwork } from "./lightning.ts";
 import { xmrCatalogNetwork, type XmrNetwork } from "./xmr.ts";
 import { parseShipmentTracking, type ShipmentTracking } from "./shipment.ts";
@@ -359,6 +359,9 @@ export async function openJson(path: string): Promise<unknown> {
 
 /// A paired request to this app's own node, even while a home node is the target.
 export async function ownNodeJson(path: string, init?: RequestInit): Promise<unknown> {
+  if (!hasNodeHost()) {
+    throw new NodeOfflineError();
+  }
   const token = await pairingToken(fromClick(init));
   let response: Response;
   try {
@@ -599,6 +602,20 @@ export function onLoopbackPage(): boolean {
   return isLoopbackHost(location.hostname.toLowerCase());
 }
 
+/// True when this page has a local or signed-in node to dial. A bare remote
+/// page (such as a store `.onion` or public `https:` page without a home-node
+/// or local-shop marker) and a signed-out home-node page must never probe
+/// `127.0.0.1:8787` (which trips Tor Browser NoScript `<LAN>` blocks) or ask
+/// for a pairing code.
+export function hasNodeHost(): boolean {
+  if (homeFetch()) return true;
+  if (typeof DESKTOP_NODE_ORIGIN === "string" && /^http:\/\/127\.0\.0\.1:\d{1,5}$/.test(DESKTOP_NODE_ORIGIN)) return true;
+  if (servedByHomeNode()) return hasSession();
+  if (servedByLocalShop()) return true;
+  if (typeof location === "undefined" || !location.hostname) return true;
+  return onLoopbackPage();
+}
+
 /// The shop page is this machine's node, opened at a loopback name.
 export function onThisComputer(): boolean {
   if (typeof location === "undefined") return false;
@@ -672,6 +689,9 @@ function resetLocalShopSession(): void {
 async function pairingToken(ask: boolean): Promise<string> {
   if (servedByHomeNode() || homeFetch()) {
     return "";
+  }
+  if (!hasNodeHost()) {
+    throw new NodeOfflineError();
   }
   if (typeof DESKTOP_TOKEN === "string" && TOKEN_PATTERN.test(DESKTOP_TOKEN)) {
     return DESKTOP_TOKEN;
@@ -810,6 +830,9 @@ async function tradeTypedCode(code: string): Promise<string> {
 }
 
 async function postPair(body: { code?: string }): Promise<{ status: number; token?: unknown; error?: string }> {
+  if (!hasNodeHost()) {
+    throw new NodeOfflineError();
+  }
   let response: Response;
   try {
     response = await fetch(`${NODE_ORIGIN}/pair`, {
@@ -838,6 +861,7 @@ const CURRENCIES: readonly CurrencyCode[] = ["USD", "EUR", "GBP", "JPY"];
 /// Bitcoin prices for the estimate beside a listing. A failure here is not
 /// the shop being offline: the bitcoin amount still stands on its own.
 export async function fetchRates(): Promise<RateTable> {
+  if (!hasNodeHost()) return {};
   try {
     const response = await nodeFetch("/rates", { cache: "no-store" });
     if (!response.ok) {
@@ -886,6 +910,7 @@ async function nodeFetch(path: string, init: RequestInit): Promise<Response> {
   if (servedByHomeNode()) return signedFetch(path, init);
   const native = homeFetch();
   if (native) return native(path, init);
+  if (!hasNodeHost()) throw new NodeOfflineError();
   const prefix = targetPrefix();
   // The localhost session cookie crosses ports (shop page to node), so it
   // must be asked for; same-origin and token requests are unaffected.

@@ -347,6 +347,21 @@ impl Replica {
         self.admissions.values().cloned().collect()
     }
 
+    pub(crate) fn admission_index_sequence(&self) -> u64 {
+        self.admission_index.as_ref().map_or(0, |index| index.sequence)
+    }
+
+    pub(crate) fn admission_state(&self) -> Result<(u64, u64, Vec<[u8; 32]>), String> {
+        let head = self
+            .head()
+            .ok_or_else(|| "no directory head in data dir; run fetch-seed first or pass --head-sequence".to_string())?;
+        let next = self.admission_index_sequence().saturating_add(1);
+        let mut stores: Vec<[u8; 32]> = self.admissions().into_iter().map(|a| a.store_id).collect();
+        stores.sort();
+        stores.dedup();
+        Ok((head.sequence, next, stores))
+    }
+
     /// Whether `admission` passed the fee check when the chain was last asked.
     pub(crate) fn is_live(&self, admission: &Admission) -> bool {
         self.live.contains(&admission.store_id)
@@ -1502,6 +1517,25 @@ pub(crate) fn pull_onions(dir: &Path, onions: &[String]) -> Result<(u64, Vec<Str
         lines.push(format!("refused sequence {sequence}: {reason}"));
     }
     Ok((document.sequence, lines))
+}
+
+/// Read `(head_sequence, next_snapshot_sequence, admitted_store_ids)` from the
+/// directory replica stored in `dir` (`…/testnet4`).
+pub(crate) fn replica_admission_state(dir: &Path) -> Result<(u64, u64, Vec<[u8; 32]>), String> {
+    Replica::open(dir).map_err(|err| err.to_string())?.admission_state()
+}
+
+/// Submit a signed admission snapshot (`OBAX`) to each introduction in `onions`.
+pub(crate) fn submit_admission_index(dir: &Path, onions: &[String], bytes: &[u8]) -> Result<Vec<(String, bool)>, String> {
+    let index = AdmissionIndex::decode(bytes).map_err(|err| err.to_string())?;
+    index.verify_signer(&DOCUMENT_KEY).map_err(|err| err.to_string())?;
+    let state_dir = dir.join("tor-client");
+    let mut results = Vec::with_capacity(onions.len());
+    for onion in onions {
+        let kept = submit_record(&state_dir, onion, tormail::SUBMIT_ADMISSION_INDEX, bytes)?;
+        results.push((onion.clone(), kept));
+    }
+    Ok(results)
 }
 
 struct Report<'a> {
@@ -2751,5 +2785,25 @@ mod tests {
             .map(|row| row["title"].as_str().unwrap().to_string())
             .collect();
         assert_eq!(shown, vec!["Cedar spoon".to_string()]);
+    }
+
+    #[test]
+    fn replica_admission_state_reads_head_next_sequence_and_admitted_stores() {
+        let dir = TempDir::new();
+        assert!(replica_admission_state(&dir.0).is_err(), "empty dir has no head");
+        let dir_secret = secret_from_label("state-directory");
+        let dir_key = xonly(&dir_secret);
+        let head = SeedDocument::sign(7, vec![onion('a')], DirectoryTerms::standard(dir_key), None, &dir_secret).unwrap();
+        let store_secret = secret_from_label("state-store");
+        let store_id = xonly(&store_secret);
+        let admission = Admission::sign(store_id, [9u8; 32], 0, 100, &store_secret).unwrap();
+        let mut replica = Replica::open(&dir.0).unwrap();
+        replica.accept_document(&head.encode().unwrap(), &dir_key).unwrap();
+        replica.accept_admission(&admission.encode().unwrap()).unwrap();
+        assert_eq!(replica.admission_state().unwrap(), (7, 1, vec![store_id]));
+
+        let snapshot = AdmissionIndex::sign(3, 20261123, 7, vec![store_id], &dir_secret).unwrap();
+        replica.accept_admission_index(&snapshot.encode().unwrap(), &dir_key).unwrap();
+        assert_eq!(replica.admission_state().unwrap(), (7, 4, vec![store_id]));
     }
 }

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
-import { DIRECT_GET, NOT_A_STORE, UNSIGNED, UNREACHABLE, catalogFromPublic, directBrowseBase, directImageUrl, fetchPublicCatalog, isPlainText, setDirectBrowse, shownListing, shownStore, storeBase, storeChoice, storeFromLocation } from "./directStore.ts";
+import { DIRECT_GET, NOT_A_STORE, UNSIGNED, UNREACHABLE, catalogFromPublic, directBrowseBase, directImageUrl, fetchHostStore, fetchPublicCatalog, isPlainText, onionOrigin, setDirectBrowse, shownListing, shownStore, storeBase, storeChoice, storeFromLocation } from "./directStore.ts";
 import { verifyListingRecord, verifyStoreRecord } from "./records.ts";
 
 const onion = `${"a".repeat(56)}.onion`;
@@ -107,4 +107,35 @@ test("images are read from the store being browsed", () => {
   assert.equal(directImageUrl(`http://${onion}`, "zz"), null);
   setDirectBrowse(null);
   assert.equal(directBrowseBase(), null);
+});
+
+test("a selling bare onion opens that store; a non-selling onion falls through to the market", async () => {
+  const { stores, listings } = raw();
+  const store = verifyStoreRecord(stores[0].record);
+  assert.ok(store);
+  const own = listings.filter((item) => item.storeId === store.key).map((item) => item.record);
+  const loc = { search: "", hostname: onion, protocol: "http:", port: "" };
+
+  assert.equal(onionOrigin(loc, false), `http://${onion}`);
+  assert.equal(onionOrigin(loc, true), null);
+  assert.equal(onionOrigin({ search: "", hostname: "market.example", protocol: "https:" }, false), null);
+
+  let called = 0;
+  const selling = await fetchHostStore(loc, false, async (url) => {
+    called += 1;
+    assert.equal(url, `http://${onion}/public/store`);
+    return new Response(JSON.stringify({ store: stores[0].record, listings: own }), { status: 200 });
+  });
+  assert.equal(called, 1);
+  assert.equal(selling?.url, `http://${onion}`);
+  assert.equal(selling?.catalog.listings.length, own.length);
+
+  const notSelling = await fetchHostStore(loc, false, async () =>
+    new Response(JSON.stringify({ error: "This node is not selling." }), { status: 404 }),
+  );
+  assert.equal(notSelling, null);
+
+  let homeCalled = 0;
+  assert.equal(await fetchHostStore(loc, true, async () => { homeCalled += 1; return new Response(""); }), null);
+  assert.equal(homeCalled, 0);
 });

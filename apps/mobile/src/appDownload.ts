@@ -1,7 +1,7 @@
 // The app a buyer downloads so they can pay. This page does not take a card
-// and does not pay the seller. The files are the v0.1.0-alpha.13 release.
+// and does not pay the seller. The files are the v0.1.0-alpha.14 release.
 
-export const APP_VERSION = "0.1.0-alpha.13";
+export const APP_VERSION = "0.1.0-alpha.14";
 const TAG = `v${APP_VERSION}`;
 const BASE = `https://github.com/OpenBazaar/openbazaar-rs/releases/download/${TAG}`;
 
