@@ -435,8 +435,12 @@ impl Node {
         check_catalog_network(&catalog, network)?;
         fs::create_dir_all(&dir).map_err(|err| Error::Detail(err.to_string()))?;
         vault_key::check_private(&dir)?;
+        // Each step is logged. The desktop shell treats a silent node as stuck
+        // and kills it, so a slow step has to say what it is doing.
+        eprintln!("ob-node: opening the vault");
         let vault = Vault::open(&dir, &local.vault)?;
         let wallets = dir.join("wallets");
+        eprintln!("ob-node: opening the bitcoin wallet");
         let buyer_wallet = NodeWallet::open(&wallets, "node", &vault, network)?;
         let moderators = moderators::accepted_at_boot(&dir, &mut catalog, network)?;
         xmr::apply_signed_accepts(&dir, &vault, &mut catalog, network)?;
@@ -447,6 +451,7 @@ impl Node {
         catalog.stores.retain(|store| store.id != own_store);
         catalog.stores.extend(own.record);
         let mut seed_replica = directory::Replica::open(&dir)?;
+        eprintln!("ob-node: checking directory admissions");
         let live = admission::live_admissions(
             config.chain.as_ref(),
             network,
@@ -488,6 +493,7 @@ impl Node {
         let buyer_orders = BuyerOrders::open(&dir, vault.clone(), network.as_str())?;
         let labelers = Labelers::open(&dir, vault.clone())?;
         let mut store_wallets = BTreeMap::new();
+        eprintln!("ob-node: opening the demo store wallets");
         for listing in &catalog.listings {
             if store_wallets.contains_key(&listing.seller) {
                 continue;
@@ -510,9 +516,11 @@ impl Node {
             .keys()
             .map(|seller| (seller.clone(), format!("store-{}", slug(seller))))
             .collect();
+        eprintln!("ob-node: opening the Monero and Zcash state");
         let xmr = xmr::XmrNode::open(&dir, &vault, network, &demo_wallets, local.egress.clone())?;
         let zec = zec::ZecNode::open(&dir, &vault, network, &demo_wallets, local.egress.clone())?;
         let wallet_tip = buyer_wallet.wallet.latest_checkpoint().block_id();
+        eprintln!("ob-node: opening the chain store");
         config
             .chain
             .open(ChainStore {
@@ -581,6 +589,7 @@ impl Node {
         };
         node.drop_uncommitted_spend()?;
         node.hold_moderator_fee_addresses();
+        eprintln!("ob-node: the data dir is open");
         Ok(node)
     }
 

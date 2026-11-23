@@ -14,7 +14,7 @@
 //! peer from this server.
 
 use std::io::Write;
-use std::net::TcpListener;
+use std::net::{Ipv4Addr, SocketAddr, TcpListener};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
 use openbazaar_escrow::Party;
@@ -78,7 +78,11 @@ pub(crate) fn http_response_headers(
 }
 
 pub fn serve(node: &Node, port: u16) -> std::io::Result<()> {
-    serve_on(node, TcpListener::bind(("127.0.0.1", port))?)
+    // A string host is resolved with getaddrinfo. On Windows that can block
+    // for minutes even for 127.0.0.1, and the desktop shell then kills the
+    // node before this port accepts a connection.
+    let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
+    serve_on(node, TcpListener::bind(addr)?)
 }
 
 /// Serve on a listener the caller bound (to 127.0.0.1).

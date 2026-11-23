@@ -12,7 +12,6 @@
 //! while no filter peer answers. Address lookups and wallet scans stay on
 //! the filters. `--peer` and `--esplora` never fall back to anything.
 
-use std::net::{SocketAddr, ToSocketAddrs};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
@@ -104,7 +103,7 @@ impl ChainPlan {
     pub fn build(&self, network: NetworkMode, egress: &Egress) -> Result<Box<dyn ChainSource>, String> {
         let filters = |config: &FilterConfig| {
             FilterChain::new(FilterConfig {
-                proxy: egress.proxy.as_deref().map(socks_address).transpose()?,
+                proxy: egress.proxy.as_deref().map(crate::egress::proxy_addr).transpose()?,
                 ..config.clone()
             })
         };
@@ -118,16 +117,6 @@ impl ChainPlan {
             ChainPlan::Esplora { urls } => Box::new(EsploraChain::with_egress(urls, network.bitcoin(), egress)?),
         })
     }
-}
-
-/// The filter client takes the proxy as a socket address; the proxy host itself is resolved here.
-fn socks_address(proxy: &str) -> Result<SocketAddr, String> {
-    let authority = proxy.trim_start_matches("socks5h://");
-    authority
-        .to_socket_addrs()
-        .map_err(|err| format!("proxy {authority}: {err}"))?
-        .next()
-        .ok_or_else(|| format!("proxy {authority} has no address"))
 }
 
 /// Parse one `--peer` value: `HOST:PORT`, `[IPv6]:PORT`, or `HOST` on the network's P2P port.

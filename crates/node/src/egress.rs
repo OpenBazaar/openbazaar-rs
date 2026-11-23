@@ -9,11 +9,44 @@
 //! server on this machine or the LAN is still reached directly. Escrow mail
 //! to loopback peers never uses the proxy.
 
-use std::net::ToSocketAddrs;
+use std::net::{Ipv4Addr, SocketAddr, ToSocketAddrs};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use serde_json::{json, Value};
+
+/// `socks5://` or `socks5h://HOST:PORT` as a socket address.
+///
+/// A numeric host, and the name `localhost`, are parsed here. `to_socket_addrs`
+/// asks the OS resolver, and on Windows that call can sit for minutes even for
+/// `127.0.0.1` while the network stack is busy. The desktop app's built-in Tor
+/// proxy is always a loopback address, and startup used to die in that lookup:
+/// the shell killed the node before it listened, so the window never opened.
+pub(crate) fn proxy_addr(proxy: &str) -> Result<SocketAddr, String> {
+    let authority = proxy
+        .trim_start_matches("socks5h://")
+        .trim_start_matches("socks5://");
+    if let Some(addr) = numeric_proxy(authority) {
+        return Ok(addr);
+    }
+    authority
+        .to_socket_addrs()
+        .map_err(|err| format!("proxy {authority}: {err}"))?
+        .next()
+        .ok_or_else(|| format!("proxy {authority} has no address"))
+}
+
+/// An address that does not need the OS resolver: `127.0.0.1:9050`,
+/// `[::1]:9050`, or `localhost:9050`.
+fn numeric_proxy(authority: &str) -> Option<SocketAddr> {
+    if let Ok(addr) = authority.parse::<SocketAddr>() {
+        return Some(addr);
+    }
+    let (host, port) = authority.rsplit_once(':')?;
+    let port = port.parse::<u16>().ok().filter(|port| *port != 0)?;
+    host.eq_ignore_ascii_case("localhost")
+        .then(|| SocketAddr::from((Ipv4Addr::LOCALHOST, port)))
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Egress {
@@ -80,11 +113,7 @@ impl Egress {
         use std::io::{Read, Write};
         use std::net::TcpStream;
         use std::time::Duration;
-        let authority = proxy.trim_start_matches("socks5h://").trim_start_matches("socks5://");
-        let Ok(mut addresses) = authority.to_socket_addrs() else {
-            return false;
-        };
-        let Some(address) = addresses.next() else {
+        let Ok(address) = proxy_addr(proxy) else {
             return false;
         };
         let timeout = Duration::from_millis(400);
@@ -232,6 +261,22 @@ mod tests {
         let tor = Egress { proxy: Some("socks5h://127.0.0.1:9050".into()), live_rates: true }.value(true);
         assert_eq!(tor["clearnet"], false);
         assert_eq!(tor["proxy"], "socks5h://127.0.0.1:9050");
+    }
+
+    #[test]
+    fn a_loopback_proxy_is_parsed_without_the_resolver() {
+        let started = std::time::Instant::now();
+        let v4 = proxy_addr("socks5h://127.0.0.1:9050").unwrap();
+        assert_eq!(v4, "127.0.0.1:9050".parse().unwrap());
+        let local = proxy_addr("socks5h://localhost:9150").unwrap();
+        assert_eq!(local, "127.0.0.1:9150".parse().unwrap());
+        let v6 = proxy_addr("socks5://[::1]:9050").unwrap();
+        assert_eq!(v6, "[::1]:9050".parse().unwrap());
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(2),
+            "a numeric proxy went through the OS resolver"
+        );
+        assert!(proxy_addr("socks5h://:9050").is_err());
     }
 
     #[test]
