@@ -125,6 +125,7 @@ export function Onboarding({ initialLink }: { initialLink: string | null }) {
       <Text style={ui.subtitle}>
         On the computer that runs your store, run <Text style={styles.code}>ob-node pair</Text> or open Pair a device. It shows a QR code and 8 words.
       </Text>
+      <Text style={ui.muted}>This phone is not a node, and it is not a shop you can hand to someone. They would still need this home node.</Text>
       {phase.name === "ended" ? <Notice text={phase.message} /> : null}
       {error ? <Notice text={error} tone="error" /> : null}
       <Card title="This phone's name">
