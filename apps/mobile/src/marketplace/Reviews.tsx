@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import type { BuyerOrder, ListingHeader } from "../catalog";
-import { fetchStoreReviews, forListing, replyToReview, reviewDate, writeReview, type StoreReview, type StoreReviews } from "../reviews";
+import { fetchStoreReviews, forListing, replyToReview, reviewDate, reviewSummary, writeReview, type StoreReview, type StoreReviews } from "../reviews";
 import { useListingStyles } from "./VariantPicker";
 
 export function Stars({ rating, size = "small" }: { rating: number; size?: "small" | "large" }) {
@@ -21,11 +21,12 @@ function useStoreReviews(storeKey: string) {
 }
 
 function Summary({ reviews, label }: { reviews: StoreReviews; label: string }) {
-  if (!reviews.count || reviews.average === null) return <p className="ob-review-none">No verified reviews {label} yet.</p>;
+  const summary = reviewSummary(reviews, label);
+  if (summary.average === null) return <p className="ob-review-none">{summary.line}</p>;
   return <div className="ob-review-summary">
-    <Stars rating={reviews.average} size="large"/>
-    <strong>{reviews.average.toFixed(1)}</strong>
-    <span>{reviews.count} verified {reviews.count === 1 ? "review" : "reviews"} {label}</span>
+    <Stars rating={reviews.average ?? 0} size="large"/>
+    <strong>{summary.average}</strong>
+    <span>{summary.line}</span>
   </div>;
 }
 

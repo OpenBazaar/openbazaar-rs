@@ -35,6 +35,13 @@ export function parseStoreReviews(value: unknown): StoreReviews {
   return { count: reviews.length, average: typeof body.average === "number" ? body.average : null, stars, reviews };
 }
 
+/** The average and count the listing summary shows. `average` is null when there is nothing to show. */
+export function reviewSummary(reviews: StoreReviews, label: string): { average: string | null; line: string } {
+  if (!reviews.count || reviews.average === null) return { average: null, line: `No verified reviews ${label} yet.` };
+  const noun = reviews.count === 1 ? "review" : "reviews";
+  return { average: reviews.average.toFixed(1), line: `${reviews.count} verified ${noun} ${label}` };
+}
+
 /** The same reviews limited to one listing, with stars recounted. */
 export function forListing(all: StoreReviews, listingId: string | null): StoreReviews {
   const reviews = all.reviews.filter(r => r.listingId === listingId);
