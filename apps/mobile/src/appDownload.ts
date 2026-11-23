@@ -1,7 +1,7 @@
 // The app a buyer downloads so they can pay. This page does not take a card
-// and does not pay the seller. The files are the v0.1.0-alpha.12 release.
+// and does not pay the seller. The files are the v0.1.0-alpha.13 release.
 
-export const APP_VERSION = "0.1.0-alpha.12";
+export const APP_VERSION = "0.1.0-alpha.13";
 const TAG = `v${APP_VERSION}`;
 const BASE = `https://github.com/OpenBazaar/openbazaar-rs/releases/download/${TAG}`;
 
@@ -16,7 +16,7 @@ export function appDownload(userAgent: string): AppDownload {
     return { href: `${BASE}/OpenBazaar_${APP_VERSION}_android.apk`, label: "Android app" };
   }
   if (ua.includes("iphone") || ua.includes("ipad") || ua.includes("ipod")) {
-    return { href: RELEASE_PAGE, label: "v0.1.0-alpha.12 release" };
+    return { href: RELEASE_PAGE, label: `${TAG} release` };
   }
   if (ua.includes("mac os") || ua.includes("macintosh")) {
     return { href: `${BASE}/OpenBazaar_${APP_VERSION}_universal.dmg`, label: "Mac app" };
@@ -27,5 +27,5 @@ export function appDownload(userAgent: string): AppDownload {
   if (ua.includes("linux")) {
     return { href: `${BASE}/OpenBazaar_${APP_VERSION}_amd64.AppImage`, label: "Linux app" };
   }
-  return { href: RELEASE_PAGE, label: "v0.1.0-alpha.12 release" };
+  return { href: RELEASE_PAGE, label: `${TAG} release` };
 }
