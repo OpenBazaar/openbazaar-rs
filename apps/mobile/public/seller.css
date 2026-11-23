@@ -90,10 +90,15 @@
 .ob-saved-name { margin: 8px 0 0; color: var(--ob-secondary); font-size: 13px; }
 
 /* Listing editor */
-.ob-listing-photos { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
-.ob-listing-photo { position: relative; margin: 0; width: 104px; height: 104px; border-radius: 8px; overflow: hidden; background: var(--ob-subtle); }
+.ob-listing-photos { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-start; }
+.ob-listing-photo { position: relative; margin: 0; width: 104px; background: transparent; }
+.ob-listing-photo .ob-photo-open { display: block; width: 104px; height: 104px; padding: 0; border: 0; border-radius: 8px; overflow: hidden; background: var(--ob-subtle); }
 .ob-listing-photo img { width: 100%; height: 100%; object-fit: cover; }
-.ob-listing-photo button { position: absolute; top: 4px; right: 4px; width: 44px; height: 44px; border-radius: 50%; background: rgba(9, 22, 38, .8); color: #fff; font-size: 22px; line-height: 1; }
+.ob-listing-photo > .ob-icon-button { position: absolute; top: 4px; right: 4px; width: 44px; height: 44px; border-radius: 50%; background: rgba(9, 22, 38, .8); color: #fff; font-size: 22px; line-height: 1; }
+.ob-photo-moves { display: flex; gap: 4px; margin-top: 4px; }
+.ob-photo-moves button { flex: 1; min-height: 32px; padding: 4px 2px; font-size: 12px; }
+.ob-photo-large { display: flex; justify-content: center; }
+.ob-photo-large img { width: min(72vw, 720px); max-height: 70vh; object-fit: contain; }
 .ob-kind-choice, .ob-tag-choice { display: flex; flex-wrap: wrap; gap: 8px; }
 .ob-kind-choice label, .ob-tag-choice label { display: inline-flex; align-items: center; gap: 9px; min-height: 44px; padding: 10px 12px; border: 1px solid var(--ob-line); border-radius: 7px; font-size: 14px; color: var(--ob-ink); cursor: pointer; }
 .ob-kind-choice label.is-selected { border-color: var(--ob-brand); background: var(--ob-selected); }

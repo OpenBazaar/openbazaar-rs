@@ -46,6 +46,7 @@ import { Follows } from "./Follows";
 import { FollowButton } from "./FollowButton";
 import { ListingRails } from "./RailMark";
 import { MediaImage } from "./SellerKit";
+import { PhotoZoom } from "./PhotoZoom";
 import { PairingBanner, PairingDialog } from "./PairingDialog";
 import { BrowsersSettings } from "./BrowsersSettings";
 
@@ -367,7 +368,15 @@ export default function Marketplace() {
 }
 function NavItem({ icon, children, active, count, countNew, countLabel, onClick }: { icon: IconName; children: ReactNode; active: boolean; count?: number; countNew?: boolean; countLabel?: string; onClick: () => void }) { return <button className={`ob-nav-item ${active ? "is-active" : ""}`} aria-label={typeof children === "string" ? children : undefined} title={typeof children === "string" ? children : undefined} aria-current={active ? "page" : undefined} onClick={onClick}><Icon name={icon} size={19}/><span>{children}</span>{count !== undefined && <span className={`ob-nav-count${countNew ? " is-new" : ""}`} aria-label={countLabel}>{count}</span>}</button>; }
 export function Empty({ icon, illustration, title, text, children }: { icon: IconName; illustration?: "bag" | "saved"; title: string; text: string; children?: ReactNode }) { return <div className="ob-empty">{illustration ? <MarketEmptyArtwork variant={illustration}/> : <span className="ob-empty-icon"><Icon name={icon} size={30}/></span>}<h2>{title}</h2><p>{text}</p>{children && <div className="ob-empty-actions">{children}</div>}</div>; }
-export function ProductImage({ listing, image = listing.images[0], ...props }: { listing: ListingHeader; image?: string; className?: string }) { const src = photo(listing); const placeholder = <Icon name={categoryIcons.get(topCategory(listing)) ?? "bag"} size={55}/>; return <div className={`ob-product-image ${src || image ? "" : "ob-product-placeholder"} ${props.className ?? ""}`}>{image ? <MediaImage hash={image} alt={listing.title} fallback={placeholder}/> : src ? <img src={src} alt={listing.title} loading="lazy"/> : placeholder}</div>; }
+export function ProductImage({ listing, image = listing.images[0], ...props }: { listing: ListingHeader; image?: string; className?: string }) {
+  const frame = useRef<HTMLDivElement>(null);
+  const [gallery, setGallery] = useState(false);
+  const [open, setOpen] = useState(false);
+  useEffect(() => { setGallery(Boolean(frame.current?.closest(".ob-gallery"))); }, [image]);
+  const src = photo(listing);
+  const placeholder = <Icon name={categoryIcons.get(topCategory(listing)) ?? "bag"} size={55}/>;
+  return <div ref={frame} className={`ob-product-image ${src || image ? "" : "ob-product-placeholder"} ${props.className ?? ""}`}>{image ? <MediaImage hash={image} alt={listing.title} fallback={placeholder}/> : src ? <img src={src} alt={listing.title} loading="lazy"/> : placeholder}{gallery && image ? <button type="button" className="ob-photo-zoom" aria-label="View photo larger" onClick={() => setOpen(true)}>View larger</button> : null}{open && image ? <PhotoZoom hash={image} title={listing.title} onClose={() => setOpen(false)}/> : null}</div>;
+}
 export function ProductCard({ listing, rates, currency, saved, onSave, onOpen, onStore }: { listing: ListingHeader; rates: RateTable; currency: CurrencyCode; saved: boolean; onSave?: () => void; onOpen: () => void; onStore?: () => void }) {
   const seller = <><span className="ob-seller-avatar" aria-hidden="true">{listing.seller.charAt(0)}</span>{listing.seller}</>;
   return <article className="ob-product-card"><div className="ob-card-image-wrap"><button className="ob-product-open" onClick={onOpen} aria-label={`View ${listing.title}`}><ProductImage listing={listing}/></button>{onSave && <button className={`ob-save ${saved ? "is-saved" : ""}`} aria-label={`${saved ? "Unsave" : "Save"} ${listing.title}`} aria-pressed={saved} onClick={onSave}><Icon name="heart" size={17}/></button>}{listing.kind === "digital" && <span className="ob-digital-badge"><Icon name="bolt" size={12}/>Digital</span>}{listing.sample && <span className="ob-sample-badge">Sample</span>}</div><div className="ob-card-category">{categoryLabel(listing)}<span>{listing.shipFrom}</span></div><button className="ob-product-title" onClick={onOpen}>{listing.title}</button>{listing.price && <span className="ob-seller-price">{formatPrice(listing.price.amount, listing.price.currency)}</span>}<Money sats={listing.priceSats} rates={rates} currency={currency}/>{onStore ? <button type="button" className="ob-card-seller" onClick={onStore} aria-label={`Open store ${listing.seller}`}>{seller}</button> : <div className="ob-card-seller">{seller}</div>}</article>;
