@@ -1,0 +1,2 @@
+# The pricing vectors are text the protocol test compares line for line.
+crates/protocol/vectors/*.json text eol=lf
