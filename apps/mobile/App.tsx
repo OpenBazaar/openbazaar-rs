@@ -54,6 +54,7 @@ import { NativeNetworkBadge, NativeOrderPayment, NativeWallet } from "./src/Nati
 import { orderPollingDone, ordersSettled } from "./src/orderState";
 import { NodePaymentsProvider } from "./src/marketplace/NodePayments";
 import { HomeNodeApp } from "./src/native/HomeNodeApp";
+import { fetchPublicCatalog, NOT_A_STORE, storeBase } from "./src/directStore";
 
 type SortKey = "relevance" | "price-asc" | "price-desc" | "newest";
 type Filters = {
@@ -153,14 +154,18 @@ function addressReady(input: AddressInput): boolean {
 }
 
 // The native app manages a paired home node; the shop below is its marketplace.
+// `withoutNode` is the unpaired phone: it can open a store address and keep a
+// bag, and it does not pay.
 export default function App() {
   return <HomeNodeApp Market={ShopApp} />;
 }
 
-function ShopApp() {
+function ShopApp({ withoutNode = false }: { withoutNode?: boolean }) {
   const { width } = useWindowDimensions();
   const compact = width < 860;
   const [catalog, setCatalog] = useState<ShopCatalog | null>(null);
+  const [direct, setDirect] = useState<string | null>(null);
+  const [storeDraft, setStoreDraft] = useState("");
   const [loadError, setLoadError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [rates, setRates] = useState<RateTable>({});
@@ -197,10 +202,40 @@ function ShopApp() {
     writeSafety(next);
   };
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (pasted?: string) => {
     setLoading(true);
     setLoadError(null);
+    if (pasted !== undefined) {
+      const url = storeBase(pasted);
+      if (!url) {
+        setDirect(null);
+        setCatalog(null);
+        setLoadError(NOT_A_STORE);
+        setLoading(false);
+        return;
+      }
+      try {
+        setCatalog(await fetchPublicCatalog(url));
+        setDirect(url);
+        setLoadError(null);
+      } catch (err) {
+        setDirect(null);
+        setCatalog(null);
+        setLoadError(err instanceof Error ? err.message : "That store could not be opened.");
+      } finally {
+        setLoading(false);
+      }
+      return;
+    }
+    if (withoutNode) {
+      setDirect(null);
+      setCatalog(null);
+      setLoadError("Paste a store address. This phone reads that seller's catalog and keeps the bag here. Paying needs your home node.");
+      setLoading(false);
+      return;
+    }
     try {
+      setDirect(null);
       setCatalog(await fetchCatalog());
     } catch (err) {
       setCatalog(null);
@@ -208,7 +243,7 @@ function ShopApp() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [withoutNode]);
 
   useEffect(() => {
     void load();
@@ -218,9 +253,12 @@ function ShopApp() {
     if (!catalog) return;
     let stop = false;
     const pull = () => {
-      void fetchRates().then((next) => {
-        if (!stop) setRates(next);
-      });
+      void fetchRates().then(
+        (next) => {
+          if (!stop) setRates(next);
+        },
+        () => {},
+      );
     };
     pull();
     const timer = setInterval(pull, 5 * 60 * 1000);
@@ -293,7 +331,18 @@ function ShopApp() {
         <Image source={require("./public/brand/ob-market-logo-256.png")} style={styles.offlineMark} accessibilityLabel="OpenBazaar" />
         <Text style={styles.offlineTitle}>Offline</Text>
         <Text style={styles.offlineBody}>{loadError ?? OFFLINE_MESSAGE}</Text>
-        <Button label="Try again" onPress={() => void load()} />
+        <TextInput
+          style={styles.addressInput}
+          value={storeDraft}
+          onChangeText={setStoreDraft}
+          placeholder="http://….onion or https://…"
+          placeholderTextColor="#8aa0b2"
+          autoCapitalize="none"
+          autoCorrect={false}
+          accessibilityLabel="Store address"
+        />
+        <Button label="Open store" onPress={() => storeDraft.trim() && void load(storeDraft)} />
+        {!withoutNode && <Button label="Try again" onPress={() => void load()} />}
       </View>
     );
   } else if (route.name === "shop" || route.name === "saved") {
@@ -386,6 +435,14 @@ function ShopApp() {
         onCheckout={() => setRoute({ name: "checkout" })}
       />
     );
+  } else if (route.name === "checkout" && direct) {
+    body = (
+      <View style={styles.sheetPad}>
+        <Text style={styles.pageTitle}>Paying needs your home node</Text>
+        <Text style={styles.body}>Your bag stays on this phone. Paying needs the home node. This phone does not hold coins and does not pay the seller.</Text>
+        <TextButton label="Back to the bag" onPress={() => setRoute({ name: "cart" })} />
+      </View>
+    );
   } else if (route.name === "checkout") {
     body = (
       <Checkout
@@ -437,6 +494,7 @@ function ShopApp() {
   return (
     <NodePaymentsProvider activeWallet={["wallet", "orders", "order", "done"].includes(route.name)} onWallet={() => { setMenu(false); setRoute({ name: "wallet" }); }}>
     <View style={styles.page}>
+      {direct ? <Text style={styles.directBanner}>Browsing {direct}. Your bag stays on this phone. Paying needs your home node.</Text> : null}
       <NativeNetworkBadge/>
       <View style={styles.trust}>
         <Text style={styles.trustText}>Orders are sealed on this machine</Text>
@@ -1676,4 +1734,6 @@ const styles = StyleSheet.create({
   offlineMark: { width: 56, height: 56, borderRadius: 10 },
   offlineTitle: { fontFamily: SANS, fontSize: 32, color: "#f4f8fb" },
   offlineBody: { fontFamily: SANS, fontSize: 16, lineHeight: 24, color: "#f4f8fb", maxWidth: 460 },
+  addressInput: { minHeight: 44, borderRadius: 8, paddingHorizontal: 12, fontFamily: SANS, fontSize: 16, color: INK, backgroundColor: CARD },
+  directBanner: { fontFamily: SANS, fontSize: 14, lineHeight: 20, color: INK, backgroundColor: SOFT, paddingHorizontal: 16, paddingVertical: 10 },
 });
