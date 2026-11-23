@@ -1,16 +1,19 @@
 //! What a selling node shows other nodes, and the follow list.
 //!
 //! `GET /public/store` and `GET /public/media/{hash}` need no token: other
-//! nodes call them to copy this store ([`crate::replicas`]). They answer only
-//! while the user chose to sell, only with records this node signed and the
-//! images those records name, and never to a browser page (nodes send no
-//! `Origin`). `GET /follows`, `POST /follows`, and `DELETE /follows` change
+//! nodes call them to copy this store ([`crate::replicas`]), and a buyer's
+//! page may read the same bytes. They answer only while the user chose to
+//! sell, and only with records this node signed and the images those records
+//! name. The loopback listener still refuses a request that carries `Origin`
+//! ([`refuse_pages`]). The sale onion and the https gateway strip `Origin`
+//! before forwarding, and the answer allows any page to read it, without
+//! cookies. `GET /follows`, `POST /follows`, and `DELETE /follows` change
 //! which stores this node copies; paired loopback callers only.
 
 use serde_json::{json, Value};
 
 use crate::escrow_mail::hex;
-use crate::http::{http_response_cors, json_body, json_error, local_guard, Client};
+use crate::http::{json_body, json_error, local_guard, public_json, public_response, Client};
 use crate::http_parse::has_header;
 use crate::store_profile::Role;
 use crate::Node;
@@ -45,9 +48,13 @@ fn selling(node: &Node) -> bool {
     node.role() == Some(Role::Seller)
 }
 
+fn public_error(status: &str, message: &str) -> Vec<u8> {
+    public_json(status, &json!({ "error": message }))
+}
+
 fn store(node: &Node) -> Vec<u8> {
     let Some(record) = node.own_record().filter(|_| selling(node)) else {
-        return json_error("404 Not Found", NOT_SELLING, None);
+        return public_error("404 Not Found", NOT_SELLING);
     };
     let encoded = record.encode().map(|bytes| hex(&bytes));
     let listings: Result<Vec<String>, _> =
@@ -55,9 +62,9 @@ fn store(node: &Node) -> Vec<u8> {
     match (encoded, listings) {
         // The accepted moderators' signed profiles, so a node that copies the store can show and verify them.
         (Ok(store), Ok(listings)) => {
-            json_body("200 OK", &json!({ "store": store, "listings": listings, "moderators": node.accepted_profiles() }), None)
+            public_json("200 OK", &json!({ "store": store, "listings": listings, "moderators": node.accepted_profiles() }))
         }
-        _ => json_error("500 Internal Server Error", "The store could not be read.", None),
+        _ => public_error("500 Internal Server Error", "The store could not be read."),
     }
 }
 
@@ -80,8 +87,8 @@ fn image(node: &Node, hash: &str) -> Vec<u8> {
         .filter(|hash| selling(node) && served_images(node).contains(hash))
         .and_then(|hash| node.media.get(&hash));
     match found {
-        Some((content_type, bytes)) => http_response_cors("200 OK", content_type, &bytes, None),
-        None => json_error("404 Not Found", "That image is not on this store.", None),
+        Some((content_type, bytes)) => public_response("200 OK", content_type, &bytes),
+        None => public_error("404 Not Found", "That image is not on this store."),
     }
 }
 

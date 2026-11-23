@@ -16,16 +16,22 @@ const LOCAL_MARKER: &str = r#"<meta name="ob-local-shop" content="1">"#;
 const PAGE_CSP: &str = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 
 pub(crate) fn response(dir: &Path, path: &str) -> Option<Vec<u8>> {
-    page(dir, path, true)
+    page(dir, path, Some(MARKER))
 }
 
 /// The same export for a browser on this machine. No home-node marker, so
 /// the page stays in the local shop and uses the localhost cookie.
 pub(crate) fn local_page(dir: &Path, path: &str) -> Option<Vec<u8>> {
-    page(dir, path, false)
+    page(dir, path, Some(LOCAL_MARKER))
 }
 
-fn page(dir: &Path, path: &str, home: bool) -> Option<Vec<u8>> {
+/// The shop page on the public store onion. No home-node or local-shop
+/// marker: the page is not signed in, and it reads `GET /public/store`.
+pub(crate) fn bare_page(dir: &Path, path: &str) -> Option<Vec<u8>> {
+    page(dir, path, None)
+}
+
+fn page(dir: &Path, path: &str, marker: Option<&str>) -> Option<Vec<u8>> {
     let path = path.split(['?', '#']).next().unwrap_or(path);
     let name = if path == "/" {
         "index.html"
@@ -49,11 +55,12 @@ fn page(dir: &Path, path: &str, home: bool) -> Option<Vec<u8>> {
     let mut body = fs::read(&file).ok()?;
     let content_type = content_type(name);
     if name == "index.html" {
-        let page = String::from_utf8(body).ok()?;
-        let marker = if home { MARKER } else { LOCAL_MARKER };
-        body = page
-            .replacen("<head>", &format!("<head>{marker}"), 1)
-            .into_bytes();
+        if let Some(marker) = marker {
+            let page = String::from_utf8(body).ok()?;
+            body = page
+                .replacen("<head>", &format!("<head>{marker}"), 1)
+                .into_bytes();
+        }
     }
     let cache = if name.starts_with("_expo/static/") {
         "public, max-age=31536000, immutable"
@@ -109,6 +116,8 @@ mod tests {
         assert!(page.contains(MARKER) && page.contains("script-src 'self'"));
         let local = String::from_utf8(local_page(&web, "/").unwrap()).unwrap();
         assert!(local.contains(LOCAL_MARKER) && !local.contains("ob-home-node"));
+        let bare = String::from_utf8(bare_page(&web, "/").unwrap()).unwrap();
+        assert!(!bare.contains("ob-home-node") && !bare.contains("ob-local-shop"));
         let script =
             String::from_utf8(response(&web, "/_expo/static/js/app.js?v=1").unwrap()).unwrap();
         assert!(script.contains("immutable") && script.contains("text/javascript"));

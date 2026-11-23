@@ -723,7 +723,7 @@ impl Node {
                                 .onion_shop
                                 .lock()
                                 .unwrap_or_else(|err| err.into_inner()) = Some(addr);
-                            scope.spawn(|| crate::sale_gate::serve(listener, port, &stop));
+                            scope.spawn(|| crate::sale_gate::serve(listener, port, None, &stop));
                         }
                         Err(err) => eprintln!("ob-node: store onion: {err}"),
                     },

@@ -579,7 +579,7 @@ mod tests {
             let stopping = Arc::clone(&stop);
             scope.spawn(move || serve_shop(shop, shop_port, &node, &record, &stopping));
             let stopping = Arc::clone(&stop);
-            scope.spawn(move || crate::sale_gate::serve(gate, shop_port, &stopping));
+            scope.spawn(move || crate::sale_gate::serve(gate, shop_port, None, &stopping));
             let counted = Arc::clone(&trap_hits);
             let stopping = Arc::clone(&stop);
             scope.spawn(move || {

@@ -68,9 +68,9 @@ impl WebOrigin {
         self.host.split(':').next().unwrap_or(&self.host)
     }
 
-    /// The answer to a request that did not come to this origin over its
-    /// scheme, or from a page of another origin.
-    pub(crate) fn refusal(&self, method: &str, head: &str) -> Option<Vec<u8>> {
+    /// Host and scheme only. A public catalog read uses this so a buyer's page
+    /// can fetch the store without being this node's signed-in page.
+    pub(crate) fn arrival(&self, method: &str, head: &str) -> Option<Vec<u8>> {
         let host = header(head, "host").map(str::to_ascii_lowercase);
         if host.as_deref() != Some(&self.host) {
             return Some(http_response_cors(
@@ -94,6 +94,15 @@ impl WebOrigin {
                 )
                 .into_bytes(),
             );
+        }
+        None
+    }
+
+    /// The answer to a request that did not come to this origin over its
+    /// scheme, or from a page of another origin.
+    pub(crate) fn refusal(&self, method: &str, head: &str) -> Option<Vec<u8>> {
+        if let Some(answer) = self.arrival(method, head) {
+            return Some(answer);
         }
         if header(head, "origin").is_some_and(|origin| origin != self.origin) {
             return Some(json_error("403 Forbidden", "That page may not call this node.", None));
