@@ -254,6 +254,7 @@ impl Node {
         write_cached(&self.data_dir, self.lock.vault(), &store)?;
         self.serve_own(store);
         self.ensure_testnet_bond();
+        self.queue_catalog_index().map_err(Error::Detail)?;
         Ok(())
     }
 

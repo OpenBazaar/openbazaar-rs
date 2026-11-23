@@ -4,9 +4,12 @@
 //! sequence that verifies under the shipped key and extends the held fee
 //! terms ([`crate::directory_head`]). Stores join with an
 //! admission, not with a new sequence. Store records are wanted for an
-//! admitted or followed id. Listing bodies are wanted for the own store,
-//! followed ids, and the 50 stores last opened here. A source that is down
-//! is skipped. A bad byte does not delete the last good record.
+//! admitted or followed id, and for a store the directory's signed admission
+//! snapshot names. Listing bodies are wanted for the own store, followed ids,
+//! and the 50 stores last opened here. A store's signed catalog index names
+//! the listing hashes for its current record; a listing the index leaves out
+//! is dropped. A source that is down is skipped. A bad byte does not delete
+//! the last good record.
 //!
 //! Nothing here accepts a client-supplied onion. Add-store takes a store key.
 //! The record is kept only when its signature matches that key.
@@ -20,7 +23,9 @@ use std::sync::Mutex;
 use std::thread;
 use std::time::Duration;
 
-use openbazaar_protocol::{Admission, Catalog, Listing, SeedDocument, Store, StoreId, ADMISSION_LEN};
+use openbazaar_protocol::{
+    Admission, AdmissionIndex, Catalog, CatalogIndex, Listing, SeedDocument, Store, StoreId, ADMISSION_LEN,
+};
 use serde_json::{json, Value};
 
 use crate::directory_head::Heads;
@@ -59,6 +64,14 @@ impl Source for Introduction {
 
     fn admission_bytes(&self, cursor: &[u8; 32]) -> Result<Option<Vec<u8>>, String> {
         ask(&self.state_dir, &self.onion, tormail::QUERY_ADMISSIONS, *cursor)
+    }
+
+    fn catalog_index_bytes(&self, id: &[u8; 32]) -> Result<Option<Vec<u8>>, String> {
+        ask(&self.state_dir, &self.onion, tormail::QUERY_CATALOG_INDEX, *id)
+    }
+
+    fn admission_index_bytes(&self) -> Result<Option<Vec<u8>>, String> {
+        ask(&self.state_dir, &self.onion, tormail::QUERY_ADMISSION_INDEX, [0u8; 32])
     }
 }
 
@@ -131,6 +144,17 @@ pub(crate) trait Source {
         let _ = cursor;
         Ok(None)
     }
+
+    /// The store's signed catalog index. `Ok(None)` means this source has none.
+    fn catalog_index_bytes(&self, id: &[u8; 32]) -> Result<Option<Vec<u8>>, String> {
+        let _ = id;
+        Ok(None)
+    }
+
+    /// The directory's signed admission snapshot. `Ok(None)` means this source has none.
+    fn admission_index_bytes(&self) -> Result<Option<Vec<u8>>, String> {
+        Ok(None)
+    }
 }
 
 const PASS_ATTEMPTS: usize = 3;
@@ -156,6 +180,10 @@ pub(crate) struct Replica {
     listings: BTreeMap<[u8; 32], Listing>,
     /// Store ids whose admission passed the fee check when the chain was last asked.
     live: BTreeSet<[u8; 32]>,
+    /// Highest signed catalog index kept for each store.
+    catalog_indexes: BTreeMap<[u8; 32], CatalogIndex>,
+    /// Highest signed admission snapshot. Used only when it names the held head.
+    admission_index: Option<AdmissionIndex>,
 }
 
 /// Where a pull keeps what it fetched. A shared replica is locked for each
@@ -183,6 +211,7 @@ impl Replica {
         fs::create_dir_all(dir.join("stores")).map_err(|err| Error::Detail(err.to_string()))?;
         fs::create_dir_all(dir.join("listings")).map_err(|err| Error::Detail(err.to_string()))?;
         fs::create_dir_all(dir.join("admissions")).map_err(|err| Error::Detail(err.to_string()))?;
+        fs::create_dir_all(dir.join("indexes")).map_err(|err| Error::Detail(err.to_string()))?;
         let mut replica = Self {
             heads: Heads::load(&dir, &DOCUMENT_KEY),
             dir,
@@ -195,6 +224,8 @@ impl Replica {
             stores: BTreeMap::new(),
             listings: BTreeMap::new(),
             live: BTreeSet::new(),
+            catalog_indexes: BTreeMap::new(),
+            admission_index: None,
         };
         replica.load().map_err(|err| Error::Detail(err))?;
         Ok(replica)
@@ -265,10 +296,25 @@ impl Replica {
         Ok(!self.synced)
     }
 
-    /// Every admitted or followed id with no store file. A missing record stays
-    /// wanted on the next pass, including an id already in the admission map.
+    /// Every admitted, followed, or snapshot-named id with no store file.
+    /// A missing record stays wanted on the next pass.
     fn wanted_stores(&self) -> BTreeSet<[u8; 32]> {
-        self.admissions.keys().chain(self.followed.iter()).filter(|id| !self.stores.contains_key(*id)).copied().collect()
+        let mut ids: BTreeSet<[u8; 32]> = self.admissions.keys().chain(self.followed.iter()).copied().collect();
+        if let Some(index) = self.current_snapshot() {
+            ids.extend(index.stores.iter().copied());
+        }
+        ids.retain(|id| !self.stores.contains_key(id));
+        ids
+    }
+
+    /// The admission snapshot that accompanies the head this node holds.
+    fn current_snapshot(&self) -> Option<&AdmissionIndex> {
+        let head = self.heads.document()?;
+        self.admission_index.as_ref().filter(|index| index.signer == head.signer && index.head_sequence == head.sequence)
+    }
+
+    fn snapshot_names(&self, id: &[u8; 32]) -> bool {
+        self.current_snapshot().is_some_and(|index| index.stores.binary_search(id).is_ok())
     }
 
     pub(crate) fn admissions(&self) -> Vec<Admission> {
@@ -311,6 +357,8 @@ impl Replica {
             tormail::QUERY_SEED => self.heads.seed_bytes(),
             tormail::QUERY_HEAD => self.heads.head_bytes(),
             tormail::QUERY_STORE => self.stores.get(id)?.encode().ok(),
+            tormail::QUERY_CATALOG_INDEX => self.catalog_indexes.get(id).and_then(|index| index.encode().ok()),
+            tormail::QUERY_ADMISSION_INDEX => self.admission_index.as_ref().and_then(|index| index.encode().ok()),
             tormail::QUERY_ADMISSIONS => Some(self.admission_page(id)),
             tormail::QUERY_INBOX => {
                 let mut out = Vec::new();
@@ -386,6 +434,9 @@ impl Replica {
             return Err("that listing has no store record".into());
         }
         let hash = listing.content_hash().map_err(|err| err.to_string())?;
+        if !self.index_allows(&id, hash.as_bytes()) {
+            return Err("that listing is not in the store's catalog index".into());
+        }
         self.save_listing(*hash.as_bytes(), &listing)
     }
 
@@ -405,9 +456,92 @@ impl Replica {
                 continue;
             }
             let Ok(hash) = listing.content_hash() else { continue };
+            if !self.index_allows(id, hash.as_bytes()) {
+                continue;
+            }
             self.save_listing(*hash.as_bytes(), &listing)?;
         }
         Ok(())
+    }
+
+    /// Keep a catalog index signed by the store it names. A lower sequence stays.
+    /// A bad signature is not stored.
+    pub(crate) fn accept_catalog_index(&mut self, bytes: &[u8]) -> Result<(), String> {
+        let index = CatalogIndex::decode(bytes).map_err(|err| err.to_string())?;
+        index.verify().map_err(|err| err.to_string())?;
+        self.keep_catalog_index(index)
+    }
+
+    fn keep_catalog_index(&mut self, index: CatalogIndex) -> Result<(), String> {
+        if self.catalog_indexes.get(&index.store_id).is_some_and(|held| index.sequence <= held.sequence) {
+            return Ok(());
+        }
+        self.retract_absent(&index);
+        let bytes = index.encode().map_err(|err| err.to_string())?;
+        atomic(&self.index_path(&index.store_id), &bytes)?;
+        self.catalog_indexes.insert(index.store_id, index);
+        Ok(())
+    }
+
+    /// Keep an admission snapshot signed by `key`. A lower sequence stays.
+    pub(crate) fn accept_admission_index(&mut self, bytes: &[u8], key: &[u8; 32]) -> Result<(), String> {
+        let index = AdmissionIndex::decode(bytes).map_err(|err| err.to_string())?;
+        index.verify_signer(key).map_err(|err| err.to_string())?;
+        self.keep_admission_index(index)
+    }
+
+    fn keep_admission_index(&mut self, index: AdmissionIndex) -> Result<(), String> {
+        if self.admission_index.as_ref().is_some_and(|held| index.sequence <= held.sequence) {
+            return Ok(());
+        }
+        let bytes = index.encode().map_err(|err| err.to_string())?;
+        atomic(&self.dir.join("admission-index"), &bytes)?;
+        self.admission_index = Some(index);
+        Ok(())
+    }
+
+    /// A listing hash stays when this node has no index for the store, or the
+    /// index names a different store record. When the digest matches, a hash
+    /// the index leaves out is a retraction.
+    fn index_allows(&self, store_id: &[u8; 32], hash: &[u8; 32]) -> bool {
+        let Some(index) = self.catalog_indexes.get(store_id) else {
+            return true;
+        };
+        let Some(store) = self.stores.get(store_id) else {
+            return true;
+        };
+        let Ok(digest) = store.record_digest() else {
+            return true;
+        };
+        if index.record_digest != digest {
+            return true;
+        }
+        index.listings.binary_search(hash).is_ok()
+    }
+
+    fn index_keeps(&self, listing: &Listing) -> bool {
+        let Ok(hash) = listing.content_hash() else {
+            return false;
+        };
+        self.index_allows(listing.store_id.as_bytes(), hash.as_bytes())
+    }
+
+    fn retract_absent(&mut self, index: &CatalogIndex) {
+        let Some(store) = self.stores.get(&index.store_id) else { return };
+        let Ok(digest) = store.record_digest() else { return };
+        if digest != index.record_digest {
+            return;
+        }
+        let stale: Vec<[u8; 32]> = self
+            .listings
+            .iter()
+            .filter(|(hash, listing)| listing.store_id.as_bytes() == &index.store_id && index.listings.binary_search(hash).is_err())
+            .map(|(hash, _)| *hash)
+            .collect();
+        for hash in stale {
+            self.listings.remove(&hash);
+            let _ = fs::remove_file(self.listing_path(&hash));
+        }
     }
 
     #[cfg(test)]
@@ -422,14 +556,21 @@ impl Replica {
         self.heads.accept(document, tip)
     }
 
-    /// The signed name is shown when this node follows the id, or the admission
-    /// still passes `live`, and a verified store record is held. A missing
-    /// record is not a shop. The own id is shown from this node's catalog, not here.
+    /// The signed name is shown when this node follows the id, the admission
+    /// still passes `live`, or the directory snapshot names the id and no
+    /// admission on file failed `live`. A missing record is not a shop. The
+    /// own id is shown from this node's catalog, not here.
     pub(crate) fn show_store(&self, id: &[u8; 32], live: &dyn Fn(&Admission) -> bool) -> bool {
         if !self.stores.contains_key(id) {
             return false;
         }
-        self.followed.contains(id) || self.admissions.get(id).is_some_and(live)
+        if self.followed.contains(id) {
+            return true;
+        }
+        if let Some(admission) = self.admissions.get(id) {
+            return live(admission);
+        }
+        self.snapshot_names(id)
     }
 
     pub(crate) fn listing_wanted(&self, id: &[u8; 32], own: &[u8; 32]) -> bool {
@@ -480,7 +621,9 @@ impl Replica {
         catalog.stores.retain(|store| local.contains(&store.id) || show(store.id.as_bytes()));
         catalog.listings.retain(|listing| {
             local.contains(&listing.store_id)
-                || (show(listing.store_id.as_bytes()) && self.listing_wanted(listing.store_id.as_bytes(), own.as_bytes()))
+                || (show(listing.store_id.as_bytes())
+                    && self.listing_wanted(listing.store_id.as_bytes(), own.as_bytes())
+                    && self.index_keeps(listing))
         });
         for store in self.stores.values() {
             if local.contains(&store.id) || !show(store.id.as_bytes()) {
@@ -492,7 +635,7 @@ impl Replica {
             }
         }
         for listing in self.listings.values() {
-            if !show(listing.store_id.as_bytes()) || !self.listing_wanted(listing.store_id.as_bytes(), own.as_bytes()) {
+            if !show(listing.store_id.as_bytes()) || !self.listing_wanted(listing.store_id.as_bytes(), own.as_bytes()) || !self.index_keeps(listing) {
                 continue;
             }
             let hash = listing.content_hash().ok();
@@ -559,6 +702,30 @@ impl Replica {
                 let Ok(hash) = listing.content_hash() else { continue };
                 self.listings.insert(*hash.as_bytes(), listing);
             }
+        }
+        if let Ok(bytes) = fs::read(self.dir.join("admission-index")) {
+            if let Ok(index) = AdmissionIndex::decode(&bytes) {
+                if index.verify().is_ok() {
+                    self.admission_index = Some(index);
+                }
+            }
+        }
+        if let Ok(entries) = fs::read_dir(self.dir.join("indexes")) {
+            for entry in entries.flatten() {
+                let Ok(bytes) = fs::read(entry.path()) else { continue };
+                let Ok(index) = CatalogIndex::decode(&bytes) else { continue };
+                if index.verify().is_err() {
+                    continue;
+                }
+                if self.catalog_indexes.get(&index.store_id).is_some_and(|held| index.sequence <= held.sequence) {
+                    continue;
+                }
+                self.catalog_indexes.insert(index.store_id, index);
+            }
+        }
+        let indexes: Vec<CatalogIndex> = self.catalog_indexes.values().cloned().collect();
+        for index in indexes {
+            self.retract_absent(&index);
         }
         Ok(())
     }
@@ -646,6 +813,10 @@ impl Replica {
         self.dir.join("listings").join(hex(hash))
     }
 
+    fn index_path(&self, id: &[u8; 32]) -> PathBuf {
+        self.dir.join("indexes").join(hex(id))
+    }
+
     pub(crate) fn outbox_listings(&self) -> Vec<(String, Vec<u8>)> {
         let Ok(entries) = fs::read_dir(self.dir.join("outbox")) else { return Vec::new() };
         entries
@@ -697,6 +868,20 @@ impl Source for Replica {
     fn admission_bytes(&self, cursor: &[u8; 32]) -> Result<Option<Vec<u8>>, String> {
         Ok(Some(self.admission_page(cursor)))
     }
+
+    fn catalog_index_bytes(&self, id: &[u8; 32]) -> Result<Option<Vec<u8>>, String> {
+        match self.catalog_indexes.get(id) {
+            Some(index) => Ok(Some(index.encode().map_err(|err| err.to_string())?)),
+            None => Ok(None),
+        }
+    }
+
+    fn admission_index_bytes(&self) -> Result<Option<Vec<u8>>, String> {
+        match &self.admission_index {
+            Some(index) => Ok(Some(index.encode().map_err(|err| err.to_string())?)),
+            None => Ok(None),
+        }
+    }
 }
 
 fn atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
@@ -722,7 +907,9 @@ fn pull_into(held: &impl Held, sources: &[&dyn Source], key: &[u8; 32], own: [u8
     let sources = &sources[..sources.len().min(PASS_ATTEMPTS)];
     pull_head(held, sources, key, tip)?;
     pull_admissions(held, sources)?;
+    pull_admission_index(held, sources, key)?;
     pull_stores(held, sources)?;
+    pull_catalog_indexes(held, sources, own)?;
     pull_wanted_listings(held, sources, own)
 }
 
@@ -749,6 +936,45 @@ fn pull_admissions(held: &impl Held, sources: &[&dyn Source]) -> Result<(), Stri
         let Some(blob) = page else { break };
         if !held.with(|replica| replica.keep_admission_page(&blob))? {
             break;
+        }
+    }
+    Ok(())
+}
+
+fn pull_admission_index(held: &impl Held, sources: &[&dyn Source], key: &[u8; 32]) -> Result<(), String> {
+    let mut best: Option<AdmissionIndex> = None;
+    for source in sources {
+        let Ok(Some(bytes)) = source.admission_index_bytes() else { continue };
+        let Ok(index) = AdmissionIndex::decode(&bytes) else { continue };
+        if index.verify_signer(key).is_err() {
+            continue;
+        }
+        if best.as_ref().is_none_or(|held_index| index.sequence > held_index.sequence) {
+            best = Some(index);
+        }
+    }
+    if let Some(index) = best {
+        held.with(|replica| replica.keep_admission_index(index))?;
+    }
+    Ok(())
+}
+
+fn pull_catalog_indexes(held: &impl Held, sources: &[&dyn Source], own: [u8; 32]) -> Result<(), String> {
+    let ids = held.with(|replica| replica.listing_ids(own));
+    for id in ids {
+        let mut best: Option<CatalogIndex> = None;
+        for source in sources {
+            let Ok(Some(bytes)) = source.catalog_index_bytes(&id) else { continue };
+            let Ok(index) = CatalogIndex::decode(&bytes) else { continue };
+            if index.store_id != id || index.verify().is_err() {
+                continue;
+            }
+            if best.as_ref().is_none_or(|held_index| index.sequence > held_index.sequence) {
+                best = Some(index);
+            }
+        }
+        if let Some(index) = best {
+            held.with(|replica| replica.keep_catalog_index(index))?;
         }
     }
     Ok(())
@@ -842,7 +1068,7 @@ impl Node {
                 }
                 if out.is_empty() { None } else { Some(out) }
             }
-            tormail::QUERY_ADMISSIONS | tormail::QUERY_INBOX => from_replica,
+            tormail::QUERY_ADMISSIONS | tormail::QUERY_INBOX | tormail::QUERY_CATALOG_INDEX | tormail::QUERY_ADMISSION_INDEX => from_replica,
             _ => None,
         }
     }
@@ -857,6 +1083,8 @@ impl Node {
                 tormail::SUBMIT_LISTING => replica.accept_listing(body),
                 tormail::SUBMIT_DOCUMENT => replica.accept_document_at(body, &DOCUMENT_KEY, tip).map(|_| ()),
                 tormail::SUBMIT_ADMISSION => replica.accept_admission(body).map(|_| ()),
+                tormail::SUBMIT_CATALOG_INDEX => replica.accept_catalog_index(body),
+                tormail::SUBMIT_ADMISSION_INDEX => replica.accept_admission_index(body, &DOCUMENT_KEY),
                 _ => Err("unknown directory submission".into()),
             }
         };
@@ -908,6 +1136,7 @@ impl Node {
                 "name": store.name,
                 "listings": listings,
                 "added": replica.followed.contains(store.id.as_bytes()),
+                "admitted": replica.snapshot_names(store.id.as_bytes()),
             }));
         }
         json!({ "stores": stores })
@@ -956,9 +1185,9 @@ impl Node {
         if let Err(err) = self.publish_admission() {
             eprintln!("ob-node: directory fee: {err}");
         }
-        let (store, admission, listings) = {
+        let (store, admission, catalog_index, listings) = {
             let replica = self.seed_replica.lock().unwrap_or_else(|err| err.into_inner());
-            (replica.read_outbox("store"), replica.read_outbox("admission"), replica.outbox_listings())
+            (replica.read_outbox("store"), replica.read_outbox("admission"), replica.read_outbox("catalog-index"), replica.outbox_listings())
         };
         for source in sources {
             if let Some(bytes) = &store {
@@ -966,6 +1195,9 @@ impl Node {
             }
             if let Some(bytes) = &admission {
                 let _ = submit_record(&source.state_dir, &source.onion, tormail::SUBMIT_ADMISSION, bytes);
+            }
+            if let Some(bytes) = &catalog_index {
+                let _ = submit_record(&source.state_dir, &source.onion, tormail::SUBMIT_CATALOG_INDEX, bytes);
             }
         }
         for (name, bytes) in &listings {
@@ -1026,9 +1258,43 @@ impl Node {
         };
         let fallback = self.introduction_listings(id);
         let lists = listings_after_dial(primary, fallback);
+        self.keep_opened_index(id, onion.as_deref());
         self.seed_replica.lock().unwrap_or_else(|err| err.into_inner()).keep_listings(&id, &lists)?;
         self.refresh_market();
         Ok(())
+    }
+
+    /// Take a catalog index from the store onion, or from one introduction when
+    /// that answer does not verify. A miss leaves the listings unchecked.
+    fn keep_opened_index(&self, id: [u8; 32], onion: Option<&str>) {
+        let from_store = match onion {
+            Some(onion) if !onion.is_empty() => {
+                let state_dir = self.data_dir.join("tor-client");
+                ask(&state_dir, onion, tormail::QUERY_CATALOG_INDEX, id).ok().flatten()
+            }
+            _ => None,
+        };
+        if from_store.as_ref().is_some_and(|bytes| {
+            self.seed_replica.lock().unwrap_or_else(|err| err.into_inner()).accept_catalog_index(bytes).is_ok()
+        }) {
+            return;
+        }
+        let Some(bytes) = self.introduction_index(id) else { return };
+        let _ = self.seed_replica.lock().unwrap_or_else(|err| err.into_inner()).accept_catalog_index(&bytes);
+    }
+
+    fn introduction_index(&self, id: [u8; 32]) -> Option<Vec<u8>> {
+        if !self.local.introductions {
+            return None;
+        }
+        let hosts = self.seed_replica.lock().unwrap_or_else(|err| err.into_inner()).introduction_hosts();
+        let state_dir = self.data_dir.join("tor-client");
+        for onion in hosts.iter().take(PASS_ATTEMPTS) {
+            if let Ok(Some(bytes)) = ask(&state_dir, onion, tormail::QUERY_CATALOG_INDEX, id) {
+                return Some(bytes);
+            }
+        }
+        None
     }
 
     fn introduction_listings(&self, id: [u8; 32]) -> Result<Vec<Vec<u8>>, String> {
@@ -1064,6 +1330,45 @@ impl Node {
         let store = self.own_record().ok_or_else(|| "the own store has no signed record yet".to_string())?;
         let replica = self.seed_replica.lock().unwrap_or_else(|err| err.into_inner());
         replica.queue_outbox(&store, listing)
+    }
+
+    /// Sign the own store's catalog index and queue it for the introductions.
+    /// The catalog lock is not held across the replica lock. An unchanged
+    /// catalog keeps its sequence.
+    pub(crate) fn queue_catalog_index(&self) -> Result<(), String> {
+        let Some(secret) = self.own_signing_key() else { return Ok(()) };
+        let (store, listings) = {
+            let catalog = self.catalog();
+            let Some(store) = catalog.store(&self.own_store).cloned() else { return Ok(()) };
+            let listings = catalog.listings.iter().filter(|listing| listing.store_id == store.id).cloned().collect::<Vec<_>>();
+            (store, listings)
+        };
+        let digest = store.record_digest().map_err(|err| err.to_string())?;
+        let mut hashes = Vec::with_capacity(listings.len());
+        for listing in &listings {
+            hashes.push(*listing.content_hash().map_err(|err| err.to_string())?.as_bytes());
+        }
+        let mut sorted = hashes.clone();
+        sorted.sort();
+        let mut replica = self.seed_replica.lock().unwrap_or_else(|err| err.into_inner());
+        if replica.catalog_indexes.get(store.id.as_bytes()).is_some_and(|index| index.record_digest == digest && index.listings == sorted) {
+            return Ok(());
+        }
+        let sequence = replica.catalog_indexes.get(store.id.as_bytes()).map(|index| index.sequence.saturating_add(1)).unwrap_or(1);
+        let index = CatalogIndex::sign(sequence, crate::own_store::today_yyyymmdd(), digest, hashes, &secret).map_err(|err| err.to_string())?;
+        for listing in &listings {
+            let hash = *listing.content_hash().map_err(|err| err.to_string())?.as_bytes();
+            replica.save_listing(hash, listing)?;
+            let name = format!("listing-{}", hex(&hash));
+            if replica.read_outbox(&name).is_none() {
+                replica.write_outbox(&name, &listing.encode().map_err(|err| err.to_string())?)?;
+            }
+        }
+        replica.save_store(&store)?;
+        replica.queue_store(&store)?;
+        let bytes = index.encode().map_err(|err| err.to_string())?;
+        replica.write_outbox("catalog-index", &bytes)?;
+        replica.keep_catalog_index(index)
     }
 
     /// Sign a listing for this node's store and keep it in the catalog and
@@ -1112,6 +1417,7 @@ impl Node {
             replica.queue_outbox(&store, &listing).map_err(OrderError::Failed)?;
         }
         self.catalog_mut().listings.push(listing.clone());
+        self.queue_catalog_index().map_err(OrderError::Failed)?;
         listing_value(&self.catalog(), &listing).map_err(|err| OrderError::Failed(err.to_string()))
     }
 }
@@ -1157,6 +1463,18 @@ impl Source for Report<'_> {
 
     fn listing_bytes(&self, id: &[u8; 32]) -> Result<Vec<Vec<u8>>, String> {
         self.inner.listing_bytes(id)
+    }
+
+    fn admission_bytes(&self, cursor: &[u8; 32]) -> Result<Option<Vec<u8>>, String> {
+        self.inner.admission_bytes(cursor)
+    }
+
+    fn catalog_index_bytes(&self, id: &[u8; 32]) -> Result<Option<Vec<u8>>, String> {
+        self.inner.catalog_index_bytes(id)
+    }
+
+    fn admission_index_bytes(&self) -> Result<Option<Vec<u8>>, String> {
+        self.inner.admission_index_bytes()
     }
 }
 
@@ -2169,5 +2487,145 @@ mod tests {
         let node = Node::open_local(&dir.0, crate::load_catalog(NetworkMode::Testnet4).unwrap(), crate::NodeConfig::offline(NetworkMode::Testnet4), local).unwrap();
         assert!(node.introduction_listings([7; 32]).is_err());
         assert!(!node.data_dir.join("tor-client").exists(), "no Tor client was opened to dial one");
+    }
+
+    fn shop(label: &str, name: &str) -> (bitcoin::secp256k1::SecretKey, openbazaar_protocol::Store) {
+        let secret = secret_from_label(label);
+        let store = openbazaar_protocol::Store::sign(
+            name,
+            "Maine",
+            openbazaar_protocol::DirectPay { bolt12_offer: String::new(), silent_payment_code: String::new() },
+            openbazaar_protocol::ContentRating::General,
+            openbazaar_protocol::StoreDetails {
+                mailbox_key: [4u8; 32],
+                onion: format!("{}.onion", "d".repeat(56)),
+                moderators: vec![],
+                profile: openbazaar_protocol::StoreProfile { created_on: 20261123, ..openbazaar_protocol::StoreProfile::default() },
+                accepts_xmr: false,
+                accepts_lightning: false,
+                accepts_zec: false,
+            },
+            &secret,
+        )
+        .unwrap();
+        (secret, store)
+    }
+
+    fn goods(store: &openbazaar_protocol::Store, secret: &bitcoin::secp256k1::SecretKey, title: &str, price: u64) -> Listing {
+        Listing::sign(
+            store.id, title, "Home", price, "Maine", "A small spoon.", store.name.clone(), 3, 20261123, false, ListingKind::Digital, "", 0, 0,
+            ContentLabel::GENERAL, secret,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn a_snapshot_names_a_store_the_peer_was_not_following() {
+        let dir_secret = secret_from_label("snapshot-directory");
+        let dir_key = xonly(&dir_secret);
+        let (_, store) = shop("snapshot-shop", "Cedar Workshop");
+        let (_, hidden) = shop("snapshot-hidden", "Hidden Workshop");
+        let head = SeedDocument::sign(4, vec![onion('a')], DirectoryTerms::standard(dir_key), None, &dir_secret).unwrap();
+        let snapshot = AdmissionIndex::sign(1, 20261123, 4, vec![*store.id.as_bytes()], &dir_secret).unwrap();
+        let intro_dir = TempDir::new();
+        let mut intro = Replica::open(&intro_dir.0).unwrap();
+        intro.accept_document(&head.encode().unwrap(), &dir_key).unwrap();
+        intro.accept_store(&store.encode().unwrap()).unwrap();
+        intro.accept_store(&hidden.encode().unwrap()).unwrap();
+        intro.accept_admission_index(&snapshot.encode().unwrap(), &dir_key).unwrap();
+        let mut forged = snapshot.encode().unwrap();
+        let last = forged.len() - 1;
+        forged[last] ^= 0xff;
+        assert!(intro.accept_admission_index(&forged, &dir_key).is_err(), "a bad snapshot signature is dropped");
+
+        let peer_dir = TempDir::new();
+        let mut peer = Replica::open(&peer_dir.0).unwrap();
+        peer.pull(&[&intro], &dir_key, [0u8; 32]).unwrap();
+        assert!(peer.stores.contains_key(store.id.as_bytes()), "the snapshot's store is fetched");
+        assert!(!peer.followed.contains(store.id.as_bytes()));
+        assert!(!peer.stores.contains_key(hidden.id.as_bytes()), "a store the snapshot does not name is not fetched");
+        let refuse = |_: &Admission| false;
+        let allow = |_: &Admission| true;
+        assert!(peer.show_store(store.id.as_bytes(), &refuse));
+
+        let admission = Admission::sign(*store.id.as_bytes(), [7u8; 32], 0, 50, &secret_from_label("snapshot-shop")).unwrap();
+        intro.accept_admission(&admission.encode().unwrap()).unwrap();
+        peer.pull(&[&intro], &dir_key, [0u8; 32]).unwrap();
+        assert!(!peer.show_store(store.id.as_bytes(), &refuse), "a failed fee check drops the store the snapshot named");
+        assert!(peer.show_store(store.id.as_bytes(), &allow));
+    }
+
+    #[test]
+    fn a_catalog_index_drops_a_listing_it_does_not_name() {
+        let (secret, store) = shop("index-shop", "Cedar Workshop");
+        let kept = goods(&store, &secret, "Cedar spoon", 2_400);
+        let dropped = goods(&store, &secret, "Maple spoon", 2_600);
+        let kept_hash = *kept.content_hash().unwrap().as_bytes();
+        let digest = store.record_digest().unwrap();
+        let intro_dir = TempDir::new();
+        let mut intro = Replica::open(&intro_dir.0).unwrap();
+        intro.accept_store(&store.encode().unwrap()).unwrap();
+        intro.accept_listing(&kept.encode().unwrap()).unwrap();
+        intro.accept_listing(&dropped.encode().unwrap()).unwrap();
+        let mismatch = CatalogIndex::sign(1, 20261123, [9u8; 32], vec![kept_hash], &secret).unwrap();
+        intro.accept_catalog_index(&mismatch.encode().unwrap()).unwrap();
+        let loose_dir = TempDir::new();
+        let mut loose = Replica::open(&loose_dir.0).unwrap();
+        loose.follow(*store.id.as_bytes()).unwrap();
+        loose.pull(&[&intro], &[0u8; 32], [0u8; 32]).unwrap();
+        assert_eq!(loose.listings.len(), 2, "an index for a different record does not drop listings");
+
+        let matching = CatalogIndex::sign(2, 20261123, digest, vec![kept_hash], &secret).unwrap();
+        intro.accept_catalog_index(&matching.encode().unwrap()).unwrap();
+        let mut bad = matching.encode().unwrap();
+        let last = bad.len() - 1;
+        bad[last] ^= 0xff;
+        assert!(intro.accept_catalog_index(&bad).is_err());
+        let older = CatalogIndex::sign(1, 20261123, digest, vec![kept_hash, *dropped.content_hash().unwrap().as_bytes()], &secret).unwrap();
+        intro.accept_catalog_index(&older.encode().unwrap()).unwrap();
+        assert_eq!(intro.catalog_indexes.get(store.id.as_bytes()).unwrap().sequence, 2);
+
+        let peer_dir = TempDir::new();
+        let mut peer = Replica::open(&peer_dir.0).unwrap();
+        peer.follow(*store.id.as_bytes()).unwrap();
+        peer.pull(&[&intro], &[0u8; 32], [0u8; 32]).unwrap();
+        peer.keep_listings(store.id.as_bytes(), &[kept.encode().unwrap(), dropped.encode().unwrap()]).unwrap();
+        let titles: Vec<_> = peer.listings.values().map(|listing| listing.title.clone()).collect();
+        assert_eq!(titles, vec!["Cedar spoon".to_string()]);
+    }
+
+    #[test]
+    fn publishing_a_listing_signs_the_catalog_index_and_the_directory_list_marks_the_snapshot() {
+        use crate::harness::{self, TempDir};
+        use crate::network::NetworkMode;
+
+        let dir = TempDir::new();
+        let chain = harness::MockChain::new();
+        let node = harness::open_node(&dir.0, NetworkMode::Testnet4, &chain, 1, harness::unreachable_escrow());
+        let body = r#"{"title":"Cedar spoon","category":"Home","shipFrom":"Maine","description":"A small cedar spoon.","priceSats":2400,"stock":3}"#;
+        let (status, value) = harness::request(&node, "POST", "/listings", body);
+        assert!(status.contains("200"), "{status} {value}");
+        let bytes = node.seed_replica.lock().unwrap().read_outbox("catalog-index").expect("the catalog index is queued");
+        let index = CatalogIndex::decode(&bytes).unwrap();
+        index.verify().unwrap();
+        assert_eq!((index.store_id, index.sequence), (*node.own_store.as_bytes(), 1));
+        assert_eq!(index.record_digest, node.own_record().unwrap().record_digest().unwrap());
+        let hash = node.catalog().listings.iter().find(|listing| listing.title == "Cedar spoon").unwrap().content_hash().unwrap();
+        assert!(index.listings.contains(hash.as_bytes()));
+
+        let dir_secret = secret_from_label("listed-directory");
+        let dir_key = xonly(&dir_secret);
+        let (_, store) = shop("listed-shop", "Cedar Workshop");
+        let head = SeedDocument::sign(4, vec![onion('a')], DirectoryTerms::standard(dir_key), None, &dir_secret).unwrap();
+        let snapshot = AdmissionIndex::sign(1, 20261123, 4, vec![*store.id.as_bytes()], &dir_secret).unwrap();
+        {
+            let mut replica = node.seed_replica.lock().unwrap();
+            replica.accept_document(&head.encode().unwrap(), &dir_key).unwrap();
+            replica.accept_store(&store.encode().unwrap()).unwrap();
+            replica.accept_admission_index(&snapshot.encode().unwrap(), &dir_key).unwrap();
+        }
+        let value = node.directory_value();
+        let row = value["stores"].as_array().unwrap().iter().find(|row| row["name"] == "Cedar Workshop").unwrap();
+        assert_eq!((row["admitted"].as_bool(), row["added"].as_bool()), (Some(true), Some(false)));
     }
 }

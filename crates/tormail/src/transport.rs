@@ -19,11 +19,15 @@ pub const QUERY_LISTINGS: u8 = 3;
 pub const QUERY_INBOX: u8 = 4;
 pub const QUERY_ADMISSIONS: u8 = 5;
 pub const QUERY_HEAD: u8 = 6;
+pub const QUERY_CATALOG_INDEX: u8 = 7;
+pub const QUERY_ADMISSION_INDEX: u8 = 8;
 pub(crate) const SUBMIT_MAGIC: &[u8; 4] = b"OBSB";
 pub const SUBMIT_STORE: u8 = 1;
 pub const SUBMIT_LISTING: u8 = 2;
 pub const SUBMIT_DOCUMENT: u8 = 3;
 pub const SUBMIT_ADMISSION: u8 = 4;
+pub const SUBMIT_CATALOG_INDEX: u8 = 5;
+pub const SUBMIT_ADMISSION_INDEX: u8 = 6;
 /// Sent by the vendor on the same stream, after `Mailbox::accept`.
 pub(crate) const STORED_ACK: u8 = 1;
 
@@ -212,11 +216,13 @@ where
 }
 
 /// Ask one introduction for the seed document (`kind` 1), one store (2),
-/// that store's listings (3), the inbox (4), one page of admissions (5), or
-/// the version 3 directory head (6). An introduction older than kind 6
-/// answers it with `Ok(None)`.
-/// The 32-byte id is the store id, or the admission cursor. `Ok(None)` means
-/// the introduction answered and does not have it. An error means it did not answer.
+/// that store's listings (3), the inbox (4), one page of admissions (5),
+/// the version 3 directory head (6), one store's catalog index (7), or the
+/// directory admission snapshot (8). An introduction older than kind 6
+/// answers a newer kind with `Ok(None)`.
+/// The 32-byte id is the store id, or the admission cursor. The snapshot
+/// ignores it. `Ok(None)` means the introduction answered and does not have
+/// it. An error means it did not answer.
 pub async fn ask_directory<R>(
     client: &arti_client::TorClient<R>,
     onion: &OnionAddress,
@@ -236,7 +242,8 @@ where
     read_query_reply(&mut stream).await
 }
 
-/// Push one signed store (1), listing (2), seed document (3), or admission (4).
+/// Push one signed store (1), listing (2), seed document (3), admission (4),
+/// catalog index (5), or admission snapshot (6).
 /// `Ok(true)` means the introduction kept it. `Ok(false)` means it refused the bytes.
 pub async fn submit_directory<R>(
     client: &arti_client::TorClient<R>,

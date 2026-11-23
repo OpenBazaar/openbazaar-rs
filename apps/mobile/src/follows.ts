@@ -2,8 +2,8 @@
 // calls that change which of them it follows. Both answer with the new list.
 import { paired } from "./catalog.ts";
 
-/** `added` is true when this person follows the store. Without it the store is here because the directory names it. */
-export type DirectoryStore = { storeId: string; name: string | null; listings: number; added: boolean };
+/** `added` is true when this person follows the store. `admitted` is true when the directory's signed snapshot names it. */
+export type DirectoryStore = { storeId: string; name: string | null; listings: number; added: boolean; admitted: boolean };
 
 export function storesOf(value: unknown): DirectoryStore[] {
   if (!value || typeof value !== "object" || !("stores" in value)) return [];
@@ -11,15 +11,21 @@ export function storesOf(value: unknown): DirectoryStore[] {
   if (!Array.isArray(rows)) return [];
   return rows.flatMap(row => {
     if (!row || typeof row !== "object" || !("storeId" in row)) return [];
-    const item = row as { storeId?: unknown; name?: unknown; listings?: unknown; added?: unknown };
+    const item = row as { storeId?: unknown; name?: unknown; listings?: unknown; added?: unknown; admitted?: unknown };
     if (typeof item.storeId !== "string") return [];
     return [{
       storeId: item.storeId,
       name: typeof item.name === "string" ? item.name : null,
       listings: typeof item.listings === "number" ? item.listings : 0,
       added: item.added === true,
+      admitted: item.admitted === true,
     }];
   });
+}
+
+/** Store ids the directory's signed snapshot named. */
+export function admittedStoreIds(stores: readonly DirectoryStore[]): string[] {
+  return stores.filter(store => store.admitted).map(store => store.storeId);
 }
 
 export function fetchDirectory(): Promise<DirectoryStore[]> {

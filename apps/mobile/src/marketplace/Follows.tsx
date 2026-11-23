@@ -35,6 +35,12 @@ export function Follows({ onChanged }: { onChanged: (message: string) => void })
     if (saved) setStoreId("");
   }
   const stores = resource.data ?? [];
+  const admitted = stores.filter(store => store.admitted);
+  const rest = stores.filter(store => !store.admitted);
+  const rows = (list: DirectoryStore[]) => <ul className="ob-follow-list">{list.map(store => <li key={store.storeId}>
+    <span><strong>{store.name ?? "Waiting for the store's record"}</strong><small>{store.listings} listing{store.listings === 1 ? "" : "s"}</small></span>
+    {store.added ? <button className="ob-text-link" disabled={busy} onClick={() => void change(() => unfollowStore(store.storeId), "Stopped following that store")}>Remove</button> : null}
+  </li>)}</ul>;
   return <div className="ob-settings-page">
     <header className="ob-settings-heading"><h1>Followed stores</h1><p>Stores the directory has named show up in Products. Paste a store key someone handed you. This node keeps that store's signed records and sends an order to the onion inside the record.</p></header>
     <form className="ob-follow-form" onSubmit={e => void submit(e)}>
@@ -42,10 +48,10 @@ export function Follows({ onChanged }: { onChanged: (message: string) => void })
       <button className="ob-primary" disabled={busy || !ready}>{busy ? "Adding…" : "Add store"}</button>
     </form>
     {(error || resource.error) && <p className="ob-form-error" role="alert">{error || resource.error}</p>}
-    {resource.loading && !resource.data ? <p role="status">Loading stores…</p> : !stores.length ? <p className="ob-page-intro">No stores yet. A store the directory names shows up here, and in Products, after the next check.</p> : <ul className="ob-follow-list">{stores.map(store => <li key={store.storeId}>
-      <span><strong>{store.name ?? "Waiting for the store's record"}</strong><small>{store.listings} listing{store.listings === 1 ? "" : "s"}</small></span>
-      {store.added ? <button className="ob-text-link" disabled={busy} onClick={() => void change(() => unfollowStore(store.storeId), "Stopped following that store")}>Remove</button> : null}
-    </li>)}</ul>}
+    {resource.loading && !resource.data ? <p role="status">Loading stores…</p> : !stores.length ? <p className="ob-page-intro">No stores yet. A store the directory admits shows up here, and in Products, after the next check.</p> : <>
+      {admitted.length > 0 && <section><h2 className="ob-admitted-heading">Stores the directory admitted</h2>{rows(admitted)}</section>}
+      {rest.length > 0 && rows(rest)}
+    </>}
     <FollowAddress onChanged={onChanged}/>
   </div>;
 }

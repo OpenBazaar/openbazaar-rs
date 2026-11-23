@@ -3754,6 +3754,7 @@ button.ob-card-seller:hover,
 button.ob-detail-seller:hover,
 button.ob-detail-seller:hover strong { color: var(--ob-link); }
 .ob-storefront > .ob-back { margin-bottom: 16px; }
+.ob-admitted-heading { margin: 4px 0 8px; font-size: 15px; font-weight: 600; }
 .ob-store-results { display: grid; gap: 8px; margin: 0 0 18px; }
 .ob-store-result { display: flex; align-items: center; gap: 12px; width: 100%; text-align: left; padding: 12px 14px; border: 1px solid var(--ob-line); border-radius: 10px; background: var(--ob-surface); color: inherit; font: inherit; cursor: pointer; }
 .ob-store-result strong { display: block; font-size: 15px; }
