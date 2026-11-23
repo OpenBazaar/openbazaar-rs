@@ -34,6 +34,9 @@ pub(crate) mod rate;
 mod sale;
 #[cfg(test)]
 mod sale_tests;
+mod send;
+#[cfg(test)]
+mod send_tests;
 #[cfg(test)]
 mod tests;
 
@@ -59,6 +62,7 @@ pub(crate) use checkout::{add_zec_flags, rail_of};
 pub(crate) use http::response;
 pub(crate) use own::own_store_allowed;
 pub(crate) use pay::ZecTerms;
+pub(crate) use send::ZecSendTerms;
 pub(crate) use sale::{add_terms, follow_seller, payment_from_terms};
 
 const WATCH_FILE: &str = "zec-watch.obv";

@@ -28,6 +28,8 @@ pub(crate) const SEND_ROUTES: &[&str] = &[
     "/wallet/send",
     "/xmr/wallet/send/quote",
     "/xmr/wallet/send",
+    "/zec/wallet/send/quote",
+    "/zec/wallet/send",
     "/ln/send/quote",
     "/ln/send",
     "/ln/withdraw/quote",
@@ -106,6 +108,12 @@ mod tests {
                 r#"{"quote":"x","passphrase":"x","confirm":true}"#,
             ),
             ("POST", "/xmr/wallet/send/quote", "{}"),
+            ("POST", "/zec/wallet/send/quote", "{}"),
+            (
+                "POST",
+                "/zec/wallet/send",
+                r#"{"quote":"x","passphrase":"x","confirm":true}"#,
+            ),
             (
                 "POST",
                 "/xmr/wallet/send",

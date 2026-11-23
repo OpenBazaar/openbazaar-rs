@@ -3,6 +3,8 @@
 //! | route | lock | body | answer |
 //! |---|---|---|---|
 //! | `GET /zec/wallet` | any | | balance, receive address, sync state |
+//! | `POST /zec/wallet/send/quote` | unlocked | `{address, amountZatoshi}` | `{quote, ...terms}` on testnet. Mainnet is refused. |
+//! | `POST /zec/wallet/send` | unlocked | `{quote, passphrase, confirm: true}` | the terms with `txid` |
 //! | `GET /zec/stores` | any | | which stores accept Zcash |
 //! | `PUT /zec/stores` | any; unlocked for the own store | `{seller, accept}` | the same, after the store's record is signed again |
 //! | `POST /zec/orders/{id}/pay/quote` | unlocked | | `{quote, ...terms}` |
@@ -75,6 +77,14 @@ pub(crate) fn response(
     };
     match (method, rest) {
         ("GET", "/wallet") => wallet(node, origin),
+        ("POST", "/wallet/send/quote") => match read_body(body, &["address", "amountZatoshi"], origin) {
+            Ok(map) => match node.zec_send_quote(&map) {
+                Ok(value) => json_body("200 OK", &value, origin),
+                Err(err) => pay_error(err, origin),
+            },
+            Err(response) => response,
+        },
+        ("POST", "/wallet/send") => crate::wallet_send::confirmed_response(node, body, origin, |quote| node.zec_send_quoted(quote)),
         ("GET", "/stores") => json_body("200 OK", &node.zec_stores_value(), origin),
         ("PUT", "/stores") => match read_body(body, &["seller", "accept"], origin) {
             Ok(map) => {

@@ -83,7 +83,7 @@ fn ticket_error(err: TicketError) -> PayError {
     }
 }
 
-fn send_error(err: openbazaar_zec::SendError) -> PayError {
+pub(super) fn send_error(err: openbazaar_zec::SendError) -> PayError {
     match err {
         openbazaar_zec::SendError::FeeAboveCap { .. } => {
             PayError::Conflict(format!("{err} Nothing was sent."))
@@ -95,7 +95,7 @@ fn send_error(err: openbazaar_zec::SendError) -> PayError {
     }
 }
 
-fn shown(txid: &[u8; 32]) -> String {
+pub(super) fn shown(txid: &[u8; 32]) -> String {
     let mut reversed = *txid;
     reversed.reverse();
     crate::vault_key::encode_hex(&reversed)
