@@ -5,7 +5,7 @@
  */
 export function remoteRoleNotice(synced: boolean): string {
   if (!synced) {
-    return "This phone is a remote for your home node. The shop stays closed until that node answers.";
+    return "This phone is a remote for your home node. You can open a store address and keep a bag on this phone. Paying waits until that node answers.";
   }
-  return "This phone is a remote for your home node. Browsing and paying happen there, and they stop when that node is off.";
+  return "This phone is a remote for your home node. A store address still opens here when that node is off. Paying needs the node.";
 }

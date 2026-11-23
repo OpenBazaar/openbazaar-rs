@@ -69,18 +69,35 @@ function Locked({ onUnlock }: { onUnlock: () => void }) {
   );
 }
 
-export function HomeNodeApp({ Market }: { Market: ComponentType }) {
+export function HomeNodeApp({ Market }: { Market: ComponentType<{ withoutNode?: boolean }> }) {
   const session = useSession();
   const { locked, unlock } = useAppLock(session.status === "loading" ? null : session.status === "paired");
   const link = usePairingLink();
   const [tab, setTab] = useState<Tab>("shop");
+  const [guest, setGuest] = useState(false);
   useEffect(() => void boot(), []);
   useSyncWhileOpen(session.status === "paired" && !locked);
 
   let body;
   if (session.status === "loading") body = <ActivityIndicator style={styles.center} color={NAVY} />;
   else if (locked) body = <Locked onUnlock={() => void unlock()} />;
-  else if (session.status === "unpaired") body = <Onboarding initialLink={link} />;
+  else if (session.status === "unpaired" && guest) body = (
+    <View style={styles.fill}>
+      <Text style={styles.remote}>{remoteRoleNotice(false)}</Text>
+      <View style={styles.fill}><Market withoutNode /></View>
+      <Pressable accessibilityRole="button" accessibilityLabel="Pair with your home node" onPress={() => setGuest(false)} style={styles.guestBack}>
+        <Text style={styles.guestBackText}>Pair with your home node</Text>
+      </Pressable>
+    </View>
+  );
+  else if (session.status === "unpaired") body = (
+    <View style={styles.fill}>
+      <View style={styles.fill}><Onboarding initialLink={link} /></View>
+      <Pressable accessibilityRole="button" accessibilityLabel="Open a store address" onPress={() => setGuest(true)} style={styles.guestBack}>
+        <Text style={styles.guestBackText}>Open a store address</Text>
+      </Pressable>
+    </View>
+  );
   else {
     const refresh = () => void sync();
     body = (
@@ -126,6 +143,8 @@ const styles = StyleSheet.create({
   fill: { flex: 1 },
   hidden: { display: "none" },
   remote: { color: MUTED, fontSize: 13, lineHeight: 18, paddingHorizontal: 16, paddingTop: 8 },
+  guestBack: { minHeight: 48, alignItems: "center", justifyContent: "center", borderTopWidth: 1, borderTopColor: LINE, backgroundColor: "#fff" },
+  guestBackText: { color: NAVY, fontSize: 15, fontWeight: "600" },
   center: { flex: 1, alignItems: "center", justifyContent: "center", gap: 18, padding: 24 },
   logo: { width: 96, height: 96 },
   tabs: { flexDirection: "row", borderTopWidth: 1, borderTopColor: LINE, backgroundColor: "#fff" },
