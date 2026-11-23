@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { forListing, parseStoreReviews, reviewDate } from "./reviews.ts";
+import { forListing, parseStoreReviews, reviewDate, reviewSummary } from "./reviews.ts";
 
 const body = {
   count: 3, average: 3.6, stars: [0, 1, 0, 1, 1],
@@ -24,6 +24,14 @@ test("one listing's stars are counted from its own reviews", () => {
   const mug = forListing(parseStoreReviews(body), "mug");
   assert.deepEqual([mug.count, mug.average, mug.stars], [2, 3.5, [0, 1, 0, 0, 1]]);
   assert.equal(forListing(parseStoreReviews(body), "cup").average, null);
+});
+
+test("a listing summary shows the average and how many verified reviews", () => {
+  const mug = forListing(parseStoreReviews(body), "mug");
+  assert.deepEqual(reviewSummary(mug, "for this item"), { average: "3.5", line: "2 verified reviews for this item" });
+  const bowl = forListing(parseStoreReviews(body), "bowl");
+  assert.deepEqual(reviewSummary(bowl, "for this item"), { average: "4.0", line: "1 verified review for this item" });
+  assert.deepEqual(reviewSummary(forListing(parseStoreReviews(body), "cup"), "for this item"), { average: null, line: "No verified reviews for this item yet." });
 });
 
 test("a receipt's month and a review's day read plainly", () => {
