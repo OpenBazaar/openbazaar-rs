@@ -1,4 +1,5 @@
 import { type FormEvent } from "react";
+import { appDownload } from "../appDownload";
 import { PAYMENT_NOTE } from "../directStore";
 import { PageHeading } from "./PageHeading";
 
@@ -17,9 +18,14 @@ export function OpenStoreForm({ value, busy, onChange, onOpen }: { value: string
 
 /** Checkout while this page has no wallet. The bag itself is unchanged. */
 export function DirectPay({ onBack, backLabel }: { onBack: () => void; backLabel: string }) {
+  const download = appDownload(typeof navigator === "undefined" ? "" : navigator.userAgent);
   return <section className="ob-checkout">
     <button className="ob-back" type="button" onClick={onBack}>{backLabel}</button>
-    <PageHeading title="Paying needs a wallet" description={PAYMENT_NOTE}/>
+    <PageHeading title="Paying needs the app" description={PAYMENT_NOTE}/>
+    <div className="ob-empty-actions">
+      <a className="ob-primary" href={download.href}>Download OpenBazaar</a>
+    </div>
+    <p className="ob-meta">{download.label}, v0.1.0-alpha.12. This page does not take a card and does not pay the seller.</p>
   </section>;
 }
 
