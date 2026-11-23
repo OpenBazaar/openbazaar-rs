@@ -27,8 +27,8 @@ const ACTIVITY_PING_MS = 30_000
 const AUTO_LOCK_CHOICES = [1, 5, 15, 30, 60]
 
 /** The node's lock status, plus activity pings while the user is at the app. */
-export function useLockState() {
-  const lock = useNodeResource(fetchLock, 10000)
+export function useLockState(enabled = true) {
+  const lock = useNodeResource(fetchLock, 10000, enabled)
   const lastPing = useRef(0)
   const unlocked = lock.data?.state === 'unlocked'
   const { update } = lock

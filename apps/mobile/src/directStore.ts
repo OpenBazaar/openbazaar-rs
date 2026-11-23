@@ -111,6 +111,32 @@ export function storeBase(pasted: string): string | null {
   return null;
 }
 
+/** This page's own onion origin when it is a bare `.onion` (not a home node). */
+export function onionOrigin(loc: PageAddress, homeNode: boolean): string | null {
+  if (homeNode) return null;
+  const host = loc.hostname.toLowerCase();
+  if (loc.protocol === "http:" && ONION.test(host) && (!loc.port || loc.port === "80")) {
+    return `http://${host}`;
+  }
+  return null;
+}
+
+/** Open this onion host's own store when it is selling; null for non-selling nodes (moderator, introduction). */
+export async function fetchHostStore(
+  loc: PageAddress,
+  homeNode: boolean,
+  fetcher: Getter = globalThis.fetch,
+): Promise<{ url: string; catalog: ShopCatalog } | null> {
+  const url = onionOrigin(loc, homeNode);
+  if (!url) return null;
+  try {
+    const catalog = await fetchPublicCatalog(url, fetcher);
+    return { url, catalog };
+  } catch {
+    return null;
+  }
+}
+
 /** A store named in `?store=`. The page itself is the market, on an onion and on the web. */
 export function storeFromLocation(loc: PageAddress, _homeNode: boolean): StoreChoice {
   const params = new URLSearchParams(loc.search);

@@ -214,13 +214,28 @@ pub use network::{resolve_vault_mode, NetworkMode, ServeOptions, VaultChoice};
 pub use onion_mail::{
     deliver_letter, letter_digest, poll_mailbox, PollMail, SendLetter, StoredLetter,
 };
-pub use head_plan::{describe_head, sign_head, HeadPlan, SignedHeads, TermsChange};
+pub use head_plan::{describe_head, sign_admission_index, sign_head, AdmissionIndexPlan, HeadPlan, SignedHeads, TermsChange};
 pub use tor_socks::TorSocks;
 
 /// Fetch the directory head from `onions` into `data_dir`. Returns the
 /// sequence kept and one line per scheduled fee entry.
 pub fn pull_seed(data_dir: &std::path::Path, onions: &[String]) -> Result<(u64, Vec<String>), String> {
     directory::pull_onions(data_dir, onions)
+}
+
+/// Read `(head_sequence, next_snapshot_sequence, admitted_store_ids)` from the
+/// pulled directory replica in `data_dir`.
+pub fn replica_admission_state(data_dir: &std::path::Path) -> Result<(u64, u64, Vec<[u8; 32]>), String> {
+    directory::replica_admission_state(data_dir)
+}
+
+/// Submit a signed admission snapshot (`OBAX`) to each introduction onion.
+pub fn submit_admission_index(
+    data_dir: &std::path::Path,
+    onions: &[String],
+    bytes: &[u8],
+) -> Result<Vec<(String, bool)>, String> {
+    directory::submit_admission_index(data_dir, onions, bytes)
 }
 pub use orders::OrderError;
 pub use pay_order::PayError;

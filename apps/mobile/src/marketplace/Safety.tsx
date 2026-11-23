@@ -2,7 +2,7 @@ import { useState, type ReactNode } from "react";
 import type { ListingHeader } from "../catalog";
 import { CONTENT_TAGS, parseKeywords, toggleHidden, type AdultMode, type SafetySettings, type SensitiveMode } from "../safety/filter";
 
-export function SafetySettingsPanel({ settings, onChange, labelSources }: { settings: SafetySettings; onChange: (settings: SafetySettings) => void; labelSources: ReactNode }) {
+export function SafetySettingsPanel({ settings, onChange, labelSources }: { settings: SafetySettings; onChange: (settings: SafetySettings) => void; labelSources?: ReactNode }) {
   const [text, setText] = useState(() => settings.blockedKeywords.join("\n"));
   const hiddenCount = settings.hiddenStores.length + settings.hiddenListings.length;
   return <section className="ob-settings-page" aria-labelledby="ob-safety-title">
@@ -27,7 +27,7 @@ export function SafetySettingsPanel({ settings, onChange, labelSources }: { sett
     <details className="ob-settings-card ob-settings-disclosure"><summary><span><strong>Hidden sellers & listings</strong><span>Review items you have hidden and bring them back.</span></span><span className="ob-settings-count">{hiddenCount}</span><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></summary><div className="ob-settings-disclosure-body"><p>These stay hidden even with safe mode off. Sellers are remembered by their store key, so changing a name does not bring them back.</p>
       {hiddenCount === 0 ? <div className="ob-settings-empty">No hidden sellers or listings.</div> : <ul className="ob-hidden-list">{settings.hiddenStores.map(item => <li key={item.id}><div><strong>{item.label}</strong><span>Seller</span></div><button className="ob-secondary" onClick={() => onChange({ ...settings, hiddenStores: toggleHidden(settings.hiddenStores, item) })} aria-label={`Unhide seller ${item.label}`}>Unhide</button></li>)}{settings.hiddenListings.map(item => <li key={item.id}><div><strong>{item.label}</strong><span>Listing</span></div><button className="ob-secondary" onClick={() => onChange({ ...settings, hiddenListings: toggleHidden(settings.hiddenListings, item) })} aria-label={`Unhide listing ${item.label}`}>Unhide</button></li>)}</ul>}
     </div></details>
-    <details className="ob-settings-card ob-settings-disclosure"><summary><span><strong>Label sources</strong><span>Use content ratings published by labelers you choose.</span></span><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></summary><div className="ob-settings-disclosure-body">{labelSources}</div></details>
+    {labelSources && <details className="ob-settings-card ob-settings-disclosure"><summary><span><strong>Label sources</strong><span>Use content ratings published by labelers you choose.</span></span><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></summary><div className="ob-settings-disclosure-body">{labelSources}</div></details>}
   </section>;
 }
 

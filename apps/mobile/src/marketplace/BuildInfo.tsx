@@ -8,16 +8,17 @@ import {
 } from '../buildInfo'
 import { useNodeResource } from '../useNodeResource'
 
-export function useBuildInfo() {
+export function useBuildInfo(enabled = true) {
   const shell = useMemo(() => shellBuild(), [])
-  const { data: node } = useNodeResource(fetchNodeBuild, 0)
+  const { data: node } = useNodeResource(fetchNodeBuild, 0, enabled)
   return {
     line: versionLine(shell, node),
     report: buildReport(shell, node),
     mismatch: buildMismatch(shell, node)
   }
 }
-type Build = ReturnType<typeof useBuildInfo>
+export type BuildInfoState = ReturnType<typeof useBuildInfo>
+type Build = BuildInfoState
 
 export function BuildLine({
   build,

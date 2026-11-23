@@ -59,11 +59,11 @@ import { SpeedUpPayment } from './SpeedUpPayment'
 import { BitcoinSendButton } from './BitcoinSend'
 import { DisputePanel } from './DisputePanel'
 
-function usePaymentState(activeWallet: boolean, onWallet: () => void) {
-  const network = useNodeResource(fetchNetwork, 30000)
-  const wallet = useNodeResource(fetchWallet, 15000, activeWallet)
-  const rates = useNodeResource(fetchWalletRates, 60000, activeWallet)
-  const lock = useLockState()
+function usePaymentState(activeWallet: boolean, onWallet: () => void, enabled: boolean) {
+  const network = useNodeResource(fetchNetwork, 30000, enabled)
+  const wallet = useNodeResource(fetchWallet, 15000, activeWallet && enabled)
+  const rates = useNodeResource(fetchWalletRates, 60000, activeWallet && enabled)
+  const lock = useLockState(enabled)
   return { network, wallet, rates, lock, onWallet }
 }
 type PaymentState = ReturnType<typeof usePaymentState>
@@ -76,14 +76,16 @@ export function usePairedNode() {
 export function NodePaymentsProvider({
   activeWallet,
   onWallet,
+  enabled = true,
   children
 }: {
   activeWallet: boolean
   onWallet: () => void
+  enabled?: boolean
   children: ReactNode
 }) {
   return (
-    <NodeContext.Provider value={usePaymentState(activeWallet, onWallet)}>
+    <NodeContext.Provider value={usePaymentState(activeWallet, onWallet, enabled)}>
       {children}
     </NodeContext.Provider>
   )

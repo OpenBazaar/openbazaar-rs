@@ -12,7 +12,7 @@ use ob_node::{
     VaultChoice, VaultMode,
 };
 
-const USAGE: &str = "ob-node [print | --version | pair [port] [--network N] [--data-dir DIR] [--lan-page] | devices [port] [--remove ID [--rotate] | --remove-all --rotate] | serve [port] [--remote] [--lan] [--lan-listen ADDR] [--remote-listen 127.0.0.1:PORT] [--web-dir DIR] [--web-listen ADDR --web-origin https://HOST] [--local-shop DIR] [--push-gateway http://ONION] [--network testnet4|mainnet] [--data-dir DIR] [--peer HOST:PORT[,...] | --esplora URL[,URL...]] [--public-fallback | --no-public-fallback] [--confirmations N] [--poll-secs S] [--escrow-vendor SELLER=URL] [--moderator URL] [--moderate] [--vault keystore|passphrase|file] [--shop-origin URL] [--no-pair-codes] [--proxy socks5h://HOST:PORT | --tor] [--no-rates] [--fixed-rates BTCUSD=N,ZECUSD=N[,XMRUSD=N]] [--no-introductions] [--tracking aftership] [--xmr-daemon URL[,URL...]|default] [--zec-indexer URL[,URL...]] [--onion] [--lightning [--ln-network signet|testnet4|regtest] [--ln-chain esplora:URL|electrum:URL|bitcoind:USER:PASS@HOST:PORT] [--lsp NODE_ID@HOST:PORT [--lsp-token T] | --no-lsp] [--lsp-max-fee-sats N] [--ln-rgs URL | --ln-p2p-gossip] [--ln-listen HOST:PORT]] | send-letter --to ONION|http://127.0.0.1:PORT --file FILE [--data-dir DIR] [--network testnet4|mainnet] [--timeout SECS] | poll-mail [--data-dir DIR] [--network testnet4|mainnet] [--expect SHA256] | sign-seed --key FILE --sequence N [--introductions ONION,ONION] --out FILE | fetch-seed --data-dir DIR --from ONION [--from ONION...]]
+const USAGE: &str = "ob-node [print | --version | pair [port] [--network N] [--data-dir DIR] [--lan-page] | devices [port] [--remove ID [--rotate] | --remove-all --rotate] | serve [port] [--remote] [--lan] [--lan-listen ADDR] [--remote-listen 127.0.0.1:PORT] [--web-dir DIR] [--web-listen ADDR --web-origin https://HOST] [--local-shop DIR] [--push-gateway http://ONION] [--network testnet4|mainnet] [--data-dir DIR] [--peer HOST:PORT[,...] | --esplora URL[,URL...]] [--public-fallback | --no-public-fallback] [--confirmations N] [--poll-secs S] [--escrow-vendor SELLER=URL] [--moderator URL] [--moderate] [--vault keystore|passphrase|file] [--shop-origin URL] [--no-pair-codes] [--proxy socks5h://HOST:PORT | --tor] [--no-rates] [--fixed-rates BTCUSD=N,ZECUSD=N[,XMRUSD=N]] [--no-introductions] [--tracking aftership] [--xmr-daemon URL[,URL...]|default] [--zec-indexer URL[,URL...]] [--onion] [--lightning [--ln-network signet|testnet4|regtest] [--ln-chain esplora:URL|electrum:URL|bitcoind:USER:PASS@HOST:PORT] [--lsp NODE_ID@HOST:PORT [--lsp-token T] | --no-lsp] [--lsp-max-fee-sats N] [--ln-rgs URL | --ln-p2p-gossip] [--ln-listen HOST:PORT]] | send-letter --to ONION|http://127.0.0.1:PORT --file FILE [--data-dir DIR] [--network testnet4|mainnet] [--timeout SECS] | poll-mail [--data-dir DIR] [--network testnet4|mainnet] [--expect SHA256] | sign-seed --key FILE --sequence N [--introductions ONION,ONION] --out FILE | sign-admission-index --key FILE [--data-dir DIR] [--head-sequence N] [--sequence N] [--stores ID[,ID...]] [--out FILE] [--to ONION[,ONION...]] | fetch-seed --data-dir DIR --from ONION [--from ONION...]]
 
 Chain data comes from BIP 157/158 compact block filters by default.
 --peer uses only your own node (bitcoind with blockfilterindex=1 and peerblockfilters=1).
@@ -38,7 +38,8 @@ Chain data comes from BIP 157/158 compact block filters by default.
 send-letter dials --to. An onion uses Arti and fails if the dial fails or times out. A loopback http:// URL posts the letter to /escrow/mail. Any other URL is refused.
 poll-mail lists id and sha256 for each letter in the sealed mailbox. With --expect, it exits 1 when that digest is absent.
 sign-seed --key FILE --sequence N [--introductions ONION,ONION] [--previous FILE] [--tip H] [--append-terms start=H[,sats=N][,confs=C][,epoch=E]] [--prune] [--v2-out FILE] --out FILE signs a version 3 directory head with the operator key. The key file is 64 hex characters and must match the public key in this binary. The head names the introduction list and a schedule of fee terms, first 20,000 sats, 1 confirmation, and a 2,016-block epoch. It does not name stores. A store joins by paying the fee. --previous is the head introductions serve now; the new head keeps its terms. --append-terms adds terms from block H, keeping any value it leaves out; it needs --tip, the chain tip now, and refuses a start sooner than 1,008 blocks after it (288 when the terms only ask less). The fee key does not change. --prune drops terms no listed store was paid under. --v2-out also writes a version 2 head for nodes that do not read version 3; it refuses terms below the first ones. Publish within 144 blocks of --tip. Copy the output file onto an introduction as testnet4/directory/document.obsd under its data dir (the version 2 file as document-v2.obsd beside it), or submit both to one that is already running; do not copy the key.
-fetch-seed --data-dir DIR --from ONION [--from ONION...] asks those introductions and prints the sequence that verified, then its fee terms.";
+fetch-seed --data-dir DIR --from ONION [--from ONION...] asks those introductions and prints the sequence that verified, then its fee terms.
+sign-admission-index --key FILE [--data-dir DIR] [--head-sequence N] [--sequence N] [--stores ID[,ID...]] [--out FILE] [--to ONION[,ONION...]] signs a directory admission snapshot (OBAX) with the operator key, writes it to --out, and/or submits it to each --to introduction onion. Without --head-sequence, --sequence, or --stores, defaults come from the pulled replica in --data-dir (run fetch-seed first).";
 const PASSPHRASE_ENV: &str = "OB_VAULT_PASSPHRASE";
 const TRACKING_KEY_ENV: &str = "OB_TRACKING_API_KEY";
 const WEB_KEY_ENV: &str = "OB_WEB_ACCESS_KEY";
@@ -53,6 +54,7 @@ fn main() -> ExitCode {
         Some("pair") => ob_node::pair_command(&args[1..]),
         Some("devices") => ob_node::devices_command(&args[1..]),
         Some("sign-seed") => sign_seed(&args[1..]),
+        Some("sign-admission-index") => sign_admission_index(&args[1..]),
         Some("fetch-seed") => fetch_seed(&args[1..]),
         Some("version") | Some("-V") | Some("--version") => {
             println!("ob-node {}", ob_node::BUILD.summary());
@@ -506,6 +508,161 @@ fn sign_seed(args: &[String]) -> ExitCode {
     }
     for line in heads.summary {
         println!("{line}");
+    }
+    ExitCode::SUCCESS
+}
+
+fn sign_admission_index(args: &[String]) -> ExitCode {
+    let mut key_path = None;
+    let mut data_dir: Option<PathBuf> = None;
+    let mut network = NetworkMode::Testnet4;
+    let mut head_sequence = None;
+    let mut sequence = None;
+    let mut stores_given = false;
+    let mut stores: Vec<[u8; 32]> = Vec::new();
+    let mut out = None;
+    let mut targets: Vec<String> = Vec::new();
+    let mut index = 0;
+    while index < args.len() {
+        let Some(value) = args.get(index + 1).map(String::as_str) else {
+            eprintln!("ob-node: {} needs a value", args[index]);
+            return ExitCode::from(2);
+        };
+        match args[index].as_str() {
+            "--key" => key_path = Some(value.to_string()),
+            "--data-dir" => data_dir = Some(PathBuf::from(value)),
+            "--network" => match value {
+                "testnet4" => network = NetworkMode::Testnet4,
+                "mainnet" => network = NetworkMode::Mainnet,
+                other => {
+                    eprintln!("ob-node: unknown network {other}");
+                    return ExitCode::from(2);
+                }
+            },
+            "--head-sequence" => match value.parse::<u64>() {
+                Ok(n) => head_sequence = Some(n),
+                Err(_) => {
+                    eprintln!("ob-node: --head-sequence must be an integer");
+                    return ExitCode::from(2);
+                }
+            },
+            "--sequence" => match value.parse::<u64>() {
+                Ok(n) => sequence = Some(n),
+                Err(_) => {
+                    eprintln!("ob-node: --sequence must be an integer");
+                    return ExitCode::from(2);
+                }
+            },
+            "--stores" => {
+                stores_given = true;
+                for part in value.split(',').map(str::trim).filter(|part| !part.is_empty()) {
+                    match unhex32(part) {
+                        Some(id) => stores.push(id),
+                        None => {
+                            eprintln!("ob-node: store id must be 64 hex characters: {part}");
+                            return ExitCode::from(2);
+                        }
+                    }
+                }
+            }
+            "--out" => out = Some(value.to_string()),
+            "--to" => {
+                for onion in value.split(',').map(str::trim).filter(|onion| !onion.is_empty()) {
+                    targets.push(onion.to_string());
+                }
+            }
+            other => {
+                eprintln!("ob-node: unknown sign-admission-index argument {other}");
+                eprintln!("{USAGE}");
+                return ExitCode::from(2);
+            }
+        }
+        index += 2;
+    }
+    let Some(key_path) = key_path else {
+        eprintln!("ob-node: sign-admission-index needs --key");
+        eprintln!("{USAGE}");
+        return ExitCode::from(2);
+    };
+    if out.is_none() && targets.is_empty() {
+        eprintln!("ob-node: sign-admission-index needs --out FILE and/or --to ONION");
+        return ExitCode::from(2);
+    }
+    let dir = network.data_dir(data_dir.as_deref().unwrap_or_else(|| std::path::Path::new("data")));
+    let need_replica = head_sequence.is_none() || sequence.is_none() || !stores_given;
+    if need_replica && data_dir.is_some() {
+        match ob_node::replica_admission_state(&dir) {
+            Ok((rep_head, rep_next, rep_stores)) => {
+                head_sequence.get_or_insert(rep_head);
+                sequence.get_or_insert(rep_next);
+                if !stores_given {
+                    stores = rep_stores;
+                }
+            }
+            Err(err) => {
+                eprintln!("ob-node: {err}");
+                return ExitCode::from(1);
+            }
+        }
+    }
+    let Some(head_sequence) = head_sequence else {
+        eprintln!("ob-node: pass --head-sequence N or --data-dir DIR with a pulled directory head");
+        return ExitCode::from(2);
+    };
+    let sequence = sequence.unwrap_or(1);
+    let key_text = match fs::read_to_string(&key_path) {
+        Ok(text) => text,
+        Err(err) => {
+            eprintln!("ob-node: {err}");
+            return ExitCode::from(1);
+        }
+    };
+    let Some(secret) = unhex32(key_text.trim()) else {
+        eprintln!("ob-node: the key file is 64 hex characters");
+        return ExitCode::from(2);
+    };
+    let plan = ob_node::AdmissionIndexPlan {
+        sequence,
+        head_sequence,
+        signed_on: 0,
+        stores,
+    };
+    let count = plan.stores.len();
+    let bytes = match ob_node::sign_admission_index(plan, secret) {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            eprintln!("ob-node: {err}");
+            return ExitCode::from(1);
+        }
+    };
+    if let Some(path) = out {
+        if let Err(err) = fs::write(&path, &bytes) {
+            eprintln!("ob-node: {err}");
+            return ExitCode::from(1);
+        }
+        println!("wrote {path} (sequence {sequence}, head {head_sequence}, {count} store(s))");
+    }
+    if !targets.is_empty() {
+        match ob_node::submit_admission_index(&dir, &targets, &bytes) {
+            Ok(results) => {
+                let mut ok = true;
+                for (onion, kept) in results {
+                    if kept {
+                        println!("submitted to {onion}");
+                    } else {
+                        eprintln!("ob-node: {onion} rejected the admission snapshot");
+                        ok = false;
+                    }
+                }
+                if !ok {
+                    return ExitCode::from(1);
+                }
+            }
+            Err(err) => {
+                eprintln!("ob-node: {err}");
+                return ExitCode::from(1);
+            }
+        }
     }
     ExitCode::SUCCESS
 }

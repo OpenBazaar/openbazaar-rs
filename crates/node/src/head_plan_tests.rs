@@ -1,7 +1,7 @@
 use bitcoin::secp256k1::SecretKey;
 use openbazaar_protocol::{secret_from_label, xonly, DirectoryTerms, SeedDocument, EPOCH_BLOCKS, FEE_SATS, NOTICE_BLOCKS, RELAX_NOTICE_BLOCKS};
 
-use super::{sign_with, HeadPlan, TermsChange};
+use super::{sign_admission_index, sign_admission_index_with, sign_with, AdmissionIndexPlan, HeadPlan, TermsChange};
 
 fn operator() -> SecretKey {
     secret_from_label("head-plan-operator")
@@ -111,4 +111,47 @@ fn append_terms_parses_and_refuses_a_fee_key() {
     assert!(TermsChange::parse("start=1,fee-key=ab").unwrap_err().contains("fee key"));
     assert!(TermsChange::parse("start=x").is_err());
     assert!(TermsChange::parse("start=1,color=blue").is_err());
+}
+
+#[test]
+fn admission_index_signs_sorts_and_refuses_wrong_key_or_duplicates() {
+    use openbazaar_protocol::{xonly, AdmissionIndex};
+
+    let key = operator();
+    let wrong = secret_from_label("not-the-directory").secret_bytes();
+    let a = [0xaa; 32];
+    let b = [0x11; 32];
+    let err = sign_admission_index(
+        AdmissionIndexPlan { sequence: 1, head_sequence: 4, signed_on: 20261123, stores: vec![a] },
+        wrong,
+    )
+    .unwrap_err();
+    assert!(err.contains("does not match"), "{err}");
+
+    let bytes = sign_admission_index_with(
+        &AdmissionIndexPlan { sequence: 2, head_sequence: 4, signed_on: 20261123, stores: vec![a, b] },
+        &key,
+    )
+    .unwrap();
+    let decoded = AdmissionIndex::decode(&bytes).unwrap();
+    decoded.verify_signer(&xonly(&key)).unwrap();
+    assert_eq!(decoded.sequence, 2);
+    assert_eq!(decoded.head_sequence, 4);
+    assert_eq!(decoded.stores, vec![b, a], "store ids are sorted into canonical order");
+
+    assert!(
+        sign_admission_index_with(
+            &AdmissionIndexPlan { sequence: 2, head_sequence: 4, signed_on: 20261123, stores: vec![a, a] },
+            &key,
+        )
+        .is_err(),
+        "duplicate store ids are refused"
+    );
+    assert!(
+        sign_admission_index_with(
+            &AdmissionIndexPlan { sequence: 0, head_sequence: 4, signed_on: 20261123, stores: vec![] },
+            &key,
+        )
+        .is_err()
+    );
 }

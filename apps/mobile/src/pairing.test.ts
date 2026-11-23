@@ -4,8 +4,12 @@ import { test } from "node:test";
 import {
   afterShopPair,
   browserTicketPath,
+  fetchCatalog,
   fetchOrders,
+  fetchRates,
+  hasNodeHost,
   mintBrowserPairingCode,
+  NodeOfflineError,
   onShopAwaitingCode,
   onThisComputer,
   pairShop,
@@ -207,5 +211,45 @@ test("a local-shop page that is not on loopback still types a code", async () =>
     assert.equal(sessions.length, before, "a forwarded shop does not mint a loopback cookie");
   } finally {
     shop.restore();
+  }
+});
+
+test("a bare remote onion never calls 127.0.0.1 or raises the pairing banner", async () => {
+  const previous = {
+    document: (globalThis as { document?: unknown }).document,
+    location: (globalThis as { location?: unknown }).location,
+    fetch: globalThis.fetch,
+  };
+  let fetchCalls = 0;
+  (globalThis as { document?: unknown }).document = { querySelector: () => null };
+  (globalThis as { location?: unknown }).location = {
+    hostname: `${"a".repeat(56)}.onion`,
+    origin: `http://${"a".repeat(56)}.onion`,
+    protocol: "http:",
+  };
+  globalThis.fetch = (async () => {
+    fetchCalls += 1;
+    throw new Error("remote onion must not probe localhost");
+  }) as typeof fetch;
+  const forget = showPairingWith(async () => false);
+  try {
+    assert.equal(hasNodeHost(), false);
+    await assert.rejects(fetchCatalog(), NodeOfflineError);
+    await assert.rejects(fetchOrders(), NodeOfflineError);
+    await assert.rejects(pairShop(), NodeOfflineError);
+    assert.deepEqual(await fetchRates(), {});
+    assert.equal(fetchCalls, 0, "no loopback request was sent");
+    assert.equal(shopAwaitingCode(), false, "no pairing banner was raised");
+
+    // A signed-out home-node page also has no active node session yet.
+    (globalThis as { document?: unknown }).document = {
+      querySelector: (sel: string) => (String(sel).includes("ob-home-node") ? {} : null),
+    };
+    assert.equal(hasNodeHost(), false);
+  } finally {
+    forget();
+    (globalThis as { document?: unknown }).document = previous.document;
+    (globalThis as { location?: unknown }).location = previous.location;
+    globalThis.fetch = previous.fetch;
   }
 });
