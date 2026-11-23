@@ -4525,6 +4525,12 @@ dialog.ob-moderator-dialog .ob-pairing-offer .ob-copy-value { padding:12px; }
 .ob-order-record code { display:block; font-size:13px; overflow-wrap:anywhere; padding-bottom:12px; }
 .ob-order-record .ob-sale-facts { grid-template-columns:minmax(0,1fr); gap:16px; }
 .ob-order-delivery { padding:18px; border:1px solid var(--ob-line); border-radius:8px; background:var(--ob-surface); }
+.ob-return-case { padding:18px; border:1px solid var(--ob-line); border-radius:8px; background:var(--ob-surface); display:grid; gap:10px; }
+.ob-return-case h3 { font-size:15px; font-weight:600; margin:0; }
+.ob-return-case p { margin:0; overflow-wrap:anywhere; }
+.ob-return-policy { color:var(--ob-secondary); font-size:14px; line-height:1.5; }
+.ob-return-form { display:grid; gap:10px; }
+.ob-return-ended { color:var(--ob-secondary); }
 .ob-tracking { display:grid; gap:12px; min-width:0; }
 .ob-tracking-head { display:flex; justify-content:space-between; gap:16px; align-items:start; }
 .ob-tracking-head h3 { font-size:15px; font-weight:600; margin:0 0 4px; }

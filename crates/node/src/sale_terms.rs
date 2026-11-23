@@ -7,7 +7,7 @@
 //! stock ledger for the payment window before the seller replies; a letter
 //! that asks for more than is left is declined before anything is paid.
 
-use openbazaar_protocol::{Availability, Listing, ListingKind, VariantId};
+use openbazaar_protocol::{Availability, Listing, ListingKind, Returns, VariantId};
 use serde_json::{json, Value};
 use tormail::{Order, TermsLine};
 
@@ -111,6 +111,10 @@ impl Node {
             "rate": rate,
             "reviewKey": (terms.review_key != [0; 32]).then(|| hex(&terms.review_key)),
         });
+        let policies: Vec<Returns> = listings
+            .iter()
+            .map(|listing| listing.commerce.as_ref().map(|commerce| commerce.returns).unwrap_or_default())
+            .collect();
         Ok(Ok(Priced {
             lines,
             items,
@@ -119,6 +123,7 @@ impl Node {
             physical: listings.iter().any(|listing| listing.kind == ListingKind::Physical),
             quote: quote_value,
             checked: Some(checked),
+            return_policy: self.return_policy_of(&policies),
         }))
     }
 

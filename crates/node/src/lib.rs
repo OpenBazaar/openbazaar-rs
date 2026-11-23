@@ -65,6 +65,7 @@ mod lock_http;
 mod mail_drop;
 mod media;
 mod messages;
+mod return_case;
 mod moderator_http;
 mod moderator_identity;
 mod moderator_track;

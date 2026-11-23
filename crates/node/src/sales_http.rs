@@ -6,6 +6,9 @@
 //! - `POST /orders/{id}/complete`: the buyer confirms an order arrived.
 //! - `POST /sales/{id}/message`, `POST /orders/{id}/message`: the two sides
 //!   of an order write to each other (see [`crate::messages`]).
+//! - `POST /orders/{id}/return`, `POST /sales/{id}/return`, and
+//!   `POST /orders/{id}/return/shipment`: a return case on the same channel
+//!   (see [`crate::return_case`]).
 //!
 //! The two mail routes take no token, like `POST /escrow/mail`, under the
 //! same limits ([`crate::mail_drop`]). The rest are for paired loopback callers.
@@ -43,10 +46,21 @@ pub(crate) fn response(
     let complete = path.strip_prefix("/orders/").and_then(|rest| rest.strip_suffix("/complete"));
     let sale_message = path.strip_prefix("/sales/").and_then(|rest| rest.strip_suffix("/message"));
     let order_message = path.strip_prefix("/orders/").and_then(|rest| rest.strip_suffix("/message"));
+    let order_return_ship = path.strip_prefix("/orders/").and_then(|rest| rest.strip_suffix("/return/shipment")).filter(|id| !id.is_empty() && !id.contains('/'));
+    let order_return = path.strip_prefix("/orders/").and_then(|rest| rest.strip_suffix("/return")).filter(|id| !id.is_empty() && !id.contains('/'));
+    let sale_return = path.strip_prefix("/sales/").and_then(|rest| rest.strip_suffix("/return")).filter(|id| !id.is_empty() && !id.contains('/'));
     let sale = path.strip_prefix("/sales/").filter(|rest| !rest.contains('/'));
     let known = match method {
         "GET" => path == "/sales" || sale.is_some(),
-        "POST" => fulfill.is_some() || complete.is_some() || sale_message.is_some() || order_message.is_some(),
+        "POST" => {
+            fulfill.is_some()
+                || complete.is_some()
+                || sale_message.is_some()
+                || order_message.is_some()
+                || order_return_ship.is_some()
+                || order_return.is_some()
+                || sale_return.is_some()
+        }
         _ => false,
     };
     if !known {
@@ -66,6 +80,29 @@ pub(crate) fn response(
             None => json_error("400 Bad Request", "The message could not be read.", origin),
         })
     };
+    if method == "POST" && (order_return_ship.is_some() || order_return.is_some() || sale_return.is_some()) {
+        let id = order_return_ship.or(order_return).or(sale_return).unwrap_or_default();
+        let parsed = if body.len() > 16 * 1024 { None } else { serde_json::from_slice::<Value>(body).ok() };
+        let result = match parsed {
+            Some(value) if order_return_ship.is_some() => node.ship_return(id, &value).map_err(Some),
+            Some(value) if order_return.is_some() => node.request_return(id, &value).map_err(Some),
+            Some(value) => node.decide_return(id, &value).map_err(|err| match err {
+                crate::own_listings::StoreError::NotFound => None,
+                crate::own_listings::StoreError::Invalid(message) => Some(message),
+                crate::own_listings::StoreError::Locked(_) => Some(crate::lock_http::LOCKED_MESSAGE.to_string()),
+                crate::own_listings::StoreError::Failed(detail) => {
+                    eprintln!("ob-node: return {id}: {detail}");
+                    Some("The return could not be saved.".to_string())
+                }
+            }),
+            None => Err(Some("The return could not be read.".to_string())),
+        };
+        return Some(match result {
+            Ok(value) => json_body("200 OK", &value, origin),
+            Err(None) => json_error("404 Not Found", "That sale is not on this node.", origin),
+            Err(Some(message)) => json_error("400 Bad Request", &message, origin),
+        });
+    }
     if method == "POST" && (sale_message.is_some() || order_message.is_some()) {
         return if sale_message.is_some() {
             message(&|id, value| node.send_sale_message(id, value))

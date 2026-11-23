@@ -11,7 +11,7 @@
 //! the buyer) -> Shipped (the seller fulfills, with tracking or the digital
 //! goods) -> Completed (the buyer confirms receipt).
 
-use openbazaar_protocol::{Listing, ListingKind};
+use openbazaar_protocol::{Listing, ListingKind, Returns};
 use serde_json::{json, Value};
 use tormail::{open_message, open_order, reply_frame, seal_reply, DropId, Opened, Order, ReplyPublic, SealedLetter, StoreSecret};
 
@@ -225,7 +225,12 @@ impl Node {
         let (items, shipping) = crate::orders::package_shipping(&refs).map_err(|err| err.to_string())?;
         let digital = priced.iter().any(|(listing, _)| listing.kind == ListingKind::Digital);
         let physical = priced.iter().any(|(listing, _)| listing.kind == ListingKind::Physical);
-        Ok(Priced { lines: values, items, shipping, digital, physical, quote: Value::Null, checked: None })
+        let policies: Vec<Returns> = priced
+            .iter()
+            .map(|(listing, _)| listing.commerce.as_ref().map(|commerce| commerce.returns).unwrap_or_default())
+            .collect();
+        let return_policy = self.return_policy_of(&policies);
+        Ok(Priced { lines: values, items, shipping, digital, physical, quote: Value::Null, checked: None, return_policy })
     }
 
     /// Keep the sale and reply with its terms. A Zcash or Monero sale has a `payment` and no bitcoin `address`, so [`Self::watch_sales`] skips it.
@@ -277,6 +282,10 @@ impl Node {
         });
         if !priced.quote.is_null() {
             terms["quote"] = priced.quote;
+        }
+        if let Some(policy) = &priced.return_policy {
+            sale["returnPolicy"] = json!(policy);
+            terms["returnPolicy"] = json!(policy);
         }
         if let Some(payment) = payment {
             match payment["rail"].as_str() {
@@ -331,6 +340,7 @@ impl Node {
                     .map_err(retry)?;
                 Ok(())
             }
+            Some("return") => self.receive_return(id, &body),
             Some("sent") => {
                 let txid = body["txid"].as_str().filter(|txid| txid.len() == 64 && txid.bytes().all(|byte| byte.is_ascii_hexdigit()));
                 let txid = txid.ok_or_else(|| refused("that payment note names no transaction"))?;
@@ -345,6 +355,73 @@ impl Node {
             }
             _ => Err(refused("that message is not one this store reads")),
         }
+    }
+
+    /// A buyer's return letter: open a case, or name the return shipment.
+    /// A letter this sale cannot apply is refused and changes nothing.
+    fn receive_return(&self, id: &str, body: &Value) -> Result<(), MailError> {
+        let now = crate::escrow_outbox::now_secs();
+        let mut problem: Option<&'static str> = None;
+        let updated = match body["action"].as_str() {
+            Some("request") => {
+                let reason = crate::return_case::request_text(body).map_err(refused)?;
+                self.sales()
+                    .update(id, |sale| {
+                        if let Err(err) = crate::return_case::buyer_request(sale, &reason, now) {
+                            problem = Some(err);
+                        }
+                    })
+                    .map_err(retry)?
+            }
+            Some("ship") => {
+                let shipment = crate::return_case::shipment_from(body).map_err(refused)?;
+                self.sales()
+                    .update(id, |sale| {
+                        if let Err(err) = crate::return_case::mark_shipped(sale, &shipment, now) {
+                            problem = Some(err);
+                        }
+                    })
+                    .map_err(retry)?
+            }
+            _ => return Err(refused("that return could not be read")),
+        };
+        if updated.is_none() {
+            return Err(refused("that sale is not on this node"));
+        }
+        match problem {
+            Some(err) => Err(refused(err)),
+            None => Ok(()),
+        }
+    }
+
+    /// `POST /sales/{id}/return`: accept or decline the buyer's return.
+    pub(crate) fn decide_return(&self, id: &str, body: &Value) -> Result<Value, StoreError> {
+        let (accept, note) = crate::return_case::decision_from(body).map_err(StoreError::invalid)?;
+        let sale = self.sales().get(id).cloned().ok_or(StoreError::NotFound)?;
+        let now = crate::escrow_outbox::now_secs();
+        let mut trial = sale.clone();
+        crate::return_case::decide(&mut trial, accept, &note, now).map_err(StoreError::invalid)?;
+        let reply = json!({
+            "v": 1,
+            "kind": "return",
+            "action": if accept { "accept" } else { "decline" },
+            "text": note,
+        });
+        self.tell_buyer(&sale, &reply).map_err(StoreError::invalid)?;
+        let mut problem: Option<&'static str> = None;
+        let updated = self
+            .sales()
+            .update(id, |sale| {
+                if let Err(err) = crate::return_case::decide(sale, accept, &note, now) {
+                    problem = Some(err);
+                }
+            })
+            .map_err(StoreError::Failed)?
+            .ok_or(StoreError::NotFound)?;
+        if let Some(err) = problem {
+            return Err(StoreError::invalid(err));
+        }
+        Ok(public_sale(&updated))
     }
 
     /// `POST /sales/{id}/fulfill`: mark a paid sale shipped and tell the buyer.
@@ -486,6 +563,8 @@ pub(crate) struct Priced {
     /// The fiat quote of a version 3 order, else null.
     pub quote: Value,
     pub checked: Option<crate::order_terms::Checked>,
+    /// The return policy this order was sold under, when one allows a return.
+    pub return_policy: Option<String>,
 }
 
 /// Where replies in one sale go.

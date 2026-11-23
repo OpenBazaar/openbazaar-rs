@@ -12,6 +12,7 @@ import { draftPath } from "./listingDraft.ts";
 import { canShrink, shrinkImage } from "./imageShrink.ts";
 import { parseShipmentTracking, type ShipmentTracking } from "./shipment.ts";
 import { parseMessages, type OrderMessage } from "./messages.ts";
+import { parseReturnCase, parseReturnPolicy, type ReturnCase } from "./returnCase.ts";
 
 export type Role = "buyer" | "seller";
 
@@ -118,6 +119,9 @@ export type Sale = {
   fulfillment: { carrier: string; tracking: string; note: string; content: string; at: number } | null;
   tracking: ShipmentTracking | null;
   messages: OrderMessage[];
+  /** The return policy this sale was sold under, when a return is allowed. */
+  returnPolicy: string;
+  returnCase: ReturnCase | null;
 };
 
 export type Fulfill = { carrier?: string; tracking?: string; note?: string; content?: string };
@@ -206,6 +210,8 @@ export function parseSale(value: unknown): Sale {
     fulfillment: f ? { carrier: text(f.carrier), tracking: text(f.tracking), note: text(f.note), content: text(f.content), at: count(f.at) } : null,
     tracking: parseShipmentTracking(s.tracking),
     messages: parseMessages(s.messages),
+    returnPolicy: parseReturnPolicy(s.returnPolicy),
+    returnCase: parseReturnCase(s.returnCase),
   };
 }
 
@@ -438,4 +444,19 @@ export async function sendSaleMessage(id: string, text: string): Promise<Sale> {
 /// The buyer writes to an order's seller.
 export async function sendOrderMessage(id: string, text: string): Promise<BuyerOrder> {
   return parseBuyerOrder(await paired(`/orders/${id}/message`, json("POST", { text })));
+}
+
+/// The buyer opens a return on an order that was sold with a return policy.
+export async function requestReturn(id: string, text: string): Promise<BuyerOrder> {
+  return parseBuyerOrder(await paired(`/orders/${id}/return`, json("POST", { text })));
+}
+
+/// The seller accepts or declines that return. Nothing is paid out here.
+export async function decideReturn(id: string, decision: "accept" | "decline", text: string): Promise<Sale> {
+  return parseSale(await paired(`/sales/${id}/return`, json("POST", { decision, text })));
+}
+
+/// The buyer names a carrier and tracking number for the trip back.
+export async function shipReturn(id: string, shipment: { carrier: string; tracking: string; note: string }): Promise<BuyerOrder> {
+  return parseBuyerOrder(await paired(`/orders/${id}/return/shipment`, json("POST", shipment)));
 }

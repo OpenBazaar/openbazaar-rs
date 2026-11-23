@@ -3,6 +3,7 @@ import { ScrollView, StyleSheet, Text, View } from "react-native";
 
 import { parseBuyerOrder, type BuyerOrder } from "../../catalog.ts";
 import { disputeFeeText } from "../../disputeFee.ts";
+import { returnStateLabel } from "../../returnCase.ts";
 import { collectionValue } from "../../homeNode/replica.ts";
 import { useSession } from "../session.ts";
 import { Button, Card, formatBtc, LINE, NAVY, Notice, ui } from "../ui.tsx";
@@ -48,6 +49,7 @@ export function OrdersScreen({ onRefresh }: { onRefresh: () => void }) {
                 {order.status} · {order.settlement === "escrow" ? "escrow" : "direct"} · {new Date(order.created * 1000).toLocaleDateString()}
               </Text>
               {order.escrow?.disputeFee ? <Text style={ui.muted}>{disputeFeeText(order.escrow.disputeFee)}</Text> : null}
+              {order.remote?.returnCase ? <Text style={ui.muted}>{returnStateLabel(order.remote.returnCase.state)}</Text> : null}
             </View>
           ))}
         </Card>

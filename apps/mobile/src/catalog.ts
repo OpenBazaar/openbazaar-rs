@@ -5,6 +5,7 @@ import { lnBlockedReason, lnCatalogNetwork, lnStoreKeys, parseLnInvoice, type Ln
 import { xmrCatalogNetwork, type XmrNetwork } from "./xmr.ts";
 import { parseShipmentTracking, type ShipmentTracking } from "./shipment.ts";
 import { parseMessages, type OrderMessage } from "./messages.ts";
+import { parseReturnCase, parseReturnPolicy, type ReturnCase } from "./returnCase.ts";
 import { parseDisputeFee, parseFeeKind, type DisputeFee, type FeeKind } from "./disputeFee.ts";
 
 // The shop dials only this origin. A query parameter, settings field, seed,
@@ -214,6 +215,9 @@ export type RemoteOrder = {
   fulfillment: Fulfillment | null;
   tracking: ShipmentTracking | null;
   messages: OrderMessage[];
+  /** The return policy this order was sold under, when a return is allowed. */
+  returnPolicy: string;
+  returnCase: ReturnCase | null;
   /** The seller sold out before this order was paid, and owes a refund. */
   oversold: boolean;
   /** Signed receipts kept for reviewing this order. */
@@ -1055,6 +1059,8 @@ function parseRemote(value: unknown): RemoteOrder | null {
       : null,
     tracking: parseShipmentTracking(remote.tracking),
     messages: parseMessages(remote.messages),
+    returnPolicy: parseReturnPolicy(remote.returnPolicy),
+    returnCase: parseReturnCase(remote.returnCase),
     oversold: Array.isArray(remote.oversold) && remote.oversold.length > 0,
     receipts: Array.isArray(remote.receipts) ? remote.receipts.length : 0,
     review: parseOrderReview(remote.review),
