@@ -51,6 +51,24 @@ test("a store page takes its profile from the signed record and only that store'
   assert.equal(parsed.acceptsXmr, false, "the Monero flag is the signed one");
 });
 
+test("a listing the catalog index leaves out is dropped, and a bad signature already is", () => {
+  const key = String(raw().stores[1].key);
+  const full = parseStorePage(page(1), key);
+  assert.ok(full.listings.length > 1);
+  assert.equal(full.catalogIndex, null);
+  const keep = full.listings[0].hash;
+  const narrowed = parseStorePage({ ...page(1), catalogIndex: [keep, "not-a-hash"] }, key);
+  assert.equal(narrowed.catalogIndex, null, "a catalog index that is not all hashes is ignored");
+  const indexed = parseStorePage({ ...page(1), catalogIndex: [keep] }, key);
+  assert.deepEqual(indexed.listings.map((listing) => listing.hash), [keep]);
+  assert.equal(indexed.rejected, full.rejected + full.listings.length - 1);
+  const broken = page(1);
+  broken.listings = [...broken.listings, { ...broken.listings[0], record: String(broken.listings[0].record).replace(/.$/, "0") }];
+  const checked = parseStorePage(broken, key);
+  assert.equal(checked.listings.length, full.listings.length);
+  assert.ok(checked.rejected > full.rejected);
+});
+
 test("a store page for another key, or with a broken record, is refused", () => {
   const key = String(raw().stores[1].key);
   assert.throws(() => parseStorePage(page(0), key));

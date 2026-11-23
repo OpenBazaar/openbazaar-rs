@@ -225,6 +225,7 @@ pub(crate) fn detail_response(node: &Node, client: &Client, head: &str, key: &st
         Ok(mut value) => {
             let pending = store.id == node.own_store && node.own_pending.load(Ordering::Relaxed);
             value["store"]["unpublishedChanges"] = json!(pending);
+            value["catalogIndex"] = json!(node.catalog_index_hashes(store));
             json_body("200 OK", &value, origin)
         }
         Err(err) => {
