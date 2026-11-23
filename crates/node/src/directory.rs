@@ -1119,6 +1119,19 @@ impl Node {
         );
     }
 
+    /// Listing hashes in the catalog index when that index names this store's
+    /// current record. `None` when there is no index, or the index names a
+    /// different record: those listings are not a retraction.
+    pub(crate) fn catalog_index_hashes(&self, store: &Store) -> Option<Vec<String>> {
+        let replica = self.seed_replica.lock().unwrap_or_else(|err| err.into_inner());
+        let index = replica.catalog_indexes.get(store.id.as_bytes())?;
+        let digest = store.record_digest().ok()?;
+        if index.record_digest != digest {
+            return None;
+        }
+        Some(index.listings.iter().map(|hash| hex(hash)).collect())
+    }
+
     /// Stores this node shows, by key and name. No onion and no URL.
     /// A followed id with no verified record is not shown as a shop.
     pub(crate) fn directory_value(&self) -> Value {
@@ -2627,5 +2640,69 @@ mod tests {
         let value = node.directory_value();
         let row = value["stores"].as_array().unwrap().iter().find(|row| row["name"] == "Cedar Workshop").unwrap();
         assert_eq!((row["admitted"].as_bool(), row["added"].as_bool()), (Some(true), Some(false)));
+    }
+
+    #[test]
+    fn opening_an_admitted_store_shows_only_listings_the_catalog_index_names() {
+        use crate::harness::{self, TempDir};
+        use crate::network::NetworkMode;
+
+        let dir = TempDir::new();
+        let chain = harness::MockChain::new();
+        let node = harness::open_node(&dir.0, NetworkMode::Testnet4, &chain, 1, harness::unreachable_escrow());
+        let secret = secret_from_label("browse-admitted");
+        let store = openbazaar_protocol::Store::sign(
+            "Cedar Workshop",
+            "Maine",
+            openbazaar_protocol::DirectPay { bolt12_offer: String::new(), silent_payment_code: String::new() },
+            openbazaar_protocol::ContentRating::General,
+            openbazaar_protocol::StoreDetails {
+                mailbox_key: [4u8; 32],
+                onion: String::new(),
+                moderators: vec![],
+                profile: openbazaar_protocol::StoreProfile { created_on: 20261123, ..openbazaar_protocol::StoreProfile::default() },
+                accepts_xmr: false,
+                accepts_lightning: false,
+                accepts_zec: false,
+            },
+            &secret,
+        )
+        .unwrap();
+        let kept = goods(&store, &secret, "Cedar spoon", 2_400);
+        let dropped = goods(&store, &secret, "Maple spoon", 2_600);
+        let mut bad = dropped.encode().unwrap();
+        let flip = bad.len() / 2;
+        bad[flip] ^= 0xff;
+        let dir_secret = secret_from_label("browse-directory");
+        let dir_key = xonly(&dir_secret);
+        let head = SeedDocument::sign(4, vec![onion('a')], DirectoryTerms::standard(dir_key), None, &dir_secret).unwrap();
+        let snapshot = AdmissionIndex::sign(1, 20261123, 4, vec![*store.id.as_bytes()], &dir_secret).unwrap();
+        let index = CatalogIndex::sign(1, 20261123, store.record_digest().unwrap(), vec![*kept.content_hash().unwrap().as_bytes()], &secret).unwrap();
+        {
+            let mut replica = node.seed_replica.lock().unwrap_or_else(|err| err.into_inner());
+            replica.accept_document(&head.encode().unwrap(), &dir_key).unwrap();
+            replica.accept_store(&store.encode().unwrap()).unwrap();
+            replica.accept_listing(&kept.encode().unwrap()).unwrap();
+            replica.accept_listing(&dropped.encode().unwrap()).unwrap();
+            assert!(replica.accept_listing(&bad).is_err(), "a bad signature is dropped");
+            replica.accept_catalog_index(&index.encode().unwrap()).unwrap();
+            replica.accept_admission_index(&snapshot.encode().unwrap(), &dir_key).unwrap();
+        }
+        let key = store.id.to_hex();
+        let (status, page) = harness::request(&node, "GET", &format!("/stores/{key}"), "");
+        assert!(status.contains("200"), "{status} {page}");
+        let titles: Vec<_> = page["listings"].as_array().unwrap().iter().map(|row| row["title"].as_str().unwrap().to_string()).collect();
+        assert_eq!(titles, vec!["Cedar spoon".to_string()]);
+        assert_eq!(page["catalogIndex"].as_array().unwrap().len(), 1);
+        let (status, catalog) = harness::request(&node, "GET", "/catalog", "");
+        assert!(status.contains("200"), "{status}");
+        let shown: Vec<_> = catalog["listings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|row| row["storeId"] == key)
+            .map(|row| row["title"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(shown, vec!["Cedar spoon".to_string()]);
     }
 }

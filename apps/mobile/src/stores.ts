@@ -31,7 +31,13 @@ export type StorePage = {
   store: StoreProfile;
   listings: ListingHeader[];
   moderators: StoreModerator[];
-  /** Listings dropped because their record did not verify or belongs to another store. */
+  /**
+   * Hashes the store's catalog index names, when that index matches the store
+   * record. `null` when there is no such index. A listing left out of the
+   * list is not shown.
+   */
+  catalogIndex: string[] | null;
+  /** Listings dropped because their record did not verify, belongs to another store, or the catalog index leaves them out. */
   rejected: number;
 };
 
@@ -40,6 +46,20 @@ export type StoreList = { stores: StoreSummary[]; rejected: number };
 export type StoreImage = { contentType: string; bytes: Uint8Array };
 
 const IMAGE_HASH = /^[0-9a-f]{64}$/;
+
+/** The catalog index when every entry is a listing hash. Anything else is no index. */
+export function catalogIndexOf(value: unknown): string[] | null {
+  if (value == null) return null;
+  if (!Array.isArray(value) || !value.every((item) => typeof item === "string" && IMAGE_HASH.test(item))) return null;
+  return value;
+}
+
+/** Listings the catalog index names. No index keeps the listings the signature check already kept. */
+export function listingsNamedByIndex(listings: readonly ListingHeader[], index: readonly string[] | null): ListingHeader[] {
+  if (!index) return [...listings];
+  const named = new Set(index);
+  return listings.filter((listing) => named.has(listing.hash));
+}
 
 function imageHash(value: string | null | undefined): string | null {
   return value && IMAGE_HASH.test(value) ? value : null;
@@ -84,6 +104,8 @@ export function parseStorePage(value: unknown, key: string): StorePage {
     if (typeof moderator.id === "string" && typeof moderator.name === "string") names.set(moderator.id, moderator.name);
   }
   const { listings, rejected } = verifiedListings(body.listings, new Set([key]), new Set(summary.acceptsXmr ? [key] : []), new Set(summary.acceptsLightning ? [key] : []), new Set(summary.acceptsZec ? [key] : []));
+  const catalogIndex = catalogIndexOf(body.catalogIndex);
+  const named = listingsNamedByIndex(listings, catalogIndex);
   return {
     store: {
       ...summary,
@@ -100,9 +122,10 @@ export function parseStorePage(value: unknown, key: string): StorePage {
       onion: details?.onion ?? null,
       unpublishedChanges: summary.own && recordOf(body.store).unpublishedChanges === true,
     },
-    listings,
+    listings: named,
     moderators: (details?.moderators ?? []).map((id) => ({ id, name: names.get(id) ?? null })),
-    rejected,
+    catalogIndex,
+    rejected: rejected + listings.length - named.length,
   };
 }
 

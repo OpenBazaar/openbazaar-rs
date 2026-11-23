@@ -4,7 +4,7 @@ import { useNodeResource } from "../useNodeResource";
 import { FollowAddress } from "./FollowAddress";
 
 /** Stores this node already has, by name. One is added by a pasted key, or by its address ([FollowAddress]). */
-export function Follows({ onChanged }: { onChanged: (message: string) => void }) {
+export function Follows({ onChanged, onOpen }: { onChanged: (message: string) => void; onOpen?: (storeId: string) => void }) {
   const resource = useNodeResource(fetchDirectory, 15000);
   const [storeId, setStoreId] = useState("");
   const [busy, setBusy] = useState(false);
@@ -39,7 +39,7 @@ export function Follows({ onChanged }: { onChanged: (message: string) => void })
   const rest = stores.filter(store => !store.admitted);
   const rows = (list: DirectoryStore[]) => <ul className="ob-follow-list">{list.map(store => <li key={store.storeId}>
     <span><strong>{store.name ?? "Waiting for the store's record"}</strong><small>{store.listings} listing{store.listings === 1 ? "" : "s"}</small></span>
-    {store.added ? <button className="ob-text-link" disabled={busy} onClick={() => void change(() => unfollowStore(store.storeId), "Stopped following that store")}>Remove</button> : null}
+    <div className="ob-follow-actions">{onOpen ? <button className="ob-text-link" onClick={() => onOpen(store.storeId)}>Browse</button> : null}{store.added ? <button className="ob-text-link" disabled={busy} onClick={() => void change(() => unfollowStore(store.storeId), "Stopped following that store")}>Remove</button> : null}</div>
   </li>)}</ul>;
   return <div className="ob-settings-page">
     <header className="ob-settings-heading"><h1>Followed stores</h1><p>Stores the directory has named show up in Products. Paste a store key someone handed you. This node keeps that store's signed records and sends an order to the onion inside the record.</p></header>
