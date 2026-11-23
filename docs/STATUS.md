@@ -2,7 +2,7 @@
 
 This file tracks how much of the design in `docs/paper` the reference implementation in this repository covers. The paper describes the network as a design; status, commit references, and review tracking live here instead.
 
-Last checked against `main` at `98da40a` plus the `payment-rbf` branch.
+Last checked against `main` at `0740679`.
 
 ## History
 
@@ -35,7 +35,7 @@ Labels: **tested** = code on main with automated tests; **demo** = code runs, bu
 | Listing address = SHA-256 of body | tested | Order letters commit to it. |
 | Vendor content self-labels (rating, tags) in the signed body | tested | Store v2, listing v5; unlabeled v1/v4 still decode. |
 | Listing v6: stable id, images, fiat price | tested | A random 16-byte id kept across edits, up to 8 image hashes, and an optional fiat price (USD, EUR, GBP, JPY in minor units, plus shipping) beside the signed sats price. The seller's node converts the fiat price at its rate when an order arrives and falls back to the signed sats price without one; the buyer refuses terms more than a quarter above what checkout showed. v4/v5 still decode. |
-| Listing authoring | tested | `POST /store/listings`, `PUT` and `DELETE /store/listings/{id}`, kept in `own-listings.obv` with each listing's earlier addresses, so an order against an older version still prices. Spend tier: `423` while locked. Stock is not decremented by sales. |
+| Listing authoring | tested | `POST /store/listings`, `PUT` and `DELETE /store/listings/{id}`, kept in `own-listings.obv` with each listing's earlier addresses, so an order against an older version still prices. Spend tier: `423` while locked. A paid sale takes its units off the shelf, and the listing is signed again with that count. |
 | Storefront editor and role | tested | `GET`/`PUT /store/profile` (name, tagline, about, avatar and banner from `POST /media`, region, ships-to, policies) signs the store record again, and every listing when the name changes; `setUp` is true once saved. `PUT /store/role` keeps the onboarding choice (buyer or seller) outside any signed record. Monero and escrow are not offered for the own store yet. |
 | Store record v3: mailbox key, onion, accepted moderators, public profile | tested | Tagline, about, avatar and banner as SHA-256 hashes, shipping/returns/processing policies, ships-to country codes, created-on date. v1/v2 still decode; one canonical encoding; every field tamper-tested. |
 | Store pages and store media for the paired client | tested | `GET /stores`, `GET /stores/{key}`, `GET /media/{hash}` (PNG/JPEG/GIF/WebP, 2 MiB cap, served only if the bytes hash to the name). |
