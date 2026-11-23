@@ -35,8 +35,13 @@ const STALL_TIMEOUT: Duration = Duration::from_secs(180);
 const KEYSTORE_WAIT_LINE: &str = "ob-node: waiting for the OS keychain";
 const KEYSTORE_DONE_LINE: &str = "ob-node: the OS keychain answered";
 
+#[cfg(target_os = "macos")]
 pub const KEYCHAIN_WAIT_MESSAGE: &str =
     "Waiting for macOS Keychain access. Click Always Allow in the system prompt.";
+#[cfg(target_os = "windows")]
+pub const KEYCHAIN_WAIT_MESSAGE: &str = "Waiting for Windows Credential Manager.";
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+pub const KEYCHAIN_WAIT_MESSAGE: &str = "Waiting for the OS keyring.";
 
 /// What the shell should do on one look at a starting node.
 #[derive(Debug, PartialEq, Eq)]
@@ -118,7 +123,8 @@ impl Sidecar {
     /// Always `--remote` so order and escrow mail get a store onion. Home mode
     /// also opens the LAN channel for paired devices. `file_vault` keeps the
     /// node's keys in a file in the data folder instead of the OS keychain
-    /// (for a disposable profile).
+    /// (for a disposable profile). A choice saved with [`choose_file_vault`]
+    /// does the same on every later launch.
     /// `on_keychain` is called once each time the node starts waiting on a
     /// Keychain prompt, so the user can be told what to click.
     pub fn start(
@@ -207,7 +213,9 @@ fn wait_for_node(
     let mut was_on_keychain = false;
     loop {
         let status = child.try_wait().ok().flatten();
-        let len = fs::metadata(log_path).map(|meta| meta.len()).unwrap_or(log_len);
+        // Directory metadata stays stale on Windows while the node holds the
+        // log open, so a node that is writing looks silent and gets killed.
+        let len = log_bytes(log_path).unwrap_or(log_len);
         if len != log_len {
             log_len = len;
             last_progress = Instant::now();
@@ -229,10 +237,16 @@ fn wait_for_node(
             Startup::Stalled => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return Err(format!(
-                    "The OpenBazaar node stopped making progress during startup. Details are in {}.",
-                    log_path.display()
-                ));
+                return Err(match launch_error(log_path, log_from) {
+                    Some(last) => format!(
+                        "The OpenBazaar node stopped making progress during startup after \"{last}\". Details are in {}.",
+                        log_path.display()
+                    ),
+                    None => format!(
+                        "The OpenBazaar node stopped making progress during startup. Details are in {}.",
+                        log_path.display()
+                    ),
+                });
             }
             Startup::Keychain => {
                 if !was_on_keychain {
@@ -245,6 +259,15 @@ fn wait_for_node(
         }
         thread::sleep(Duration::from_millis(100));
     }
+}
+
+/// How many bytes the log holds. A fresh open and a seek see bytes the node
+/// has written; `metadata` on Windows can keep the size from when the file
+/// was first opened.
+fn log_bytes(path: &Path) -> Option<u64> {
+    use std::io::{Seek, SeekFrom};
+    let mut file = File::open(path).ok()?;
+    file.seek(SeekFrom::End(0)).ok()
 }
 
 /// The last 64 KiB this launch wrote to the log.
@@ -284,7 +307,7 @@ fn sidecar_args(
         args.push("--lan".into());
     }
     args.extend(["--onion".into(), "--tor".into()]);
-    if file_vault {
+    if file_vault || file_vault_chosen(app_data_dir) {
         args.extend(["--vault".into(), "file".into()]);
     }
     if let Some(shop) = shop {
@@ -302,9 +325,10 @@ fn sidecar_args(
     args
 }
 
-/// What the node said before it died, from the part of the log this launch
-/// wrote: its last `ob-node:` line when there is one, else its last line.
-/// One bounded line, so a startup dialog can carry the actual reason.
+/// What the node last said, from the part of the log this launch wrote: its
+/// last `ob-node:` line when there is one, else its last line. One bounded
+/// line, so a startup dialog can carry the reason a node died or the step a
+/// stalled one never finished.
 fn launch_error(log_path: &Path, from: u64) -> Option<String> {
     use std::io::{Read, Seek, SeekFrom};
     let mut file = File::open(log_path).ok()?;
@@ -711,6 +735,7 @@ mod tests {
         let (mut child, log_path) = fake_node(&dir, "echo starting; sleep 30");
         let error = wait_for_node(&mut child, &log_path, 0, Duration::from_secs(1), || false, &|| {}).unwrap_err();
         assert!(error.contains("stopped making progress"), "{error}");
+        assert!(error.contains("after \"starting\""), "the stall names the node's last step: {error}");
         assert!(child.try_wait().unwrap().is_some(), "a stuck node is killed");
         let (mut child, log_path) = fake_node(&dir, "echo 'ob-node: bad flag' >&2; exit 2");
         let error = wait_for_node(&mut child, &log_path, 0, Duration::from_secs(60), || false, &|| {}).unwrap_err();

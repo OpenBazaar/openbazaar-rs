@@ -91,7 +91,13 @@ const KEYSTORE_WAIT_LINE: &str = "ob-node: waiting for the OS keychain";
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 const KEYSTORE_DONE_LINE: &str = "ob-node: the OS keychain answered";
 
-#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+/// How long Windows Credential Manager may take. It does not show a prompt
+/// the user has to click, and a call that never returns used to leave the
+/// desktop app on the "stopped making progress" dialog.
+#[cfg(target_os = "windows")]
+const KEYSTORE_PATIENCE: std::time::Duration = std::time::Duration::from_secs(20);
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn asking_keystore<T>(call: impl FnOnce() -> T) -> T {
     eprintln!("{KEYSTORE_WAIT_LINE}");
     let result = call();
@@ -99,7 +105,29 @@ fn asking_keystore<T>(call: impl FnOnce() -> T) -> T {
     result
 }
 
-#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+/// Run `call` on its own thread and give up if Credential Manager does not
+/// answer. The error text is wrapped by [`keystore_error`], which is what the
+/// desktop shell looks for before offering a file vault.
+#[cfg(target_os = "windows")]
+fn asking_keystore<T: Send + 'static>(call: impl FnOnce() -> T + Send + 'static) -> Result<T, String> {
+    eprintln!("{KEYSTORE_WAIT_LINE}");
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .name("ob-keystore".into())
+        .spawn(move || {
+            let _ = tx.send(call());
+        })
+        .map_err(|err| err.to_string())?;
+    match rx.recv_timeout(KEYSTORE_PATIENCE) {
+        Ok(value) => {
+            eprintln!("{KEYSTORE_DONE_LINE}");
+            Ok(value)
+        }
+        Err(_) => Err("Windows Credential Manager did not answer".into()),
+    }
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 impl KeyStore for OsKeyStore {
     fn get(&self, account: &str) -> Result<Option<[u8; 32]>, String> {
         let entry = keyring::Entry::new(KEYRING_SERVICE, account).map_err(|err| err.to_string())?;
@@ -118,6 +146,32 @@ impl KeyStore for OsKeyStore {
     fn delete(&self, account: &str) -> Result<(), String> {
         let entry = keyring::Entry::new(KEYRING_SERVICE, account).map_err(|err| err.to_string())?;
         match asking_keystore(|| entry.delete_credential()) {
+            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Err(err) => Err(err.to_string()),
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl KeyStore for OsKeyStore {
+    fn get(&self, account: &str) -> Result<Option<[u8; 32]>, String> {
+        let entry = keyring::Entry::new(KEYRING_SERVICE, account).map_err(|err| err.to_string())?;
+        match asking_keystore(move || entry.get_password())? {
+            Ok(hex) => decode_hex_key(&hex).map(Some),
+            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(err) => Err(err.to_string()),
+        }
+    }
+
+    fn set(&self, account: &str, key: &[u8; 32]) -> Result<(), String> {
+        let entry = keyring::Entry::new(KEYRING_SERVICE, account).map_err(|err| err.to_string())?;
+        let hex = encode_hex(key);
+        asking_keystore(move || entry.set_password(&hex))?.map_err(|err| err.to_string())
+    }
+
+    fn delete(&self, account: &str) -> Result<(), String> {
+        let entry = keyring::Entry::new(KEYRING_SERVICE, account).map_err(|err| err.to_string())?;
+        match asking_keystore(move || entry.delete_credential())? {
             Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
             Err(err) => Err(err.to_string()),
         }
