@@ -33,6 +33,8 @@ export type CrawlOptions = {
 const SKIP = /^(skip to content)$|delete wallet|reset|forget|wipe|sign out|log out|remove all|rotate|dark mode|collapse sidebar|resize sidebar/i
 const CLOSE = /^(close|cancel|done|not now|dismiss|×|back)$/i
 const FUZZ = ['', 'a', 'Test value 123', '0', '-1', '99999999999', 'ñandú 🚀', '<b>x</b>', ' '.repeat(3), 'x'.repeat(300)]
+// A number input rejects anything that is not a number, and Playwright reports that as a failed action.
+const NUMBER_FUZZ = ['0', '1', '12', '999999']
 
 /** Mulberry32: small, seedable, good enough to pick controls. */
 export function rng(seed: number) {
@@ -218,7 +220,8 @@ export async function crawl(page: Page, options: CrawlOptions): Promise<Finding[
     try {
       if (['text', 'number', 'search', 'password', 'email', 'url', 'textarea'].includes(control.kind) || control.tag === 'textarea') {
         const label = await labelOf(handle)
-        const value = /passphrase/i.test(label) ? options.passphrase : FUZZ[Math.floor(random() * FUZZ.length)]
+        const pool = control.kind === 'number' ? NUMBER_FUZZ : FUZZ
+        const value = /passphrase/i.test(label) && control.kind !== 'number' ? options.passphrase : pool[Math.floor(random() * pool.length)]
         await handle.fill(value, { timeout: 3000 })
         await handle.press(random() < 0.3 ? 'Enter' : 'Tab', { timeout: 3000 })
       } else if (control.tag === 'select') {
@@ -240,8 +243,19 @@ export async function crawl(page: Page, options: CrawlOptions): Promise<Finding[
     const isPressable = ['button', 'summary', 'tab', 'switch', 'menuitem', 'a'].includes(control.kind) || control.tag === 'button'
     // A visible error already answers the press, e.g. pressing Review again on an invalid form.
     const answered = (await scope(page).getByRole('alert').filter({ visible: true }).count()) > 0
-    if (acted && isPressable && !control.current && !answered && after === before && !requests.length && (await stillDead(page, handle)))
-      await report({ kind: 'dead control', screen, control: control.name, detail: 'Pressing it changed nothing on the page and sent nothing to the node, twice', step })
+    if (acted && isPressable && !control.current && !answered && after === before && !requests.length && (await stillDead(page, handle))) {
+      const href = control.tag === 'a' ? await handle.getAttribute('href') : null
+      const section = href?.startsWith('#') ? href.slice(1) : ''
+      // A section link that is already showing did its job. One that names no section did not.
+      if (section && await page.evaluate(id => !!document.getElementById(id), section)) continue
+      await report({
+        kind: 'dead control',
+        screen,
+        control: control.name,
+        detail: section ? 'This link points at a section that is not on the page' : 'Pressing it changed nothing on the page and sent nothing to the node, twice',
+        step
+      })
+    }
 
     // A dialog opened by this step must close again the normal way.
     if ((await page.locator('dialog[open]').count()) > dialogsBefore && random() < 0.5) {
