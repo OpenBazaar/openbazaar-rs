@@ -3419,6 +3419,8 @@ svg {
 .ob-empty p,.ob-loading p { font-size: 15px; line-height: 1.65; max-width: 440px; }
 .ob-empty-actions { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 12px; margin-top: 24px; }
 .ob-empty-actions button { margin: 0; }
+.ob-open-store { flex: 1 0 100%; display: grid; justify-items: center; gap: 12px; max-width: 440px; margin: 8px auto 0; text-align: left; }
+.ob-open-store .ob-field { width: 100%; }
 .ob-covered-card { display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 20px; padding: 24px; min-height: 300px; border: 1px solid var(--ob-line); border-radius: 10px; background: var(--ob-subtle); text-align: center; font-size: 14px; line-height: 1.6; }
 .ob-back { font-size: 14px; min-height: 44px; margin: -8px 0 20px; padding: 8px 0; }
 .ob-detail-grid { gap: 36px; }

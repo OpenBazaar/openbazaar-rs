@@ -133,6 +133,12 @@ pub(crate) fn respond(node: &Node, raw: &[u8], entry: Entry, main_port: u16) -> 
             let Some(origin) = node.remote.web_origin() else {
                 return misdirected();
             };
+            if crate::sale_gate::catalog_read(method, path) {
+                if let Some(answer) = origin.arrival(method, request.head) {
+                    return answer;
+                }
+                return forward_public(node, method, path, main_port);
+            }
             if let Some(refusal) = origin.refusal(method, request.head) {
                 return refusal;
             }
@@ -303,6 +309,22 @@ fn signed_request(
         }
     }
     answer
+}
+
+/// `GET /public/store` and `GET /public/media/{hash}` as a node would send
+/// them: no page `Origin`, no pairing token. The shop's answer already
+/// allows a browser to read it.
+fn forward_public(node: &Node, method: &str, path: &str, main_port: u16) -> Vec<u8> {
+    let raw = format!("{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{main_port}\r\nConnection: close\r\n\r\n");
+    let _one = super::dispatch_lock();
+    crate::http::respond(
+        node,
+        raw.as_bytes(),
+        crate::http::Client {
+            loopback: true,
+            port: main_port,
+        },
+    )
 }
 
 /// A request for the node's own router, as the paired local client acting

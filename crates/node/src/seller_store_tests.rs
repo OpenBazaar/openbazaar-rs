@@ -357,6 +357,9 @@ fn other_nodes_see_only_a_selling_store_and_its_own_images() {
     let listing = open_store(&node);
     let (status, body) = peer_request(&node, "/public/store");
     assert!(status.contains("200"), "{status}");
+    let opened = String::from_utf8(dispatch(&node, b"GET /public/store HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")).unwrap();
+    assert!(opened.to_ascii_lowercase().contains("access-control-allow-origin: *\r\n"), "{opened}");
+    assert!(!opened.to_ascii_lowercase().contains("access-control-allow-credentials"), "{opened}");
     let value: Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(value["listings"].as_array().unwrap().len(), 1);
     let image = listing["images"][0].as_str().unwrap();

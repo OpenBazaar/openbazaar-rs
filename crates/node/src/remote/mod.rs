@@ -52,6 +52,11 @@ pub(crate) fn local_shop_page(dir: &Path, path: &str) -> Option<Vec<u8>> {
     web::local_page(dir, path)
 }
 
+/// The shop page on the public store onion. No sign-in marker.
+pub(crate) fn bare_shop_page(dir: &Path, path: &str) -> Option<Vec<u8>> {
+    web::bare_page(dir, path)
+}
+
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
@@ -463,7 +468,8 @@ pub(crate) fn run(node: &Node, main_port: u16, stop: &AtomicBool) {
     };
     std::thread::scope(|scope| {
         if let Some(listener) = sale_listener {
-            scope.spawn(move || crate::sale_gate::serve(listener, main_port, stop));
+            let shop = node.remote.web_dir().map(std::path::Path::to_path_buf);
+            scope.spawn(move || crate::sale_gate::serve(listener, main_port, shop, stop));
         }
         if let Some(addr) = config.lan {
             scope.spawn(move || lan::serve(node, addr, main_port, stop));

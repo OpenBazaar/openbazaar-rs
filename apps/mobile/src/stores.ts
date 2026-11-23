@@ -3,6 +3,7 @@
 // this page verified; an image is returned only if its bytes hash to the
 // hash in that record. Paired client only.
 import { pairedJson, pairedResponse, type ListingHeader } from "./catalog.ts";
+import { DIRECT_GET, directBrowseBase, directImageUrl } from "./directStore.ts";
 import { sha256Hex, verifiedListings, verifiedStore, type StoreSummary } from "./records.ts";
 
 export type { StoreSummary } from "./records.ts";
@@ -123,7 +124,10 @@ export async function fetchStore(key: string): Promise<StorePage> {
 /// An avatar or banner by the hash in a verified store record.
 export async function fetchStoreImage(hash: string): Promise<StoreImage> {
   if (!/^[0-9a-f]{64}$/.test(hash)) throw new Error("That is not an image hash.");
-  const response = await pairedResponse(`/media/${hash}`);
+  const remote = directBrowseBase();
+  const imageUrl = remote ? directImageUrl(remote, hash) : null;
+  if (remote && !imageUrl) throw new Error("That is not an image hash.");
+  const response = imageUrl ? await fetch(imageUrl, DIRECT_GET) : await pairedResponse(`/media/${hash}`);
   if (!response.ok) throw new Error(response.status === 404 ? "This node does not have that image." : "The image could not be loaded.");
   const bytes = new Uint8Array(await response.arrayBuffer());
   const image = checkStoreImage(hash, response.headers.get("Content-Type") ?? "", bytes);

@@ -95,6 +95,21 @@ fn the_web_address_refuses_plain_http_other_hosts_other_pages_and_pairing() {
     let (status, _) = on_web(&node, &signed("GET", "/remote/devices"), &format!("{HTTPS}Origin: https://{HOST}\r\n"));
     assert!(status.contains("200"), "{status}");
 
+    // A buyer's page may read the public catalog. The rest of the node stays closed.
+    let store = unsigned("GET", "/public/store", "Origin: https://buyer.example\r\n", "");
+    let store = store.replacen(&format!("Host: {GATEWAY}\r\n"), &format!("Host: {HOST}\r\n{HTTPS}"), 1);
+    let answer = String::from_utf8(gateway::respond(&node, store.as_bytes(), Entry::Web, MAIN_PORT)).unwrap();
+    assert!(answer.starts_with("HTTP/1.1 404"), "{answer}");
+    assert!(answer.contains("not selling"), "{answer}");
+    assert!(answer.to_ascii_lowercase().contains("access-control-allow-origin: *\r\n"), "{answer}");
+    assert!(!answer.to_ascii_lowercase().contains("access-control-allow-credentials"), "{answer}");
+    for closed in ["/wallet", "/catalog", "/public/reviews", "/mail"] {
+        let raw = unsigned("GET", closed, "Origin: https://buyer.example\r\n", "");
+        let raw = raw.replacen(&format!("Host: {GATEWAY}\r\n"), &format!("Host: {HOST}\r\n{HTTPS}"), 1);
+        let denied = String::from_utf8(gateway::respond(&node, raw.as_bytes(), Entry::Web, MAIN_PORT)).unwrap();
+        assert!(denied.starts_with("HTTP/1.1 403"), "{closed} {denied}");
+    }
+
     // A pairing code is not tried here: the request is only an unsigned one.
     let code = node.remote.issue_code(None).unwrap();
     let ask = Ask::phone("Phone").body(&code.secret).to_string();

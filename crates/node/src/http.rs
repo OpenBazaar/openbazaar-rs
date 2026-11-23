@@ -53,6 +53,18 @@ pub(crate) fn http_response_cors(
     http_response_headers(status, content_type, body, origin, "")
 }
 
+/// A public catalog response. Any page may read it. There is no cookie and
+/// no pairing token on these routes, so the origin is `*` and credentials
+/// are not allowed.
+pub(crate) fn public_response(status: &str, content_type: &str, body: &[u8]) -> Vec<u8> {
+    http_response_headers(status, content_type, body, None, "Access-Control-Allow-Origin: *\r\n")
+}
+
+pub(crate) fn public_json(status: &str, value: &Value) -> Vec<u8> {
+    let body = serde_json::to_vec_pretty(value).unwrap_or_else(|_| b"{}".to_vec());
+    public_response(status, "application/json", &body)
+}
+
 pub(crate) fn http_response_headers(
     status: &str,
     content_type: &str,

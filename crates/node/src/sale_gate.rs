@@ -9,6 +9,7 @@
 
 use std::io::{Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
@@ -21,18 +22,24 @@ pub(crate) fn bind() -> std::io::Result<TcpListener> {
     TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
 }
 
-pub(crate) fn serve(listener: TcpListener, main_port: u16, stop: &AtomicBool) {
+pub(crate) fn serve(listener: TcpListener, main_port: u16, web_dir: Option<PathBuf>, stop: &AtomicBool) {
     listener.set_nonblocking(true).ok();
     while !stop.load(Ordering::Relaxed) {
         match listener.accept() {
             Ok((stream, _)) => {
                 let _ = stream.set_nonblocking(false);
-                handle(stream, main_port);
+                handle(stream, main_port, web_dir.as_deref());
             }
             Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => thread::sleep(Duration::from_millis(50)),
             Err(_) => thread::sleep(Duration::from_millis(50)),
         }
     }
+}
+
+/// The catalog a buyer's page may read: the signed store and the images it
+/// names. Mail, reviews, and moderator routes stay between nodes.
+pub(crate) fn catalog_read(method: &str, path: &str) -> bool {
+    method == "GET" && (path == "/public/store" || media(path))
 }
 
 pub(crate) fn allowed(method: &str, path: &str) -> bool {
@@ -52,7 +59,7 @@ fn media(path: &str) -> bool {
     hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
-pub(crate) fn handle(mut client: TcpStream, main_port: u16) {
+pub(crate) fn handle(mut client: TcpStream, main_port: u16, web_dir: Option<&Path>) {
     let _ = client.set_read_timeout(Some(http_parse::READ_DEADLINE));
     let raw = match http_parse::read(&mut client) {
         Ok(raw) => raw,
@@ -69,6 +76,14 @@ pub(crate) fn handle(mut client: TcpStream, main_port: u16) {
         }
     };
     if !allowed(request.method, request.path) {
+        // The shop page, when this node has one. Closed routes stay closed:
+        // a missing file is still 404, and it is not forwarded to the shop.
+        if request.method == "GET" {
+            if let Some(page) = web_dir.and_then(|dir| crate::remote::bare_shop_page(dir, request.path)) {
+                let _ = client.write_all(&page);
+                return;
+            }
+        }
         let _ = client.write_all(&plain("404 Not Found", "not found"));
         return;
     }
@@ -144,6 +159,12 @@ mod tests {
 
     #[test]
     fn the_allowlist_is_the_sale_routes_only() {
+        assert!(catalog_read("GET", "/public/store"));
+        assert!(catalog_read("GET", "/public/media/0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"));
+        assert!(!catalog_read("POST", "/public/store"));
+        assert!(!catalog_read("GET", "/public/reviews"));
+        assert!(!catalog_read("GET", "/public/media/abcd"));
+        assert!(!catalog_read("GET", "/wallet"));
         assert!(allowed("GET", "/public/store"));
         assert!(allowed("GET", "/public/moderator"));
         assert!(allowed("GET", "/public/moderators"));
@@ -205,7 +226,7 @@ mod tests {
         let gate_addr = gate.local_addr().unwrap();
         let stop = Arc::new(AtomicBool::new(false));
         let stopping = stop.clone();
-        thread::spawn(move || serve(gate, port, &stopping));
+        thread::spawn(move || serve(gate, port, None, &stopping));
 
         let wallet = talk(gate_addr, "GET /wallet HTTP/1.1\r\nHost: example.onion\r\nConnection: close\r\n\r\n");
         assert!(wallet.starts_with("HTTP/1.1 404"), "{wallet}");
@@ -225,6 +246,38 @@ mod tests {
         assert!(forwarded.contains(&format!("Host: 127.0.0.1:{port}")), "{forwarded}");
         assert!(!forwarded.to_ascii_lowercase().contains("origin"), "{forwarded}");
         assert!(forwarded.starts_with("GET /public/store "), "{forwarded}");
+        stop.store(true, Ordering::SeqCst);
+    }
+
+    #[test]
+    fn the_store_onion_serves_the_shop_page_and_not_the_wallet() {
+        let dir = crate::harness::TempDir::new();
+        let web = dir.0.join("web");
+        std::fs::create_dir_all(&web).unwrap();
+        std::fs::write(web.join("index.html"), "<html><head></head><body>shop</body></html>").unwrap();
+        let backend = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = backend.local_addr().unwrap().port();
+        let opened = Arc::new(AtomicUsize::new(0));
+        let counting = opened.clone();
+        thread::spawn(move || {
+            for mut stream in backend.incoming().flatten() {
+                counting.fetch_add(1, Ordering::SeqCst);
+                let mut buf = [0u8; 64];
+                let _ = stream.read(&mut buf);
+            }
+        });
+        let gate = bind().unwrap();
+        let gate_addr = gate.local_addr().unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let stopping = stop.clone();
+        thread::spawn(move || serve(gate, port, Some(web), &stopping));
+        let page = talk(gate_addr, "GET / HTTP/1.1\r\nHost: example.onion\r\nConnection: close\r\n\r\n");
+        assert!(page.starts_with("HTTP/1.1 200"), "{page}");
+        assert!(page.contains("shop") && !page.contains("ob-home-node") && !page.contains("ob-local-shop"), "{page}");
+        let wallet = talk(gate_addr, "GET /wallet HTTP/1.1\r\nHost: example.onion\r\nConnection: close\r\n\r\n");
+        assert!(wallet.starts_with("HTTP/1.1 404"), "{wallet}");
+        thread::sleep(Duration::from_millis(80));
+        assert_eq!(opened.load(Ordering::SeqCst), 0, "the shop page was forwarded");
         stop.store(true, Ordering::SeqCst);
     }
 
