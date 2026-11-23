@@ -241,6 +241,106 @@ fn buyer_and_seller_message_each_other_inside_an_order() {
 }
 
 #[test]
+fn an_order_without_a_return_policy_cannot_open_a_case() {
+    let pair = Pair::new();
+    let placed = pair.checkout(1);
+    let id = placed["orderId"].as_str().unwrap();
+    pair.deliver();
+    assert!(pair.sales()[0]["returnPolicy"].is_null(), "the store named no return policy");
+    let (status, body) = request(&pair.buyer.node, "POST", &format!("/orders/{id}/return"), &json!({ "text": "I changed my mind." }).to_string());
+    assert!(status.contains("400"), "{status} {body}");
+    assert!(pair.sales()[0].get("returnCase").is_none() || pair.sales()[0]["returnCase"].is_null());
+    assert_eq!(order(&pair.buyer.node, id)["status"], AWAITING_PAYMENT);
+}
+
+#[test]
+fn a_return_is_requested_accepted_and_shipped_without_moving_the_order() {
+    let pair = Pair::new();
+    let (status, profile) = request(
+        &pair.seller.node,
+        "PUT",
+        "/store/profile",
+        &json!({ "returnsPolicy": "Unused goods can come back within 30 days." }).to_string(),
+    );
+    assert!(status.contains("200"), "{status} {profile}");
+    let placed = pair.checkout(1);
+    let id = placed["orderId"].as_str().unwrap().to_string();
+    pair.deliver();
+    let awaiting = order(&pair.buyer.node, &id);
+    assert_eq!(awaiting["remote"]["returnPolicy"], "Unused goods can come back within 30 days.", "{awaiting}");
+    assert_eq!(pair.sales()[0]["returnPolicy"], "Unused goods can come back within 30 days.");
+
+    let (status, _) = request(&pair.buyer.node, "POST", &format!("/orders/{id}/return"), &json!({ "text": "The glaze is crazed." }).to_string());
+    assert!(status.contains("400"), "{status}");
+
+    fund_node_wallet(&pair.buyer.node, &pair.chain, 100_000);
+    pay(&pair.buyer.node, &id, "{}");
+    pair.mine();
+    pair.deliver();
+    let sale_id = pair.sales()[0]["id"].as_str().unwrap().to_string();
+    let (status, shipped) = request(
+        &pair.seller.node,
+        "POST",
+        &format!("/sales/{sale_id}/fulfill"),
+        &json!({ "carrier": "USPS", "tracking": "9400111100000000000000" }).to_string(),
+    );
+    assert!(status.contains("200"), "{status} {shipped}");
+    pair.deliver();
+    assert_eq!(order(&pair.buyer.node, &id)["status"], SHIPPED);
+
+    let (status, _) = request(&pair.buyer.node, "POST", &format!("/orders/{id}/return"), &json!({ "text": "write me at a@b.co" }).to_string());
+    assert!(status.contains("400"), "{status}");
+    assert!(order(&pair.buyer.node, &id)["remote"]["returnCase"].is_null());
+
+    let (status, opened) = request(
+        &pair.buyer.node,
+        "POST",
+        &format!("/orders/{id}/return"),
+        &json!({ "text": "The glaze is crazed." }).to_string(),
+    );
+    assert!(status.contains("200"), "{status} {opened}");
+    assert_eq!(opened["remote"]["returnCase"]["state"], "requested");
+    assert_eq!(opened["status"], SHIPPED);
+    pair.deliver();
+    assert_eq!(pair.sales()[0]["returnCase"]["state"], "requested");
+    assert_eq!(pair.sales()[0]["returnCase"]["reason"], "The glaze is crazed.");
+    assert_eq!(pair.sales()[0]["status"], SHIPPED);
+
+    let (status, decided) = request(
+        &pair.seller.node,
+        "POST",
+        &format!("/sales/{sale_id}/return"),
+        &json!({ "decision": "accept", "text": "Send it back." }).to_string(),
+    );
+    assert!(status.contains("200"), "{status} {decided}");
+    assert_eq!(decided["returnCase"]["state"], "accepted");
+    assert_eq!(decided["status"], SHIPPED);
+    pair.deliver();
+    let accepted = order(&pair.buyer.node, &id);
+    assert_eq!(accepted["remote"]["returnCase"]["state"], "accepted", "{accepted}");
+    assert_eq!(accepted["remote"]["returnCase"]["decision"], "Send it back.");
+    assert_eq!(accepted["status"], SHIPPED);
+
+    let (status, sent) = request(
+        &pair.buyer.node,
+        "POST",
+        &format!("/orders/{id}/return/shipment"),
+        &json!({ "carrier": "USPS", "tracking": "9400111100000000000000", "note": "Packed in the original box." }).to_string(),
+    );
+    assert!(status.contains("200"), "{status} {sent}");
+    assert_eq!(sent["remote"]["returnCase"]["state"], "shipped");
+    assert_eq!(sent["status"], SHIPPED);
+    pair.deliver();
+    let sale = &pair.sales()[0];
+    assert_eq!(sale["returnCase"]["state"], "shipped");
+    assert_eq!(sale["returnCase"]["shipment"]["tracking"], "9400111100000000000000");
+    assert_eq!(sale["status"], SHIPPED, "a return shipment does not change the order");
+    pair.deliver();
+    assert_eq!(order(&pair.buyer.node, &id)["remote"]["returnCase"]["state"], "shipped");
+    assert_eq!(pair.sales()[0]["status"], SHIPPED);
+}
+
+#[test]
 fn a_store_with_no_finished_escrow_sale_takes_a_direct_order() {
     let pair = Pair::new();
     assert_eq!(pair.seller.node.finished_escrow_sales(), 0, "the store is new");

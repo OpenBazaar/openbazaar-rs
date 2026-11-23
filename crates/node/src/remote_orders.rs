@@ -34,6 +34,14 @@ fn retry(message: impl std::fmt::Display) -> MailError {
     MailError::Retry(message.to_string())
 }
 
+fn order_err(err: crate::OrderError) -> String {
+    match err {
+        crate::OrderError::Invalid(message) => message.to_string(),
+        crate::OrderError::Failed(detail) => format!("The seller's node could not take the return. {detail}"),
+        err => err.to_string(),
+    }
+}
+
 /// The most a seller may ask: what checkout showed, or a quarter more for a fiat price.
 fn ceiling(estimate: u64, fiat: bool) -> u64 {
     if fiat {
@@ -171,6 +179,84 @@ impl Node {
         Ok(self.orders().get_value(id).unwrap_or_default())
     }
 
+    /// `POST /orders/{id}/return`: the buyer opens a return on an order that
+    /// was sold with a return policy, once the seller has shipped it.
+    pub(crate) fn request_return(&self, id: &str, body: &Value) -> Result<Value, String> {
+        let order = self.orders().get(id).cloned().ok_or_else(|| "That order is not on this node.".to_string())?;
+        let remote = order.remote.as_ref().ok_or_else(|| "Only an order to another node's store can be returned here.".to_string())?;
+        if remote["returnPolicy"].as_str().map(str::trim).unwrap_or("").is_empty() {
+            return Err("This order has no return policy.".to_string());
+        }
+        if order.status != SHIPPED && order.status != COMPLETED {
+            return Err("Open a return once the seller has shipped the order.".to_string());
+        }
+        let text = crate::return_case::request_text(body)?;
+        let (key, target, letter) = self
+            .seller_letter(&order, remote, &json!({ "kind": "return", "action": "request", "text": text.clone() }))
+            .map_err(order_err)?;
+        self.order_outbox
+            .send(key, &target, &letter)
+            .map_err(|err| format!("The seller's node refused the return. ({err})"))?;
+        let now = crate::escrow_outbox::now_secs();
+        let mut problem: Option<&'static str> = None;
+        self.orders()
+            .update(id, |order| {
+                if let Some(remote) = order.remote.as_mut() {
+                    if let Err(err) = crate::return_case::record_request(remote, &text, now) {
+                        problem = Some(err);
+                    }
+                }
+            })
+            .map_err(|err| format!("The return could not be saved. ({err})"))?;
+        match problem {
+            Some(err) => Err(err.to_string()),
+            None => Ok(self.orders().get_value(id).unwrap_or_default()),
+        }
+    }
+
+    /// `POST /orders/{id}/return/shipment`: the buyer names the return shipment
+    /// after the seller has accepted. The number is a reference, not a lookup.
+    pub(crate) fn ship_return(&self, id: &str, body: &Value) -> Result<Value, String> {
+        let order = self.orders().get(id).cloned().ok_or_else(|| "That order is not on this node.".to_string())?;
+        let remote = order.remote.as_ref().ok_or_else(|| "Only an order to another node's store can be returned here.".to_string())?;
+        let state = remote["returnCase"]["state"].as_str();
+        if state != Some(crate::return_case::STATE_ACCEPTED) && state != Some(crate::return_case::STATE_SHIPPED) {
+            return Err("Ship a return once the seller has accepted it.".to_string());
+        }
+        let shipment = crate::return_case::shipment_from(body)?;
+        let (key, target, letter) = self
+            .seller_letter(
+                &order,
+                remote,
+                &json!({
+                    "kind": "return",
+                    "action": "ship",
+                    "carrier": shipment.carrier.clone(),
+                    "tracking": shipment.tracking.clone(),
+                    "note": shipment.note.clone(),
+                }),
+            )
+            .map_err(order_err)?;
+        self.order_outbox
+            .send(key, &target, &letter)
+            .map_err(|err| format!("The seller's node refused the return shipment. ({err})"))?;
+        let now = crate::escrow_outbox::now_secs();
+        let mut problem: Option<&'static str> = None;
+        self.orders()
+            .update(id, |order| {
+                if let Some(remote) = order.remote.as_mut() {
+                    if let Err(err) = crate::return_case::mark_shipped(remote, &shipment, now) {
+                        problem = Some(err);
+                    }
+                }
+            })
+            .map_err(|err| format!("The return shipment could not be saved. ({err})"))?;
+        match problem {
+            Some(err) => Err(err.to_string()),
+            None => Ok(self.orders().get_value(id).unwrap_or_default()),
+        }
+    }
+
     /// `POST /orders/{id}/complete`: the goods arrived. Tells the seller.
     pub(crate) fn complete_order(&self, id: &str) -> Result<Value, OrderError> {
         let order = self.orders().get(id).cloned().ok_or(OrderError::Invalid("That order is not on this node."))?;
@@ -282,6 +368,11 @@ pub(crate) fn apply_reply(order: &mut crate::buyer_orders::BuyerOrder, body: &Va
                     if let Some(remote) = order.remote.as_mut().filter(|_| !body["quote"].is_null()) {
                         remote["sellerQuote"] = body["quote"].clone();
                     }
+                    if let Some(policy) = crate::return_case::policy_from_reply(&body["returnPolicy"]) {
+                        if let Some(remote) = order.remote.as_mut() {
+                            remote["returnPolicy"] = json!(policy);
+                        }
+                    }
                 }
                 Err(problem) => {
                     order.status = DECLINED.to_string();
@@ -341,6 +432,11 @@ pub(crate) fn apply_reply(order: &mut crate::buyer_orders::BuyerOrder, body: &Va
                 }
             }
         }
+        Some("return") => {
+            if let Some(remote) = order.remote.as_mut() {
+                let _ = crate::return_case::apply_seller_reply(remote, body, crate::escrow_outbox::now_secs());
+            }
+        }
         _ => {}
     }
 }
@@ -353,5 +449,49 @@ mod tests {
     fn a_fiat_price_may_move_a_quarter_a_sats_price_not_at_all() {
         assert_eq!(ceiling(10_000, false), 10_000);
         assert_eq!(ceiling(10_000, true), 12_500);
+    }
+
+    #[test]
+    fn a_bad_return_reply_does_not_change_the_order() {
+        let mut order = crate::buyer_orders::BuyerOrder {
+            id: "order".into(),
+            checkout_id: "checkout".into(),
+            created: 1,
+            seller: "Brook and Pine".into(),
+            store_id: "ab".repeat(32),
+            lines: vec![],
+            items_sats: 25_000,
+            shipping_sats: 800,
+            total_sats: 25_800,
+            settlement: "direct".into(),
+            payment: Some(json!({ "address": "bcrt1qexample", "amountSats": 25_800 })),
+            escrow: None,
+            address_label: String::new(),
+            status: crate::watch::SHIPPED.to_string(),
+            network: "testnet4".into(),
+            received_sats: 25_800,
+            confirmations: 1,
+            txids: vec![],
+            pay_txid: None,
+            paying: false,
+            pay_error: None,
+            remote: Some(json!({
+                "returnPolicy": "Unused goods can come back within 30 days.",
+                "returnCase": { "state": "requested", "reason": "The glaze is crazed.", "requestedAt": 1 }
+            })),
+        };
+        let network = crate::NetworkMode::Testnet4;
+        apply_reply(&mut order, &json!({ "kind": "return", "action": "release", "text": "send the coins back" }), network);
+        apply_reply(&mut order, &json!({ "kind": "return", "action": "accept", "text": "mail me at a@b.co" }), network);
+        assert_eq!(order.status, crate::watch::SHIPPED);
+        assert_eq!(order.total_sats, 25_800);
+        assert_eq!(order.payment.as_ref().unwrap()["address"], "bcrt1qexample");
+        assert_eq!(order.remote.as_ref().unwrap()["returnCase"]["state"], "requested");
+
+        apply_reply(&mut order, &json!({ "kind": "return", "action": "accept", "text": "Send it back." }), network);
+        assert_eq!(order.status, crate::watch::SHIPPED);
+        assert_eq!(order.remote.as_ref().unwrap()["returnCase"]["state"], "accepted");
+        assert_eq!(order.remote.as_ref().unwrap()["returnCase"]["decision"], "Send it back.");
+        assert_eq!(order.payment.as_ref().unwrap()["amountSats"], 25_800);
     }
 }

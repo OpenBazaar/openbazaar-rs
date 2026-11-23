@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import type { CurrencyCode, RateTable } from "../catalog";
 import { EXTERNAL_TX_NOTE } from "../nodeWallet";
-import { fetchSales, fulfillSale, sendSaleMessage, type Sale } from "../seller";
+import { decideReturn, fetchSales, fulfillSale, sendSaleMessage, type Sale } from "../seller";
+import { returnStateLabel } from "../returnCase";
 import { useNodeResource } from "../useNodeResource";
 import { sameOrderSnapshot, salesRefreshInterval, type OrderListRow } from "../orderList";
 import { Empty, Money } from "./Marketplace";
@@ -13,6 +14,7 @@ import { CopyAddress, CopyButton } from "./CopyAddress";
 import { CARRIER_OPTIONS } from "../shipment";
 import { TrackingTimeline } from "./TrackingTimeline";
 import { MessageThread } from "./MessageThread";
+import { ReturnCase } from "./ReturnCase";
 
 
 /** Sales, polled while the node is a store. Calls `onNew` once for each sale that appears. */
@@ -114,6 +116,7 @@ function SaleDetail({ sale, rates, currency, onChange, drafts }: { sale: Sale; r
         {paid && (sale.shipTo || sale.deliveryNote) && <section className="ob-sale-delivery-context">{destination}</section>}
         {paid && <FulfillForm sale={sale} onDone={onChange} drafts={drafts}/>}
         {sale.fulfillment && <section className="ob-order-delivery"><h3>Delivery record</h3>{physical ? <TrackingTimeline tracking={sale.tracking} carrier={sale.fulfillment.carrier} trackingNumber={sale.fulfillment.tracking}/> : <p>Delivered digitally</p>}{sale.fulfillment.note && <p>{sale.fulfillment.note}</p>}{sale.fulfillment.content && <p className="ob-sale-content">{sale.fulfillment.content}</p>}</section>}
+        <ReturnCase viewer="seller" status={sale.status} policy={sale.returnPolicy} returnCase={sale.returnCase} allowShipment={physical} onDecide={async (decision, text) => { onChange(await decideReturn(sale.id, decision, text)); }}/>
         <MessageThread messages={sale.messages} viewer="seller" otherLabel="Buyer" onSend={async text => { onChange(await sendSaleMessage(sale.id, text)); }}/>
         {sale.zcash?.expired ? <p className="ob-form-error" role="alert">The Zcash quote for this sale ran out before it was paid in full, so the sale stays unpaid. Do not ship it. What arrives at the address is still counted in the payment records.</p> : pending && !sale.fulfillment && <div className="ob-sale-payment-hold"><strong>{sale.status === "Payment seen" ? "Payment detected" : sale.sentTxid ? "Buyer reported payment" : "Payment outstanding"}</strong><p>{paymentSent(sale) ? "Wait for confirmation before fulfilling this order." : "The buyer has not completed payment. No delivery action is needed yet."}</p></div>}
         <details className="ob-order-record">
@@ -153,11 +156,11 @@ export function Sales({ sales, rates, currency, onSeen }: { sales: SalesResource
     return {
       id: sale.id, title: sale.lines.map(line => line.title).join(", "), subtitle: "", amount: sale.totalSats, created: sale.created,
       itemSummary: sale.lines.map(line => `${line.quantity} × ${line.title}`).join(", "), deliveryKind: physical ? "physical" : "digital",
-      attention: sale.status === "Paid", awaitingPayment: ["Awaiting payment", "Payment seen"].includes(sale.status), closed: sale.status === "Completed",
+      attention: sale.status === "Paid" || sale.returnCase?.state === "requested", awaitingPayment: ["Awaiting payment", "Payment seen"].includes(sale.status), closed: sale.status === "Completed",
       status: sale.status,
       paymentStatus: confirmed ? "Paid" : sale.status === "Payment seen" ? "Confirming" : sale.status === "Awaiting payment" ? (sale.zcash ? Number(sale.zcash.receivedZec) > 0 : sale.receivedSats > 0) ? "Partial" : sale.sentTxid ? "Reported" : "Unpaid" : "Review",
       fulfillmentStatus: sale.status === "Paid" ? "Unfulfilled" : sale.status === "Shipped" ? physical ? "Shipped" : "Delivered" : sale.status === "Completed" ? "Completed" : "On hold",
-      hint: deliverySummary(sale)
+      hint: [deliverySummary(sale), sale.returnCase ? returnStateLabel(sale.returnCase.state) : ""].filter(Boolean).join(" · ")
     };
   });
   return <section className="ob-orders ob-sales ob-order-center">
