@@ -23,7 +23,7 @@ test("an opened link names the store, and a home-node onion does not", () => {
   const page = { search: `?store=http://${onion}`, hostname: "localhost", protocol: "http:" };
   assert.deepEqual(storeFromLocation(page, false), { url: `http://${onion}`, rejected: false });
   assert.deepEqual(storeFromLocation(page, true), { url: `http://${onion}`, rejected: false });
-  assert.deepEqual(storeFromLocation({ search: "", hostname: onion, protocol: "http:", port: "" }, false), { url: `http://${onion}`, rejected: false });
+  assert.deepEqual(storeFromLocation({ search: "", hostname: onion, protocol: "http:", port: "" }, false), { url: null, rejected: false }, "the onion page is the market");
   assert.deepEqual(storeFromLocation({ search: "", hostname: onion, protocol: "http:" }, true), { url: null, rejected: false });
   assert.deepEqual(storeFromLocation({ search: "?store=nope", hostname: onion, protocol: "http:" }, false), { url: null, rejected: true });
   assert.deepEqual(storeChoice({ search: "", hostname: "localhost", protocol: "http:" }, false, "https://shop.example/"), { url: "https://shop.example", rejected: false });

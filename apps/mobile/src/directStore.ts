@@ -8,6 +8,7 @@
 
 import type { Commerce } from "./commerce.ts";
 import type { ListingHeader, ShopCatalog } from "./catalog.ts";
+import { verifyCatalogIndex } from "./catalogIndex.ts";
 import { verifyListingRecord, verifyStoreRecord, type ListingRecord, type StoreRecord, type StoreSummary } from "./records.ts";
 import { displayText } from "./safeText.ts";
 
@@ -36,6 +37,26 @@ export type PageAddress = { search: string; hostname: string; protocol: string; 
 export type StoreChoice = { url: string | null; rejected: boolean };
 
 let browsing: string | null = null;
+const imageHosts = new Map<string, string>();
+
+/** Forget which store served each photo. */
+export function clearListingImages(): void {
+  imageHosts.clear();
+}
+
+/** Photos in a market come from the store that signed the listing, by hash. */
+export function setListingImages(base: string, hashes: readonly string[]): void {
+  const url = storeBase(base);
+  if (!url) return;
+  for (const hash of hashes) {
+    if (/^[0-9a-f]{64}$/.test(hash)) imageHosts.set(hash, url);
+  }
+}
+
+/** The store that served this photo, when the market remembered it. */
+export function imageHost(hash: string): string | null {
+  return imageHosts.get(hash) ?? null;
+}
 
 /** Remember which seller this page is reading, so images come from that node. */
 export function setDirectBrowse(url: string | null): void {
@@ -90,15 +111,12 @@ export function storeBase(pasted: string): string | null {
   return null;
 }
 
-/** A store named in the page link, or the page itself when it is an onion and not a home node. */
-export function storeFromLocation(loc: PageAddress, homeNode: boolean): StoreChoice {
+/** A store named in `?store=`. The page itself is the market, on an onion and on the web. */
+export function storeFromLocation(loc: PageAddress, _homeNode: boolean): StoreChoice {
   const params = new URLSearchParams(loc.search);
   if (params.has("store")) {
     const url = storeBase(params.get("store") ?? "");
     return { url, rejected: url === null };
-  }
-  if (!homeNode && loc.protocol === "http:" && ONION.test(loc.hostname.toLowerCase()) && (!loc.port || loc.port === "80")) {
-    return { url: `http://${loc.hostname.toLowerCase()}`, rejected: false };
   }
   return { url: null, rejected: false };
 }
@@ -230,9 +248,15 @@ export function shownListing(record: ListingRecord, store: StoreRecord): Listing
   };
 }
 
-/** The shop catalog from one `GET /public/store` body. Unsigned or hostile listings are counted and dropped. */
+/** Listing hashes the store's signed catalog index names, when that index matches this record. */
+function namedByIndex(body: { catalogIndex?: unknown; store?: unknown }, storeKey: string): string[] | null {
+  if (typeof body.catalogIndex !== "string" || typeof body.store !== "string") return null;
+  return verifyCatalogIndex(body.catalogIndex, storeKey, body.store);
+}
+
+/** The shop catalog from one `GET /public/store` body. Unsigned or hostile listings are counted and dropped. A listing the signed catalog index leaves out is dropped too. */
 export function catalogFromPublic(value: unknown): ShopCatalog {
-  const body = value && typeof value === "object" ? (value as { store?: unknown; listings?: unknown }) : null;
+  const body = value && typeof value === "object" ? (value as { store?: unknown; listings?: unknown; catalogIndex?: unknown }) : null;
   const listings = body && Array.isArray(body.listings) ? body.listings : null;
   const verified = body ? verifyStoreRecord(body.store) : null;
   if (!body || !listings || !verified) throw new Error(body && listings ? UNSIGNED : "That store's answer could not be read.");
@@ -248,12 +272,14 @@ export function catalogFromPublic(value: unknown): ShopCatalog {
   }
   const summary = shownStore(verified, shown.length);
   if (!summary) throw new Error(HOSTILE);
+  const index = namedByIndex(body, verified.key);
+  const named = index ? shown.filter((card) => index.includes(card.hash)) : shown;
   return {
     store: { id: summary.key, name: summary.name, region: summary.region, contentRating: summary.contentRating },
-    stores: [summary],
+    stores: [{ ...summary, listingCount: named.length }],
     moderator: null,
-    listings: shown,
-    rejected,
+    listings: named,
+    rejected: rejected + shown.length - named.length,
     lightningBlocked: null,
     lightningNetwork: null,
     xmrNetwork: null,

@@ -171,6 +171,9 @@ pub(crate) fn respond(node: &Node, raw: &[u8], entry: Entry, main_port: u16) -> 
                 // and offers to create the first on a node nobody owns yet.
                 hello["passkeys"] = json!(!node.remote.devices().passkeys.is_empty());
                 hello["claimable"] = json!(passkeys::claimable(node));
+                if let Some(onion) = node.remote.services.sale_onion() {
+                    hello["saleOnion"] = json!(onion);
+                }
             }
             json_body("200 OK", &hello, None)
         }

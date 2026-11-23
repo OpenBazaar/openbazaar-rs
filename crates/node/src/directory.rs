@@ -307,6 +307,32 @@ impl Replica {
         ids
     }
 
+    /// The signed admission snapshot for the head this node holds, or nothing.
+    pub(crate) fn admission_record(&self) -> Option<Vec<u8>> {
+        self.current_snapshot()?.encode().ok()
+    }
+
+    /// Store id and sale URL for each id the current snapshot names. The onion
+    /// comes from the store record this node already verified. No listing.
+    pub(crate) fn admission_addresses(&self) -> Vec<(String, String)> {
+        let Some(index) = self.current_snapshot() else {
+            return Vec::new();
+        };
+        let mut rows = Vec::new();
+        for id in &index.stores {
+            let onion = self
+                .stores
+                .get(id)
+                .and_then(|store| store.details.as_ref())
+                .map(|details| details.onion.as_str())
+                .unwrap_or("");
+            if let Some(url) = sale_url(onion) {
+                rows.push((hex(id), url));
+            }
+        }
+        rows
+    }
+
     /// The admission snapshot that accompanies the head this node holds.
     fn current_snapshot(&self) -> Option<&AdmissionIndex> {
         let head = self.heads.document()?;
@@ -1130,6 +1156,27 @@ impl Node {
             return None;
         }
         Some(index.listings.iter().map(|hash| hex(hash)).collect())
+    }
+
+    /// The own store's signed catalog index, when it names the record served now.
+    pub(crate) fn own_catalog_index_record(&self) -> Option<Vec<u8>> {
+        let store = self.own_record()?;
+        let replica = self.seed_replica.lock().unwrap_or_else(|err| err.into_inner());
+        let index = replica.catalog_indexes.get(store.id.as_bytes())?;
+        if index.record_digest != store.record_digest().ok()? {
+            return None;
+        }
+        index.encode().ok()
+    }
+
+    /// The signed admission snapshot, or nothing when this node is not holding one for its head.
+    pub(crate) fn public_admission_record(&self) -> Option<Vec<u8>> {
+        self.seed_replica.lock().unwrap_or_else(|err| err.into_inner()).admission_record()
+    }
+
+    /// Admitted stores as key and address only.
+    pub(crate) fn public_admission_addresses(&self) -> Vec<(String, String)> {
+        self.seed_replica.lock().unwrap_or_else(|err| err.into_inner()).admission_addresses()
     }
 
     /// Stores this node shows, by key and name. No onion and no URL.
