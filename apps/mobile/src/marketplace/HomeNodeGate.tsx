@@ -14,6 +14,9 @@ const overTor = () => typeof location !== "undefined" && location.hostname.endsW
 /** Opens the moderator desk from the shop. Null when the node does not moderate or the shop is not paired yet. */
 export const ModeratorDeskLink = createContext<(() => void) | null>(null);
 
+/** Opens operator sign-in from the public market. Null once this browser is signed in. */
+export const OpenSignIn = createContext<(() => void) | null>(null);
+
 /**
  * Wraps the shop. A page served by a home node first signs in this browser.
  * On a node that moderates, the shop and the moderator desk each link to the
@@ -22,6 +25,7 @@ export const ModeratorDeskLink = createContext<(() => void) | null>(null);
 export function withHomeNode(Shop: ComponentType) {
   return function HomeNodeRoot() {
     const [state, setState] = useState<"checking" | "signed-out" | "ready">(() => (!servedByHomeNode() || hasSession() ? "ready" : "checking"));
+    const [signing, setSigning] = useState(false);
     // Whether the node moderates; null until it has said.
     const [moderates, setModerates] = useState<boolean | null>(null);
     // This computer's own shop opens at once. A served page waits to learn which to open.
@@ -43,12 +47,11 @@ export function withHomeNode(Shop: ComponentType) {
     }, [state, moderates]);
     // The desk's requests need the pairing the shop asks for, so a shop still waiting for its code does not offer the desk.
     const unpaired = useSyncExternalStore(onShopAwaitingCode, shopAwaitingCode);
-    if (state === "ready" && view === "shop") return <ModeratorDeskLink.Provider value={moderates && !unpaired ? () => setView("desk") : null}><Shop/></ModeratorDeskLink.Provider>;
+    if (state === "ready" && view === "shop") return <ModeratorDeskLink.Provider value={moderates && !unpaired ? () => setView("desk") : null}><Shop key="node"/></ModeratorDeskLink.Provider>;
     if (state === "ready" && view === "desk") return <div className="ob-app"><StyleSheet/><ModeratorDesk onShop={() => setView("shop")}/></div>;
-    return <div className="ob-app ob-home-gate">
-      <StyleSheet/>
-      {state === "signed-out" ? <SignIn onReady={() => setState("ready")}/> : <p role="status">{state === "checking" ? "Checking this browser’s key…" : "Asking the node…"}</p>}
-    </div>;
+    if (state === "checking" || (state === "ready" && view === null)) return <div className="ob-app ob-home-gate"><StyleSheet/><p role="status">{state === "checking" ? "Checking this browser’s key…" : "Asking the node…"}</p></div>;
+    if (signing) return <div className="ob-app ob-home-gate"><StyleSheet/><SignIn onReady={() => { setSigning(false); setState("ready"); }} onBack={() => setSigning(false)}/></div>;
+    return <OpenSignIn.Provider value={() => setSigning(true)}><Shop key="market"/></OpenSignIn.Provider>;
   };
 }
 
@@ -64,7 +67,7 @@ function StyleSheet() {
   return null;
 }
 
-function SignIn({ onReady }: { onReady: () => void }) {
+function SignIn({ onReady, onBack }: { onReady: () => void; onBack?: () => void }) {
   const [key, setKey] = useState("");
   const [remember, setRemember] = useState(false);
   const [error, setError] = useState("");
@@ -161,6 +164,7 @@ function SignIn({ onReady }: { onReady: () => void }) {
       <p>Paste the setup key from the service that hosts this node. On Railway, open the service, then Variables, and copy OB_WEB_ACCESS_KEY.{passkeys ? " You need it only this once: next you create a passkey." : ""}</p>
     </>}
     {error && <p className="ob-form-error" role="alert">{error}</p>}
+    {onBack && <button className="ob-text-link" type="button" onClick={onBack}>Browse the market</button>}
     {web && hasPasskey && passkeys ? <details>
       <summary>Trouble signing in?</summary>
       <p>If you never created a passkey here, someone else set this node up first: delete its data on the hosting service and deploy it again. If you lost your passkey, set OB_WEB_ACCESS_KEY on the hosting service, restart the node, and sign in with that key.</p>

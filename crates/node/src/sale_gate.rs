@@ -39,12 +39,12 @@ pub(crate) fn serve(listener: TcpListener, main_port: u16, web_dir: Option<PathB
 /// The catalog a buyer's page may read: the signed store and the images it
 /// names. Mail, reviews, and moderator routes stay between nodes.
 pub(crate) fn catalog_read(method: &str, path: &str) -> bool {
-    method == "GET" && (path == "/public/store" || media(path))
+    method == "GET" && (path == "/public/store" || path == "/public/admission-index" || path == "/public/admission-addresses" || media(path))
 }
 
 pub(crate) fn allowed(method: &str, path: &str) -> bool {
     match (method, path) {
-        ("GET", "/public/store" | "/public/moderator" | "/public/moderators") => true,
+        ("GET", "/public/store" | "/public/admission-index" | "/public/admission-addresses" | "/public/moderator" | "/public/moderators") => true,
         ("GET", path) if media(path) => true,
         ("GET" | "POST", "/public/reviews") => true,
         ("POST", "/mail" | "/mail/reply" | "/escrow/mail") => true,
@@ -160,12 +160,16 @@ mod tests {
     #[test]
     fn the_allowlist_is_the_sale_routes_only() {
         assert!(catalog_read("GET", "/public/store"));
+        assert!(catalog_read("GET", "/public/admission-index"));
+        assert!(catalog_read("GET", "/public/admission-addresses"));
         assert!(catalog_read("GET", "/public/media/0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"));
         assert!(!catalog_read("POST", "/public/store"));
         assert!(!catalog_read("GET", "/public/reviews"));
         assert!(!catalog_read("GET", "/public/media/abcd"));
         assert!(!catalog_read("GET", "/wallet"));
         assert!(allowed("GET", "/public/store"));
+        assert!(allowed("GET", "/public/admission-index"));
+        assert!(allowed("GET", "/public/admission-addresses"));
         assert!(allowed("GET", "/public/moderator"));
         assert!(allowed("GET", "/public/moderators"));
         assert!(!allowed("GET", "/moderator/profile"));

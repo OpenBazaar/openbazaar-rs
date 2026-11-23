@@ -14,24 +14,26 @@ const MAX_FILE: u64 = 16 * 1024 * 1024;
 const MARKER: &str = r#"<meta name="ob-home-node" content="1">"#;
 const LOCAL_MARKER: &str = r#"<meta name="ob-local-shop" content="1">"#;
 const PAGE_CSP: &str = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
+/// The onion market fetches other stores' public catalogs in the browser.
+const BARE_CSP: &str = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' http: https:; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 
 pub(crate) fn response(dir: &Path, path: &str) -> Option<Vec<u8>> {
-    page(dir, path, Some(MARKER))
+    page(dir, path, Some(MARKER), PAGE_CSP)
 }
 
 /// The same export for a browser on this machine. No home-node marker, so
 /// the page stays in the local shop and uses the localhost cookie.
 pub(crate) fn local_page(dir: &Path, path: &str) -> Option<Vec<u8>> {
-    page(dir, path, Some(LOCAL_MARKER))
+    page(dir, path, Some(LOCAL_MARKER), PAGE_CSP)
 }
 
 /// The shop page on the public store onion. No home-node or local-shop
-/// marker: the page is not signed in, and it reads `GET /public/store`.
+/// marker: the page is not signed in, and it reads other stores directly.
 pub(crate) fn bare_page(dir: &Path, path: &str) -> Option<Vec<u8>> {
-    page(dir, path, None)
+    page(dir, path, None, BARE_CSP)
 }
 
-fn page(dir: &Path, path: &str, marker: Option<&str>) -> Option<Vec<u8>> {
+fn page(dir: &Path, path: &str, marker: Option<&str>, csp: &str) -> Option<Vec<u8>> {
     let path = path.split(['?', '#']).next().unwrap_or(path);
     let name = if path == "/" {
         "index.html"
@@ -68,7 +70,7 @@ fn page(dir: &Path, path: &str, marker: Option<&str>) -> Option<Vec<u8>> {
         "no-cache"
     };
     let head = format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: {cache}\r\nX-Content-Type-Options: nosniff\r\nContent-Security-Policy: {PAGE_CSP}\r\nX-Frame-Options: DENY\r\nReferrer-Policy: no-referrer\r\nCross-Origin-Opener-Policy: same-origin\r\n\r\n",
+        "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: {cache}\r\nX-Content-Type-Options: nosniff\r\nContent-Security-Policy: {csp}\r\nX-Frame-Options: DENY\r\nReferrer-Policy: no-referrer\r\nCross-Origin-Opener-Policy: same-origin\r\n\r\n",
         body.len()
     );
     let mut response = head.into_bytes();
@@ -118,6 +120,8 @@ mod tests {
         assert!(local.contains(LOCAL_MARKER) && !local.contains("ob-home-node"));
         let bare = String::from_utf8(bare_page(&web, "/").unwrap()).unwrap();
         assert!(!bare.contains("ob-home-node") && !bare.contains("ob-local-shop"));
+        assert!(bare.contains("connect-src 'self' http: https:"));
+        assert!(!page.contains("connect-src 'self' http:"));
         let script =
             String::from_utf8(response(&web, "/_expo/static/js/app.js?v=1").unwrap()).unwrap();
         assert!(script.contains("immutable") && script.contains("text/javascript"));

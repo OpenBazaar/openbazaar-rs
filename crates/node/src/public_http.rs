@@ -31,6 +31,8 @@ pub(crate) fn response(
 ) -> Option<Vec<u8>> {
     match (method, path) {
         ("GET", "/public/store") => Some(refuse_pages(head).unwrap_or_else(|| store(node))),
+        ("GET", "/public/admission-index") => Some(refuse_pages(head).unwrap_or_else(|| admission_index(node))),
+        ("GET", "/public/admission-addresses") => Some(refuse_pages(head).unwrap_or_else(|| admission_addresses(node))),
         ("GET", path) if path.starts_with("/public/media/") => {
             let hash = &path["/public/media/".len()..];
             Some(refuse_pages(head).unwrap_or_else(|| image(node, hash)))
@@ -48,6 +50,24 @@ fn selling(node: &Node) -> bool {
     node.role() == Some(Role::Seller)
 }
 
+/// The directory's signed admission snapshot and nothing else.
+fn admission_index(node: &Node) -> Vec<u8> {
+    match node.public_admission_record() {
+        Some(bytes) => public_json("200 OK", &json!({ "record": hex(&bytes) })),
+        None => public_error("404 Not Found", "This node has no admission snapshot."),
+    }
+}
+
+/// Store key and onion or https address for ids the snapshot names. No listing body.
+fn admission_addresses(node: &Node) -> Vec<u8> {
+    let stores: Vec<Value> = node
+        .public_admission_addresses()
+        .iter()
+        .map(|(id, url)| json!({ "storeId": id, "url": url }))
+        .collect();
+    public_json("200 OK", &json!({ "stores": stores }))
+}
+
 fn public_error(status: &str, message: &str) -> Vec<u8> {
     public_json(status, &json!({ "error": message }))
 }
@@ -61,8 +81,12 @@ fn store(node: &Node) -> Vec<u8> {
         node.own_listings().entries.iter().map(|entry| entry.listing.encode().map(|bytes| hex(&bytes))).collect();
     match (encoded, listings) {
         // The accepted moderators' signed profiles, so a node that copies the store can show and verify them.
-        (Ok(store), Ok(listings)) => {
-            public_json("200 OK", &json!({ "store": store, "listings": listings, "moderators": node.accepted_profiles() }))
+        (Ok(store_record), Ok(listings)) => {
+            let mut value = json!({ "store": store_record, "listings": listings, "moderators": node.accepted_profiles() });
+            if let Some(bytes) = node.own_catalog_index_record() {
+                value["catalogIndex"] = json!(hex(&bytes));
+            }
+            public_json("200 OK", &value)
         }
         _ => public_error("500 Internal Server Error", "The store could not be read."),
     }
@@ -107,5 +131,97 @@ fn follows(node: &Node, client: &Client, head: &str, method: &str, body: &[u8], 
     match result {
         Ok(value) => json_body("200 OK", &value, origin),
         Err(message) => json_error("400 Bad Request", &message, origin),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use openbazaar_protocol::{
+        secret_from_label, xonly, AdmissionIndex, ContentLabel, ContentRating, DirectoryTerms, DirectPay, Listing, ListingKind, SeedDocument,
+        Store, StoreDetails, StoreProfile,
+    };
+
+    use crate::harness::{self, MockChain, TempDir};
+    use crate::network::NetworkMode;
+    use crate::seller_store_tests::peer_request;
+
+    #[test]
+    fn the_admission_routes_return_the_signed_snapshot_and_addresses_only() {
+        let chain = MockChain::new();
+        let dir = TempDir::new();
+        let node = harness::open_node(&dir.0, NetworkMode::Testnet4, &chain, 1, harness::unreachable_escrow());
+        let (status, _) = peer_request(&node, "/public/admission-index");
+        assert!(status.contains("404"), "{status}");
+
+        let secret = secret_from_label("public-admission");
+        let key = xonly(&secret);
+        let onion = "25njqamcweflpvkl73j4szahhihoc4xt3ktcgjnpaingr5yhkenl5sid.onion".to_string();
+        let store = Store::sign(
+            "Cedar Workshop",
+            "Maine",
+            DirectPay { bolt12_offer: String::new(), silent_payment_code: String::new() },
+            ContentRating::General,
+            StoreDetails {
+                mailbox_key: [4u8; 32],
+                onion: onion.clone(),
+                moderators: vec![],
+                profile: StoreProfile { created_on: 20261123, ..StoreProfile::default() },
+                accepts_xmr: false,
+                accepts_lightning: false,
+                accepts_zec: false,
+            },
+            &secret,
+        )
+        .unwrap();
+        let listing = Listing::sign(
+            store.id,
+            "Hidden spoon",
+            "Home",
+            1000,
+            "Maine",
+            "A small spoon.",
+            store.name.clone(),
+            3,
+            20261123,
+            false,
+            ListingKind::Digital,
+            "",
+            0,
+            0,
+            ContentLabel::GENERAL,
+            &secret,
+        )
+        .unwrap();
+        let head = SeedDocument::sign(3, vec![onion.clone()], DirectoryTerms::standard(key), None, &secret).unwrap();
+        let snapshot = AdmissionIndex::sign(1, 20261123, 3, vec![*store.id.as_bytes()], &secret).unwrap();
+        {
+            let mut replica = node.seed_replica.lock().unwrap_or_else(|err| err.into_inner());
+            replica.accept_document(&head.encode().unwrap(), &key).unwrap();
+            replica.accept_admission_index(&snapshot.encode().unwrap(), &key).unwrap();
+            replica.accept_store(&store.encode().unwrap()).unwrap();
+            replica.accept_listing(&listing.encode().unwrap()).unwrap();
+        }
+
+        let (status, body) = peer_request(&node, "/public/admission-index");
+        assert!(status.contains("200"), "{status}");
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value.as_object().unwrap().len(), 1, "{value}");
+        let record = crate::escrow_mail::unhex(value["record"].as_str().unwrap()).unwrap();
+        let decoded = AdmissionIndex::decode(&record).unwrap();
+        decoded.verify_signer(&key).unwrap();
+        assert_eq!(decoded.stores, vec![*store.id.as_bytes()]);
+        let text = String::from_utf8_lossy(&body);
+        assert!(!text.contains("Hidden spoon"), "{text}");
+
+        let (status, body) = peer_request(&node, "/public/admission-addresses");
+        assert!(status.contains("200"), "{status}");
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value.as_object().unwrap().keys().collect::<Vec<_>>(), vec!["stores"]);
+        let row = &value["stores"][0];
+        assert_eq!(row.as_object().unwrap().len(), 2, "{row}");
+        assert_eq!(row["url"], format!("http://{onion}"));
+        assert_eq!(row["storeId"].as_str().unwrap().len(), 64);
+        let text = String::from_utf8_lossy(&body);
+        assert!(!text.contains("Hidden spoon") && !text.contains("Cedar"), "{text}");
     }
 }
