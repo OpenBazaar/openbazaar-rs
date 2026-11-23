@@ -51,6 +51,11 @@ concurrency:
 
 env:
   VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}
+  # Arti pulls liblzma. Homebrew runners have xz, and without this the macOS
+  # binary links /opt/homebrew/opt/xz/lib/liblzma.5.dylib and aborts on user
+  # machines that lack it. crates/node also enables liblzma/static; this env
+  # covers any crate path that does not.
+  LZMA_API_STATIC: "1"
 
 jobs:
   verify:
@@ -287,6 +292,18 @@ jobs:
               && echo "Gatekeeper accepts the app." \
               || echo "Gatekeeper refuses the unnotarized app; the release notes tell users the way past it."
           done
+      # Refuse a sidecar that still loads Homebrew xz (or any other absolute
+      # third-party dylib). That link is what made alpha builds abort with
+      # "liblzma.5.dylib (no such file)" on machines without Homebrew xz.
+      - name: refuse non-portable macOS dylibs
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/check-macos-dylibs.py apps/desktop/src-tauri/binaries/ob-node-universal-apple-darwin
+          for app in apps/desktop/src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app; do
+            python3 scripts/check-macos-dylibs.py "$app/Contents/MacOS/"*
+          done
       - name: collect installers
         shell: bash
         run: |
@@ -397,6 +414,10 @@ jobs:
             cargo build --release --locked -p ob-node
           fi
           (cd apps/mobile && npm run build)
+      - name: refuse non-portable macOS dylibs
+        if: runner.os == 'macOS'
+        shell: bash
+        run: python3 scripts/check-macos-dylibs.py target/release/ob-node
       - name: package
         shell: bash
         run: |
