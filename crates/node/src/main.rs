@@ -109,6 +109,7 @@ fn serve(args: &[String]) -> ExitCode {
     }
     // Lives until serve returns; every client below reads `options.proxy`.
     let _tor = if options.tor {
+        eprintln!("ob-node: starting built-in Tor");
         match ob_node::TorSocks::start(&options.data_dir().join("tor-socks")) {
             Ok(tor) => {
                 eprintln!("ob-node: built-in Tor proxy on {}", tor.url());
@@ -209,6 +210,7 @@ fn serve(args: &[String]) -> ExitCode {
             return ExitCode::from(1);
         }
     };
+    eprintln!("ob-node: preparing the chain client");
     let chain = match plan.build(network, &options.egress()) {
         Ok(chain) => chain,
         Err(err) => {

@@ -435,8 +435,8 @@ impl Node {
         check_catalog_network(&catalog, network)?;
         fs::create_dir_all(&dir).map_err(|err| Error::Detail(err.to_string()))?;
         vault_key::check_private(&dir)?;
-        // Startup progress is logged step by step: the desktop shell treats a
-        // silent node as stuck, and a stalled launch should name its last step.
+        // Each step is logged. The desktop shell treats a silent node as stuck
+        // and kills it, so a slow step has to say what it is doing.
         eprintln!("ob-node: opening the vault");
         let vault = Vault::open(&dir, &local.vault)?;
         let wallets = dir.join("wallets");

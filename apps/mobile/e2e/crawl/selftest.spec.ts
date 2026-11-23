@@ -30,3 +30,21 @@ test('the crawler reports a dead button and a dialog that cannot be closed, and 
   expect(kinds).not.toContain('dead control: Count')
   expect(kinds).not.toContain('dead control: Open trap')
 })
+
+test('a number field and a section link are not reported as broken', async ({ page }) => {
+  const pageServer = createServer((_, res) => res.writeHead(200, { 'Content-Type': 'text/html' }).end(`<!doctype html><html><body>
+<h1>Filters</h1>
+<label>Max. price in sats<input type="number" min="0" placeholder="No maximum"></label>
+<a href="#photos">Photos</a>
+<section id="photos"><h2>Photos</h2></section>
+</body></html>`))
+  await new Promise<void>(r => pageServer.listen(0, '127.0.0.1', r))
+  const url = `http://127.0.0.1:${(pageServer.address() as { port: number }).port}/`
+  try {
+    await page.goto(url)
+    const findings = await crawl(page, { seed: 1, maxSteps: 12, maxMs: 30000, passphrase: 'x', home: url })
+    expect(findings).toEqual([])
+  } finally {
+    await new Promise<void>(r => pageServer.close(() => r()))
+  }
+})
