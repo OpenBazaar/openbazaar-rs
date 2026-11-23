@@ -17,6 +17,11 @@ path = "src/main.rs"
 [dependencies]
 argon2 = "0.5"
 arti-client = { version = "0.48", features = ["onion-service-client", "onion-service-service", "static-sqlite", "experimental-api", "keymgr", "restricted-discovery"] }
+# Arti's directory client pulls liblzma through async-compression. Without the
+# static feature, a macOS build on a Homebrew runner links
+# /opt/homebrew/opt/xz/lib/liblzma.5.dylib and the shipped app aborts on
+# machines that do not have that path (SIGABRT at startup).
+liblzma = { version = "0.4", features = ["static"] }
 bip157 = "0.8.1"
 bip39 = "2.2"
 bdk_esplora = { version = "0.22.3", default-features = false, features = ["std", "async-https-rustls", "tokio"] }

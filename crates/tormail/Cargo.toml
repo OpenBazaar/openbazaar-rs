@@ -9,6 +9,8 @@ description = "Sealed OpenBazaar order letters carried to a vendor onion mailbox
 
 [dependencies]
 arti-client = { version = "0.48", features = ["onion-service-client", "onion-service-service", "static-sqlite", "experimental-api", "keymgr", "restricted-discovery"] }
+# Keep liblzma inside the binary; see crates/node/Cargo.toml.
+liblzma = { version = "0.4", features = ["static"] }
 async-trait = "0.1"
 bitcoin = "0.32.7"
 futures = "0.3"
