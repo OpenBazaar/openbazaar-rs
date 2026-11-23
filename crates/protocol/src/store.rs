@@ -218,6 +218,12 @@ impl Store {
         sign::verify(TAG, &body, self.id.as_bytes(), &self.signature)
     }
 
+    /// SHA-256 of the encoded signed record. A catalog index names this digest
+    /// so a new mailbox key or policy is a different record.
+    pub fn record_digest(&self) -> Result<[u8; 32], Error> {
+        Ok(sign::content_hash(&self.encode()?))
+    }
+
     fn check_for_signing(&self) -> Result<(), Error> {
         public_text::check("store name", &self.name)?;
         public_text::check_region("store region", &self.region)?;

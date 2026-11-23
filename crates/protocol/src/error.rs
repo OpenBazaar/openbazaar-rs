@@ -33,6 +33,8 @@ pub enum Error {
     BadTerms(&'static str),
     /// A seed document is out of order, repeated, or not a v3 onion list.
     BadSeed(&'static str),
+    /// A catalog index or admission snapshot is out of order, repeated, or too big.
+    BadIndex(&'static str),
 }
 
 impl fmt::Display for Error {
@@ -51,6 +53,9 @@ impl fmt::Display for Error {
         }
         if let Error::BadSeed(what) = self {
             return write!(f, "seed document: {what}");
+        }
+        if let Error::BadIndex(what) = self {
+            return f.write_str(what);
         }
         let message = match self {
             Error::Truncated => "truncated record",
@@ -71,7 +76,8 @@ impl fmt::Display for Error {
             | Error::BadProfile(_)
             | Error::BadListing(_)
             | Error::BadTerms(_)
-            | Error::BadSeed(_) => unreachable!("handled above"),
+            | Error::BadSeed(_)
+            | Error::BadIndex(_) => unreachable!("handled above"),
         };
         f.write_str(message)
     }

@@ -465,6 +465,7 @@ impl Node {
             listing
         };
         self.queue_outbox(&listing).map_err(StoreError::Failed)?;
+        self.queue_catalog_index().map_err(StoreError::Failed)?;
         crate::listing_value(&self.catalog(), &listing).map_err(|err| StoreError::Failed(err.to_string()))
     }
 

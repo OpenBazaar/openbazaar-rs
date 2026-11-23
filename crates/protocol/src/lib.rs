@@ -37,6 +37,7 @@ mod pricing_tests;
 mod reputation;
 mod review;
 mod admission;
+mod catalog_index;
 mod seed;
 mod terms;
 #[cfg(test)]
@@ -84,6 +85,7 @@ pub use signed::{Signed, Terms};
 pub use taxonomy::{taxonomy_name, TAXONOMY};
 pub use variants::{Axis, Variant, VariantId, Variants, MAX_AXES, MAX_AXIS_VALUES, MAX_VARIANTS};
 pub use admission::{store_fee_key, store_fee_secret, Admission, ADMISSION_LEN};
+pub use catalog_index::{AdmissionIndex, CatalogIndex, MAX_INDEX_ENTRIES};
 pub use payment::DirectPay;
 pub use seed::{SeedDocument, MAX_INTRODUCTIONS};
 pub use terms::{
