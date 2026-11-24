@@ -318,6 +318,10 @@ fn sidecar_args(
     }
     if let Some(shop) = shop {
         args.extend(["--local-shop".into(), shop.display().to_string()]);
+        // The same export is the public page on the store onion, so the store
+        // address opens the shop in Tor Browser. Without it that onion only
+        // answers other nodes and a browser gets "not found".
+        args.extend(["--web-dir".into(), shop.display().to_string()]);
     }
     args.extend([
         "--zec-indexer".into(),
@@ -636,6 +640,18 @@ mod tests {
             None,
             "only a loopback proxy is used"
         );
+    }
+
+    #[test]
+    fn the_bundled_shop_is_also_the_store_onions_public_page() {
+        let dir = temp_dir("sidecar-web-dir");
+        let shop = dir.join("shop");
+        let args = sidecar_args(18787, &dir, false, Some(&shop));
+        let shop = shop.display().to_string();
+        assert!(has_flag(&args, "--local-shop", &shop), "{args:?}");
+        assert!(has_flag(&args, "--web-dir", &shop), "{args:?}");
+        let without = sidecar_args(18787, &dir, false, None);
+        assert!(!without.iter().any(|arg| arg == "--web-dir"), "{without:?}");
     }
 
     fn has_flag(args: &[String], name: &str, value: &str) -> bool {
