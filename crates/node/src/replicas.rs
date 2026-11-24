@@ -125,12 +125,9 @@ impl Replicas {
         self.vault.write_sealed(&self.path, &bytes).map_err(|err| err.to_string())
     }
 
-    /// Stores this node serves a copy of because it follows their URL.
-    pub(crate) fn served_ids(&self) -> std::collections::BTreeSet<StoreId> {
-        self.follows
-            .iter()
-            .filter_map(|follow| follow.replica.as_ref().map(|replica| replica.store.id))
-            .collect()
+    /// The copies this node serves because it follows their URL.
+    pub(crate) fn served_copies(&self) -> Vec<Replica> {
+        self.follows.iter().filter_map(|follow| follow.replica.clone()).collect()
     }
 
     /// The followed URL serving store `id`, if any.
@@ -143,7 +140,7 @@ impl Replicas {
 }
 
 /// Put `replica` in `catalog`, replacing any older copy of that store.
-fn serve_replica(catalog: &mut Catalog, replica: &Replica) {
+pub(crate) fn serve_replica(catalog: &mut Catalog, replica: &Replica) {
     let id = replica.store.id;
     catalog.listings.retain(|listing| listing.store_id != id);
     match catalog.stores.iter_mut().find(|store| store.id == id) {

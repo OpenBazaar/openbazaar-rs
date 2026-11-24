@@ -1149,19 +1149,26 @@ impl Node {
     }
 
     fn refresh_market(&self) {
-        // Stores followed by URL are served from `replicas.rs`, not from the
-        // directory replica, so the replica does not know them; they stay.
-        // Read before the other locks, which `replicate` takes in the other order.
-        let followed_by_url = self.replicas().served_ids();
+        // Stores followed by URL are served from `replicas.rs`; the directory
+        // replica does not know them, so `apply` drops any it has no record
+        // of. Those are put back. A store both sources hold keeps the
+        // directory's handling, as before. Copied before the other locks,
+        // which `replicate` takes in the other order.
+        let followed_by_url = self.replicas().served_copies();
         let replica = self.seed_replica.lock().unwrap_or_else(|err| err.into_inner());
         let own = self.own_store;
         let mut catalog = self.catalog.write().unwrap_or_else(|err| err.into_inner());
         replica.apply(
             &mut catalog,
             own,
-            |store| store.id == own || crate::demo_secret(store).is_some() || followed_by_url.contains(&store.id),
+            |store| store.id == own || crate::demo_secret(store).is_some(),
             |admission| replica.is_live(admission),
         );
+        for copy in &followed_by_url {
+            if !catalog.stores.iter().any(|store| store.id == copy.store.id) {
+                crate::replicas::serve_replica(&mut catalog, copy);
+            }
+        }
     }
 
     /// Listing hashes in the catalog index when that index names this store's
