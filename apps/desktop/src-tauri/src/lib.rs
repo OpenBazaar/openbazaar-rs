@@ -16,6 +16,7 @@
 mod build;
 mod node;
 mod tray;
+mod updates;
 
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -37,6 +38,7 @@ pub fn run() {
     }
     let app = builder
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(NodeState(Mutex::new(None)))
         .invoke_handler(tauri::generate_handler![home_node_mode, set_home_node_mode])
         .menu(build::menu)
@@ -50,6 +52,7 @@ pub fn run() {
         })
         .setup(|app| {
             tray::install(app.handle())?;
+            updates::start_schedule(app.handle().clone());
             let handle = app.handle().clone();
             std::thread::spawn(move || start(handle));
             Ok(())
@@ -167,7 +170,7 @@ fn set_home_node_mode(app: AppHandle, on: bool) -> Result<bool, String> {
     Ok(on)
 }
 
-fn app_data_dir(app: &AppHandle) -> Result<std::path::PathBuf, String> {
+pub(crate) fn app_data_dir(app: &AppHandle) -> Result<std::path::PathBuf, String> {
     if let Some(dir) = separate_profile() {
         return Ok(dir);
     }
@@ -209,6 +212,13 @@ pub(crate) fn browser_session(app: &AppHandle) -> Option<(String, String)> {
     Some((node.origin.clone(), node.token.clone()))
 }
 
+/// The node's built-in Tor proxy, while the node runs. Update checks go through it.
+pub(crate) fn tor_proxy(app: &AppHandle) -> Option<String> {
+    let state = app.state::<NodeState>();
+    let guard = state.0.lock().ok()?;
+    guard.as_ref()?.tor_proxy.clone()
+}
+
 fn shop_dir(app: &AppHandle) -> Option<PathBuf> {
     if let Ok(resources) = app.path().resource_dir() {
         let bundled = resources.join("shop");
@@ -227,7 +237,7 @@ pub(crate) fn focus_main_window(app: &AppHandle) {
     }
 }
 
-fn stop_node(app: &AppHandle) {
+pub(crate) fn stop_node(app: &AppHandle) {
     if let Some(mut sidecar) = app.state::<NodeState>().0.lock().unwrap().take() {
         sidecar.stop();
     }

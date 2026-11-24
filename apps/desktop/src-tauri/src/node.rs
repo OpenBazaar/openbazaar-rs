@@ -34,6 +34,8 @@ const STALL_TIMEOUT: Duration = Duration::from_secs(180);
 /// answered, which has no time limit.
 const KEYSTORE_WAIT_LINE: &str = "ob-node: waiting for the OS keychain";
 const KEYSTORE_DONE_LINE: &str = "ob-node: the OS keychain answered";
+/// Must match the line `ob-node serve --tor` prints once its proxy listens (`main.rs`).
+const TOR_PROXY_LINE: &str = "ob-node: built-in Tor proxy on ";
 
 #[cfg(target_os = "macos")]
 pub const KEYCHAIN_WAIT_MESSAGE: &str =
@@ -91,6 +93,8 @@ pub struct Sidecar {
     pub origin: String,
     /// Read from `pairing.token` after the node starts; handed only to the app's own webview.
     pub token: String,
+    /// The node's built-in Tor proxy (`--tor`), read from its log after it starts.
+    pub tor_proxy: Option<String>,
 }
 
 pub fn home_mode(app_data_dir: &Path) -> bool {
@@ -169,6 +173,7 @@ impl Sidecar {
             port,
             origin: format!("http://127.0.0.1:{port}"),
             token: String::new(),
+            tor_proxy: None,
         };
         let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
         wait_for_node(
@@ -183,6 +188,7 @@ impl Sidecar {
             sidecar.stop();
             format!("Could not read the node's pairing token: {err}")
         })?;
+        sidecar.tor_proxy = launch_log(&log_path, log_from).and_then(|log| tor_proxy_from_log(&log));
         Ok(sidecar)
     }
 
@@ -551,6 +557,16 @@ fn hide_console(command: &mut Command) {
 #[cfg(not(windows))]
 fn hide_console(_command: &mut Command) {}
 
+/// The loopback SOCKS address of the node's built-in Tor, from this launch's log.
+pub(crate) fn tor_proxy_from_log(log: &str) -> Option<String> {
+    log.lines()
+        .rev()
+        .find_map(|line| line.trim().strip_prefix(TOR_PROXY_LINE))
+        .map(str::trim)
+        .filter(|url| url.starts_with("socks5h://127.0.0.1:"))
+        .map(str::to_string)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -608,6 +624,18 @@ mod tests {
         assert_eq!(shop_page_url(origin).unwrap(), "http://127.0.0.1:56562/");
         assert!(shop_page_url("https://tauri.localhost").is_err());
         assert!(shop_page_url("http://localhost:56562").is_err());
+    }
+
+    #[test]
+    fn the_tor_proxy_is_read_from_this_launchs_log() {
+        let log = "ob-node: starting built-in Tor\nob-node: built-in Tor proxy on socks5h://127.0.0.1:50123\nob-node 0.1.0\n";
+        assert_eq!(tor_proxy_from_log(log).as_deref(), Some("socks5h://127.0.0.1:50123"));
+        assert_eq!(tor_proxy_from_log("ob-node: starting built-in Tor\n"), None);
+        assert_eq!(
+            tor_proxy_from_log("ob-node: built-in Tor proxy on socks5h://203.0.113.9:9050\n"),
+            None,
+            "only a loopback proxy is used"
+        );
     }
 
     fn has_flag(args: &[String], name: &str, value: &str) -> bool {
