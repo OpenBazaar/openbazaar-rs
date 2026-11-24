@@ -74,6 +74,23 @@ impl Pair {
     }
 }
 
+/// Opening a store followed by URL used to refresh the market, which dropped
+/// every URL-followed store (the directory replica does not know them), so
+/// the open itself answered 404 (the alpha.14 release crawl).
+#[test]
+fn a_store_followed_by_url_opens_and_stays_in_the_shop() {
+    let pair = Pair::new();
+    let id = pair.seller.node.own_store;
+    let path = format!("/stores/{}", id.to_hex());
+    for _ in 0..2 {
+        let (status, page) = request(&pair.buyer.node, "GET", &path, "");
+        assert!(status.contains("200"), "{status} {page}");
+    }
+    let catalog = pair.buyer.node.catalog();
+    assert!(catalog.stores.iter().any(|store| store.id == id), "the followed store is still served");
+    assert!(catalog.listings.iter().any(|listing| listing.store_id == id), "and so are its listings");
+}
+
 #[test]
 fn a_sale_goes_from_listing_to_completed_across_two_nodes() {
     let pair = Pair::new();

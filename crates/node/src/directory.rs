@@ -1149,13 +1149,17 @@ impl Node {
     }
 
     fn refresh_market(&self) {
+        // Stores followed by URL are served from `replicas.rs`, not from the
+        // directory replica, so the replica does not know them; they stay.
+        // Read before the other locks, which `replicate` takes in the other order.
+        let followed_by_url = self.replicas().served_ids();
         let replica = self.seed_replica.lock().unwrap_or_else(|err| err.into_inner());
         let own = self.own_store;
         let mut catalog = self.catalog.write().unwrap_or_else(|err| err.into_inner());
         replica.apply(
             &mut catalog,
             own,
-            |store| store.id == own || crate::demo_secret(store).is_some(),
+            |store| store.id == own || crate::demo_secret(store).is_some() || followed_by_url.contains(&store.id),
             |admission| replica.is_live(admission),
         );
     }

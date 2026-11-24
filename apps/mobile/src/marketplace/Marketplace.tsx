@@ -378,10 +378,11 @@ export default function Marketplace() {
     if (direct || publicMode) return;
     try {
       // A store the node dropped (unfollowed, or no longer admitted) is not in its shop, so it is not asked for.
-      // The catalog is read now, not taken from state: an unfollow a moment ago may not have reloaded it yet.
-      const fresh = await fetchCatalog();
-      setCatalog(fresh);
-      if (!fresh.stores.some(store => store.key === storeId)) { setToast("That store is no longer in your shop. Follow it to see its goods."); return; }
+      if (!catalog?.stores.some(store => store.key === storeId)) {
+        const fresh = await fetchCatalog();
+        setCatalog(fresh);
+        if (!fresh.stores.some(store => store.key === storeId)) { setToast("That store is no longer in your shop. Follow it to see its goods."); return; }
+      }
       const shop = await fetchStore(storeId);
       setOpenedShop({ id: storeId, listings: shop.listings });
       setCatalog(await fetchCatalog());

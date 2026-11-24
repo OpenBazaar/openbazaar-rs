@@ -125,6 +125,14 @@ impl Replicas {
         self.vault.write_sealed(&self.path, &bytes).map_err(|err| err.to_string())
     }
 
+    /// Stores this node serves a copy of because it follows their URL.
+    pub(crate) fn served_ids(&self) -> std::collections::BTreeSet<StoreId> {
+        self.follows
+            .iter()
+            .filter_map(|follow| follow.replica.as_ref().map(|replica| replica.store.id))
+            .collect()
+    }
+
     /// The followed URL serving store `id`, if any.
     pub(crate) fn url_of(&self, id: &StoreId) -> Option<&str> {
         self.follows
