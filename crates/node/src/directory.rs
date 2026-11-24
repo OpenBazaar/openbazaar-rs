@@ -1303,8 +1303,12 @@ impl Node {
         Ok(())
     }
 
+    /// Follow a store. A record this node already holds goes back in the shop
+    /// now, so a store unfollowed and followed again opens without a 404.
     pub(crate) fn follow_store(&self, id: [u8; 32]) -> Result<(), String> {
-        self.seed_replica.lock().unwrap_or_else(|err| err.into_inner()).follow(id)
+        self.seed_replica.lock().unwrap_or_else(|err| err.into_inner()).follow(id)?;
+        self.refresh_market();
+        Ok(())
     }
 
     /// Open one store: remember it, and pull its listings from the onion in
@@ -1950,6 +1954,16 @@ mod tests {
             assert_eq!(listing.store_id.as_bytes(), &a_store);
             listing.verify().unwrap();
         }
+        let b_path = format!("/stores/{}", hex(&b_store));
+        a.unfollow_store(b_store).unwrap();
+        assert!(!a.catalog().stores.iter().any(|store| store.id.as_bytes() == &b_store), "an unfollowed store leaves the shop");
+        let (status, _) = harness::request(&a, "GET", &b_path, "");
+        assert!(status.contains("404"), "{status}");
+        a.follow_store(b_store).unwrap();
+        assert!(a.catalog().stores.iter().any(|store| store.id.as_bytes() == &b_store), "following again puts the held record back at once");
+        assert!(a.catalog().listings.iter().any(|item| item.title == "Maple spoon"));
+        let (status, value) = harness::request(&a, "GET", &b_path, "");
+        assert!(status.contains("200"), "{status} {value}");
         drop(a);
         drop(b);
         let kept = harness::open_node(&b_dir.0, NetworkMode::Testnet4, &chain, 1, harness::unreachable_escrow());
