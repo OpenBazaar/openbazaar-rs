@@ -125,6 +125,11 @@ impl Replicas {
         self.vault.write_sealed(&self.path, &bytes).map_err(|err| err.to_string())
     }
 
+    /// The copies this node serves because it follows their URL.
+    pub(crate) fn served_copies(&self) -> Vec<Replica> {
+        self.follows.iter().filter_map(|follow| follow.replica.clone()).collect()
+    }
+
     /// The followed URL serving store `id`, if any.
     pub(crate) fn url_of(&self, id: &StoreId) -> Option<&str> {
         self.follows
@@ -135,7 +140,7 @@ impl Replicas {
 }
 
 /// Put `replica` in `catalog`, replacing any older copy of that store.
-fn serve_replica(catalog: &mut Catalog, replica: &Replica) {
+pub(crate) fn serve_replica(catalog: &mut Catalog, replica: &Replica) {
     let id = replica.store.id;
     catalog.listings.retain(|listing| listing.store_id != id);
     match catalog.stores.iter_mut().find(|store| store.id == id) {
