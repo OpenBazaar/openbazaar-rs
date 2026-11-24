@@ -262,11 +262,46 @@ jobs:
           $conf | ConvertTo-Json -Depth 20 | Set-Content $confPath -Encoding utf8
           Write-Output "Windows: signing with certificate $($cert.Thumbprint)."
 
+      # In-app updates (docs/updates.md). With the key, Tauri also writes each
+      # installer's update bundle and its minisign signature, and the app reads
+      # the manifest of this version's channel. Without it the release builds
+      # as before and the app never checks.
+      - name: configure update signing (optional)
+        id: updater
+        shell: bash
+        env:
+          S_TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${S_TAURI_SIGNING_PRIVATE_KEY}" ]; then
+            echo "Updates: TAURI_SIGNING_PRIVATE_KEY is not set; no update bundles, and this build never checks for updates."
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          case "$APP_VERSION" in *-alpha*) channel=alpha ;; *-beta*) channel=beta ;; *-*) channel=pre ;; *) channel=stable ;; esac
+          CHANNEL_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/updates-${channel}/latest.json" node -e '
+            const fs = require("fs");
+            const path = "apps/desktop/src-tauri/tauri.conf.json";
+            const conf = JSON.parse(fs.readFileSync(path, "utf8"));
+            const updater = conf.plugins && conf.plugins.updater;
+            if (!updater || !updater.pubkey || updater.pubkey === "UPDATER_PUBLIC_KEY_NOT_SET") {
+              console.error("TAURI_SIGNING_PRIVATE_KEY is set but tauri.conf.json has no updater pubkey. Put the public key there (docs/updates.md).");
+              process.exit(1);
+            }
+            updater.endpoints = [process.env.CHANNEL_URL];
+            conf.bundle.createUpdaterArtifacts = true;
+            fs.writeFileSync(path, JSON.stringify(conf, null, 2) + "\n");
+          '
+          echo "Updates: signing update bundles; the app reads updates-${channel}."
+          echo "enabled=true" >> "$GITHUB_OUTPUT"
+
       - name: build installers
         working-directory: apps/desktop
         shell: bash
         env:
           APPIMAGE_EXTRACT_AND_RUN: "1"
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           set -euo pipefail
           args=(--bundles "${{ matrix.bundles }}")
@@ -318,6 +353,8 @@ jobs:
         run: python3 scripts/check-pe-imports.py apps/desktop/src-tauri/binaries/ob-node-*.exe
       - name: collect installers
         shell: bash
+        env:
+          UPDATER: ${{ steps.updater.outputs.enabled }}
         run: |
           set -euo pipefail
           mkdir -p dist-release
@@ -338,13 +375,19 @@ jobs:
             macOS)
               ditto -c -k --keepParent "$bundle"/macos/*.app "dist-release/OpenBazaar_${APP_VERSION}_universal.app.zip"
               cp "$bundle"/dmg/*.dmg dist-release/
+              if [ "$UPDATER" = true ]; then
+                cp "$bundle"/macos/OpenBazaar.app.tar.gz "dist-release/OpenBazaar_${APP_VERSION}_universal.app.tar.gz"
+                cp "$bundle"/macos/OpenBazaar.app.tar.gz.sig "dist-release/OpenBazaar_${APP_VERSION}_universal.app.tar.gz.sig"
+              fi
               ;;
             Linux)
               cp "$bundle"/deb/*.deb dist-release/
               cp "$bundle"/appimage/*.AppImage dist-release/
+              if [ "$UPDATER" = true ]; then cp "$bundle"/appimage/*.AppImage.sig dist-release/; fi
               ;;
             Windows)
               cp "$bundle"/nsis/*.exe dist-release/
+              if [ "$UPDATER" = true ]; then cp "$bundle"/nsis/*.exe.sig dist-release/; fi
               ;;
             *)
               echo "Unexpected runner ${RUNNER_OS}" >&2
@@ -522,6 +565,22 @@ jobs:
           pattern: home-node-*
           path: release-assets
           merge-multiple: true
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: scripts
+          path: repo
+      # The update manifest the desktop app reads, when the desktop builds
+      # signed their update bundles (docs/updates.md).
+      - name: write the update manifest
+        working-directory: release-assets
+        run: |
+          set -euo pipefail
+          if ! ls ./*.sig >/dev/null 2>&1; then
+            echo "No update signatures in this release; no manifest."
+            exit 0
+          fi
+          python3 ../repo/scripts/update-manifest.py --version "${VERSION#v}" --repo "$GITHUB_REPOSITORY" --out latest.json .
+          cat latest.json
       - name: write SHA256SUMS
         working-directory: release-assets
         run: |
@@ -573,6 +632,21 @@ jobs:
               --title "OpenBazaar ${version} (testnet4)" \
               --notes-file release-notes.md \
               "${flags[@]}"
+          fi
+          # Point the channel at this version only now that every file it
+          # names is on the release.
+          if [ -f release-assets/latest.json ]; then
+            case "$version" in *-alpha*) channel=alpha ;; *-beta*) channel=beta ;; *-*) channel=pre ;; *) channel=stable ;; esac
+            ctag="updates-${channel}"
+            if ! gh release view "$ctag" >/dev/null 2>&1; then
+              gh release create "$ctag" \
+                --target "$GITHUB_SHA" \
+                --prerelease \
+                --title "Update manifest (${channel})" \
+                --notes "The ${channel} channel's latest.json, which the desktop app reads to find new versions (docs/updates.md). Not an app release: download OpenBazaar from the versioned releases."
+            fi
+            gh release upload "$ctag" release-assets/latest.json --clobber
+            echo "The ${channel} channel now offers ${version}."
           fi
 
   # The Android package is not in this repository. There is no Gradle project

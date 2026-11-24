@@ -31,5 +31,16 @@
       "signingIdentity": "-",
       "minimumSystemVersion": "11.0"
     }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "UPDATER_PUBLIC_KEY_NOT_SET",
+      "endpoints": [
+        "https://github.com/OpenBazaar/openbazaar-rs/releases/download/updates-alpha/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }

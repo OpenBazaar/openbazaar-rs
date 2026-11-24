@@ -7,7 +7,7 @@
 //! shows where that browser should point, and is not a command.
 
 use tauri::image::Image;
-use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder, Wry};
 
@@ -17,6 +17,8 @@ const OPEN: &str = "open";
 const BROWSER: &str = "browser";
 const PAIR: &str = "pair";
 const QUIT: &str = "quit";
+const UPDATES: &str = "updates";
+const AUTO_UPDATES: &str = "auto-updates";
 const PAIR_WINDOW: &str = "pair";
 /// The home node's setup page, when that node was started with `--lan`.
 const PAIR_URL: &str = "http://127.0.0.1:8790/";
@@ -29,6 +31,7 @@ struct TrayState {
     #[allow(dead_code)]
     icon: TrayIcon<Wry>,
     status: MenuItem<Wry>,
+    auto_updates: CheckMenuItem<Wry>,
 }
 
 pub fn install(app: &AppHandle) -> tauri::Result<()> {
@@ -37,6 +40,16 @@ pub fn install(app: &AppHandle) -> tauri::Result<()> {
     let pair = MenuItem::with_id(app, PAIR, "Pair a device", true, None::<&str>)?;
     let status = MenuItem::with_id(app, "status", "Node stopped", false, None::<&str>)?;
     let quit = MenuItem::with_id(app, QUIT, "Quit", true, None::<&str>)?;
+    let updates = MenuItem::with_id(app, UPDATES, "Check for updates…", true, None::<&str>)?;
+    let auto_updates = CheckMenuItem::with_id(
+        app,
+        AUTO_UPDATES,
+        "Check for updates automatically",
+        crate::updates::configured(app),
+        crate::updates::configured(app) && crate::updates::automatic(app),
+        None::<&str>,
+    )?;
+    let above_updates = PredefinedMenuItem::separator(app)?;
     let above_status = PredefinedMenuItem::separator(app)?;
     let above_quit = PredefinedMenuItem::separator(app)?;
     let menu = Menu::with_items(
@@ -45,6 +58,9 @@ pub fn install(app: &AppHandle) -> tauri::Result<()> {
             &open,
             &browser,
             &pair,
+            &above_updates,
+            &updates,
+            &auto_updates,
             &above_status,
             &status,
             &above_quit,
@@ -62,6 +78,8 @@ pub fn install(app: &AppHandle) -> tauri::Result<()> {
             OPEN => focus_main_window(app),
             BROWSER => open_browser(app),
             PAIR => open_pair(app),
+            UPDATES => crate::updates::check_now(app),
+            AUTO_UPDATES => toggle_auto_updates(app),
             QUIT => app.exit(0),
             _ => {}
         })
@@ -77,7 +95,7 @@ pub fn install(app: &AppHandle) -> tauri::Result<()> {
         })
         .build(app)?;
 
-    app.manage(TrayState { icon, status });
+    app.manage(TrayState { icon, status, auto_updates });
     eprintln!("OpenBazaar menu bar icon is up");
     Ok(())
 }
@@ -104,6 +122,17 @@ pub fn set_status(app: &AppHandle, text: &str) {
     std::thread::spawn(move || {
         let _ = status.set_text(text);
     });
+}
+
+/// Flip automatic update checks and show the saved state, not the click.
+fn toggle_auto_updates(app: &AppHandle) {
+    let on = !crate::updates::automatic(app);
+    if let Err(err) = crate::updates::set_automatic(app, on) {
+        eprintln!("OpenBazaar: {err}");
+    }
+    if let Some(tray) = app.try_state::<TrayState>() {
+        let _ = tray.auto_updates.set_checked(crate::updates::automatic(app));
+    }
 }
 
 pub(crate) fn status_label(running: bool, origin: Option<&str>) -> String {
