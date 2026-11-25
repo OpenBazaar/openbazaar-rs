@@ -104,6 +104,10 @@ fn serve(args: &[String]) -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    // Ask before the watchdog below starts. `is_terminal` takes the stdin lock,
+    // and the watchdog blocks in a stdin read holding it, so asking after the
+    // watchdog exists can wait forever and the node never opens its port.
+    let stdin_is_terminal = std::io::stdin().is_terminal();
     // Before anything that can block (Tor, a Keychain prompt), so a node whose
     // app quit mid-startup does not linger.
     if env::var_os("OB_EXIT_ON_STDIN_EOF").is_some() {
@@ -199,7 +203,7 @@ fn serve(args: &[String]) -> ExitCode {
         None if network == NetworkMode::Mainnet => eprintln!("ob-node: Lightning is off on mainnet (it needs --proxy and an LSP you name; there is no default)"),
         None => eprintln!("ob-node: Lightning is off (no --lightning)"),
     }
-    let vault = match vault_mode(&options) {
+    let vault = match vault_mode(&options, stdin_is_terminal) {
         Ok(vault) => vault,
         Err(err) => {
             eprintln!("ob-node: {err}");
@@ -680,12 +684,12 @@ fn unhex32(text: &str) -> Option<[u8; 32]> {
     Some(out)
 }
 
-fn vault_mode(options: &ServeOptions) -> Result<VaultMode, String> {
+fn vault_mode(options: &ServeOptions, stdin_is_terminal: bool) -> Result<VaultMode, String> {
     let env_passphrase = env::var(PASSPHRASE_ENV).ok();
     let resolved = resolve_vault_mode(
         options.vault,
         env_passphrase.as_deref(),
-        std::io::stdin().is_terminal(),
+        stdin_is_terminal,
     )?;
     match resolved {
         Some(mode @ VaultMode::File) => {
