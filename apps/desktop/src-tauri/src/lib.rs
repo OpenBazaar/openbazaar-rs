@@ -42,6 +42,11 @@ pub fn run() {
         .manage(NodeState(Mutex::new(None)))
         .invoke_handler(tauri::generate_handler![home_node_mode, set_home_node_mode])
         .menu(build::menu)
+        .on_menu_event(|app, event| {
+            if event.id().as_ref() == build::CHECK_UPDATES {
+                updates::check_now(app);
+            }
+        })
         .on_window_event(|window, event| {
             if window.label() == MAIN_WINDOW {
                 if let tauri::WindowEvent::CloseRequested { api, .. } = event {
