@@ -99,6 +99,10 @@ pub(crate) fn refused(message: impl Into<String>) -> MailError {
     MailError::Refused(message.into())
 }
 
+pub(crate) fn unauthorized() -> MailError {
+    MailError::Unauthorized("That order status request was not authorized.".into())
+}
+
 pub(crate) fn retry(message: impl std::fmt::Display) -> MailError {
     MailError::Retry(message.to_string())
 }
@@ -134,7 +138,9 @@ impl Node {
     }
 
     /// `POST /mail`: an order letter or a buyer's follow-up, sealed to the own store.
-    pub(crate) fn receive_store_mail(&self, bytes: &[u8]) -> Result<(), MailError> {
+    /// Returns an immediate sealed reply for pull-mode orders (where the buyer
+    /// runs no 24/7 reply mailbox), or `None` for push-mode orders and messages.
+    pub(crate) fn receive_store_mail(&self, bytes: &[u8]) -> Result<Option<tormail::SealedReply>, MailError> {
         let letter = SealedLetter::from_bytes(bytes).map_err(|_| refused("that is not a sealed letter"))?;
         let secret = {
             let wallet = self.buyer_wallet();
@@ -145,26 +151,41 @@ impl Node {
             return self.receive_order(opened);
         }
         let opened = open_message(&letter, &secret).map_err(|_| refused("that letter is not for this store"))?;
-        self.receive_buyer_message(opened)
+        self.receive_buyer_message(opened)?;
+        Ok(None)
     }
 
-    fn receive_order(&self, opened: Opened<Order>) -> Result<(), MailError> {
+    fn receive_order(&self, opened: Opened<Order>) -> Result<Option<tormail::SealedReply>, MailError> {
         let order = opened.body;
         let id = hex(&order.reply.drop.0);
         let sender = hex(&opened.sender.0);
-        if let Some(sale) = self.sales().get(&id) {
+        if let Some(sale) = self.sales().get(&id).cloned() {
             return if sale["buyerSender"] == sender.as_str() {
-                Ok(())
+                if sale["replyUrl"].as_str().unwrap_or("").is_empty() {
+                    let route = Route::of(&sale)?;
+                    let terms = self.terms_reply_for(&sale);
+                    return self.seal_sale_reply(route.key, route.drop, &terms).map(Some).map_err(retry);
+                }
+                Ok(None)
             } else {
                 Err(refused("that order id is taken"))
             };
         }
-        let reply_url = order.options.get("replyUrl").cloned().unwrap_or_default();
-        let reply_url = crate::peer_http::sale_base(&reply_url).map_err(refused)?;
+        let raw_reply_url = order.options.get("replyUrl").map(|url| url.trim()).unwrap_or("");
+        let pull_mode = raw_reply_url.is_empty();
+        let reply_url = if pull_mode {
+            String::new()
+        } else {
+            crate::peer_http::sale_base(raw_reply_url).map_err(refused)?
+        };
         let route = Route { url: reply_url, key: *order.reply.key.as_bytes(), drop: order.reply.drop.0 };
         if self.on_vacation() {
-            self.queue_reply(&route, &json!({ "v": 1, "kind": "declined", "reason": crate::vacation::AWAY_MESSAGE })).map_err(retry)?;
-            return Ok(());
+            let declined = json!({ "v": 1, "kind": "declined", "reason": crate::vacation::AWAY_MESSAGE });
+            if pull_mode {
+                return self.seal_sale_reply(route.key, route.drop, &declined).map(Some).map_err(retry);
+            }
+            self.queue_reply(&route, &declined).map_err(retry)?;
+            return Ok(None);
         }
         let rail = order.options.get("rail").map(String::as_str);
         let priced = match (match rail {
@@ -182,15 +203,19 @@ impl Node {
                 let checked = priced.checked.take();
                 let result = self.open_sale(id.clone(), sender, &order, route, priced, rail);
                 match (&result, checked) {
-                    (Ok(()), Some(checked)) => self.record_terms(&id, &checked),
+                    (Ok(_), Some(checked)) => self.record_terms(&id, &checked),
                     (Err(_), Some(_)) => self.release_units(&id),
                     _ => {}
                 }
                 result
             }
             Err(reason) => {
-                self.queue_reply(&route, &json!({ "v": 1, "kind": "declined", "reason": reason })).map_err(retry)?;
-                Ok(())
+                let declined = json!({ "v": 1, "kind": "declined", "reason": reason });
+                if pull_mode {
+                    return self.seal_sale_reply(route.key, route.drop, &declined).map(Some).map_err(retry);
+                }
+                self.queue_reply(&route, &declined).map_err(retry)?;
+                Ok(None)
             }
         }
     }
@@ -234,7 +259,7 @@ impl Node {
     }
 
     /// Keep the sale and reply with its terms. A Zcash or Monero sale has a `payment` and no bitcoin `address`, so [`Self::watch_sales`] skips it.
-    fn open_sale(&self, id: String, sender: String, order: &Order, route: Route, priced: Priced, rail: Option<&str>) -> Result<(), MailError> {
+    fn open_sale(&self, id: String, sender: String, order: &Order, route: Route, priced: Priced, rail: Option<&str>) -> Result<Option<tormail::SealedReply>, MailError> {
         let total = priced.items.checked_add(priced.shipping).ok_or_else(|| refused("the total overflows"))?;
         let payment = match rail {
             Some("zec") => Some(self.zec_sale_payment(total).map_err(retry)?),
@@ -297,7 +322,134 @@ impl Node {
             sale["payment"] = payment;
         }
         self.sales().insert(sale).map_err(retry)?;
-        self.queue_reply(&route, &terms).map_err(retry)
+        if route.url.is_empty() {
+            let sealed = self.seal_sale_reply(route.key, route.drop, &terms).map_err(retry)?;
+            return Ok(Some(sealed));
+        }
+        self.queue_reply(&route, &terms).map_err(retry)?;
+        Ok(None)
+    }
+
+    fn terms_reply_for(&self, sale: &Value) -> Value {
+        let mut terms = json!({
+            "v": 1,
+            "kind": "terms",
+            "address": sale["address"],
+            "amountSats": sale["totalSats"],
+            "itemsSats": sale["itemsSats"],
+            "shippingSats": sale["shippingSats"],
+            "network": sale["network"],
+        });
+        if !sale["quote"].is_null() {
+            terms["quote"] = sale["quote"].clone();
+        }
+        if let Some(policy) = sale["returnPolicy"].as_str() {
+            terms["returnPolicy"] = json!(policy);
+        }
+        if let Some(payment) = sale.get("payment").filter(|v| !v.is_null()) {
+            match payment["rail"].as_str() {
+                Some("zec") => crate::zec::add_terms(&mut terms, payment),
+                Some("xmr") => crate::xmr::add_terms(&mut terms, payment),
+                Some("ln") => crate::lightning::add_terms(&mut terms, payment),
+                _ => {}
+            }
+        }
+        terms
+    }
+
+    /// `POST /mail/pull`: authenticated pull of a sale's sealed status snapshot.
+    ///
+    /// The request is a [`SealedLetter`] sealed to this store's mailbox key and
+    /// signed inside the ciphertext by the buyer's per-order key. Any unknown
+    /// sale id or mismatched buyer key receives a uniform unauthorized error.
+    pub(crate) fn pull_sale_status(&self, bytes: &[u8]) -> Result<Value, MailError> {
+        let letter = SealedLetter::from_bytes(bytes).map_err(|_| refused("that is not a sealed letter"))?;
+        let secret = {
+            let wallet = self.buyer_wallet();
+            let key = wallet.watch.store_mailbox_key().map_err(retry)?;
+            StoreSecret::from_bytes(*key).map_err(retry)?
+        };
+        let opened = open_message(&letter, &secret).map_err(|_| unauthorized())?;
+        let body: Value = serde_json::from_slice(&opened.body).map_err(|_| refused("that pull request could not be read"))?;
+        if body["v"].as_u64() != Some(1) || body["kind"].as_str() != Some("pull") {
+            return Err(refused("that is not an order status pull request"));
+        }
+        let sale_id = body["sale"].as_str().unwrap_or("");
+        let nonce = body["nonce"].as_str().unwrap_or("");
+        if crate::escrow_mail::parse_id(sale_id).is_none() || crate::escrow_mail::parse_id(nonce).is_none() {
+            return Err(refused("that pull request is missing a valid sale id or nonce"));
+        }
+        let sender = hex(&opened.sender.0);
+        let Some(sale) = self.sales().get(sale_id).cloned() else {
+            return Err(unauthorized());
+        };
+        if sale["buyerSender"].as_str() != Some(sender.as_str()) {
+            return Err(unauthorized());
+        }
+        let route = Route::of(&sale)?;
+        let snapshot = self.build_pull_snapshot(&sale, nonce);
+        let sealed = self.seal_sale_reply(route.key, route.drop, &snapshot).map_err(retry)?;
+        Ok(json!({
+            "ok": true,
+            "drop": sale_id,
+            "reply": hex(&sealed.to_bytes()),
+        }))
+    }
+
+    fn build_pull_snapshot(&self, sale: &Value, nonce: &str) -> Value {
+        let status = sale["status"].as_str().unwrap_or(AWAITING_PAYMENT);
+        let mut snapshot = json!({
+            "v": 1,
+            "kind": "status",
+            "sale": sale["id"],
+            "nonce": nonce,
+            "status": status,
+            "network": sale["network"],
+            "itemsSats": sale["itemsSats"],
+            "shippingSats": sale["shippingSats"],
+            "amountSats": sale["totalSats"],
+            "receivedSats": sale["receivedSats"],
+            "confirmations": sale["confirmations"],
+            "txids": sale["txids"],
+            "sellerSawPayment": matches!(status, PAID | SHIPPED | COMPLETED),
+            "sellerCompleted": status == COMPLETED,
+        });
+        if let Some(address) = sale["address"].as_str() {
+            snapshot["address"] = json!(address);
+        }
+        if !sale["quote"].is_null() {
+            snapshot["quote"] = sale["quote"].clone();
+        }
+        if let Some(policy) = sale["returnPolicy"].as_str() {
+            snapshot["returnPolicy"] = json!(policy);
+        }
+        if !sale["returnCase"].is_null() {
+            snapshot["returnCase"] = sale["returnCase"].clone();
+        }
+        if !sale["fulfillment"].is_null() {
+            snapshot["fulfillment"] = sale["fulfillment"].clone();
+        }
+        if !sale["tracking"].is_null() {
+            snapshot["tracking"] = sale["tracking"].clone();
+        }
+        if let Some(payment) = sale.get("payment").filter(|v| !v.is_null()) {
+            match payment["rail"].as_str() {
+                Some("zec") => crate::zec::add_terms(&mut snapshot, payment),
+                Some("xmr") => crate::xmr::add_terms(&mut snapshot, payment),
+                Some("ln") => crate::lightning::add_terms(&mut snapshot, payment),
+                _ => {}
+            }
+        }
+        if let Some(messages) = sale["messages"].as_array() {
+            let mut list = messages.clone();
+            snapshot["messages"] = Value::Array(list.clone());
+            while body_bytes(&snapshot).len() > tormail::MAX_REPLY_LEN && !list.is_empty() {
+                list.remove(0);
+                snapshot["messages"] = Value::Array(list.clone());
+                snapshot["messagesTrimmed"] = json!(true);
+            }
+        }
+        snapshot
     }
 
     fn receive_buyer_message(&self, opened: Opened<Vec<u8>>) -> Result<(), MailError> {
@@ -538,16 +690,26 @@ impl Node {
     }
 
     /// Seal `body` to the buyer's reply key and queue it for the buyer's node.
+    /// Pull-only orders (`route.url.is_empty()`) skip push queueing because
+    /// the buyer fetches sealed snapshots via `POST /mail/pull`.
     fn queue_reply(&self, route: &Route, body: &Value) -> Result<(), String> {
+        if route.url.is_empty() {
+            return Ok(());
+        }
         self.queue_buyer_reply(&route.url, route.key, route.drop, body)
+    }
+
+    pub(crate) fn seal_sale_reply(&self, key: [u8; 32], drop: [u8; 16], body: &Value) -> Result<tormail::SealedReply, String> {
+        let bytes = body_bytes(body);
+        let key = ReplyPublic::from_bytes(key).map_err(|err| err.to_string())?;
+        let from = self.sale_letter_key(&drop)?;
+        seal_reply(&bytes, &key, &from).map_err(|err| err.to_string())
     }
 
     /// Seal `body` to a bid or order reply key and queue it for that buyer's node.
     pub(crate) fn queue_buyer_reply(&self, url: &str, key: [u8; 32], drop: [u8; 16], body: &Value) -> Result<(), String> {
         let bytes = body_bytes(body);
-        let key = ReplyPublic::from_bytes(key).map_err(|err| err.to_string())?;
-        let from = self.sale_letter_key(&drop)?;
-        let sealed = seal_reply(&bytes, &key, &from).map_err(|err| err.to_string())?;
+        let sealed = self.seal_sale_reply(key, drop, body)?;
         let frame = reply_frame(DropId(drop), &sealed);
         let url = format!("{url}{REPLY_MAIL}");
         self.order_outbox.queue(mail_key(&url, &drop, &bytes), &url, &frame)

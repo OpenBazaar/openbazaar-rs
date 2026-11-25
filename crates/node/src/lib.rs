@@ -20,6 +20,7 @@ mod admission;
 mod backoff;
 mod browser;
 mod build_info;
+mod buyer_light;
 mod buyer_orders;
 mod chain;
 mod chain_backend;
@@ -124,6 +125,8 @@ mod zec;
 #[cfg(test)]
 mod admission_tests;
 #[cfg(test)]
+mod buyer_light_tests;
+#[cfg(test)]
 mod checkout_tests;
 #[cfg(test)]
 mod fee_schedule_tests;
@@ -202,6 +205,10 @@ use vendor_labels::VendorLabels;
 use wallet::NodeWallet;
 
 pub use build_info::{BuildInfo, BUILD};
+pub use buyer_light::{
+    build_pull_request, open_pull_response, BuyerOrderKeys, BuyerSeed, OfflineDisputePayload,
+    RetainedContract, RetainedEscrow, VerifiedEscrow,
+};
 pub use chain::{AddressTx, ChainSource, ChainStatus, EsploraChain, OfflineChain, WalletRequest};
 pub use chain_backend::ChainPlan;
 pub use chain_filters::{ChainStore, FilterChain, FilterConfig};

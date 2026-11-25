@@ -15,8 +15,9 @@
 
 use serde_json::{json, Value};
 
+use crate::escrow_mail::hex;
 use crate::http::{json_body, json_error, local_guard, Client};
-use crate::order_mail::{MailError, REPLY_MAIL, STORE_MAIL};
+use crate::order_mail::{MailError, PULL_MAIL, REPLY_MAIL, STORE_MAIL};
 use crate::{lock_http, mail_drop, Node, OrderError};
 
 pub(crate) fn response(
@@ -28,13 +29,36 @@ pub(crate) fn response(
     body: &[u8],
     origin: Option<&str>,
 ) -> Option<Vec<u8>> {
-    if method == "POST" && (path == STORE_MAIL || path == REPLY_MAIL) {
+    if method == "POST" && (path == STORE_MAIL || path == REPLY_MAIL || path == PULL_MAIL) {
         if let Err(response) = mail_drop::admit_mail(node, head, body) {
             return Some(response);
         }
-        let result = if path == STORE_MAIL { node.receive_store_mail(body) } else { node.receive_reply(body) };
-        return Some(match result {
+        if path == PULL_MAIL {
+            return Some(match node.pull_sale_status(body) {
+                Ok(value) => json_body("200 OK", &value, None),
+                Err(MailError::Unauthorized(message)) => json_error("403 Forbidden", &message, None),
+                Err(MailError::Refused(message)) => json_error("400 Bad Request", &message, None),
+                Err(MailError::Retry(detail)) => {
+                    eprintln!("ob-node: mail pull: {detail}");
+                    json_error("503 Service Unavailable", "Try again later.", None)
+                }
+            });
+        }
+        if path == STORE_MAIL {
+            return Some(match node.receive_store_mail(body) {
+                Ok(Some(reply)) => json_body("200 OK", &json!({ "ok": true, "reply": hex(&reply.to_bytes()) }), None),
+                Ok(None) => json_body("200 OK", &json!({ "ok": true }), None),
+                Err(MailError::Unauthorized(message)) => json_error("403 Forbidden", &message, None),
+                Err(MailError::Refused(message)) => json_error("400 Bad Request", &message, None),
+                Err(MailError::Retry(detail)) => {
+                    eprintln!("ob-node: mail: {detail}");
+                    json_error("503 Service Unavailable", "Try again later.", None)
+                }
+            });
+        }
+        return Some(match node.receive_reply(body) {
             Ok(()) => json_body("200 OK", &json!({ "ok": true }), None),
+            Err(MailError::Unauthorized(message)) => json_error("403 Forbidden", &message, None),
             Err(MailError::Refused(message)) => json_error("400 Bad Request", &message, None),
             Err(MailError::Retry(detail)) => {
                 eprintln!("ob-node: mail: {detail}");
@@ -44,6 +68,8 @@ pub(crate) fn response(
     }
     let fulfill = path.strip_prefix("/sales/").and_then(|rest| rest.strip_suffix("/fulfill"));
     let complete = path.strip_prefix("/orders/").and_then(|rest| rest.strip_suffix("/complete"));
+    let order_pull = path.strip_prefix("/orders/").and_then(|rest| rest.strip_suffix("/pull")).filter(|id| !id.is_empty() && !id.contains('/'));
+    let order_contract = path.strip_prefix("/orders/").and_then(|rest| rest.strip_suffix("/contract")).filter(|id| !id.is_empty() && !id.contains('/'));
     let sale_message = path.strip_prefix("/sales/").and_then(|rest| rest.strip_suffix("/message"));
     let order_message = path.strip_prefix("/orders/").and_then(|rest| rest.strip_suffix("/message"));
     let order_return_ship = path.strip_prefix("/orders/").and_then(|rest| rest.strip_suffix("/return/shipment")).filter(|id| !id.is_empty() && !id.contains('/'));
@@ -51,10 +77,11 @@ pub(crate) fn response(
     let sale_return = path.strip_prefix("/sales/").and_then(|rest| rest.strip_suffix("/return")).filter(|id| !id.is_empty() && !id.contains('/'));
     let sale = path.strip_prefix("/sales/").filter(|rest| !rest.contains('/'));
     let known = match method {
-        "GET" => path == "/sales" || sale.is_some(),
+        "GET" => path == "/sales" || sale.is_some() || order_contract.is_some(),
         "POST" => {
             fulfill.is_some()
                 || complete.is_some()
+                || order_pull.is_some()
                 || sale_message.is_some()
                 || order_message.is_some()
                 || order_return_ship.is_some()
@@ -68,6 +95,26 @@ pub(crate) fn response(
     }
     if let Err(response) = local_guard(node, client, head, origin) {
         return Some(response);
+    }
+    if method == "GET" {
+        if let Some(id) = order_contract {
+            return Some(match node.export_retained_contract(id) {
+                Ok(contract) => json_body("200 OK", &contract.to_json(), origin),
+                Err(message) if message.contains("not on this node") => json_error("404 Not Found", &message, origin),
+                Err(message) => json_error("400 Bad Request", &message, origin),
+            });
+        }
+    }
+    if method == "POST" {
+        if let Some(id) = order_pull {
+            return Some(match node.pull_remote_order(id) {
+                Ok(value) => json_body("200 OK", &value, origin),
+                Err(OrderError::Invalid(message)) => json_error("400 Bad Request", message, origin),
+                Err(OrderError::Locked(state)) => lock_http::locked_response(state, origin),
+                Err(OrderError::Failed(message)) => json_error("502 Bad Gateway", &message, origin),
+                Err(OrderError::UnknownListing) => json_error("404 Not Found", "That order is not on this node.", origin),
+            });
+        }
     }
     let message = |send: &dyn Fn(&str, &Value) -> Result<Value, String>| -> Option<Vec<u8>> {
         let id = sale_message.or(order_message)?;

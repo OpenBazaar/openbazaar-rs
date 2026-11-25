@@ -15,15 +15,20 @@
 //! `zec/sale.rs` and `xmr/sale.rs`), a "shipped" reply carries the tracking or the digital goods, and
 //! `POST /orders/{id}/complete` tells the seller it arrived.
 
-use openbazaar_protocol::Listing;
-use serde_json::{json, Value};
-use tormail::{open_reply, seal_message, ReplyDelivery, SealedLetter};
+use std::time::Duration;
 
-use crate::escrow_mail::hex;
+use openbazaar_protocol::Listing;
+use rand::rngs::StdRng;
+use rand::{RngCore, SeedableRng};
+use serde_json::{json, Value};
+use tormail::{open_reply, seal_message, ReplyDelivery, SealedLetter, SealedReply};
+
+use crate::buyer_light::{build_pull_request, open_pull_response};
+use crate::escrow_mail::{hex, unhex};
 use crate::escrow_outbox::Sent;
-use crate::order_mail::{body_bytes, mail_key, MailError, STORE_MAIL};
+use crate::order_mail::{body_bytes, mail_key, MailError, PULL_MAIL, STORE_MAIL};
 use crate::orders::package_shipping;
-use crate::watch::{AWAITING_PAYMENT, AWAITING_SELLER, COMPLETED, DECLINED, PAYMENT_SEEN, SHIPPED};
+use crate::watch::{AWAITING_PAYMENT, AWAITING_SELLER, COMPLETED, DECLINED, PAID, PAYMENT_SEEN, SHIPPED};
 use crate::{Node, OrderError};
 
 fn refused(message: impl Into<String>) -> MailError {
@@ -68,9 +73,6 @@ impl Node {
         if !direct {
             return Ok(None);
         }
-        if self.sale_reply_url().is_none() {
-            return Err(OrderError::Invalid("This node has no address for the seller's reply."));
-        }
         Ok(Some(url))
     }
 
@@ -92,20 +94,52 @@ impl Node {
     ) -> Result<Value, OrderError> {
         let (_, drop) = self.order_reply_secret(checkout_id, listing.store_id.as_bytes()).map_err(OrderError::Failed)?;
         let fiat = lines.iter().any(|(listing, _)| listing.details.as_ref().is_some_and(|details| details.price.is_some()));
+        let reply_mode = if self.sale_reply_url().is_some() { "push" } else { "pull" };
         Ok(json!({
             "url": url,
             "drop": hex(&drop.0),
             "estimateSats": estimate,
             "fiat": fiat,
             "delivered": false,
+            "replyMode": reply_mode,
         }))
     }
 
     /// Queue the sealed order for the seller's node and try it once.
+    /// In pull mode (when this node has no 24/7 reply URL), tries a direct
+    /// POST first so an immediate sealed `terms` reply is applied right away.
     pub(crate) fn deliver_remote_order(&self, id: &str, url: &str, checkout_id: &str, listing: &Listing, letter: &SealedLetter) {
         let target = format!("{url}{STORE_MAIL}");
         let conversation = [checkout_id.as_bytes(), listing.store_id.as_bytes()].concat();
         let bytes = letter.to_bytes();
+        if self.sale_reply_url().is_none() {
+            if let Ok(answer) = crate::peer_http::call(
+                &self.peers,
+                "POST",
+                &target,
+                Some(&bytes),
+                Some("application/octet-stream"),
+                Duration::from_secs(15),
+                64 * 1024,
+            ) {
+                if (200..300).contains(&answer.status) {
+                    let parsed = serde_json::from_slice::<Value>(&answer.body).ok();
+                    let immediate = parsed
+                        .as_ref()
+                        .and_then(|v| v["reply"].as_str())
+                        .and_then(|hex_str| unhex(hex_str).ok());
+                    if let Some(reply_bytes) = immediate {
+                        let _ = self.apply_sealed_reply_bytes(id, &reply_bytes);
+                        return;
+                    }
+                    let _ = self.orders().update(id, |order| {
+                        let remote = order.remote.get_or_insert_with(|| json!({}));
+                        remote["delivered"] = json!(true);
+                    });
+                    return;
+                }
+            }
+        }
         let result = self.order_outbox.send(mail_key(&target, &conversation, &bytes), &target, &bytes);
         let update = |order: &mut crate::buyer_orders::BuyerOrder| {
             let remote = order.remote.get_or_insert_with(|| json!({}));
@@ -118,6 +152,96 @@ impl Node {
         if let Err(err) = self.orders().update(id, update) {
             eprintln!("ob-node: order {id}: {err}");
         }
+    }
+
+    fn apply_sealed_reply_bytes(&self, id: &str, reply_bytes: &[u8]) -> Result<(), String> {
+        let order = self.orders().get(id).cloned().ok_or_else(|| "that order is not on this node".to_string())?;
+        let store = crate::stores::unhex32(&order.store_id).ok_or_else(|| "the order names no store key".to_string())?;
+        let (secret, _) = self.order_reply_secret(&order.checkout_id, &store)?;
+        let sealed = SealedReply::from_bytes(reply_bytes).map_err(|_| "that reply is malformed".to_string())?;
+        let opened = open_reply(&sealed, &secret).map_err(|_| "that reply does not open".to_string())?;
+        let sender = hex(&opened.sender.0);
+        let pinned = order.remote.as_ref().and_then(|remote| remote["seller"].as_str().map(str::to_string));
+        if pinned.as_ref().is_some_and(|pinned| *pinned != sender) {
+            return Err("that reply is not from this order's seller".into());
+        }
+        let body: Value = serde_json::from_slice(&opened.body).map_err(|_| "that reply could not be read".to_string())?;
+        crate::buyer_light::check_pull_text(&body)?;
+        let network = self.network;
+        let review_key = self.order_review_key(&order.checkout_id, &store).ok();
+        self.orders()
+            .update(&order.id, |order| {
+                let remote = order.remote.get_or_insert_with(|| json!({}));
+                remote["seller"] = json!(sender);
+                remote["delivered"] = json!(true);
+                if let Some(map) = remote.as_object_mut() {
+                    map.remove("error");
+                }
+                apply_reply(order, &body, network);
+                crate::checkout_terms::keep_receipts(order, &body, review_key);
+            })
+            .map(|_| ())
+    }
+
+    /// `POST /orders/{id}/pull`: pull sealed status/tracking/chat/return updates
+    /// directly from the seller's `POST /mail/pull` endpoint using this order's
+    /// derived key. Works without a 24/7 buyer Tor mailbox.
+    pub(crate) fn pull_remote_order(&self, id: &str) -> Result<Value, OrderError> {
+        let order = self.orders().get(id).cloned().ok_or(OrderError::Invalid("That order is not on this node."))?;
+        let Some(remote) = &order.remote else {
+            return Err(OrderError::Invalid("Only an order to another node's store can pull updates."));
+        };
+        let url = remote["url"].as_str().filter(|u| !u.is_empty()).ok_or(OrderError::Invalid("This order has no seller URL."))?;
+        let store = crate::stores::unhex32(&order.store_id).ok_or_else(|| OrderError::Failed("the order names no store key".into()))?;
+        let store_mailbox = {
+            let catalog = self.catalog();
+            let record = catalog.stores.iter().find(|store_record| store_record.id.as_bytes() == &store);
+            record.map(crate::stores::mailbox_key).transpose().map_err(OrderError::Failed)?
+        }
+        .ok_or(OrderError::Invalid("This node no longer has the store's record."))?;
+        let from = self.order_letter_key(&order.checkout_id, &store).map_err(OrderError::Failed)?;
+        let (reply_secret, drop) = self.order_reply_secret(&order.checkout_id, &store).map_err(OrderError::Failed)?;
+        let mut nonce = [0u8; 16];
+        StdRng::from_os_rng().fill_bytes(&mut nonce);
+        let letter = build_pull_request(&drop.0, &from, &store_mailbox, &nonce).map_err(OrderError::Failed)?;
+        let target = format!("{url}{PULL_MAIL}");
+        let answer = crate::peer_http::call(
+            &self.peers,
+            "POST",
+            &target,
+            Some(&letter.to_bytes()),
+            Some("application/octet-stream"),
+            Duration::from_secs(15),
+            64 * 1024,
+        )
+        .map_err(|err| OrderError::Failed(format!("Could not reach the seller's node. ({err})")))?;
+        if !(200..300).contains(&answer.status) {
+            return Err(OrderError::Failed(format!(
+                "The seller's node refused the status request (HTTP {}).",
+                answer.status
+            )));
+        }
+        let parsed: Value = serde_json::from_slice(&answer.body)
+            .map_err(|_| OrderError::Failed("The seller's status answer could not be read.".into()))?;
+        let reply_hex = parsed["reply"]
+            .as_str()
+            .ok_or_else(|| OrderError::Failed("The seller's status answer carried no sealed reply.".into()))?;
+        let reply_bytes = unhex(reply_hex).map_err(OrderError::Failed)?;
+        let pinned = remote["seller"].as_str();
+        let (sender, snapshot) = open_pull_response(&reply_bytes, &reply_secret, &nonce, pinned).map_err(OrderError::Failed)?;
+        let network = self.network;
+        self.orders()
+            .update(&order.id, |order| {
+                let remote = order.remote.get_or_insert_with(|| json!({}));
+                remote["seller"] = json!(sender);
+                remote["delivered"] = json!(true);
+                if let Some(map) = remote.as_object_mut() {
+                    map.remove("error");
+                }
+                apply_pull_status(order, &snapshot, network);
+            })
+            .map_err(OrderError::Failed)?;
+        Ok(self.orders().get_value(id).unwrap_or_default())
     }
 
     /// `POST /mail/reply`: a seller's reply to one of this node's orders.
@@ -438,6 +562,73 @@ pub(crate) fn apply_reply(order: &mut crate::buyer_orders::BuyerOrder, body: &Va
             }
         }
         _ => {}
+    }
+}
+
+/// Apply one authenticated pull status snapshot from `POST /mail/pull`.
+/// Reuses the exact same price-ceiling and network-address checks as push
+/// replies and only moves the order forward.
+pub(crate) fn apply_pull_status(order: &mut crate::buyer_orders::BuyerOrder, body: &Value, network: crate::NetworkMode) {
+    if order.status == AWAITING_SELLER {
+        let mut terms = body.clone();
+        terms["kind"] = json!("terms");
+        apply_reply(order, &terms, network);
+        if order.status == DECLINED {
+            return;
+        }
+    }
+    let status = body["status"].as_str().unwrap_or("");
+    if body["sellerSawPayment"].as_bool() == Some(true) || matches!(status, PAID | SHIPPED | COMPLETED) {
+        apply_reply(order, &json!({ "kind": "paid" }), network);
+    }
+    if let Some(fulfillment) = body.get("fulfillment").filter(|v| v.is_object()) {
+        let mut shipped = fulfillment.clone();
+        shipped["kind"] = json!("shipped");
+        apply_reply(order, &shipped, network);
+    }
+    if let Some(tracking) = body.get("tracking").filter(|v| v.is_object()) {
+        if order.status == SHIPPED {
+            if let Some(remote) = order.remote.as_mut() {
+                remote["tracking"] = tracking.clone();
+            }
+        }
+    }
+    if body["sellerCompleted"].as_bool() == Some(true) || status == COMPLETED {
+        apply_reply(order, &json!({ "kind": "completed" }), network);
+    }
+    if let Some(policy) = crate::return_case::policy_from_reply(&body["returnPolicy"]) {
+        if let Some(remote) = order.remote.as_mut() {
+            if remote.get("returnPolicy").and_then(Value::as_str).unwrap_or("").is_empty() {
+                remote["returnPolicy"] = json!(policy);
+            }
+        }
+    }
+    if let Some(return_case) = body.get("returnCase").filter(|v| v.is_object()) {
+        if let Some(remote) = order.remote.as_mut() {
+            let state = return_case["state"].as_str();
+            if matches!(state, Some("accepted") | Some("declined")) {
+                let action = if state == Some("accepted") { "accept" } else { "decline" };
+                let text = return_case["decision"].as_str().unwrap_or("");
+                let _ = crate::return_case::apply_seller_reply(
+                    remote,
+                    &json!({ "kind": "return", "action": action, "text": text }),
+                    crate::escrow_outbox::now_secs(),
+                );
+            }
+        }
+    }
+    if let Some(messages) = body["messages"].as_array() {
+        if let Some(remote) = order.remote.as_mut() {
+            for message in messages {
+                let from = message["from"].as_str();
+                if matches!(from, Some("buyer") | Some("seller")) {
+                    if let Some((message_id, text)) = crate::messages::received(message) {
+                        let at = message["at"].as_u64().unwrap_or_else(crate::escrow_outbox::now_secs);
+                        crate::messages::append(remote, "messages", &message_id, from.unwrap_or("seller"), &text, at);
+                    }
+                }
+            }
+        }
     }
 }
 
