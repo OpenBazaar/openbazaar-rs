@@ -6,7 +6,10 @@
 //!   bootstrapped, or the proxy answers. A listening SOCKS port is not
 //!   enough, since built-in Tor listens before it has bootstrapped. Tor that
 //!   the health check calls cut off ([`crate::remote::tor_health`]) is
-//!   `failed` too. Otherwise `connecting`, or `off` with no Tor at all.
+//!   `failed`; degraded (guards or onion publish struggling while still
+//!   bootstrapped) is `degraded` so the UI can go amber; health `starting`
+//!   (same trouble inside the grace window) is `connecting`. Otherwise
+//!   `connecting`, or `off` with no Tor at all.
 //! * onionServices: the node's own onion services by role, and whether each
 //!   is published, from the same health check.
 
@@ -23,6 +26,12 @@ pub(crate) fn value(
 ) -> Value {
     let cut_off = health
         .filter(|health| health["state"] == "cut off")
+        .map(|health| text(&health["reason"]));
+    let degraded = health
+        .filter(|health| health["state"] == "degraded")
+        .map(|health| text(&health["reason"]));
+    let starting = health
+        .filter(|health| health["state"] == "starting")
         .map(|health| text(&health["reason"]));
     let (mode, state, progress, error) = match (built_in, proxy) {
         (Some(tor), _) if tor.ready => ("builtin", "connected", Some(100), None),
@@ -44,9 +53,15 @@ pub(crate) fn value(
         ),
         (None, None) => ("none", "off", None, None),
     };
-    let (state, error) = match cut_off {
-        Some(reason) if state == "connected" => ("failed", Some(reason)),
-        _ => (state, error),
+    // Bootstrap "ready" can stay true while guards and onion uploads fail.
+    // Prefer the ongoing health check over a one-shot bootstrap bit (#221).
+    let (state, progress, error) = match (cut_off, degraded, starting) {
+        (Some(reason), _, _) if state == "connected" => ("failed", progress, Some(reason)),
+        (_, Some(reason), _) if state == "connected" => ("degraded", progress, Some(reason)),
+        // Drop the 100% bootstrap figure so the sidebar does not say
+        // "connecting… 100%" during the health grace window.
+        (_, _, Some(reason)) if state == "connected" => ("connecting", None, Some(reason)),
+        _ => (state, progress, error),
     };
     let onions: Vec<Value> = health
         .and_then(|health| health["onions"].as_array())
@@ -140,6 +155,53 @@ mod tests {
         assert_eq!(
             tor["onionServices"],
             json!([{ "name": "store", "published": true }, { "name": "lightning", "published": false }])
+        );
+    }
+
+    #[test]
+    fn a_degraded_health_check_turns_connected_amber() {
+        let ready = Bootstrap {
+            ready: true,
+            progress: 100,
+            problem: None,
+            failed: false,
+        };
+        let health = json!({
+            "state": "degraded",
+            "reason": "too many preemptive onion service circuits failed",
+            "onions": [{ "role": "store", "published": false }]
+        });
+        let tor = value(Some(&ready), None, Some(&health));
+        assert_eq!(
+            (tor["state"].as_str(), tor["error"].as_str()),
+            (
+                Some("degraded"),
+                Some("too many preemptive onion service circuits failed")
+            )
+        );
+        assert_eq!(tor["progress"], 100);
+    }
+
+    #[test]
+    fn health_starting_keeps_a_ready_bootstrap_from_showing_green() {
+        let ready = Bootstrap {
+            ready: true,
+            progress: 100,
+            problem: None,
+            failed: false,
+        };
+        let health = json!({
+            "state": "starting",
+            "reason": "The store onion address has not been published yet.",
+            "onions": [{ "role": "store", "published": false }]
+        });
+        let tor = value(Some(&ready), None, Some(&health));
+        assert_eq!(
+            (tor["state"].as_str(), tor["error"].as_str()),
+            (
+                Some("connecting"),
+                Some("The store onion address has not been published yet.")
+            )
         );
     }
 }

@@ -140,7 +140,9 @@ fn serve(args: &[String]) -> ExitCode {
         "ob-node: paid after {} confirmation(s)",
         options.confirmations
     );
-    if options.uses_public_server() {
+    // With --tor / --proxy the next line already says traffic goes through the
+    // proxy; the "without --proxy" warning would contradict that (#221).
+    if options.uses_public_server() && options.proxy.is_none() {
         eprintln!("ob-node: WARNING: a public Esplora server is not told which addresses this wallet follows, and it is not contacted without --proxy. Pass --proxy, or --peer with your own node.");
     }
     match &options.proxy {

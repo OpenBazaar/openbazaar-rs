@@ -2,8 +2,8 @@
 export type TorStatus = {
   /** `builtin`: the node's own Tor. `system`: a Tor proxy already on this computer. */
   mode: 'builtin' | 'system' | 'none'
-  /** `connected` only once Tor can build circuits, not when its port merely listens. */
-  state: 'connecting' | 'connected' | 'failed' | 'off'
+  /** `connected` only once Tor can build circuits, not when its port merely listens. `degraded` means bootstrapped but struggling (guards / onion publish). */
+  state: 'connecting' | 'connected' | 'degraded' | 'failed' | 'off'
   progress: number | null
   error: string | null
   onionServices: { name: string; published: boolean }[]
@@ -20,7 +20,10 @@ export function parseTorStatus(value: unknown): TorStatus | null {
   if (!value || typeof value !== 'object') return null
   const r = record(value)
   const mode = r.mode === 'builtin' || r.mode === 'system' ? r.mode : 'none'
-  const state = r.state === 'connecting' || r.state === 'connected' || r.state === 'failed' ? r.state : 'off'
+  const state =
+    r.state === 'connecting' || r.state === 'connected' || r.state === 'degraded' || r.state === 'failed'
+      ? r.state
+      : 'off'
   const progress = typeof r.progress === 'number' && r.progress >= 0 && r.progress <= 100 ? Math.round(r.progress) : null
   const onionServices = Array.isArray(r.onionServices)
     ? r.onionServices.map(onion => ({ name: text(record(onion).name) ?? 'unknown', published: record(onion).published === true }))
@@ -38,6 +41,13 @@ export function torIndicator(tor: TorStatus | null | undefined): { tone: TorTone
   if (!tor || tor.mode === 'none') return null
   const kind = tor.mode === 'builtin' ? 'built-in' : 'system'
   if (tor.state === 'connected') return { tone: 'ok', label: `Tor connected (${kind})`, title: 'Tor is connected and can build circuits.' }
+  if (tor.state === 'degraded') {
+    return {
+      tone: 'busy',
+      label: `Tor having trouble (${kind})`,
+      title: tor.error ?? 'Tor is up but having trouble building circuits or publishing onion addresses.'
+    }
+  }
   if (tor.state === 'connecting') {
     const progress = tor.progress != null ? ` ${tor.progress}%` : ''
     return { tone: 'busy', label: `Tor connecting…${progress}`, title: tor.error ?? `Connecting to the Tor network (${kind}).` }
@@ -50,6 +60,9 @@ export function torSummary(tor: TorStatus): string {
   const which = tor.mode === 'builtin' ? 'OpenBazaar’s built-in Tor' : 'The Tor proxy on this computer'
   if (tor.mode === 'none') return 'This node does not use Tor. Public servers are not contacted.'
   if (tor.state === 'connected') return `${which} is connected.`
+  if (tor.state === 'degraded') {
+    return `${which} is having trouble${tor.error ? `: ${tor.error}` : ''}. Payments and onion addresses may stall until it recovers.`
+  }
   if (tor.state === 'connecting') return `${which} is connecting to the Tor network${tor.progress != null ? ` (${tor.progress}%)` : ''}. Payments, prices, and peers wait until it is ready.`
   return `${which} is not connected${tor.error ? `: ${tor.error}` : ''}. The node keeps trying.`
 }

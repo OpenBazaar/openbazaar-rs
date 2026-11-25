@@ -11,6 +11,12 @@ test('the indicator is green, amber, or red, and says which Tor', () => {
   const connecting = torIndicator(sent({ state: 'connecting', progress: 42 }))!
   assert.equal(connecting.tone, 'busy')
   assert.equal(connecting.label, 'Tor connecting… 42%')
+  const degraded = torIndicator(sent({ state: 'degraded', error: 'too many preemptive onion service circuits failed' }))!
+  assert.equal(degraded.tone, 'busy')
+  assert.equal(degraded.label, 'Tor having trouble (built-in)')
+  assert.match(degraded.title, /preemptive onion service circuits/)
+  assert.match(torSummary(sent({ state: 'degraded', error: 'guards failing' })), /having trouble: guards failing/)
+  assert.equal(waitingForTor(sent({ state: 'degraded' })), true)
   const failed = torIndicator(sent({ mode: 'system', state: 'failed', progress: null, error: 'the Tor proxy at 127.0.0.1:9050 does not answer' }))!
   assert.equal(failed.tone, 'down')
   assert.equal(failed.label, 'Tor not connected (system)')
