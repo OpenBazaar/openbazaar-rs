@@ -13,6 +13,7 @@
 //! `updates-off` in the app data folder records that. "Check for updates…"
 //! always works. A version the user answered "Later" to is not offered again
 //! by the automatic check until the app restarts.
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::thread;
@@ -161,6 +162,16 @@ fn offer(app: &AppHandle, trigger: Trigger, update: Update) {
     if trigger == Trigger::Automatic && later.as_deref() == Some(update.version.as_str()) {
         return;
     }
+    // Say so before downloading when this copy cannot be replaced where it runs
+    // (a mounted .dmg, a translocated copy): the install would fail at the end.
+    if let Some(problem) = replaced_path().and_then(|path| location_problem(&path, is_read_only(&path))) {
+        *LATER.lock().unwrap_or_else(|err| err.into_inner()) = Some(update.version.clone());
+        tell(app, MessageDialogKind::Warning, "An OpenBazaar update is ready", &format!(
+            "OpenBazaar {} is available. You have {}.\n\n{problem}",
+            update.version, update.current_version
+        ));
+        return;
+    }
     let message = offer_text(&update.current_version, &update.version, update.body.as_deref());
     let install = app
         .dialog()
@@ -211,15 +222,84 @@ fn install_now(app: &AppHandle, update: &Update) -> Result<(), String> {
     app.restart();
 }
 
-/// The updater's errors name its internals; say what they mean.
+#[cfg(target_os = "macos")]
+const MOVE_HINT: &str = "Quit OpenBazaar, drag it into your Applications folder, eject the OpenBazaar disk image if it is mounted, open OpenBazaar from Applications, and check for updates again.";
+#[cfg(not(target_os = "macos"))]
+const MOVE_HINT: &str = "Quit OpenBazaar, move it to a folder you own (for example ~/Applications), start it from there, and check for updates again.";
+
+/// What an install replaces: the .app bundle on macOS, the AppImage on Linux.
+/// None where an installer does the work (Windows).
+#[cfg(target_os = "macos")]
+fn replaced_path() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    exe.ancestors()
+        .find(|path| path.extension().is_some_and(|ext| ext == "app"))
+        .map(Path::to_path_buf)
+}
+
+#[cfg(target_os = "linux")]
+fn replaced_path() -> Option<PathBuf> {
+    std::env::var_os("APPIMAGE").map(PathBuf::from)
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn replaced_path() -> Option<PathBuf> {
+    None
+}
+
+/// Whether the folder holding `path` is on a read-only file system, found by
+/// creating and removing a probe file. A permission error is not counted:
+/// the updater may still ask for an administrator's password there.
+fn is_read_only(path: &Path) -> bool {
+    let Some(dir) = path.parent() else { return false };
+    let probe = dir.join(format!(".openbazaar-update-probe-{}", std::process::id()));
+    match std::fs::OpenOptions::new().write(true).create_new(true).open(&probe) {
+        Ok(_) => {
+            let _ = std::fs::remove_file(&probe);
+            false
+        }
+        Err(err) => err.raw_os_error() == Some(READ_ONLY_FS),
+    }
+}
+
+/// `EROFS` on macOS and Linux.
+const READ_ONLY_FS: i32 = 30;
+
+/// Why this copy cannot be replaced where it runs, if it cannot.
+pub(crate) fn location_problem(path: &Path, read_only: bool) -> Option<String> {
+    let text = path.to_string_lossy();
+    if text.contains("/AppTranslocation/") {
+        return Some(format!(
+            "macOS is running OpenBazaar from a temporary read-only copy, because it was opened where it was downloaded. {MOVE_HINT}"
+        ));
+    }
+    if !read_only {
+        return None;
+    }
+    if text.starts_with("/Volumes/") {
+        Some(format!(
+            "OpenBazaar is running from its disk image ({}), which cannot be changed. {MOVE_HINT}",
+            path.display()
+        ))
+    } else {
+        Some(format!("OpenBazaar is running from a read-only place ({}). {MOVE_HINT}", path.display()))
+    }
+}
+
+/// The updater's errors name its internals; say what they mean. Callers put
+/// them under a title that says what was being done.
 pub(crate) fn plain_error(raw: &str) -> String {
     let lower = raw.to_lowercase();
     if lower.contains("signature") {
         "The download is not signed by the OpenBazaar release key, so it was not installed.".into()
     } else if (lower.contains("platform") || lower.contains("target")) && lower.contains("not found") {
         "This kind of install cannot update itself (for example the Debian package). Download the new version instead.".into()
+    } else if lower.contains("read-only file system") || lower.contains("os error 30") {
+        format!("OpenBazaar could not replace itself because it is running from a read-only place. {MOVE_HINT}")
+    } else if lower.contains("permission denied") || lower.contains("os error 13") {
+        format!("OpenBazaar does not have permission to replace itself where it is installed. {MOVE_HINT}")
     } else {
-        format!("The update could not be read: {raw}")
+        raw.to_string()
     }
 }
 
@@ -252,6 +332,30 @@ mod tests {
     fn updater_errors_are_put_plainly() {
         assert!(plain_error("Signature verification failed").contains("not signed"));
         assert!(plain_error("the platform `linux-x86_64-deb` was not found on the response `platforms` object").contains("cannot update itself"));
-        assert!(plain_error("connection reset").contains("connection reset"));
+        assert_eq!(plain_error("connection reset"), "connection reset");
+        let read_only = plain_error("Read-only file system (os error 30) at path \"/Volumes/OpenBazaar/tauri_current_app\"");
+        assert!(read_only.contains("read-only place") && read_only.contains(MOVE_HINT), "{read_only}");
+        assert!(plain_error("Permission denied (os error 13)").contains("permission"));
+    }
+
+    #[test]
+    fn a_copy_that_cannot_be_replaced_is_named_before_any_download() {
+        let dmg = Path::new("/Volumes/OpenBazaar/OpenBazaar.app");
+        let said = location_problem(dmg, true).expect("a mounted disk image is refused");
+        assert!(said.contains("disk image") && said.contains(MOVE_HINT), "{said}");
+        assert_eq!(location_problem(dmg, false), None, "an external drive the user can write to is fine");
+        let moved = Path::new("/private/var/folders/x/AppTranslocation/ABC/d/OpenBazaar.app");
+        assert!(location_problem(moved, false).unwrap().contains("temporary read-only copy"));
+        assert_eq!(location_problem(Path::new("/Applications/OpenBazaar.app"), false), None);
+        assert!(location_problem(Path::new("/opt/OpenBazaar.AppImage"), true).unwrap().contains("read-only place"));
+    }
+
+    #[test]
+    fn a_writable_folder_is_not_read_only() {
+        let dir = std::env::temp_dir().join(format!("ob-probe-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(!is_read_only(&dir.join("OpenBazaar.app")));
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0, "the probe file is removed");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }
