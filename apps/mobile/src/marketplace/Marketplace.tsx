@@ -56,6 +56,7 @@ import { BrowsersSettings } from "./BrowsersSettings";
 import { CatalogEmpty } from "./CatalogEmpty";
 import { sanitizeGuestLocation } from "./guestRoute";
 import { SidebarUtilities } from "./SidebarUtilities";
+import { Classifieds } from "./Classifieds";
 
 type IconName = "settings" | "wallet" | "sun" | "moon" | "compass" | "heart" | "bag" | "arrow" | "search" | "chevron" | "check" | "shield" | "globe" | "close" | "menu" | "book" | "cup" | "home" | "music" | "shirt" | "tool" | "paper" | "grid" | "pin" | "bolt" | "external" | "ticket";
 export function Icon({ name, size = 20, ...props }: { name: IconName; size?: number; className?: string }) {
@@ -111,7 +112,7 @@ function btc(sats: number) { return `${(sats / 1e8).toFixed(8).replace(/0+$/, ""
 export function Money({ sats, rates, currency, large = false }: { sats: number; rates: RateTable; currency: CurrencyCode; large?: boolean }) { const estimate = fiat(sats, rates, currency); return <div className={`ob-money ${large ? "ob-money-large" : ""}`}><span>{sats.toLocaleString("en-US")} <small>sats</small></span>{estimate && <span className="ob-estimate" title={`Estimated value in ${currency}`}>≈ {estimate}</span>}</div>; }
 function Brand({ theme }: { theme: "light" | "dark" }) { return <span className="ob-brand"><span className="ob-brand-icon"><img src={theme === "light" ? "brand/ob-market-logo-light.png" : "brand/ob-market-logo-256.png"} alt="" width={42} height={42}/></span><span>OpenBazaar<span className="ob-brand-dot">.</span></span></span>; }
 
-export type Section = "discover" | "saved" | "orders" | "bag" | "addresses" | "safety" | "wallet" | "store-labels" | "home-node" | "browsers" | "lightning" | "zcash" | "monero" | "tor" | "follows" | StoreSection;
+export type Section = "discover" | "saved" | "orders" | "bag" | "addresses" | "safety" | "wallet" | "store-labels" | "home-node" | "browsers" | "lightning" | "zcash" | "monero" | "tor" | "follows" | "classifieds" | StoreSection;
 type StoreSection = "storefront" | "listings" | "coupons" | "sales" | "store";
 const STORE_SECTIONS: readonly Section[] = ["storefront", "listings", "coupons", "sales", "store"];
 type Page = { name: "browse" } | { name: "store"; storeId: string } | { name: "detail"; listing: ListingHeader; fromStore?: string } | { name: "checkout"; lines: CartLine[]; returnTo?: ListingHeader; fromStore?: string } | { name: "receipt"; receipt: CheckoutReceipt };
@@ -406,7 +407,7 @@ export default function Marketplace() {
 
   const money = { rates, currency };
   const navSection: Section = page.name === "receipt" ? "orders" : section;
-  const utilityView = page.name !== "browse" ? null : section === "saved" && saved.length === 0 ? <section><PageHeading title="Saved goods"/><Empty illustration="saved" icon="heart" title="No saved products" text="Save products using the heart button."><button className="ob-primary" onClick={() => navigate("discover")}>Browse products <Icon name="arrow" size={17}/></button></Empty></section> : section === "safety" ? <SafetySettingsPanel settings={safety} onChange={setSafety} labelSources={nodeAvailable ? <LabelersPanel state={labelers} onState={setLabelerState}/> : undefined}/> : guest ? storeView() : section === "wallet" ? <WalletPage {...money} onOrders={() => navigate("orders")} onSales={seller ? () => navigate("sales") : undefined} onManage={rail => navigate(rail)} onTor={() => navigate("tor")}/> : section === "lightning" ? <LightningSettings/> : section === "zcash" ? <ZcashSettings/> : section === "monero" ? <MoneroSettings/> : section === "tor" ? <TorSettings/> : section === "home-node" ? <div className="ob-settings-page"><header className="ob-settings-heading"><h1>Home node</h1><p>Run your store on an always-on computer and manage it from anywhere over Tor.</p></header><HomeNodePanel/></div> : section === "browsers" ? <BrowsersSettings/> : section === "addresses" ? <Addresses/> : section === "orders" ? <Orders {...money} onBrowse={() => navigate("discover")}/> : section === "follows" ? <Follows onChanged={message => { setToast(message); void load(); }} onOpen={id => void openStore(id)}/> : storeView();
+  const utilityView = page.name !== "browse" ? null : section === "saved" && saved.length === 0 ? <section><PageHeading title="Saved goods"/><Empty illustration="saved" icon="heart" title="No saved products" text="Save products using the heart button."><button className="ob-primary" onClick={() => navigate("discover")}>Browse products <Icon name="arrow" size={17}/></button></Empty></section> : section === "safety" ? <SafetySettingsPanel settings={safety} onChange={setSafety} labelSources={nodeAvailable ? <LabelersPanel state={labelers} onState={setLabelerState}/> : undefined}/> : guest ? storeView() : section === "wallet" ? <WalletPage {...money} onOrders={() => navigate("orders")} onSales={seller ? () => navigate("sales") : undefined} onManage={rail => navigate(rail)} onTor={() => navigate("tor")}/> : section === "lightning" ? <LightningSettings/> : section === "zcash" ? <ZcashSettings/> : section === "monero" ? <MoneroSettings/> : section === "tor" ? <TorSettings/> : section === "home-node" ? <div className="ob-settings-page"><header className="ob-settings-heading"><h1>Home node</h1><p>Run your store on an always-on computer and manage it from anywhere over Tor.</p></header><HomeNodePanel/></div> : section === "browsers" ? <BrowsersSettings/> : section === "addresses" ? <Addresses/> : section === "orders" ? <Orders {...money} onBrowse={() => navigate("discover")}/> : section === "follows" ? <Follows onChanged={message => { setToast(message); void load(); }} onOpen={id => void openStore(id)}/> : section === "classifieds" ? <Classifieds/> : storeView();
   function storeView() {
     if (guest && inStore) return <SellGate/>;
     const own = profile.data;
@@ -429,6 +430,7 @@ export default function Marketplace() {
       <div className="ob-sidebar-scroll">
         <nav className="ob-main-nav" aria-label="Shopping">
           <NavItem icon="compass" active={navSection === "discover" && !category} onClick={() => navigate("discover")}>Products</NavItem>
+          <NavItem icon="paper" active={navSection === "classifieds"} onClick={() => navigate("classifieds")}>Classifieds</NavItem>
           <NavItem icon="heart" active={navSection === "saved"} onClick={() => navigate("saved")} count={savedCount || undefined}>Saved goods</NavItem>
           <NavItem icon="bag" active={navSection === "bag"} onClick={() => navigate("bag")} count={cart.reduce((n, l) => n + l.quantity, 0) || undefined}>Your bag</NavItem>
         </nav>

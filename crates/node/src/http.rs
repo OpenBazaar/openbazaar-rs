@@ -213,7 +213,15 @@ fn route(node: &Node, request: &Request<'_>, client: Client, origin: Option<&str
     if let Some(response) = crate::browser::route(node, client, method, path, head, origin) {
         return response;
     }
-    let modules = [crate::store_http::response, crate::sales_http::response, crate::commerce_http::response, crate::reviews_http::response, crate::public_http::response, crate::moderator_http::response];
+    let modules = [
+        crate::store_http::response,
+        crate::sales_http::response,
+        crate::commerce_http::response,
+        crate::reviews_http::response,
+        crate::classifieds_http::response,
+        crate::public_http::response,
+        crate::moderator_http::response,
+    ];
     for module in modules {
         if let Some(response) = module(node, client, head, method, path, body, origin) {
             return response;
