@@ -55,10 +55,13 @@ type Control = { index: number; name: string; tag: string; kind: string; current
 /** What the user can see and what the controls say, to tell whether a click did anything. */
 async function signature(page: Page): Promise<string> {
   return page.evaluate(() => {
-    const states = [...document.querySelectorAll('[aria-pressed],[aria-expanded],[aria-checked],[aria-selected],details,input,select,textarea,dialog')]
-      .map(e => [e.getAttribute('aria-pressed'), e.getAttribute('aria-expanded'), e.getAttribute('aria-checked'), e.getAttribute('aria-selected'), (e as HTMLDetailsElement).open, (e as HTMLInputElement).value, (e as HTMLInputElement).checked, (e as HTMLDialogElement).open].join(','))
+    // Disabled buttons and image order matter: reordering photos changes both
+    // without changing body text or the usual ARIA state attributes.
+    const states = [...document.querySelectorAll('[aria-pressed],[aria-expanded],[aria-checked],[aria-selected],details,input,select,textarea,dialog,button')]
+      .map(e => [e.getAttribute('aria-pressed'), e.getAttribute('aria-expanded'), e.getAttribute('aria-checked'), e.getAttribute('aria-selected'), (e as HTMLDetailsElement).open, (e as HTMLInputElement).value, (e as HTMLInputElement).checked, (e as HTMLDialogElement).open, (e as HTMLButtonElement).disabled].join(','))
       .join('|')
-    const text = `${document.body.innerText}#${states}`
+    const media = [...document.images].map(i => i.currentSrc || i.getAttribute('src') || '').join(',')
+    const text = `${document.body.innerText}#${states}#${media}`
     let hash = 5381
     for (let i = 0; i < text.length; i++) hash = (Math.imul(hash, 33) ^ text.charCodeAt(i)) >>> 0
     return `${location.href}#${text.length}#${hash}`

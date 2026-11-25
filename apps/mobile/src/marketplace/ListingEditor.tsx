@@ -185,6 +185,7 @@ export function ListingEditor({ listing, savedDraft, rates, onSaved, onCancel }:
       <div className="ob-listing-photos">
         {form.images.map((hash, i) => <figure key={hash} className="ob-listing-photo">
           <button type="button" className="ob-photo-open" aria-label={`View photo ${i + 1} larger`} onClick={() => setLarger(i)}><MediaImage hash={hash} alt={`Photo ${i + 1}`}/></button>
+          {i === 0 ? <figcaption className="ob-photo-cover">Cover</figcaption> : null}
           <button type="button" className="ob-icon-button" aria-label={`Remove photo ${i + 1}`} onClick={() => { if (larger === i) setLarger(null); set("images", form.images.filter(h => h !== hash)); }}>×</button>
           <span className="ob-photo-moves">
             <button type="button" aria-label={`Move photo ${i + 1} earlier`} disabled={i === 0} onClick={() => set("images", movePhoto(form.images, i, -1))}>Earlier</button>

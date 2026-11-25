@@ -53,6 +53,28 @@ test('photos are added to and removed from an existing listing', async ({ page, 
   expect(towel.images).not.toContain(first)
 })
 
+test('moving a photo later moves the cover label with it', async ({ page, seller }) => {
+  const first = await seller.uploadImage()
+  const second = await seller.uploadImage()
+  await seller.addListing({ title: 'Field notes zine', images: [first, second] })
+  await page.goto(seller.ui)
+  await openListings(page)
+  await page.getByRole('button', { name: 'Edit Field notes zine' }).click()
+  const media = page.getByRole('group', { name: 'Product media' })
+  const figures = media.locator('.ob-listing-photo')
+  await expect(figures.nth(0)).toContainText('Cover')
+  await expect(figures.nth(1)).not.toContainText('Cover')
+  await media.getByRole('button', { name: 'Move photo 1 later' }).click()
+  await expect(figures.nth(0)).toContainText('Cover')
+  await expect(figures.nth(1)).not.toContainText('Cover')
+  const order = await media.getByRole('img').evaluateAll(imgs => imgs.map(i => (i as HTMLImageElement).src))
+  await page.getByRole('button', { name: 'Save changes' }).click()
+  await expect(page.getByRole('button', { name: 'Edit Field notes zine' })).toBeVisible()
+  const [zine] = (await ownListings(seller)).filter(l => l.title === 'Field notes zine')
+  expect(zine.images).toEqual([second, first])
+  expect(order[0]).not.toBe(order[1])
+})
+
 test('the list counts drafts, shows bulk changes only for a selection, and removes a draft', async ({ page, seller }) => {
   const photo = await seller.uploadImage()
   await seller.addListing({ title: 'Linen tea towel', images: [photo] })
