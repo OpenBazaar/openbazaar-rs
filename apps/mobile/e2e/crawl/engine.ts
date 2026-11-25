@@ -222,7 +222,19 @@ export async function crawl(page: Page, options: CrawlOptions): Promise<Finding[
         const label = await labelOf(handle)
         const pool = control.kind === 'number' ? NUMBER_FUZZ : FUZZ
         const value = /passphrase/i.test(label) && control.kind !== 'number' ? options.passphrase : pool[Math.floor(random() * pool.length)]
-        await handle.fill(value, { timeout: 3000 })
+        // Playwright's fill() clears with an empty string first; some engines then refuse
+        // to type into input[type=number] ("Cannot type text into input[type=number]").
+        if (control.kind === 'number') {
+          await handle.evaluate((el, next) => {
+            const input = el as HTMLInputElement
+            input.focus()
+            input.value = next
+            input.dispatchEvent(new Event('input', { bubbles: true }))
+            input.dispatchEvent(new Event('change', { bubbles: true }))
+          }, value)
+        } else {
+          await handle.fill(value, { timeout: 3000 })
+        }
         await handle.press(random() < 0.3 ? 'Enter' : 'Tab', { timeout: 3000 })
       } else if (control.tag === 'select') {
         const values = await handle.locator('option').evaluateAll(os => os.map(o => (o as HTMLOptionElement).value))

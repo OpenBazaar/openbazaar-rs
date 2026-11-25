@@ -25,6 +25,7 @@ export function privacyStatus(info: ConnectionInfo & { privacyWarning?: string |
   const tor = info.tor
   if (tor && waitingForTor(tor)) {
     if (tor.state === 'connecting') return `Connecting to Tor…${tor.progress != null ? ` ${tor.progress}%` : ''}`
+    if (tor.state === 'degraded') return `Tor having trouble${tor.error ? `: ${tor.error}` : ''}`
     return `Tor not connected: ${tor.error ?? 'the node keeps trying'}`
   }
   if (info.proxyReachable === false) return 'Tor is not running'
@@ -76,6 +77,9 @@ function proxyLine(info: ConnectionInfo): string {
   const tor = info.tor
   if (tor?.mode === 'builtin') {
     if (tor.state === 'connected') return 'Built-in Tor, connected.'
+    if (tor.state === 'degraded') {
+      return `Built-in Tor is having trouble${tor.error ? `: ${tor.error}` : ''}. The node keeps trying.`
+    }
     if (tor.state === 'failed') {
       return `Built-in Tor could not connect${tor.error ? `: ${tor.error}` : ''}. Check this computer's internet connection; the node keeps trying.`
     }

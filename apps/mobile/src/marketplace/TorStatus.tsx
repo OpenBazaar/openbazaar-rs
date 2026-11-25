@@ -33,7 +33,7 @@ export function TorSettings() {
       <dl className='ob-spend-terms'>
         <dt>Connection</dt>
         <dd>{indicator ? <><span className={`ob-status-dot ${TONE_CLASS[indicator.tone]}`} aria-hidden='true'/> {indicator.label}</> : 'Not used'}</dd>
-        {tor.mode !== 'none' && <><dt>Bootstrap</dt><dd>{tor.state === 'connected' ? 'Done' : tor.progress != null ? `${tor.progress}%` : 'Not reported'}</dd></>}
+        {tor.mode !== 'none' && <><dt>Bootstrap</dt><dd>{tor.state === 'connected' || tor.state === 'degraded' ? 'Done' : tor.progress != null ? `${tor.progress}%` : 'Not reported'}</dd></>}
         {tor.error && <><dt>Last problem</dt><dd>{tor.error}</dd></>}
       </dl>
     </section>}
