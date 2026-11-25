@@ -48,3 +48,49 @@ test('a number field and a section link are not reported as broken', async ({ pa
     await new Promise<void>(r => pageServer.close(() => r()))
   }
 })
+
+test('reordering photos by swapping disabled move buttons is not a dead control', async ({ page }) => {
+  // Distinct image URLs: with identical srcs the page signature would not change
+  // when only order swaps, which is what the release crawl hit on listing photos.
+  const pageServer = createServer((_, res) => res.writeHead(200, { 'Content-Type': 'text/html' }).end(`<!doctype html><html><body>
+<h1>Draft photos</h1>
+<div id="photos"></div>
+<script>
+const order = [
+  'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7',
+  'data:image/gif;base64,R0lGODlhAQABAIABAP///wAAACwAAAAAAQABAAACAkQBADs='
+]
+function render() {
+  const root = document.getElementById('photos')
+  root.innerHTML = order.map((src, i) => \`
+    <figure>
+      <img src="\${src}" alt="photo \${i + 1}">
+      \${i === 0 ? '<figcaption>Cover</figcaption>' : ''}
+      <button aria-label="Move photo \${i + 1} earlier" \${i === 0 ? 'disabled' : ''}>Earlier</button>
+      <button aria-label="Move photo \${i + 1} later" \${i === order.length - 1 ? 'disabled' : ''}>Later</button>
+    </figure>\`).join('')
+  root.querySelectorAll('button').forEach((button, index) => {
+    button.onclick = () => {
+      const photo = Math.floor(index / 2)
+      const direction = index % 2 === 0 ? -1 : 1
+      const next = photo + direction
+      if (next < 0 || next >= order.length) return
+      const [moved] = order.splice(photo, 1)
+      order.splice(next, 0, moved)
+      render()
+    }
+  })
+}
+render()
+</script>
+</body></html>`))
+  await new Promise<void>(r => pageServer.listen(0, '127.0.0.1', r))
+  const url = `http://127.0.0.1:${(pageServer.address() as { port: number }).port}/`
+  try {
+    await page.goto(url)
+    const findings = await crawl(page, { seed: 3, maxSteps: 20, maxMs: 30000, passphrase: 'x', home: url })
+    expect(findings.filter(f => /Move photo/.test(f.control))).toEqual([])
+  } finally {
+    await new Promise<void>(r => pageServer.close(() => r()))
+  }
+})
