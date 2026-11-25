@@ -26,6 +26,15 @@ pub(crate) fn proxy_addr(proxy: &str) -> Result<SocketAddr, String> {
     let authority = proxy
         .trim_start_matches("socks5h://")
         .trim_start_matches("socks5://");
+    // Refuse an empty host before numeric_proxy and before any resolver call.
+    // On Windows getaddrinfo answers an empty name with every interface address
+    // on this machine, so `socks5h://:9050` would resolve to the node itself.
+    let Some((host, _port)) = authority.rsplit_once(':') else {
+        return Err(format!("proxy {authority} has no port"));
+    };
+    if host.trim().is_empty() {
+        return Err(format!("proxy {authority} has no host"));
+    }
     if let Some(addr) = numeric_proxy(authority) {
         return Ok(addr);
     }
@@ -74,7 +83,7 @@ impl Egress {
             .or_else(|| text.strip_prefix("socks5://"))
             .ok_or_else(refused)?;
         let (host, port) = authority.rsplit_once(':').ok_or_else(refused)?;
-        if host.is_empty() || host.contains(['/', '@', '?', '#']) || port.parse::<u16>().map_or(true, |port| port == 0) {
+        if host.trim().is_empty() || host.contains(['/', '@', '?', '#']) || port.parse::<u16>().map_or(true, |port| port == 0) {
             return Err(refused());
         }
         Ok(format!("socks5h://{authority}"))
@@ -245,7 +254,7 @@ mod tests {
     fn proxies_are_socks5_with_remote_names() {
         assert_eq!(Egress::parse_proxy("socks5://127.0.0.1:9050").unwrap(), "socks5h://127.0.0.1:9050");
         assert_eq!(Egress::parse_proxy("socks5h://localhost:9150/").unwrap(), "socks5h://localhost:9150");
-        for bad in ["http://127.0.0.1:8080", "socks5://127.0.0.1", "socks5://:9050", "socks5://u:p@h:1", "127.0.0.1:9050", "socks5://h:0"] {
+        for bad in ["http://127.0.0.1:8080", "socks5://127.0.0.1", "socks5://:9050", "socks5:// :9050", "socks5://u:p@h:1", "127.0.0.1:9050", "socks5://h:0"] {
             assert!(Egress::parse_proxy(bad).is_err(), "{bad}");
         }
     }
@@ -277,6 +286,7 @@ mod tests {
             "a numeric proxy went through the OS resolver"
         );
         assert!(proxy_addr("socks5h://:9050").is_err());
+        assert!(proxy_addr("socks5h:// :9050").is_err(), "a whitespace host is not a host");
     }
 
     #[test]
