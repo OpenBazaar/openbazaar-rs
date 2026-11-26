@@ -1,5 +1,6 @@
-//! Network, wallet, and pay routes. Everything except `GET /network` needs a
-//! loopback caller with the pairing token.
+//! Network, wallet, and pay routes. `GET /network` returns a minimal public
+//! status (network name, lock state) without pairing; detailed Tor, onion,
+//! and backend fields require the pairing token.
 
 use std::collections::HashMap;
 
@@ -9,7 +10,19 @@ use crate::http::{json_body, json_error, local_guard, Client};
 use crate::pay_order::PayError;
 use crate::Node;
 
-pub(crate) fn network_response(node: &Node, origin: Option<&str>) -> Vec<u8> {
+/// `GET /network`: full detail for paired callers, redacted identity-linking
+/// fields (onion, Tor health) for unpaired loopback callers (#241).
+pub(crate) fn network_response(
+    node: &Node,
+    client: &Client,
+    head: &str,
+    origin: Option<&str>,
+) -> Vec<u8> {
+    let paired = crate::browser::allows(node, client, head);
+    network_response_inner(node, paired, origin)
+}
+
+fn network_response_inner(node: &Node, paired: bool, origin: Option<&str>) -> Vec<u8> {
     let chain = node.chain.status();
     let mut value = json!({
         "network": node.network.as_str(),
@@ -44,6 +57,17 @@ pub(crate) fn network_response(node: &Node, origin: Option<&str>) -> Vec<u8> {
         map.extend(egress);
         let health = node.remote.tor_health();
         map.insert("tor".into(), crate::tor_status::value(built_in.as_ref(), proxy, health.as_ref()));
+    }
+    // Without pairing, redact the fields that link this machine to a store
+    // identity: onion address, Tor health details, and proxy config (#241).
+    if !paired {
+        if let Some(map) = value.as_object_mut() {
+            map.remove("onion");
+            map.remove("letterOnion");
+            map.remove("tor");
+            map.remove("proxy");
+            map.remove("proxyReachable");
+        }
     }
     json_body("200 OK", &value, origin)
 }

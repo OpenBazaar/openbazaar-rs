@@ -460,7 +460,11 @@ mod tests {
     fn the_advertised_address_is_the_onion_and_the_shop_stays_loopback() {
         let dir = TempDir::new();
         let node = Node::open(&dir.0, load_catalog(NetworkMode::Testnet4).unwrap()).unwrap();
-        let raw = b"GET /network HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n";
+        let raw = format!(
+            "GET /network HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Ob-Pair: {}\r\n\r\n",
+            node.pairing_token()
+        );
+        let raw = raw.as_bytes();
         let response = dispatch(&node, raw);
         let body = std::str::from_utf8(&response).unwrap();
         let json: serde_json::Value = serde_json::from_str(body.split_once("\r\n\r\n").unwrap().1).unwrap();
