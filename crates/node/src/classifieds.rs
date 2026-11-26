@@ -28,6 +28,7 @@ use crate::{Error, Node};
 const FILE: &str = "classifieds.obv";
 const MAX_POSTS: usize = 2_000;
 const MAX_THREADS: usize = 500;
+const MAX_THREADS_PER_PEER: usize = 10;
 const MAX_OWN_LIVE: usize = 50;
 
 #[derive(Clone)]
@@ -587,6 +588,10 @@ impl Node {
             None => {
                 if board.threads.len() >= MAX_THREADS {
                     return Err(refused("that store cannot take another contact right now"));
+                }
+                let peer_threads = board.threads.iter().filter(|thread| thread.peer == *peer).count();
+                if peer_threads >= MAX_THREADS_PER_PEER {
+                    return Err(refused("that sender has too many open contact threads"));
                 }
                 board.threads.push(Thread {
                     id: thread_id,
