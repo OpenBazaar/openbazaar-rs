@@ -137,7 +137,7 @@ fn contact_routes(
     let message = path.strip_prefix("/contact/").and_then(|rest| rest.strip_suffix("/message")).filter(|id| !id.is_empty() && !id.contains('/'));
     let one = path.strip_prefix("/contact/").filter(|rest| !rest.is_empty() && !rest.contains('/') && message.is_none());
     let list = path == "/contact";
-    let known = matches!((method, list, one.is_some(), message.is_some()), ("GET", true, _, _) | ("GET", _, true, _) | ("POST", _, _, true));
+    let known = matches!((method, list, one.is_some(), message.is_some()), ("GET", true, _, _) | ("GET", _, true, _) | ("DELETE", _, true, _) | ("POST", _, _, true));
     if !known {
         return None;
     }
@@ -147,10 +147,17 @@ fn contact_routes(
     if method == "GET" && list {
         return Some(json_body("200 OK", &node.contact_threads_value(), origin));
     }
-    if method == "GET" {
+    if method == "GET" && one.is_some() {
         return Some(match node.contact_thread_value(one.unwrap()) {
             Some(value) => json_body("200 OK", &value, origin),
             None => json_error("404 Not Found", "That contact thread is not on this node.", origin),
+        });
+    }
+    if method == "DELETE" {
+        return Some(match node.delete_contact_thread(one.unwrap()) {
+            Ok(()) => json_body("200 OK", &json!({ "ok": true }), origin),
+            Err(StoreError::NotFound) => json_error("404 Not Found", "That contact thread is not on this node.", origin),
+            Err(err) => error_response(err, origin),
         });
     }
     let parsed = if body.len() > MAX_JSON { None } else { serde_json::from_slice::<Value>(body).ok() };

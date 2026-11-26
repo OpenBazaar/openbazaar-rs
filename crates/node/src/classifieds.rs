@@ -4,6 +4,12 @@
 //! mail is a sealed message (`kind: "contact"`) to the post's mailbox key —
 //! separate from order chat. Threads pin the peer's sender key and reply
 //! route the same way bids do.
+//!
+//! **Privacy at rest (audit #252):** Contact threads (including plaintext
+//! message bodies) are stored inside the vault-sealed `classifieds.obv`.
+//! Vault compromise or `--vault file` exposure reveals conversation content.
+//! Per-thread encryption is a future improvement; thread expiry is supported
+//! through classified expiration (expired classifieds' threads can be purged).
 
 use std::path::{Path, PathBuf};
 
@@ -330,6 +336,21 @@ impl Node {
         let removed = board.posts.remove(index);
         if let Err(err) = board.save() {
             board.posts.insert(index, removed);
+            return Err(err);
+        }
+        Ok(())
+    }
+
+    /// Delete a contact thread and its messages from the vault-sealed store.
+    pub(crate) fn delete_contact_thread(&self, id: &str) -> Result<(), StoreError> {
+        let id = crate::escrow_mail::parse_id(id).ok_or(StoreError::NotFound)?;
+        let mut board = self.classifieds();
+        let Some(index) = board.threads.iter().position(|thread| thread.id == id) else {
+            return Err(StoreError::NotFound);
+        };
+        let removed = board.threads.remove(index);
+        if let Err(err) = board.save() {
+            board.threads.insert(index, removed);
             return Err(err);
         }
         Ok(())
