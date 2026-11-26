@@ -73,6 +73,10 @@ pub fn check_request(route: &str, body: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
+/// Rotate the shared chain circuit every 2 minutes to limit how long an exit
+/// or daemon can correlate scanning patterns from one session.
+const CIRCUIT_ROTATE_SECS: u64 = 120;
+
 #[derive(Clone)]
 pub struct RpcTransport {
     url: String,
@@ -83,6 +87,8 @@ pub struct RpcTransport {
     /// SOCKS isolation for chain fetches. Bumped after a failure so Tor builds
     /// a new circuit instead of reusing the one that just stalled.
     circuit: Arc<AtomicU64>,
+    /// When this instant is reached, the chain circuit rotates automatically.
+    circuit_expires: Arc<std::sync::Mutex<std::time::Instant>>,
 }
 
 impl RpcTransport {
@@ -130,13 +136,32 @@ impl RpcTransport {
             None => builder.no_proxy(),
         };
         let client = builder.build().map_err(|err| err.to_string())?;
-        Ok(Self { url: url.trim_end_matches('/').to_string(), client, request_timeout: deadline, circuit })
+        Ok(Self {
+            url: url.trim_end_matches('/').to_string(),
+            client,
+            request_timeout: deadline,
+            circuit,
+            circuit_expires: Arc::new(std::sync::Mutex::new(
+                std::time::Instant::now() + Duration::from_secs(CIRCUIT_ROTATE_SECS),
+            )),
+        })
     }
 
     /// Drop the chain circuit. The next chain fetch uses a new SOCKS username,
     /// which makes Tor build a new circuit to this daemon.
     pub(crate) fn rotate_circuit(&self) {
         self.circuit.fetch_add(1, Ordering::Relaxed);
+        *self.circuit_expires.lock().unwrap_or_else(|err| err.into_inner()) =
+            std::time::Instant::now() + Duration::from_secs(CIRCUIT_ROTATE_SECS);
+    }
+
+    /// Rotate the chain circuit if it has been open longer than the limit.
+    fn maybe_rotate(&self) {
+        let mut expires = self.circuit_expires.lock().unwrap_or_else(|err| err.into_inner());
+        if std::time::Instant::now() >= *expires {
+            self.circuit.fetch_add(1, Ordering::Relaxed);
+            *expires = std::time::Instant::now() + Duration::from_secs(CIRCUIT_ROTATE_SECS);
+        }
     }
 
     #[cfg(test)]
@@ -160,6 +185,7 @@ impl HttpTransport for RpcTransport {
         body: Vec<u8>,
         response_size_limit: Option<usize>,
     ) -> impl Send + std::future::Future<Output = Result<Vec<u8>, InterfaceError>> {
+        self.maybe_rotate();
         let checked = check_request(route, &body);
         let request = self.client.post(format!("{}/{route}", self.url)).body(body);
         let timeout = self.request_timeout;
