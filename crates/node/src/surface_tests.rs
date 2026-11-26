@@ -220,9 +220,26 @@ fn route_shaped_paths_do_not_panic() {
 }
 
 #[test]
-fn network_warns_while_requests_go_over_clearnet() {
+fn unpaired_network_redacts_identity_linking_fields() {
     let (_dir, node) = node();
     let response = send(&node, b"GET /network HTTP/1.1\r\nHost: 127.0.0.1:8787\r\n\r\n");
+    let value = body(&response);
+    assert_eq!(value["network"], "testnet4");
+    // Chain backend and other operational fields are still present for the UI.
+    assert!(value["chainBackend"]["backend"].is_string());
+    // Identity-linking fields are redacted without pairing.
+    assert!(value["onion"].is_null(), "onion leaked to unpaired caller");
+    assert!(value["tor"].is_null(), "tor leaked to unpaired caller");
+}
+
+#[test]
+fn paired_network_warns_while_requests_go_over_clearnet() {
+    let (_dir, node) = node();
+    let raw = format!(
+        "GET /network HTTP/1.1\r\nHost: 127.0.0.1:8787\r\nX-Ob-Pair: {}\r\n\r\n",
+        node.pairing_token()
+    );
+    let response = send(&node, raw.as_bytes());
     let value = body(&response);
     assert_eq!(value["clearnet"], false);
     assert!(value["privacyWarning"].as_str().unwrap().contains("not contacted"));

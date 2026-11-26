@@ -544,11 +544,14 @@ fn each_network_has_its_own_data_dir_and_never_shows_the_other() {
 #[test]
 fn network_and_wallet_endpoints() {
     let (_dir, chain, node) = testnet();
+    // Without pairing, /network redacts identity-linking fields but keeps operational ones.
     let raw = b"GET /network HTTP/1.1\r\nHost: 127.0.0.1\r\nOrigin: http://127.0.0.1:4173\r\n\r\n";
     let text = String::from_utf8(dispatch(&node, raw)).unwrap();
     let body: Value = serde_json::from_str(text.split_once("\r\n\r\n").unwrap().1).unwrap();
     assert_eq!(body["network"], "testnet4");
     assert_eq!(body["confirmations"], 1);
+    assert!(body["onion"].is_null(), "onion leaked without pairing");
+    assert!(body["tor"].is_null(), "tor leaked without pairing");
 
     let raw = b"GET /wallet HTTP/1.1\r\nHost: 127.0.0.1\r\nOrigin: http://127.0.0.1:4173\r\n\r\n";
     let text = String::from_utf8(dispatch(&node, raw)).unwrap();

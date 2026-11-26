@@ -246,7 +246,7 @@ fn route(node: &Node, request: &Request<'_>, client: Client, origin: Option<&str
         ("DELETE", path) if path.starts_with("/addresses/") => {
             addresses_delete(node, client, head, &path["/addresses/".len()..], origin)
         }
-        ("GET", "/network") => wallet_http::network_response(node, origin),
+        ("GET", "/network") => wallet_http::network_response(node, client, head, origin),
         ("GET", "/version") => crate::build_info::version_response(node, client, head, origin),
         ("GET", "/wallet") => wallet_http::wallet_response(node, client, head, origin),
         ("POST", "/wallet/address") => wallet_http::wallet_address_response(node, client, head, origin),
