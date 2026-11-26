@@ -199,9 +199,17 @@ impl ChainSource for FallbackChain {
             status.scanned_height = primary.scanned_height;
             status.syncing = primary.syncing;
             status.error = primary.error.or(status.error);
+        } else {
+            // Peers recovered: clear the one-shot broadcast latch so the UI
+            // no longer shows "fallback active" when it isn't (#254).
+            self.public_broadcast.store(false, Ordering::Relaxed);
         }
         status.fallback = Some("public-esplora");
         status.fallback_active = active || self.public_broadcast.load(Ordering::Relaxed);
+        if self.public_broadcast.load(Ordering::Relaxed) {
+            let note = "A transaction was broadcast through a public Esplora server (Tor exit). The server saw the full transaction but not the wallet's addresses.";
+            status.reveals = format!("{}; {}", status.reveals, note);
+        }
         status
     }
 
