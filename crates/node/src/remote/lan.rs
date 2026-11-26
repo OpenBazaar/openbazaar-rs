@@ -47,6 +47,8 @@ struct Inner {
     decision: Option<String>,
     /// Highest response-nonce counter issued by this process.
     counter: u64,
+    /// Anti-CSRF nonce embedded in the setup page and required in the decide form.
+    csrf_nonce: Option<String>,
 }
 
 impl LanState {
@@ -242,6 +244,14 @@ pub(crate) fn respond(node: &Node, raw: &[u8], main_port: u16) -> Vec<u8> {
                     .unwrap_or_default()
                     .to_string()
             };
+            let csrf = field("csrf");
+            {
+                let inner = node.remote.lan.inner();
+                let valid = inner.csrf_nonce.as_deref() == Some(csrf.as_str());
+                if csrf.is_empty() || !valid {
+                    return bare("403 Forbidden");
+                }
+            }
             let id = field("id");
             let name = {
                 let mut pairing = node.remote.pairing();
@@ -297,6 +307,9 @@ fn page(node: &Node) -> Vec<u8> {
     let Some(code) = page_code(node) else {
         return bare("409 Conflict");
     };
+    // Generate a fresh CSRF nonce for the approve/reject forms.
+    let csrf_nonce = encode_hex(&random_bytes::<16>());
+    node.remote.lan.inner().csrf_nonce = Some(csrf_nonce.clone());
     let link = node.remote.link_for(&code);
     let code_words = words(&code.secret).join(" ");
     let noted = decision(node)
@@ -316,6 +329,7 @@ fn page(node: &Node) -> Vec<u8> {
                      <p class=sas title=\"{title}\">{pictures}</p>\
                      <p class=match>Approve only if your device shows the same four pictures.</p>\
                      <input type=hidden name=id value={id}>\
+                     <input type=hidden name=csrf value={csrf}>\
                      <div class=actions>\
                      <button type=submit name=approve value=1 class=approve>Approve</button>\
                      <button type=submit name=approve value=0 class=reject>Reject</button>\
@@ -325,6 +339,7 @@ fn page(node: &Node) -> Vec<u8> {
                     title = escape(&names.join(", ")),
                     pictures = sas.join(" "),
                     id = escape(&request.id),
+                    csrf = escape(&csrf_nonce),
                 )
             })
             .collect()

@@ -432,7 +432,16 @@ fn the_setup_page_shows_a_code_on_first_run_only() {
             "the page shows the request's emoji"
         );
     }
-    let form = format!("id={}&approve=1", asked["requestId"].as_str().unwrap());
+    // Extract the CSRF nonce from the hidden field in the page.
+    let csrf = shown
+        .split("name=csrf value=")
+        .nth(1)
+        .unwrap()
+        .split('>')
+        .next()
+        .unwrap()
+        .to_string();
+    let form = format!("id={}&approve=1&csrf={csrf}", asked["requestId"].as_str().unwrap());
     let get_decide = String::from_utf8(lan::respond(
         &node,
         b"GET /setup/decide HTTP/1.1\r\nHost: openbazaar.local:8790\r\n\r\n",
@@ -447,10 +456,17 @@ fn the_setup_page_shows_a_code_on_first_run_only() {
         get_decide.contains("Return to the setup page"),
         "{get_decide}"
     );
+    // Wrong origin is refused even with valid CSRF.
     let decide = format!("POST /setup/decide HTTP/1.1\r\nHost: openbazaar.local:8790\r\nOrigin: http://evil.example\r\nContent-Length: {}\r\n\r\n{form}", form.len());
     assert!(lan::respond(&node, decide.as_bytes(), MAIN_PORT).starts_with(b"HTTP/1.1 403"));
     assert!(node.remote.devices().list().is_empty());
-    let decide = decide.replace("Origin: http://evil.example\r\n", "");
+    // Missing CSRF nonce is refused.
+    let no_csrf_form = format!("id={}&approve=1", asked["requestId"].as_str().unwrap());
+    let no_csrf = format!("POST /setup/decide HTTP/1.1\r\nHost: openbazaar.local:8790\r\nContent-Length: {}\r\n\r\n{no_csrf_form}", no_csrf_form.len());
+    assert!(lan::respond(&node, no_csrf.as_bytes(), MAIN_PORT).starts_with(b"HTTP/1.1 403"), "missing CSRF nonce should be rejected");
+    assert!(node.remote.devices().list().is_empty());
+    // Valid CSRF nonce and no evil origin succeeds.
+    let decide = format!("POST /setup/decide HTTP/1.1\r\nHost: openbazaar.local:8790\r\nContent-Length: {}\r\n\r\n{form}", form.len());
     let posted = String::from_utf8(lan::respond(&node, decide.as_bytes(), MAIN_PORT)).unwrap();
     assert!(posted.starts_with("HTTP/1.1 303"), "{posted}");
     assert!(posted.contains("Phone was approved"), "{posted}");
