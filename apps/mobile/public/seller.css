@@ -66,7 +66,7 @@
 .ob-image-upload label:focus-within { outline: 2px solid #467e97; outline-offset: 4px; }
 .ob-media-loading { display: block; width: 100%; height: 100%; background: linear-gradient(90deg, var(--ob-subtle), var(--ob-line), var(--ob-subtle)); background-size: 200% 100%; animation: ob-shimmer 1.4s infinite linear; }
 @keyframes ob-shimmer { to { background-position: -200% 0; } }
-.ob-product-image > img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.ob-product-image > img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; object-position: center; }
 
 /* Storefront editor */
 .ob-store-images { position: relative; margin-bottom: 0; }
@@ -93,7 +93,7 @@
 .ob-listing-photos { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-start; }
 .ob-listing-photo { position: relative; margin: 0; width: 104px; background: transparent; }
 .ob-listing-photo .ob-photo-open { display: block; width: 104px; height: 104px; padding: 0; border: 0; border-radius: 8px; overflow: hidden; background: var(--ob-subtle); }
-.ob-listing-photo img { width: 100%; height: 100%; object-fit: cover; }
+.ob-listing-photo img { width: 100%; height: 100%; object-fit: contain; object-position: center; }
 .ob-listing-photo > .ob-icon-button { position: absolute; top: 4px; right: 4px; width: 44px; height: 44px; border-radius: 50%; background: rgba(9, 22, 38, .8); color: #fff; font-size: 22px; line-height: 1; }
 .ob-photo-cover { margin: 4px 0 0; font-size: 12px; font-weight: 600; color: var(--ob-ink); }
 .ob-photo-moves { display: flex; gap: 4px; margin-top: 4px; }
@@ -112,7 +112,7 @@
 .ob-own-listing.is-selectable { grid-template-columns: 44px 64px minmax(0,1fr) auto auto; }
 .ob-own-listing.is-selectable > .ob-default-address { margin: 0; min-height: 44px; justify-content: center; }
 .ob-own-listing-image { width: 64px; height: 64px; border-radius: 8px; overflow: hidden; background: var(--ob-subtle); display: flex; align-items: center; justify-content: center; font-size: 24px; color: var(--ob-muted); }
-.ob-own-listing-image img { width: 100%; height: 100%; object-fit: cover; }
+.ob-own-listing-image img { width: 100%; height: 100%; object-fit: contain; object-position: center; }
 .ob-own-listing-copy { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .ob-own-listing-copy strong { font-weight: 500; font-size: 15px; line-height: 20px; }
 .ob-own-listing-copy span { color: var(--ob-secondary); font-size: 13px; line-height: 20px; }

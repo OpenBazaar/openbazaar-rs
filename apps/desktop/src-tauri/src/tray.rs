@@ -6,6 +6,9 @@
 //! in the system browser, open the LAN setup page, or quit. The status line
 //! shows where that browser should point, and is not a command.
 
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
+
 use tauri::image::Image;
 use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
@@ -107,9 +110,7 @@ pub fn set_running(app: &AppHandle, running: bool, origin: Option<&str>) {
     let status = tray.status.clone();
     let text = status_label(running, origin);
     drop(tray);
-    std::thread::spawn(move || {
-        let _ = status.set_text(text);
-    });
+    show_status(status, text);
 }
 
 pub fn set_status(app: &AppHandle, text: &str) {
@@ -119,17 +120,43 @@ pub fn set_status(app: &AppHandle, text: &str) {
     let status = tray.status.clone();
     let text = text.to_string();
     drop(tray);
+    show_status(status, text);
+}
+
+/// Put the status line back on what the node is doing, after a download
+/// that ended without an install.
+pub fn restore_status(app: &AppHandle) {
+    let origin = browser_session(app).map(|(origin, _)| origin);
+    set_running(app, origin.is_some(), origin.as_deref());
+}
+
+/// Each change is set on a thread of its own, so the caller never waits on the
+/// menu. The numbering keeps a slow thread from putting older text over newer.
+static STATUS_SEQ: AtomicU64 = AtomicU64::new(0);
+static STATUS_SHOWN: Mutex<u64> = Mutex::new(0);
+
+fn show_status(status: MenuItem<Wry>, text: String) {
+    let seq = STATUS_SEQ.fetch_add(1, Ordering::SeqCst) + 1;
     std::thread::spawn(move || {
-        let _ = status.set_text(text);
+        let mut shown = STATUS_SHOWN.lock().unwrap_or_else(|err| err.into_inner());
+        if seq > *shown {
+            *shown = seq;
+            let _ = status.set_text(text);
+        }
     });
 }
 
 /// Flip automatic update checks and show the saved state, not the click.
 fn toggle_auto_updates(app: &AppHandle) {
     let on = !crate::updates::automatic(app);
-    if let Err(err) = crate::updates::set_automatic(app, on) {
+    if let Err(err) = crate::updates::apply_automatic(app, on) {
         eprintln!("OpenBazaar: {err}");
+        sync_auto_updates(app);
     }
+}
+
+/// Show the saved choice in the menu's check box, whichever side changed it.
+pub fn sync_auto_updates(app: &AppHandle) {
     if let Some(tray) = app.try_state::<TrayState>() {
         let _ = tray.auto_updates.set_checked(crate::updates::automatic(app));
     }

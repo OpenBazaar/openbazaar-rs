@@ -40,7 +40,15 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(NodeState(Mutex::new(None)))
-        .invoke_handler(tauri::generate_handler![home_node_mode, set_home_node_mode])
+        .invoke_handler(tauri::generate_handler![
+            home_node_mode,
+            set_home_node_mode,
+            update_status,
+            check_for_updates,
+            install_available_update,
+            cancel_update_download,
+            set_automatic_updates
+        ])
         .menu(build::menu)
         .on_menu_event(|app, event| {
             if event.id().as_ref() == build::CHECK_UPDATES {
@@ -56,6 +64,7 @@ pub fn run() {
             }
         })
         .setup(|app| {
+            app.manage(updates::UpdaterState::for_app(app.handle()));
             tray::install(app.handle())?;
             updates::start_schedule(app.handle().clone());
             let handle = app.handle().clone();
@@ -173,6 +182,34 @@ fn set_home_node_mode(app: AppHandle, on: bool) -> Result<bool, String> {
     *slot = Some(started);
     tray::set_running(&app, true, Some(&origin));
     Ok(on)
+}
+
+/// The update's state, as the shop page draws it. See `updates`.
+#[tauri::command]
+fn update_status(app: AppHandle) -> updates::UpdateStatus {
+    updates::snapshot(&app)
+}
+
+/// Start a check over Tor and return at once, already "checking".
+#[tauri::command]
+fn check_for_updates(app: AppHandle) -> updates::UpdateStatus {
+    updates::start_check(&app)
+}
+
+/// Download and install the update the last check found.
+#[tauri::command]
+fn install_available_update(app: AppHandle) -> Result<updates::UpdateStatus, String> {
+    updates::install_available(&app)
+}
+
+#[tauri::command]
+fn cancel_update_download(app: AppHandle) -> updates::UpdateStatus {
+    updates::cancel_download(&app)
+}
+
+#[tauri::command]
+fn set_automatic_updates(app: AppHandle, enabled: bool) -> Result<updates::UpdateStatus, String> {
+    updates::apply_automatic(&app, enabled)
 }
 
 pub(crate) fn app_data_dir(app: &AppHandle) -> Result<std::path::PathBuf, String> {

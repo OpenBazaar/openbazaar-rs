@@ -4,6 +4,8 @@ import { servedByHomeNode } from "../homeNode/transport";
 import { BuildLine, type BuildInfoState } from "./BuildInfo";
 import { Icon, NavItem, type Section } from "./Marketplace";
 import { TorIndicator } from "./TorStatus";
+import { UpdatePill } from "./UpdateBanner";
+import type { DesktopUpdater } from "./useDesktopUpdater";
 
 type Props = {
   guest: boolean;
@@ -28,6 +30,7 @@ type Props = {
   currency: CurrencyCode;
   onCurrency: (next: CurrencyCode) => void;
   build: BuildInfoState;
+  updater: DesktopUpdater;
   onCopied: (message: string) => void;
   unreadOrders?: number;
 };
@@ -56,6 +59,7 @@ export function SidebarUtilities({
   currency,
   onCurrency,
   build,
+  updater,
   onCopied,
   unreadOrders = 0,
 }: Props) {
@@ -100,6 +104,7 @@ export function SidebarUtilities({
         {testnet4 && <NavItem icon="wallet" active={section === "zcash"} onClick={() => onNavigate("zcash")}>Zcash</NavItem>}
         {testnet4 && <NavItem icon="wallet" active={section === "monero"} onClick={() => onNavigate("monero")}>Monero</NavItem>}
         <NavItem icon="shield" active={section === "tor"} onClick={() => onNavigate("tor")}>Tor</NavItem>
+        {updater.available && <NavItem icon="bolt" active={section === "updates"} onClick={() => onNavigate("updates")}>App updates</NavItem>}
         <NavItem icon="globe" active={section === "follows"} onClick={() => onNavigate("follows")}>Followed stores</NavItem>
       </>}
       {guest
@@ -115,5 +120,6 @@ export function SidebarUtilities({
       <strong>{compact}</strong>
     </div>
     {!loadError && nodeAvailable && <TorIndicator onOpen={() => onNavigate("tor")}/>}
+    <UpdatePill updater={updater} onOpen={() => onNavigate("updates")}/>
   </div>;
 }
