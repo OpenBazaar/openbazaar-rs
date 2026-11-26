@@ -3372,11 +3372,12 @@ svg {
 .ob-settings-grid .ob-settings-card { margin: 0; }
 .ob-tag-controls { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 20px; }
 .ob-tag-setting { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-width: 0; padding: 9px 0; }
-.ob-keyword-card { display: grid; grid-template-columns: 1fr 1fr; gap: 40px; align-items: start; }
+.ob-keyword-card { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 40px; align-items: start; }
+.ob-keyword-card > * { min-width: 0; }
 .ob-keyword-card .ob-settings-footnote { margin-top: 12px; }
-.ob-keyword-input { display: grid; gap: 12px; }
-.ob-keyword-row { display: flex; gap: 8px; align-items: stretch; }
-.ob-keyword-row input { flex: 1; min-width: 0; border-radius: 8px; }
+.ob-keyword-input { display: grid; gap: 12px; min-width: 0; }
+.ob-keyword-row { display: flex; gap: 8px; align-items: stretch; min-width: 0; }
+.ob-keyword-row input { flex: 1 1 0; width: 0; min-width: 0; border-radius: 8px; }
 .ob-keyword-add { flex-shrink: 0; padding-inline: 16px; border-radius: 8px; }
 .ob-keyword-add:disabled { opacity: .45; cursor: default; }
 .ob-keyword-chips { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 8px; }
@@ -3425,7 +3426,7 @@ svg {
   .ob-settings-heading h1 { font-size: 28px; }
   .ob-settings-card { padding: 20px; border-radius: 10px; }
   .ob-settings-card.ob-settings-disclosure { padding: 0; }
-  .ob-settings-grid,.ob-keyword-card,.ob-labeler-form-grid { grid-template-columns: 1fr; gap: 20px; }
+  .ob-settings-grid,.ob-keyword-card,.ob-labeler-form-grid { grid-template-columns: minmax(0, 1fr); gap: 20px; }
   .ob-settings-disclosure summary,.ob-settings-disclosure-body { padding: 20px; }
   .ob-tag-controls { grid-template-columns: 1fr 1fr; gap: 0 16px; }
   .ob-safe-mode { gap: 16px; }
@@ -3437,8 +3438,8 @@ svg {
 }
 
 /* Shared screen rhythm: comfortable edges, readable controls, consistent headings. */
-.ob-app { --ob-gutter: 40px; --ob-card-padding: 24px; }
-.ob-content-inner { padding: 24px 32px max(48px,env(safe-area-inset-bottom)); max-width: 72rem; }
+.ob-app { --ob-gutter: 32px; --ob-card-padding: 24px; }
+.ob-content-inner { padding: 24px var(--ob-gutter) max(48px,env(safe-area-inset-bottom)); max-width: 72rem; }
 .ob-topbar { padding-inline: var(--ob-gutter); }
 .ob-network-badge { padding-inline: var(--ob-gutter); font-size: 13px; line-height: 1.5; }
 .ob-content { scroll-padding-block: 24px 40px; }

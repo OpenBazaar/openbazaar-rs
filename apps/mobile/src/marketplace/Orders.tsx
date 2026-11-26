@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import type { BuyerOrder, CurrencyCode, RateTable } from "../catalog";
 import { fetchOrders, onThisComputer, shopPairingMessage } from "../catalog";
 import { pairingKind, pairingOrdersText } from "../pairingUi";
@@ -10,7 +10,7 @@ import { PairButton } from "./PairingDialog";
 import { PageHeading } from "./PageHeading";
 import { RemoteOrderStatus } from "./RemoteOrder";
 import { returnStateLabel } from "../returnCase";
-import { OrderWorkspace } from "./OrderWorkspace";
+import { OrderWorkspace, type OrderWorkspaceState } from "./OrderWorkspace";
 
 function nextStep(order: BuyerOrder): string {
   if (order.remote?.oversold) return "The seller reported a stock issue. Review the order before taking further action.";
@@ -113,6 +113,7 @@ type OrdersProps = {
 export function Orders({ rates, currency, onBrowse, selectedOrderId = null, unreadByOrder = {}, onSelectOrder, onBack }: OrdersProps) {
   const resource = useNodeResource(fetchOrders, 12000, true, ordersSettled, sameOrderSnapshot);
   const orders = resource.data ?? [];
+  const listState = useRef<OrderWorkspaceState | null>(null);
 
   if (selectedOrderId) {
     const order = orders.find(item => item.id === selectedOrderId) ?? null;
@@ -146,6 +147,7 @@ export function Orders({ rates, currency, onBrowse, selectedOrderId = null, unre
           rates={rates}
           currency={currency}
           onSelect={onSelectOrder}
+          savedStateRef={listState}
           rows={orders.map(order => ({
             id: order.id,
             title: order.lines.map(line => line.title).join(", "),

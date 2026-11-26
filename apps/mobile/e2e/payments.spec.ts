@@ -8,9 +8,7 @@ test.afterEach(async ({ page }) => {
 
 async function checkout(page: Page) {
   await page.goto('/')
-  await expect(
-    page.getByText('Testnet4 · test coins, no value', { exact: true })
-  ).toBeVisible()
+  await expect(page.locator('.ob-network-pill > summary')).toContainText('Testnet4')
   // A reload reopens the page that was showing, which may be the wallet.
   await page.getByRole('button', { name: 'Products', exact: true }).click()
   await page
@@ -141,9 +139,12 @@ test('testnet4 wallet, setup, real checkout, and a real quote request', async ({
   page
 }, testInfo) => {
   await page.goto('/')
+  await expect(page.locator('.ob-network-pill > summary')).toContainText('Testnet4')
+  await page.locator('.ob-network-pill > summary').click()
   await expect(
     page.getByText('Testnet4 · test coins, no value', { exact: true })
   ).toBeVisible()
+  await page.locator('.ob-network-pill > summary').click()
   await protect(page)
   await page.locator('.ob-wallet-connection > summary').click()
   await expect(page.getByText('Only your own chain server sees the addresses this wallet follows.')).toBeVisible()
@@ -182,7 +183,7 @@ test('testnet4 wallet, setup, real checkout, and a real quote request', async ({
   )
   await page.getByRole('button', { name: 'Your orders', exact: true }).click()
   await page
-    .getByRole('button', { name: 'Order from Marlow Goods', exact: true })
+    .getByRole('button', { name: /^Order from Marlow Goods/ })
     .filter({ hasText: `#${id.slice(0, 8)}` })
     .click()
   await expect(pay).toBeEnabled()
@@ -248,10 +249,10 @@ test('mainnet shows the node’s terms and needs the passphrase before confirm:t
     await route.fulfill({ status: 202, json: state })
   })
   await page.reload()
-  await expect(page.getByText('Mainnet', { exact: true })).toBeVisible()
+  await expect(page.locator('.ob-network-pill > summary')).toContainText('Mainnet')
   await page.getByRole('button', { name: 'Your orders', exact: true }).click()
   await page
-    .getByRole('button', { name: 'Order from Marlow Goods', exact: true })
+    .getByRole('button', { name: /^Order from Marlow Goods/ })
     .click()
   const pay = page.getByRole('button', {
     name: 'Pay from your node wallet',
@@ -314,9 +315,11 @@ test('partial payment QR, confirmations, tx links, and status polling', async ({
   await page.reload()
   await (await walletLoaded).finished()
   await page.getByRole('button', { name: 'Your orders', exact: true }).click()
+  const loaded = page.waitForResponse(r => r.url().endsWith(`/orders/${id}`))
   await page
-    .getByRole('button', { name: 'Order from Marlow Goods', exact: true })
+    .getByRole('button', { name: /^Order from Marlow Goods/ })
     .click()
+  await loaded
   const due = order.totalSats - 1500
   await expect(
     page.getByText(
@@ -340,12 +343,12 @@ test('partial payment QR, confirmations, tx links, and status polling', async ({
   await expect(page.getByRole('tooltip')).toHaveCount(0)
   state = { ...state, receivedSats: order.totalSats, status: 'Payment seen' }
   await page.clock.fastForward(13000)
-  await expect(page.locator('.ob-payment-progress strong')).toHaveText(
+  await expect(page.locator('.ob-order-next h2')).toHaveText(
     'Payment seen'
   )
   state = { ...state, status: 'Paid', confirmations: 2 }
   await page.clock.fastForward(13000)
-  await expect(page.locator('.ob-payment-progress strong')).toHaveText('Paid')
+  await expect(page.locator('.ob-order-next h2')).toHaveText('Paid')
   await expect(page.getByText('Confirmed', { exact: true })).toBeVisible()
   await expect(page.locator('.ob-order-payment').getByText(/Waiting for/)).toHaveCount(0)
   await expect(
@@ -376,9 +379,11 @@ test('a direct order to a store on another node warns above the payment details'
   await page.clock.install()
   await page.reload()
   await page.getByRole('button', { name: 'Your orders', exact: true }).click()
+  const loaded = page.waitForResponse(r => r.url().endsWith(`/orders/${id}`))
   await page
-    .getByRole('button', { name: 'Order from Marlow Goods', exact: true })
+    .getByRole('button', { name: /^Order from Marlow Goods/ })
     .click()
+  await loaded
   const pay = page.getByRole('button', {
     name: 'Pay from your node wallet',
     exact: true
@@ -403,7 +408,7 @@ test('a direct order to a store on another node warns above the payment details'
   expect(above).toBe(true)
   state = { ...state, receivedSats: order.totalSats, status: 'Paid' }
   await page.clock.fastForward(16000)
-  await expect(page.locator('.ob-payment-progress strong')).toHaveText('Paid')
+  await expect(page.locator('.ob-order-next h2')).toHaveText('Paid')
   await expect(warning).toHaveCount(0)
 })
 
@@ -444,7 +449,7 @@ test('a Zcash order to a store on another node shows the warning, the seller\'s 
   await page.clock.install()
   await page.reload()
   await page.getByRole('button', { name: 'Your orders', exact: true }).click()
-  await page.getByRole('button', { name: 'Order from Marlow Goods', exact: true }).click()
+  await page.getByRole('button', { name: /^Order from Marlow Goods/ }).click()
   const warning = page.getByRole('note').filter({ hasText: DIRECT_PAY_WARNING })
   await expect(warning).toBeVisible()
   await expect(page.getByRole('img', { name: /QR code/ })).toHaveAttribute('data-payment-uri', payment.uri)
@@ -455,8 +460,10 @@ test('a Zcash order to a store on another node shows the warning, the seller\'s 
   const network = await (await page.request.get('/network')).json()
   await page.route('**/network', route => route.fulfill({ json: { ...network, zecBackend: { ...network.zecBackend, enabled: true, backend: 'mock' } } }))
   await page.reload()
-  await page.getByRole('button', { name: 'Your orders', exact: true }).click()
-  await page.getByRole('button', { name: 'Order from Marlow Goods', exact: true }).click()
+  await page.getByRole('complementary', { name: 'Main navigation', exact: true }).getByRole('button', { name: 'Your orders', exact: true }).click()
+  const loaded = page.waitForResponse(r => r.url().endsWith(`/orders/${id}`))
+  await page.getByRole('button', { name: /^Order from Marlow Goods/ }).click()
+  await loaded
   await expect(page.getByRole('button', { name: 'Pay from your node wallet', exact: true })).toBeVisible()
   state = { ...state, status: 'Payment seen', confirmations: 3, payment: { ...payment, receivedZatoshi: '2277608', seenInTime: true } }
   await page.clock.fastForward(16000)
@@ -465,7 +472,7 @@ test('a Zcash order to a store on another node shows the warning, the seller\'s 
   await expect(warning).toHaveCount(0)
   state = { ...state, status: 'Paid', confirmations: 30 }
   await page.clock.fastForward(16000)
-  await expect(page.locator('.ob-payment-progress strong')).toHaveText('Paid')
+  await expect(page.locator('.ob-order-next h2')).toHaveText('Paid')
 })
 
 test('network mismatch and escrow are read-only', async ({ page }) => {
@@ -490,9 +497,11 @@ test('network mismatch and escrow are read-only', async ({ page }) => {
   await page.reload()
   await (await walletLoaded).finished()
   await page.getByRole('button', { name: 'Your orders', exact: true }).click()
+  const loaded = page.waitForResponse(r => r.url().endsWith(`/orders/${id}`))
   await page
-    .getByRole('button', { name: 'Order from Marlow Goods', exact: true })
+    .getByRole('button', { name: /^Order from Marlow Goods/ })
     .click()
+  await loaded
   await expect(
     page.getByRole('button', { name: 'Pay from your node wallet', exact: true })
   ).toBeDisabled()
@@ -541,7 +550,7 @@ test('escrow awaiting funding can be paid from the node or another wallet', asyn
   await page.reload()
   await (await walletLoaded).finished()
   await page.getByRole('button', { name: 'Your orders', exact: true }).click()
-  await page.getByRole('button', { name: 'Order from Marlow Goods', exact: true }).click()
+  await page.getByRole('button', { name: /^Order from Marlow Goods/ }).click()
   await expect(page.getByRole('button', { name: 'Pay from your node wallet', exact: true })).toBeVisible()
   await page.getByText('Pay from another wallet', { exact: true }).click()
   await expect(page.getByText('tb1qtestescrow000000000000000000000000000')).toBeVisible()
@@ -567,7 +576,7 @@ test('a multi-seller checkout submits one separate pay request per seller', asyn
     await page.getByRole('button', { name: 'Add to bag', exact: true }).click()
     await page.getByRole('button', { name: 'Back to products', exact: true }).click()
   }
-  await page.getByRole('button', { name: 'Your bag', exact: true }).click()
+  await page.getByRole('navigation', { name: 'Shopping', exact: true }).getByRole('button', { name: 'Your bag', exact: true }).click()
   await page
     .getByRole('button', { name: 'Continue to checkout', exact: true })
     .click()
@@ -626,7 +635,7 @@ test('pending payments disable spending and node failures remain visible', async
   // The first order fetch must finish before the clock jumps, or the poll joins it.
   const loaded = page.waitForResponse(r => r.url().endsWith(`/orders/${id}`))
   await page
-    .getByRole('button', { name: 'Order from Marlow Goods', exact: true })
+    .getByRole('button', { name: /^Order from Marlow Goods/ })
     .click()
   await loaded
   const pay = page.getByRole('button', {

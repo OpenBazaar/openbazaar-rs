@@ -1,8 +1,15 @@
-import { useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useLayoutEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
 import type { CurrencyCode, RateTable } from "../catalog";
 import { indexOrders, orderPage, orderTime, selectOrders, type OrderFilter, type OrderListRow, type OrderQuery, type OrderSort, type OrderRange } from "../orderList";
 import { Money } from "./Marketplace";
 import { SalesLedger } from "./SalesLedger";
+
+export type OrderWorkspaceState = {
+  query: OrderQuery;
+  page: number;
+  size: number;
+  focusId: string | null;
+};
 
 export function OrderMessageBadge({ count = 0, unread = 0 }: { count?: number; unread?: number }) {
   if (count <= 0 && unread <= 0) return null;
@@ -20,16 +27,18 @@ export function OrderMessageBadge({ count = 0, unread = 0 }: { count?: number; u
   );
 }
 
-type Props = { rows: OrderListRow[]; rates: RateTable; currency: CurrencyCode; onSelect: (id: string) => void; seller?: boolean };
-export function OrderWorkspace({ rows, rates, currency, onSelect, seller = false }: Props) {
-  const [query, setQuery] = useState<OrderQuery>(() => ({ filter: seller && rows.some(row => row.attention) ? "attention" : "all", search: "", sort: "priority", range: "all", from: "", to: "" }));
-  const [page, setPage] = useState(0);
-  const [size, setSize] = useState(25);
+type Props = { rows: OrderListRow[]; rates: RateTable; currency: CurrencyCode; onSelect: (id: string) => void; seller?: boolean; savedStateRef?: MutableRefObject<OrderWorkspaceState | null> };
+export function OrderWorkspace({ rows, rates, currency, onSelect, seller = false, savedStateRef }: Props) {
+  const [query, setQuery] = useState<OrderQuery>(() => savedStateRef?.current?.query ?? ({ filter: seller && rows.some(row => row.attention) ? "attention" : "all", search: "", sort: "priority", range: "all", from: "", to: "" }));
+  const [page, setPage] = useState(() => savedStateRef?.current?.page ?? 0);
+  const [size, setSize] = useState(() => savedStateRef?.current?.size ?? 25);
+  const [focusId, setFocusId] = useState<string | null>(() => savedStateRef?.current?.focusId ?? null);
   const top = useRef<HTMLDivElement>(null);
   const queue = useRef<HTMLDivElement>(null);
   const indexed = useMemo(() => indexOrders(rows), [rows]);
   const selected = useMemo(() => selectOrders(indexed, query), [indexed, query]);
-  const visible = orderPage(selected.rows, page, size, null);
+  const visible = orderPage(selected.rows, page, size, focusId);
+  if (savedStateRef) savedStateRef.current = { query, page: visible.page, size, focusId };
   const noun = seller ? "sales" : "orders";
   const countNoun = selected.rows.length === 1 ? (seller ? "sale" : "order") : noun;
   const invalidDates = query.range === "custom" && query.from && query.to && query.from > query.to;
@@ -55,15 +64,21 @@ export function OrderWorkspace({ rows, rates, currency, onSelect, seller = false
   function changeQuery(change: Partial<OrderQuery>) {
     setQuery(previous => ({ ...previous, ...change }));
     setPage(0);
+    setFocusId(null);
     startOfList();
   }
   function changePage(next: number, fromBottom = false) {
     setPage(next);
+    setFocusId(null);
     startOfList();
     if (fromBottom) {
       if (!seller) top.current?.scrollIntoView({ block: "start" });
       top.current?.focus({ preventScroll: true });
     }
+  }
+  function selectRow(id: string) {
+    if (savedStateRef) savedStateRef.current = { query, page: visible.page, size, focusId: id };
+    onSelect(id);
   }
   function pagination(bottom = false) {
     return <nav className="ob-order-pagination" aria-label={`${seller ? "Sales" : "Orders"} pagination${bottom ? " bottom" : ""}`}>
@@ -84,7 +99,7 @@ export function OrderWorkspace({ rows, rates, currency, onSelect, seller = false
     <div className="ob-order-refine">
       <label>Sort by<select aria-label={`Sort ${noun}`} value={query.sort} onChange={event => changeQuery({ sort: event.target.value as OrderSort })}><option value="priority">Action needed, oldest first</option><option value="newest">Newest first</option><option value="oldest">Oldest first</option><option value="highest">Highest total</option><option value="lowest">Lowest total</option></select></label>
       <label>Order date<select aria-label="Order date" value={query.range} onChange={event => changeQuery({ range: event.target.value as OrderRange })}><option value="all">Any time</option><option value="7">Last 7 days</option><option value="30">Last 30 days</option><option value="90">Last 90 days</option><option value="custom">Custom range</option></select></label>
-      <label>Per page<select aria-label="Orders per page" value={size} onChange={event => { setSize(Number(event.target.value)); setPage(0); startOfList(); }}><option value={25}>25</option><option value={50}>50</option></select></label>
+      <label>Per page<select aria-label="Orders per page" value={size} onChange={event => { setSize(Number(event.target.value)); setPage(0); setFocusId(null); startOfList(); }}><option value={25}>25</option><option value={50}>50</option></select></label>
       {query.range === "custom" && <><label>From<input type="date" aria-label="From date" value={query.from} onChange={event => changeQuery({ from: event.target.value })}/></label><label>Through<input type="date" aria-label="Through date" min={query.from || undefined} value={query.to} onChange={event => changeQuery({ to: event.target.value })}/></label></>}
       {(query.search || query.range !== "all") && <button className="ob-text-link" onClick={() => changeQuery({ search: "", range: "all", from: "", to: "" })}>Reset search & dates</button>}
     </div>
@@ -94,9 +109,9 @@ export function OrderWorkspace({ rows, rates, currency, onSelect, seller = false
       {selected.rows.length > size && pagination()}
     </div>
     {!selected.rows.length && <div className="ob-order-no-results"><h2>{seller && query.filter === "attention" && !query.search && query.range === "all" ? "No orders to fulfill" : `No matching ${noun}`}</h2><p>{seller && query.filter === "attention" && !query.search && query.range === "all" ? "Paid orders appear here when they are ready for delivery." : "Try another search, date range or status filter."}</p><button className="ob-text-link" onClick={() => changeQuery({ filter: "all", search: "", range: "all", from: "", to: "" })}>Clear filters</button></div>}
-    {seller ? <SalesLedger rows={visible.rows} rates={rates} currency={currency} onSelect={onSelect}/> : selected.rows.length > 0 ? <>
+    {seller ? <SalesLedger rows={visible.rows} rates={rates} currency={currency} onSelect={selectRow}/> : selected.rows.length > 0 ? <>
       <div className="ob-order-ledger">{visible.rows.map(row => <article className={`ob-order-row ${row.attention ? "needs-action" : ""}${row.unreadMessages ? " has-unread" : ""}`} key={row.id}>
-        <button type="button" className="ob-order-toggle" aria-label={`Order from ${row.subtitle}: ${row.title}`} onClick={() => onSelect(row.id)}>
+        <button type="button" className="ob-order-toggle" aria-label={`Order from ${row.subtitle}: ${row.title}`} onClick={() => selectRow(row.id)}>
           <span className="ob-order-name">
             <span className="ob-order-row-meta">{new Date(orderTime(row.created)).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })} · #{row.id.slice(0, 8)}{row.rail ? ` · ${row.rail}` : ""}</span>
             <strong>{row.title}</strong>

@@ -676,6 +676,7 @@ fn store_detail(err: StoreError) -> String {
 #[cfg(test)]
 mod unit_tests {
     use super::*;
+    use openbazaar_protocol::day_from_unix;
 
     #[test]
     fn thread_ids_are_stable_for_the_same_parties() {

@@ -8,7 +8,7 @@ import { orderTime, sameOrderSnapshot, salesRefreshInterval, type OrderListRow }
 import { Empty, Icon, Money } from "./Marketplace";
 import { OfferInbox } from "./OfferInbox";
 import { PageHeading } from "./PageHeading";
-import { OrderWorkspace } from "./OrderWorkspace";
+import { OrderWorkspace, type OrderWorkspaceState } from "./OrderWorkspace";
 import { InfoTip } from "./InfoTip";
 import { CopyAddress, CopyButton } from "./CopyAddress";
 import { CARRIER_OPTIONS } from "../shipment";
@@ -188,6 +188,7 @@ export function Sales({ sales, rates, currency, onSeen, selectedSaleId = null, u
   useEffect(() => { if (sales.data) seen.current?.(sales.data); }, [sales.data]);
   // Unsent fulfillment details stay in memory while the console is mounted.
   const drafts = useRef<Drafts>(new Map()).current;
+  const listState = useRef<OrderWorkspaceState | null>(null);
   const latest = useRef(list);
   latest.current = list;
 
@@ -244,6 +245,6 @@ export function Sales({ sales, rates, currency, onSeen, selectedSaleId = null, u
     {view === "offers" ? <><h2 className="ob-offers-title">Offers</h2><OfferInbox showEmpty/></>
       : sales.loading && !sales.data ? <p role="status">Loading sales…</p>
       : !list.length ? (sales.error ? null : <Empty icon="paper" title="No sales yet" text="Orders will appear here when buyers purchase from your store."/>)
-      : <OrderWorkspace seller rates={rates} currency={currency} rows={rows} onSelect={onSelectSale}/>}
+      : <OrderWorkspace seller rates={rates} currency={currency} rows={rows} onSelect={onSelectSale} savedStateRef={listState}/>}
   </section>;
 }

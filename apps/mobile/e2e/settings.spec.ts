@@ -1,7 +1,11 @@
 import { test, expect, type Page } from '@playwright/test'
 
+function settingsToggle(page: Page) {
+  return page.getByRole('complementary', { name: 'Main navigation', exact: true }).getByRole('button', { name: 'Settings', exact: true })
+}
+
 async function contentFilters(page: Page) {
-  await page.getByRole('button', { name: 'Settings', exact: true }).click()
+  await settingsToggle(page).click()
   await page.getByRole('button', { name: 'Content filters', exact: true }).click()
   await expect(page.getByRole('heading', { name: 'Content filters', exact: true })).toBeVisible()
 }
@@ -14,9 +18,9 @@ test('shopping and settings are separate; browsing preferences persist and apply
   await expect(shopping.getByRole('button', { name: 'Wallet', exact: true })).toHaveCount(0)
   await expect(categories.getByRole('button', { name: 'Books', exact: true })).toBeVisible()
   await expect(page.getByRole('navigation', { name: 'Settings', exact: true })).toBeHidden()
-  await page.getByRole('button', { name: 'Settings', exact: true }).click()
+  await settingsToggle(page).click()
   await page.keyboard.press('Escape')
-  await expect(page.getByRole('button', { name: 'Settings', exact: true })).toBeFocused()
+  await expect(settingsToggle(page)).toBeFocused()
   await expect(page.getByRole('navigation', { name: 'Settings', exact: true })).toBeHidden()
   await contentFilters(page)
   await expect(page.getByRole('navigation', { name: 'Settings', exact: true })).toBeHidden()
@@ -25,6 +29,8 @@ test('shopping and settings are separate; browsing preferences persist and apply
   await page.getByLabel('Sensitive listings', { exact: true }).selectOption('cover')
   await page.getByRole('switch', { name: 'Hide weapons', exact: true }).check()
   await page.getByRole('textbox', { name: 'Blocked words', exact: true }).fill('notebook')
+  await page.getByRole('textbox', { name: 'Blocked words', exact: true }).press('Enter')
+  await expect(page.getByRole('list', { name: 'Blocked words list', exact: true })).toContainText('notebook')
   await page.getByRole('switch', { name: 'Safe mode', exact: true }).uncheck()
   await expect(page.getByLabel('Sensitive listings', { exact: true })).toBeDisabled()
   await expect(page.getByRole('switch', { name: 'Hide weapons', exact: true })).toBeDisabled()
@@ -34,11 +40,11 @@ test('shopping and settings are separate; browsing preferences persist and apply
   await expect(page.getByRole('switch', { name: 'Safe mode', exact: true })).not.toBeChecked()
   await expect(page.getByLabel('Sensitive listings', { exact: true })).toHaveValue('cover')
   await expect(page.getByRole('switch', { name: 'Hide weapons', exact: true })).toBeChecked()
-  await expect(page.getByRole('textbox', { name: 'Blocked words', exact: true })).toHaveValue('notebook')
+  await expect(page.getByRole('list', { name: 'Blocked words list', exact: true })).toContainText('notebook')
   await page.getByRole('button', { name: 'Products', exact: true }).click()
   await page.getByLabel('Search stores and listings', { exact: true }).fill('notebook')
   await expect(page.getByRole('button', { name: 'View Clothbound notebook', exact: true })).toHaveCount(0)
-  await page.getByRole('button', { name: 'Settings', exact: true }).click()
+  await settingsToggle(page).click()
   await page.getByRole('button', { name: 'Store labels', exact: true }).click()
   await expect(page.getByRole('heading', { name: 'Store labels', exact: true })).toBeVisible()
   await expect(page.getByRole('button', { name: 'Save label', exact: true })).toBeVisible()
@@ -83,11 +89,11 @@ test('the mobile drawer keeps utilities accessible and preferences fit a narrow 
 
 test('Zcash settings say how to turn it on when the node has no indexer', async ({ page }) => {
   await page.goto('/')
-  await page.getByRole('button', { name: 'Settings', exact: true }).click()
+  await settingsToggle(page).click()
   await page.getByRole('button', { name: 'Zcash', exact: true }).click()
   await expect(page.getByRole('heading', { name: 'Zcash is off on this node', exact: true })).toBeVisible()
-  await expect(page.getByText('ob-node serve --proxy socks5h://127.0.0.1:9050 --zec-indexer http://127.0.0.1:8137', { exact: true })).toBeVisible()
-  await expect(page.getByText('the proxy is only for the ZEC price')).toBeVisible()
+  await expect(page.getByLabel('Zcash indexer URL', { exact: true })).toHaveValue('http://127.0.0.1:8137')
+  await expect(page.getByRole('button', { name: 'Enable Zcash', exact: true })).toBeVisible()
   await expect(page.getByRole('heading', { name: 'Stores that take Zcash', exact: true })).toHaveCount(0)
   await expect(page.getByRole('switch', { name: 'Marlow Goods' })).toHaveCount(0)
 })
@@ -131,11 +137,11 @@ test('Settings can mint a pairing code for another browser', async ({ page }) =>
 
 test('Monero settings say how to turn it on when the node has no daemon', async ({ page }) => {
   await page.goto('/')
-  await page.getByRole('button', { name: 'Settings', exact: true }).click()
+  await settingsToggle(page).click()
   await page.getByRole('button', { name: 'Monero', exact: true }).click()
   await expect(page.getByRole('heading', { name: 'Monero is off on this node', exact: true })).toBeVisible()
-  await expect(page.getByText('ob-node serve --proxy socks5h://127.0.0.1:9050 --xmr-daemon http://127.0.0.1:38081', { exact: true })).toBeVisible()
-  await expect(page.getByText('the proxy is only for the XMR price')).toBeVisible()
+  await expect(page.getByLabel('Monero daemon URL', { exact: true })).toHaveValue('http://127.0.0.1:38081')
+  await expect(page.getByRole('button', { name: 'Enable Monero', exact: true })).toBeVisible()
   await expect(page.getByRole('heading', { name: 'Stores that take Monero', exact: true })).toHaveCount(0)
   await expect(page.getByRole('switch', { name: 'Marlow Goods' })).toHaveCount(0)
 })
@@ -166,8 +172,8 @@ test('Settings has no Zcash page on a mainnet node', async ({ page }) => {
   const network = await (await page.request.get('/network')).json()
   await page.route('**/network', route => route.fulfill({ json: { ...network, network: 'mainnet' } }))
   await page.goto('/', { waitUntil: 'networkidle' })
-  await expect(page.locator('.ob-network-badge')).toContainText('Mainnet')
-  await page.getByRole('button', { name: 'Settings', exact: true }).click()
+  await expect(page.locator('.ob-network-pill > summary')).toContainText('Mainnet')
+  await settingsToggle(page).click()
   const settings = page.getByRole('navigation', { name: 'Settings', exact: true })
   await expect(settings.getByRole('button', { name: 'Lightning', exact: true })).toBeVisible()
   await expect(settings.getByRole('button', { name: 'Zcash', exact: true })).toHaveCount(0)

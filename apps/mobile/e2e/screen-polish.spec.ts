@@ -3,7 +3,9 @@ import { test, expect, type Page, type TestInfo } from '@playwright/test'
 async function navigation(page: Page, label: string, group?: string) {
   const drawer = page.getByRole('button', { name: 'Open navigation', exact: true })
   if (await drawer.isVisible()) await drawer.click()
-  const scope = group ? page.getByRole('navigation', { name: group, exact: true }) : page
+  const scope = group
+    ? page.getByRole('navigation', { name: group, exact: true })
+    : page.getByRole('complementary', { name: 'Main navigation', exact: true })
   await scope.getByRole('button', { name: label, exact: true }).click()
 }
 async function setting(page: Page, label: string) {

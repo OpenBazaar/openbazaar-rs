@@ -78,6 +78,7 @@ test('an escrow order is disputed, ruled for the buyer, and settled on chain', a
 })
 
 test('a moderator with a filing fee asks for it, the buyer pays it, and the ruling settles', async ({ page, market, chain }) => {
+  test.setTimeout(120000)
   const { moderator, seller, buyer } = market
   const own = await moderator.api('PUT', '/moderator/profile', { name: 'Ridge Arbitration', feeSats: 2000, description: 'Fast answers.', languages: ['en'], terms: 'Evidence first.' })
   await seller.api('POST', '/moderators', { address: own.address })

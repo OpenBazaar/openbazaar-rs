@@ -3,13 +3,14 @@ import { test, expect, type Page } from '@playwright/test'
 async function navigate(page: Page, name: string) {
   const opener = page.getByRole('button', { name: 'Open navigation', exact: true })
   if (await opener.isVisible()) await opener.click()
-  await page.getByRole('button', { name, exact: true }).click()
+  await page.getByRole('complementary', { name: 'Main navigation', exact: true }).getByRole('button', { name, exact: true }).click()
 }
 async function settings(page: Page, name: string) {
   const opener = page.getByRole('button', { name: 'Open navigation', exact: true })
   if (await opener.isVisible()) await opener.click()
-  await page.getByRole('button', { name: 'Settings', exact: true }).click()
-  await page.getByRole('button', { name, exact: true }).click()
+  const sidebar = page.getByRole('complementary', { name: 'Main navigation', exact: true })
+  await sidebar.getByRole('button', { name: 'Settings', exact: true }).click()
+  await sidebar.getByRole('button', { name, exact: true }).click()
 }
 async function fits(page: Page) {
   const layout = await page.locator('.ob-content').evaluate(e => {
@@ -95,7 +96,7 @@ for (const [width, height, dark] of [[320, 740, false], [768, 1024, true], [1366
     await expect(page.getByRole('img', { name: 'Bitcoin payment QR code', exact: true })).toBeVisible()
     await fits(page)
     await navigate(page, 'Your orders')
-    await page.getByRole('button', { name: 'Order from Marlow Goods', exact: true }).first().click()
+    await page.getByRole('button', { name: /^Order from Marlow Goods/ }).first().click()
     await page.locator('.ob-external-payment summary').click()
     await expect(page.getByRole('img', { name: 'Bitcoin payment QR code', exact: true })).toBeVisible()
     await fits(page)
