@@ -580,7 +580,7 @@ export default function Marketplace() {
             </>
           ) : (
             <>
-              {inSettings || inStore || (navSection !== "wallet" && navSection !== "orders") ? <><button type="button" className="ob-breadcrumb-link" onClick={() => { if (inSettings) { if (mobile) setMenu(true); setSettingsOpen(true); } else if (inStore) navigate("storefront"); else navigate("discover"); }}>{inSettings ? "Settings" : inStore ? "Your store" : "Marketplace"}</button><Icon name="chevron" size={12}/></> : null}
+              {inSettings || inStore || (navSection !== "wallet" && navSection !== "orders") ? <><button type="button" className="ob-breadcrumb-link" aria-current={page.name === "browse" && ((inStore && section === "storefront") || (!inStore && !inSettings && section === "discover" && !category)) ? "page" : undefined} onClick={() => { if (inSettings) { if (mobile) setMenu(true); setSettingsOpen(true); } else if (inStore) navigate("storefront"); else navigate("discover"); }}>{inSettings ? "Settings" : inStore ? "Your store" : "Marketplace"}</button><Icon name="chevron" size={12}/></> : null}
               <strong>{page.name === "browse" ? activeTitle : page.name === "store" ? (catalog?.stores.find(store => store.key === page.storeId)?.name ?? catalog?.listings.find(listing => listing.storeId === page.storeId)?.seller ?? "Store") : page.name === "detail" ? page.listing.title : page.name === "checkout" ? "Checkout" : "Order details"}</strong>
             </>
           )}
