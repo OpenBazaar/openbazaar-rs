@@ -44,6 +44,15 @@ The first version with this code still has to be installed by hand once. Every l
 
 **Losing the secret key** means installed apps can never verify another update: users would reinstall once to get a build with a new public key. Keep a backup.
 
+### Supply-chain residual (audit #259)
+
+Tor-only manifest fetch and minisign verification are solid. The residual risks are:
+
+- **Release signing key compromise**: the key is the trust root. If it is compromised, every auto-updating install is reachable. The key ceremony (generate on a trusted machine, keep the secret offline) is documented above; CI has the key as a repository secret.
+- **CI compromise**: the CI that signs update bundles (GitHub Actions with `TAURI_SIGNING_PRIVATE_KEY`) is in the trust path. A compromised CI run could sign a malicious bundle. Future hardening: dual-channel or out-of-band notice for the first update on a channel; transparency log of signed releases.
+- **Windows passive install**: `installMode: passive` shortens the abort window after the user chose Install. This is intentional for UX but reduces the user's chance to cancel.
+- **Fail-closed on Tor**: the app does not check at all while Tor is not up, which is correct.
+
 ## Android — next
 
 - Set `ANDROID_KEYSTORE_BASE64` and the other keystore secrets in `mobile.yml` first. Android installs an update only when it is signed with the same key as the installed APK, and an APK signed with a key made for one CI run can never be updated; phones that have one need one last reinstall.
