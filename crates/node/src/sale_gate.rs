@@ -87,6 +87,13 @@ pub(crate) fn handle(mut client: TcpStream, main_port: u16, web_dir: Option<&Pat
         let _ = client.write_all(&plain("404 Not Found", "not found"));
         return;
     }
+    // Refuse browser-originated requests: a page should not reach the sale
+    // onion. This keeps the Origin check in mail_drop effective even though
+    // rebuild() does not forward the header (#247).
+    if http_parse::header(request.head, "origin").is_some() {
+        let _ = client.write_all(&plain("403 Forbidden", "pages may not use this endpoint"));
+        return;
+    }
     let content_type = http_parse::header(request.head, "content-type").map(str::to_string);
     let outbound = rebuild(request.method, request.path, content_type.as_deref(), request.body, main_port);
     match forward(&outbound, main_port) {
@@ -241,9 +248,18 @@ mod tests {
         assert!(catalog.starts_with("HTTP/1.1 404"), "{catalog}");
         assert_eq!(opened.load(Ordering::SeqCst), 0, "a closed path was forwarded");
 
-        let store = talk(
+        // A request with an Origin header (browser-like) is refused at the gate.
+        let with_origin = talk(
             gate_addr,
             "GET /public/store HTTP/1.1\r\nHost: example.onion\r\nOrigin: http://evil.example\r\nConnection: close\r\n\r\n",
+        );
+        assert!(with_origin.starts_with("HTTP/1.1 403"), "Origin should be refused at the gate: {with_origin}");
+        assert_eq!(opened.load(Ordering::SeqCst), 0, "an Origin request was forwarded");
+
+        // Without Origin, the request is forwarded normally.
+        let store = talk(
+            gate_addr,
+            "GET /public/store HTTP/1.1\r\nHost: example.onion\r\nConnection: close\r\n\r\n",
         );
         thread::sleep(Duration::from_millis(150));
         assert!(store.starts_with("HTTP/1.1 302"), "{store}");
