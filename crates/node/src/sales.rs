@@ -362,7 +362,20 @@ impl Node {
     /// The request is a [`SealedLetter`] sealed to this store's mailbox key and
     /// signed inside the ciphertext by the buyer's per-order key. Any unknown
     /// sale id or mismatched buyer key receives a uniform unauthorized error.
+    ///
+    /// Rate-limited to one pull per sale per 30 seconds to bound timing
+    /// information the buyer can extract from pull frequency (#251).
     pub(crate) fn pull_sale_status(&self, bytes: &[u8]) -> Result<Value, MailError> {
+        use std::collections::HashMap;
+        use std::sync::Mutex;
+        use std::time::Instant;
+
+        /// Minimum interval between pulls for the same sale.
+        const PULL_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(10);
+
+        static PULL_TIMES: std::sync::LazyLock<Mutex<HashMap<String, Instant>>> =
+            std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+
         let letter = SealedLetter::from_bytes(bytes).map_err(|_| refused("that is not a sealed letter"))?;
         let secret = {
             let wallet = self.buyer_wallet();
@@ -385,6 +398,23 @@ impl Node {
         };
         if sale["buyerSender"].as_str() != Some(sender.as_str()) {
             return Err(unauthorized());
+        }
+        // Per-sale pull rate limit: at most one successful pull per 10 seconds.
+        // Checked after authorization so unauthorized requests do not burn the
+        // legitimate buyer's quota.
+        {
+            let mut times = PULL_TIMES.lock().unwrap_or_else(|err| err.into_inner());
+            let now = Instant::now();
+            if let Some(last) = times.get(sale_id) {
+                if now.saturating_duration_since(*last) < PULL_COOLDOWN {
+                    return Err(refused("try again shortly"));
+                }
+            }
+            times.insert(sale_id.to_string(), now);
+            // Evict old entries to bound memory.
+            if times.len() > 10_000 {
+                times.retain(|_, last| now.saturating_duration_since(*last) < PULL_COOLDOWN);
+            }
         }
         let route = Route::of(&sale)?;
         let snapshot = self.build_pull_snapshot(&sale, nonce);
