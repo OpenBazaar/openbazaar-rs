@@ -36,6 +36,16 @@ pub use store::ChainStore;
 /// Scripts taken from each keychain of a full wallet scan.
 const FULL_SCAN_SPKS: usize = 100;
 const BROADCAST_TIMEOUT: Duration = Duration::from_secs(30);
+/// The failures that mean no peer took the transaction, as opposed to a peer that
+/// answered and refused it. Only these are worth handing to a public server: a
+/// refusal has already been judged, and passing it on only tells a third party
+/// about the transaction.
+pub(crate) const NO_PEER_TOOK_IT: &str = "no peer took the transaction in time";
+pub(crate) const NOT_CONNECTED: &str = "the filter client is not connected to any peer yet";
+
+pub(crate) fn undelivered(err: &str) -> bool {
+    err == NO_PEER_TOOK_IT || err == NOT_CONNECTED
+}
 /// Paid blocks that form the estimate. Empty blocks are not samples.
 const FEE_BLOCKS: u32 = 3;
 /// Blocks walked back from the tip while collecting those paid samples.
@@ -174,7 +184,7 @@ impl Shared {
             .lock()
             .unwrap_or_else(|err| err.into_inner())
             .clone()
-            .ok_or_else(|| "the filter client is not connected to any peer yet".to_string())
+            .ok_or_else(|| NOT_CONNECTED.to_string())
     }
 }
 
@@ -285,6 +295,13 @@ impl FilterChain {
 
     pub fn config(&self) -> &FilterConfig {
         &self.config
+    }
+
+    /// Whether the proxy this client needs is known to be down. The public
+    /// fallback must not try the same dead proxy: every attempt would pay the
+    /// connect and request timeouts again.
+    pub(crate) fn proxy_is_down(&self) -> bool {
+        self.shared.proxy_down.load(Ordering::Relaxed)
     }
 
     /// No peer has answered for `after` since the client started or last
@@ -543,7 +560,7 @@ impl ChainSource for FilterChain {
         }
         let requester = self.shared.requester()?;
         self.wait(BROADCAST_TIMEOUT, requester.submit_package(tx.clone()))
-            .ok_or_else(|| "no peer took the transaction in time".to_string())?
+            .ok_or_else(|| NO_PEER_TOOK_IT.to_string())?
             .map_err(|err| err.to_string())?;
         self.shared.index().add_mempool(tx.clone(), now_secs());
         self.shared.save();

@@ -92,7 +92,7 @@ impl ChainPlan {
                 "compact block filters from P2P peers; no public server fallback".into()
             }
             ChainPlan::Filters { fallback, .. } => format!(
-                "compact block filters from P2P peers; public Esplora ({}) for the tip, fees, and broadcasts only through --proxy while no peer answers",
+                "compact block filters from P2P peers; public Esplora ({}) for the tip and the fees while no peer answers, and for any transaction no peer takes, only through --proxy",
                 fallback.join(", ")
             ),
             ChainPlan::Esplora { urls } => format!("Esplora at {}", urls.join(", ")),
@@ -113,6 +113,7 @@ impl ChainPlan {
                 primary: filters(config)?,
                 fallback: EsploraChain::with_egress(fallback, network.bitcoin(), egress)?,
                 active: AtomicBool::new(false),
+                public_broadcast: AtomicBool::new(false),
             }),
             ChainPlan::Esplora { urls } => Box::new(EsploraChain::with_egress(urls, network.bitcoin(), egress)?),
         })
@@ -157,6 +158,9 @@ struct FallbackChain {
     primary: FilterChain,
     fallback: EsploraChain,
     active: AtomicBool,
+    /// Set once a transaction has been handed to a public server, so status()
+    /// can say so after the fact.
+    public_broadcast: AtomicBool,
 }
 
 impl FallbackChain {
@@ -164,7 +168,7 @@ impl FallbackChain {
         let unreachable = self.primary.unreachable_for(FALLBACK_AFTER);
         if self.active.swap(unreachable, Ordering::Relaxed) != unreachable {
             if unreachable {
-                eprintln!("ob-node: WARNING: no filter peer answered or the filter scan stopped moving; public Esplora is asked for the tip, fees, and broadcasts only when --proxy is set. Addresses stay on the filters, so a payment is not seen until a peer answers");
+                eprintln!("ob-node: WARNING: no filter peer answered or the filter scan stopped moving; public Esplora is asked for the tip and the fees, and for any transaction no peer takes, only when --proxy is set. Addresses stay on the filters, so a sale address is not seen until a peer answers");
             } else {
                 eprintln!("ob-node: filter peers answer again; the public Esplora servers are no longer asked");
             }
@@ -197,7 +201,7 @@ impl ChainSource for FallbackChain {
             status.error = primary.error.or(status.error);
         }
         status.fallback = Some("public-esplora");
-        status.fallback_active = active;
+        status.fallback_active = active || self.public_broadcast.load(Ordering::Relaxed);
         status
     }
 
@@ -220,7 +224,33 @@ impl ChainSource for FallbackChain {
     }
 
     fn broadcast(&self, tx: &Transaction) -> Result<(), String> {
-        self.pick().broadcast(tx)
+        if self.use_fallback() {
+            return self.fallback.broadcast(tx);
+        }
+        match self.primary.broadcast(tx) {
+            Ok(()) => Ok(()),
+            // The sync gate above answers whether the tip is moving, and a client
+            // with no live peer can still look healthy by that measure, which is how
+            // a payment died with no peer taking the transaction while a working
+            // public server was never asked. Only a transaction nobody took is
+            // offered on: a peer that answered and refused it has judged it, and a
+            // dead proxy would only add this client's timeouts to every retry. The
+            // clearnet refusal is a configuration answer, not a delivery failure, so
+            // it goes back to the caller untouched.
+            Err(peer) => {
+                if !crate::chain_filters::undelivered(&peer) || self.primary.proxy_is_down() {
+                    return Err(peer);
+                }
+                eprintln!("ob-node: no filter peer took the transaction ({peer}); asking the public Esplora servers, which see a Tor exit");
+                let public = self.fallback.broadcast(tx);
+                if public.is_ok() {
+                    self.public_broadcast.store(true, Ordering::Relaxed);
+                }
+                public.map_err(|public| {
+                    format!("{peer}; the public Esplora servers did not take it either: {public}")
+                })
+            }
+        }
     }
 
     fn wallet_update(&self, request: WalletRequest) -> Result<Update, String> {
@@ -285,7 +315,7 @@ mod tests {
             &Egress::default(),
         )
         .unwrap();
-        let chain = FallbackChain { primary, fallback, active: AtomicBool::new(false) };
+        let chain = FallbackChain { primary, fallback, active: AtomicBool::new(false), public_broadcast: AtomicBool::new(false) };
         let address = Address::from_str("bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080")
             .unwrap()
             .require_network(Network::Regtest)
@@ -333,7 +363,7 @@ mod tests {
             .unwrap();
         let fallback =
             crate::chain::EsploraChain::with_egress(&[format!("http://127.0.0.1:{port}")], Network::Regtest, &Egress::default()).unwrap();
-        let chain = FallbackChain { primary, fallback, active: AtomicBool::new(false) };
+        let chain = FallbackChain { primary, fallback, active: AtomicBool::new(false), public_broadcast: AtomicBool::new(false) };
         let started = std::time::Instant::now();
         while chain.status().syncing {
             assert!(started.elapsed() < Duration::from_secs(60), "the scan did not catch up");
@@ -347,5 +377,113 @@ mod tests {
         assert_eq!(hits.load(Ordering::SeqCst) - before, 0, "44 tip reads went to the public server");
         assert!(tips.iter().all(|tip| *tip == Ok(1)), "{tips:?}");
         assert!(!chain.status().fallback_active);
+    }
+    /// A payment that no peer takes must still reach the public server. The sync
+    /// gate answers whether the tip is moving, which is not the question a
+    /// broadcast asks: a client with no live peer can look healthy by that
+    /// measure and still fail every payment.
+    #[test]
+    fn a_broadcast_the_filter_route_cannot_take_reaches_the_public_server() {
+        use bitcoin::consensus::encode::deserialize_hex;
+        use bitcoin::{absolute::LockTime, transaction::Version, Amount, OutPoint, ScriptBuf, Sequence, TxIn, TxOut, Witness};
+
+        let tx = bitcoin::Transaction {
+            version: Version::TWO,
+            lock_time: LockTime::ZERO,
+            input: vec![TxIn {
+                previous_output: OutPoint::null(),
+                script_sig: ScriptBuf::new(),
+                sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
+                witness: Witness::default(),
+            }],
+            output: vec![TxOut { value: Amount::from_sat(1_000), script_pubkey: ScriptBuf::new() }],
+        };
+        let genesis = bitcoin::blockdata::constants::genesis_block(Network::Regtest).block_hash().to_string();
+        let txid = tx.compute_txid().to_string();
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let bodies = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let seen = bodies.clone();
+        thread::spawn(move || {
+            for mut stream in listener.incoming().flatten() {
+                let mut request = Vec::new();
+                let mut buf = [0u8; 4096];
+                while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    match stream.read(&mut buf) {
+                        Ok(0) | Err(_) => break,
+                        Ok(read) => request.extend_from_slice(&buf[..read]),
+                    }
+                }
+                let head_end = request
+                    .windows(4)
+                    .position(|window| window == b"\r\n\r\n")
+                    .map(|at| at + 4)
+                    .unwrap_or(request.len());
+                let head = String::from_utf8_lossy(&request[..head_end]).to_lowercase();
+                let path = head.lines().next().and_then(|line| line.split(' ').nth(1)).unwrap_or("").to_string();
+                let length: usize = head
+                    .lines()
+                    .find_map(|line| line.strip_prefix("content-length:"))
+                    .and_then(|value| value.trim().parse().ok())
+                    .unwrap_or(0);
+                while request.len() < head_end + length {
+                    match stream.read(&mut buf) {
+                        Ok(0) | Err(_) => break,
+                        Ok(read) => request.extend_from_slice(&buf[..read]),
+                    }
+                }
+                let body = String::from_utf8_lossy(&request[head_end..(head_end + length).min(request.len())]).to_string();
+                // The client probes GET /block-height/0 for the genesis hash, then
+                // POSTs /tx with the transaction. Answer both honestly.
+                let reply = if path.starts_with("/block-height/0") {
+                    genesis.clone()
+                } else {
+                    if path.starts_with("/tx") {
+                        seen.lock().unwrap().push(body);
+                    }
+                    txid.clone()
+                };
+                let _ = stream.write_all(
+                    format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", reply.len(), reply).as_bytes(),
+                );
+            }
+        });
+
+        // The pair production actually builds: a public filter client with a
+        // proxy, and a public fallback. The client is never opened here, so it
+        // has no requester and fails at once; a running client with no peer fails
+        // the same way after BROADCAST_TIMEOUT. The sync gate says the filters are
+        // fine, which is the state that failed on a quiet chain with no peers.
+        let mut config = FilterConfig::public(Network::Regtest);
+        config.proxy = Some("127.0.0.1:9050".parse().unwrap());
+        let primary = FilterChain::new(config).unwrap();
+        let fallback = crate::chain::EsploraChain::with_egress(
+            &[format!("http://127.0.0.1:{port}")],
+            Network::Regtest,
+            &Egress::default(),
+        )
+        .unwrap();
+        let chain = FallbackChain { primary, fallback, active: AtomicBool::new(false), public_broadcast: AtomicBool::new(false) };
+        assert!(!chain.status().fallback_active, "the sync gate is off, which is the state that failed");
+
+        let result = chain.broadcast(&tx);
+        assert!(result.is_ok(), "a payment the peers cannot take must still be relayed: {result:?}");
+        let sent = bodies.lock().unwrap().clone();
+        assert_eq!(sent.len(), 1, "the public server was not asked exactly once");
+        let decoded: bitcoin::Transaction = deserialize_hex(sent[0].trim()).expect("the server was sent a serialized transaction");
+        assert_eq!(decoded.compute_txid(), tx.compute_txid(), "a different transaction was sent than the one paid with");
+    }
+
+    /// A peer that answered and refused the transaction has judged it, and a dead
+    /// proxy would only add timeouts to every retry. Neither is a reason to ask a
+    /// public server, which is why the classification exists at all.
+    #[test]
+    fn only_an_undelivered_transaction_is_offered_to_a_public_server() {
+        use crate::chain_filters::{undelivered, NOT_CONNECTED, NO_PEER_TOOK_IT};
+        assert!(undelivered(NO_PEER_TOOK_IT));
+        assert!(undelivered(NOT_CONNECTED));
+        assert!(!undelivered("dust output: below the minimum"));
+        assert!(!undelivered("a public filter peer is not sent this transaction without --proxy; it would see this machine's IP"));
     }
 }
