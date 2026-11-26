@@ -78,6 +78,10 @@ impl LanState {
     fn allocate_counter(&self, dir: &std::path::Path) -> u64 {
         let mut inner = self.inner();
         let path = dir.join("lan-response-counter");
+        // Atomic update: write the new counter to a temp file, then rename.
+        // The in-process mutex serializes within one ob-node; the random
+        // nonce prefix still makes a collision between two processes
+        // negligible, but atomic rename prevents a half-written file (#255).
         let disk = std::fs::read(&path)
             .ok()
             .filter(|bytes| bytes.len() == 8)
@@ -86,12 +90,11 @@ impl LanState {
             .unwrap_or(0);
         let next = inner.counter.max(disk).saturating_add(1).max(1);
         inner.counter = next;
-        match std::fs::OpenOptions::new().create(true).write(true).truncate(true).open(&path) {
-            Ok(mut file) => {
-                if file.write_all(&next.to_le_bytes()).and_then(|()| file.sync_all()).is_err() {
-                    eprintln!("ob-node: the LAN response nonce counter could not be saved; this process still will not reuse one");
-                }
-            }
+        let tmp = path.with_extension("tmp");
+        match std::fs::write(&tmp, next.to_le_bytes())
+            .and_then(|()| std::fs::rename(&tmp, &path))
+        {
+            Ok(()) => {}
             Err(err) => eprintln!("ob-node: the LAN response nonce counter could not be saved ({err}); this process still will not reuse one"),
         }
         next
