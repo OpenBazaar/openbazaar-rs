@@ -297,6 +297,13 @@ impl FilterChain {
         &self.config
     }
 
+    /// Whether the proxy this client needs is known to be down. The public
+    /// fallback must not try the same dead proxy: every attempt would pay the
+    /// connect and request timeouts again.
+    pub(crate) fn proxy_is_down(&self) -> bool {
+        self.shared.proxy_down.load(Ordering::Relaxed)
+    }
+
     /// No peer has answered for `after` since the client started or last
     /// heard from one, the scan is behind and has not moved for `after`, or
     /// a caught-up tip header is older than [`STALE_TIP`]. A peer can answer a
@@ -307,13 +314,6 @@ impl FilterChain {
     /// A caught-up peer has nothing to say until the next block. While its
     /// connection is up that silence is not a failure: the client pings a
     /// quiet peer every two minutes and drops one that does not answer.
-    /// Whether the proxy this client needs is known to be down. The public
-    /// fallback must not try the same dead proxy: every attempt would pay the
-    /// connect and request timeouts again.
-    pub(crate) fn proxy_is_down(&self) -> bool {
-        self.shared.proxy_down.load(Ordering::Relaxed)
-    }
-
     pub(crate) fn unreachable_for(&self, after: Duration) -> bool {
         let Some(started) = *self.started.lock().unwrap_or_else(|err| err.into_inner()) else {
             return false;
