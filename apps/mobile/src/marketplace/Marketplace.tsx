@@ -389,11 +389,20 @@ export default function Marketplace() {
     } catch (error) { setToast(error instanceof Error ? error.message : "This store could not be opened."); }
   }
   async function startSelling() { try { profile.update(await setRole("seller")); navigate("store"); } catch (e) { setToast(e instanceof Error ? e.message : "Your node could not open a store."); } }
-  function storeChanged(message: string) { setToast(message); void load(); void profile.refresh(); }
+  // A store save must not call load(): that flips `loading` and the content pane scrolls to the top.
+  function storeChanged(message: string) {
+    setToast(message);
+    void refreshCatalog();
+    void profile.refresh();
+  }
   // The node puts a followed store back in its catalog as it is followed, so the catalog is read again.
   async function followChanged(message: string) {
     setToast(message);
     try { setCatalog(await fetchCatalog()); } catch {}
+  }
+  async function refreshCatalog() {
+    try { setCatalog(await fetchCatalog()); }
+    catch (e) { setLoadError(e instanceof Error ? e.message : "Your node could not be reached."); }
   }
   const followable = (storeId: string) => !!profile.data && storeId !== profile.data.storeKey;
   const activeTitle = section === "storefront" ? "Your storefront" : section === "listings" ? "Your listings" : section === "coupons" ? "Coupons" : section === "sales" ? "Sales" : section === "store" ? "Store settings" : section === "follows" ? "Followed stores" : section === "saved" ? "Saved goods" : section === "orders" ? "Your orders" : section === "bag" ? "Your bag" : section === "addresses" ? "Your addresses" : section === "wallet" ? "Wallet" : section === "safety" ? "Content filters" : section === "store-labels" ? "Store labels" : section === "home-node" ? "Home node" : section === "browsers" ? "Browsers" : section === "lightning" ? "Lightning" : section === "zcash" ? "Zcash" : section === "monero" ? "Monero" : section === "tor" ? "Tor" : "Products";
