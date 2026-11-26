@@ -245,9 +245,20 @@ impl Node {
         self.ln.rail.set(rail).map_err(|_| "the Lightning node is already running".to_string())
     }
 
-    /// `true` on mainnet until Lightning is configured to dial through `--proxy`.
+    /// `true` on mainnet until Lightning is configured to dial through a
+    /// reachable `--proxy`. A configured but unreachable proxy is treated the
+    /// same as no proxy: peers and LSP would fail or behave unexpectedly.
     pub(crate) fn ln_blocked(&self) -> bool {
-        self.network == NetworkMode::Mainnet && self.ln.config().is_none_or(|config| config.proxy.is_none())
+        if self.network != NetworkMode::Mainnet {
+            return false;
+        }
+        match self.ln.config() {
+            None => true,
+            Some(config) => match &config.proxy {
+                None => true,
+                Some(proxy) => !crate::egress::Egress::proxy_reachable(proxy),
+            },
+        }
     }
 
     /// What the store named `seller` signed about Lightning. Always `false`
