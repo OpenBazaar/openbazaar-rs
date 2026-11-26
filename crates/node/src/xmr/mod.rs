@@ -463,8 +463,11 @@ impl Node {
 
     /// Sync and pay on one thread until `stop`: payments as they are queued, a sync every `every`.
     pub(crate) fn run_xmr(&self, every: Duration, stop: &AtomicBool) {
-        if self.xmr.chain().is_none() {
-            return;
+        while self.xmr.chain().is_none() {
+            if stop.load(Ordering::Relaxed) {
+                return;
+            }
+            std::thread::sleep(Duration::from_secs(1));
         }
         // A queued payment lives only in memory. After a restart nothing is
         // sending it, so the order can be paid again.

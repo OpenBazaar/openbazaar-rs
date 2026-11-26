@@ -1,10 +1,25 @@
 import { useState, type ReactNode } from "react";
 import type { ListingHeader } from "../catalog";
-import { CONTENT_TAGS, parseKeywords, toggleHidden, type AdultMode, type SafetySettings, type SensitiveMode } from "../safety/filter";
+import { CONTENT_TAGS, toggleHidden, type AdultMode, type SafetySettings, type SensitiveMode } from "../safety/filter";
 
 export function SafetySettingsPanel({ settings, onChange, labelSources }: { settings: SafetySettings; onChange: (settings: SafetySettings) => void; labelSources?: ReactNode }) {
-  const [text, setText] = useState(() => settings.blockedKeywords.join("\n"));
+  const [draft, setDraft] = useState("");
   const hiddenCount = settings.hiddenStores.length + settings.hiddenListings.length;
+  const addKeywords = (raw: string) => {
+    const existing = new Set(settings.blockedKeywords.map(w => w.toLowerCase()));
+    const added: string[] = [];
+    for (const part of raw.split(",")) {
+      const word = part.trim();
+      if (!word || existing.has(word.toLowerCase())) continue;
+      existing.add(word.toLowerCase());
+      added.push(word);
+    }
+    setDraft("");
+    if (added.length > 0) onChange({ ...settings, blockedKeywords: [...settings.blockedKeywords, ...added] });
+  };
+  const removeKeyword = (word: string) => {
+    onChange({ ...settings, blockedKeywords: settings.blockedKeywords.filter(w => w !== word) });
+  };
   return <section className="ob-settings-page" aria-labelledby="ob-safety-title">
     <header className="ob-settings-heading"><div className="ob-settings-eyebrow">Browsing preferences</div><h1 id="ob-safety-title">Content filters</h1><p>Choose what appears in your marketplace. Changes apply automatically.</p></header>
     <div className="ob-filter-privacy"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg><span>Your browsing filters stay on this device. Nothing is removed from the network.</span></div>
@@ -23,7 +38,44 @@ export function SafetySettingsPanel({ settings, onChange, labelSources }: { sett
         <div className="ob-tag-controls">{CONTENT_TAGS.map(tag => <label key={tag} className="ob-tag-setting"><span>{tag.charAt(0).toUpperCase() + tag.slice(1)}</span><span className="ob-setting-switch"><input type="checkbox" role="switch" aria-label={`Hide ${tag}`} checked={settings.tags[tag] === "hide"} disabled={!settings.safeMode} onChange={e => onChange({ ...settings, tags: { ...settings.tags, [tag]: e.target.checked ? "hide" : "show" } })}/><span aria-hidden="true"/></span></label>)}</div>
       </section>
     </div>
-    <section className="ob-settings-card ob-keyword-card" aria-labelledby="ob-keywords-title"><div><h2 id="ob-keywords-title">Blocked words</h2><p>Hide listings that contain these words or phrases in their title, description, category, or tags.</p><p className="ob-settings-footnote">Matches whole words. Always applies, even with safe mode off.</p></div><div className="ob-keyword-input"><label htmlFor="ob-blocked-words">One word or phrase per line</label><textarea id="ob-blocked-words" aria-label="Blocked words" rows={4} value={text} placeholder={"Add words or phrases…"} onChange={e => { setText(e.target.value); onChange({ ...settings, blockedKeywords: parseKeywords(e.target.value) }); }}/><span className="ob-settings-footnote">{settings.blockedKeywords.length} {settings.blockedKeywords.length === 1 ? "phrase" : "phrases"} blocked</span></div></section>
+    <section className="ob-settings-card ob-keyword-card" aria-labelledby="ob-keywords-title">
+      <div>
+        <h2 id="ob-keywords-title">Blocked words</h2>
+        <p>Hide listings matching these whole words or phrases, even with safe mode off.</p>
+      </div>
+      <div className="ob-keyword-input">
+        <div className="ob-keyword-row">
+          <input
+            id="ob-blocked-words"
+            type="text"
+            aria-label="Blocked words"
+            value={draft}
+            placeholder="Add a word or phrase…"
+            onChange={e => setDraft(e.target.value)}
+            onKeyDown={e => {
+              if (e.key === "Enter" || e.key === ",") {
+                e.preventDefault();
+                addKeywords(draft);
+              }
+            }}
+          />
+          <button type="button" className="ob-secondary ob-keyword-add" onClick={() => addKeywords(draft)} disabled={!draft.trim()}>Add</button>
+        </div>
+        {settings.blockedKeywords.length > 0 && (
+          <>
+            <ul className="ob-keyword-chips" aria-label="Blocked words list">
+              {settings.blockedKeywords.map(word => (
+                <li key={word} className="ob-keyword-chip">
+                  <span>{word}</span>
+                  <button type="button" className="ob-keyword-chip-remove" onClick={() => removeKeyword(word)} aria-label={`Remove ${word}`}>×</button>
+                </li>
+              ))}
+            </ul>
+            <span className="ob-settings-footnote">{settings.blockedKeywords.length} blocked</span>
+          </>
+        )}
+      </div>
+    </section>
     <details className="ob-settings-card ob-settings-disclosure"><summary><span><strong>Hidden sellers & listings</strong><span>Review items you have hidden and bring them back.</span></span><span className="ob-settings-count">{hiddenCount}</span><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></summary><div className="ob-settings-disclosure-body"><p>These stay hidden even with safe mode off. Sellers are remembered by their store key, so changing a name does not bring them back.</p>
       {hiddenCount === 0 ? <div className="ob-settings-empty">No hidden sellers or listings.</div> : <ul className="ob-hidden-list">{settings.hiddenStores.map(item => <li key={item.id}><div><strong>{item.label}</strong><span>Seller</span></div><button className="ob-secondary" onClick={() => onChange({ ...settings, hiddenStores: toggleHidden(settings.hiddenStores, item) })} aria-label={`Unhide seller ${item.label}`}>Unhide</button></li>)}{settings.hiddenListings.map(item => <li key={item.id}><div><strong>{item.label}</strong><span>Listing</span></div><button className="ob-secondary" onClick={() => onChange({ ...settings, hiddenListings: toggleHidden(settings.hiddenListings, item) })} aria-label={`Unhide listing ${item.label}`}>Unhide</button></li>)}</ul>}
     </div></details>

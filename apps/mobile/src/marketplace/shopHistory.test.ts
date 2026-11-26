@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import type { ListingHeader } from "../catalog.ts";
-import { ShopHistory, type HistoryLike, type ShopLocation } from "./shopHistory.ts";
+import { hashToInitial, locationToHash, ShopHistory, type HistoryLike, type ShopLocation } from "./shopHistory.ts";
 
 class MemoryHistory implements HistoryLike {
   entries: unknown[] = [null];
@@ -191,4 +191,47 @@ test("a pop from outside the shop does not rewrite the open page", () => {
   shop.onPop(null);
   shop.onPop({ ob: "other" });
   assert.equal(last(seen).page.name, "store");
+});
+
+test("order and sale permalinks serialize and restore cleanly from URL hash", () => {
+  const fallback = browse("discover");
+  const orderLoc: ShopLocation = { section: "orders", category: null, page: { name: "order", orderId: "c8849d4b0011" } };
+  const saleLoc: ShopLocation = { section: "sales", category: null, page: { name: "sale", saleId: "e84380b01122" } };
+
+  assert.equal(locationToHash(orderLoc), "#/orders/c8849d4b0011");
+  assert.equal(locationToHash(saleLoc), "#/sales/e84380b01122");
+  assert.deepEqual(hashToInitial("#/orders/c8849d4b0011", fallback), orderLoc);
+  assert.deepEqual(hashToInitial("#/sales/e84380b01122", fallback), saleLoc);
+  assert.deepEqual(hashToInitial("#/orders", fallback), browse("orders"));
+  assert.deepEqual(hashToInitial("#/sales", fallback), browse("sales"));
+});
+
+test("order and sale detail pages support browser back/forward and backToParent after direct reload or toast jump", () => {
+  const { memory, shop, seen } = harness();
+  // Normal flow: list -> detail -> backToParent uses history.back() and preserves Forward
+  shop.section(browse("orders"));
+  shop.page({ section: "orders", category: null, page: { name: "order", orderId: "ord-1" } });
+  assert.equal(last(seen).page.name, "order");
+  shop.backToParent();
+  assert.equal(last(seen).section, "orders");
+  assert.equal(last(seen).page.name, "browse");
+  memory.go(1);
+  assert.deepEqual(last(seen).page, { name: "order", orderId: "ord-1" });
+
+  // Jump from another section (e.g. incoming message toast): backToParent navigates to parent list
+  shop.section(browse("discover"));
+  shop.page({ section: "sales", category: null, page: { name: "sale", saleId: "sale-9" } });
+  assert.deepEqual(last(seen), { section: "sales", category: null, page: { name: "sale", saleId: "sale-9" } });
+  shop.backToParent();
+  assert.deepEqual(last(seen), browse("sales"));
+
+  // Direct reload on #/orders/<id> (cursor 0): backToParent navigates to #/orders instead of exiting
+  const reloadMem = new MemoryHistory();
+  const reloadShop = new ShopHistory(reloadMem);
+  const reloadSeen: ShopLocation[] = [];
+  reloadMem.listener = state => reloadShop.onPop(state);
+  reloadShop.listen(loc => reloadSeen.push(loc));
+  reloadShop.start({ section: "orders", category: null, page: { name: "order", orderId: "ord-direct" } });
+  reloadShop.backToParent();
+  assert.deepEqual(last(reloadSeen), browse("orders"));
 });

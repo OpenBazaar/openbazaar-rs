@@ -49,6 +49,33 @@ pub(crate) fn response(node: &Node, client: &Client, head: &str, method: &str, p
     let order = |suffix: &str| rest.strip_prefix("/orders/").and_then(|tail| tail.strip_suffix(suffix)).filter(|id| !id.contains('/'));
     match (method, rest) {
         ("GET", "/wallet") => wallet(node, origin),
+        ("POST", "/enable") => match read_body(body, &["daemons"], origin) {
+            Ok(map) => {
+                let raw = map.get("daemons").and_then(Value::as_str).unwrap_or("").trim();
+                let urls: Vec<String> = raw
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(ToOwned::to_owned)
+                    .collect();
+                if urls.is_empty() {
+                    return json_error("400 Bad Request", "Provide at least one monerod URL (for example http://127.0.0.1:38081).", origin);
+                }
+                let config = match openbazaar_xmr::DaemonConfig::new(node.network.monero(), &urls, node.local.egress.proxy.clone()) {
+                    Ok(config) => config,
+                    Err(err) => return json_error("400 Bad Request", &err.to_string(), origin),
+                };
+                let chain = match openbazaar_xmr::DaemonChain::new(config) {
+                    Ok(chain) => chain,
+                    Err(err) => return json_error("400 Bad Request", &err.to_string(), origin),
+                };
+                match node.set_xmr_chain(std::sync::Arc::new(chain)) {
+                    Ok(()) => json_body("200 OK", &node.xmr.backend_value(), origin),
+                    Err(err) => json_error("409 Conflict", &err, origin),
+                }
+            }
+            Err(response) => response,
+        },
         ("POST", "/wallet/subaddress") => subaddress(node, origin),
         ("POST", "/wallet/send/quote") => match read_body(body, &["address", "amountPiconero"], origin) {
             Ok(map) => match node.xmr_send_quote(&map) {

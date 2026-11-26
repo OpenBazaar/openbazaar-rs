@@ -1,4 +1,5 @@
-import { fetchXmrBackend, fetchXmrStores, setStoreAcceptsXmr, type XmrBackend, type XmrStores } from '../xmr'
+import { useState, type FormEvent } from 'react'
+import { enableMonero, fetchXmrBackend, fetchXmrStores, setStoreAcceptsXmr, type XmrBackend, type XmrStores } from '../xmr'
 import { useNodeResource } from '../useNodeResource'
 import { RailMark } from './RailMark'
 import { FormError, useSubmit } from './WalletLock'
@@ -14,7 +15,15 @@ export function MoneroSettings() {
   const backend = useNodeResource(fetchXmrBackend, 15000)
   const stores = useNodeResource(fetchXmrStores, 30000)
   const toggle = useSubmit()
+  const [daemonUrl, setDaemonUrl] = useState('http://127.0.0.1:38081')
   const xmr = backend.data
+  function submitEnable(e: FormEvent) {
+    e.preventDefault()
+    void toggle.run(async () => {
+      backend.update(await enableMonero(daemonUrl))
+      await stores.refresh()
+    }, 'Monero could not be enabled.')
+  }
   async function accept(seller: string, on: boolean) {
     await toggle.run(async () => {
       stores.update(await setStoreAcceptsXmr(seller, on))
@@ -35,10 +44,21 @@ export function MoneroSettings() {
         <section className='ob-settings-card'>
           <h2>Monero is off on this node</h2>
           <p>
-            Start the node with a monerod to read Monero blocks from: your own node, <code>ob-node serve --proxy socks5h://127.0.0.1:9050 --xmr-daemon http://127.0.0.1:38081</code>, or a remote
-            one over Tor. There is no default daemon. Your own monerod is read directly. With it the proxy is only for the XMR price, which the node asks for over Tor, and without a price no Monero order can be placed.
+            Connect a <code>monerod</code> RPC URL to enable Monero on the fly (your own node locally, or a remote node over Tor).
             {xmr.network === 'stagenet' ? ' On testnet4 the node pays on Monero stagenet.' : ''}
           </p>
+          <form onSubmit={submitEnable} className='ob-form-stack'>
+            <label className='ob-field'>
+              <span>Monero daemon URL</span>
+              <input value={daemonUrl} onChange={e => setDaemonUrl(e.target.value)} placeholder='http://127.0.0.1:38081' required />
+            </label>
+            <FormError message={toggle.error} />
+            <div className='ob-form-actions'>
+              <button type='submit' className='ob-primary' disabled={toggle.busy || !daemonUrl.trim()}>
+                {toggle.busy ? 'Enabling…' : 'Enable Monero'}
+              </button>
+            </div>
+          </form>
         </section>
         {stores.data?.stores.some(store => store.problem) && (
           <StoresCard stores={stores.data.stores.filter(store => store.problem)} busy={toggle.busy} error={toggle.error} onAccept={accept} />

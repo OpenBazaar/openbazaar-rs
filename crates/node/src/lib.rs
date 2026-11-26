@@ -25,6 +25,8 @@ mod buyer_orders;
 mod chain;
 mod chain_backend;
 mod chain_filters;
+mod classifieds;
+mod classifieds_http;
 mod checkout_terms;
 mod coin_locks;
 mod coin_provenance;
@@ -158,6 +160,8 @@ mod multinode_tests;
 mod multinode_variant_tests;
 #[cfg(test)]
 mod offers_tests;
+#[cfg(test)]
+mod classifieds_tests;
 #[cfg(test)]
 mod own_store_tests;
 #[cfg(test)]
@@ -367,6 +371,8 @@ pub struct Node {
     pub(crate) coupons: Mutex<coupons::CouponBook>,
     /// Bids waiting for this store to answer.
     pub(crate) offers: Mutex<offers::OfferBook>,
+    /// Local WTB / WTS board and contact threads.
+    pub(crate) classifieds: Mutex<classifieds::ClassifiedBoard>,
     pub(crate) reviews: Mutex<reviews::ReviewPool>,
     /// Order letters and replies on their way to other nodes.
     pub(crate) order_outbox: escrow_outbox::Outbox,
@@ -564,6 +570,7 @@ impl Node {
             order_terms: Mutex::new(order_terms::TermsLedger::open(&dir, vault.clone())?),
             coupons: Mutex::new(coupons::CouponBook::open(&dir, vault.clone())?),
             offers: Mutex::new(offers::OfferBook::open(&dir, vault.clone())?),
+            classifieds: Mutex::new(classifieds::ClassifiedBoard::open(&dir, vault.clone())?),
             reviews: Mutex::new(reviews::ReviewPool::open(&dir, vault.clone())?),
             order_outbox: order_mail::open_outbox(&dir, vault.clone(), Arc::clone(&peers))?,
             peers,

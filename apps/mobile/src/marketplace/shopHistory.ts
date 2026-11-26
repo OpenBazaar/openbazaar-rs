@@ -11,7 +11,9 @@ export type ShopPage =
   | { name: "store"; storeId: string }
   | { name: "detail"; listing: ListingHeader; fromStore?: string }
   | { name: "checkout"; lines: CartLine[]; returnTo?: ListingHeader; fromStore?: string }
-  | { name: "receipt"; receipt: CheckoutReceipt };
+  | { name: "receipt"; receipt: CheckoutReceipt }
+  | { name: "order"; orderId: string }
+  | { name: "sale"; saleId: string };
 
 export type ShopLocation = {
   section: string;
@@ -24,12 +26,51 @@ type Stamp = { ob: "shop"; i: number; depth: number; loc: ShopLocation };
 
 export type HistoryLike = {
   readonly state: unknown;
-  pushState(data: unknown, unused: string): void;
-  replaceState(data: unknown, unused: string): void;
+  pushState(data: unknown, unused: string, url?: string | URL | null): void;
+  replaceState(data: unknown, unused: string, url?: string | URL | null): void;
   back(): void;
   go(delta: number): void;
   scrollRestoration?: "auto" | "manual";
 };
+
+export function locationToHash(loc: ShopLocation): string {
+  const { page, section, category } = loc;
+  if (page.name === "store") return `#/store/${encodeURIComponent(page.storeId)}`;
+  if (page.name === "detail") return `#/product/${encodeURIComponent(page.listing.hash)}`;
+  if (page.name === "checkout") return "#/checkout";
+  if (page.name === "receipt") return `#/receipt/${encodeURIComponent(page.receipt.checkoutId)}`;
+  if (page.name === "order") return `#/orders/${encodeURIComponent(page.orderId)}`;
+  if (page.name === "sale") return `#/sales/${encodeURIComponent(page.saleId)}`;
+  if (section === "discover") return category ? `#/category/${encodeURIComponent(category)}` : "#/";
+  return `#/${encodeURIComponent(section)}`;
+}
+
+export function hashToInitial(hash: string, fallback: ShopLocation): ShopLocation {
+  const clean = hash.replace(/^#\/?/, "").trim();
+  if (!clean) return fallback;
+  let parts: string[];
+  try {
+    parts = clean.split("/").map(decodeURIComponent);
+  } catch {
+    return fallback;
+  }
+  if (parts[0] === "category" && parts[1]) {
+    return { section: "discover", category: parts[1], page: { name: "browse" } };
+  }
+  if (parts[0] === "store" && parts[1]) {
+    return { section: "discover", category: null, page: { name: "store", storeId: parts[1] } };
+  }
+  if (parts[0] === "orders" && parts[1]) {
+    return { section: "orders", category: null, page: { name: "order", orderId: parts[1] } };
+  }
+  if (parts[0] === "sales" && parts[1]) {
+    return { section: "sales", category: null, page: { name: "sale", saleId: parts[1] } };
+  }
+  if (parts.length === 1 && parts[0] && !["product", "checkout", "receipt"].includes(parts[0])) {
+    return { section: parts[0], category: null, page: { name: "browse" } };
+  }
+  return fallback;
+}
 
 const MARK = "shop";
 
@@ -57,6 +98,8 @@ function knownPage(page: ShopPage | undefined): page is ShopPage {
   if (page.name === "detail") return !!page.listing && typeof page.listing.hash === "string";
   if (page.name === "checkout") return Array.isArray(page.lines);
   if (page.name === "receipt") return !!page.receipt && typeof page.receipt.checkoutId === "string";
+  if (page.name === "order") return typeof page.orderId === "string" && page.orderId.length > 0;
+  if (page.name === "sale") return typeof page.saleId === "string" && page.saleId.length > 0;
   return false;
 }
 
@@ -72,6 +115,8 @@ function samePage(a: ShopPage, b: ShopPage): boolean {
       && a.lines.every((line, i) => line.hash === b.lines[i]?.hash && line.quantity === b.lines[i]?.quantity && (line.variant ?? "") === (b.lines[i]?.variant ?? ""));
   }
   if (a.name === "receipt" && b.name === "receipt") return a.receipt.checkoutId === b.receipt.checkoutId;
+  if (a.name === "order" && b.name === "order") return a.orderId === b.orderId;
+  if (a.name === "sale" && b.name === "sale") return a.saleId === b.saleId;
   return false;
 }
 
@@ -84,6 +129,8 @@ function backTarget(loc: ShopLocation): ShopLocation | null {
   const page = loc.page;
   const rest = { section: loc.section, category: loc.category };
   if (page.name === "store") return { ...rest, page: { name: "browse" } };
+  if (page.name === "order") return { section: "orders", category: null, page: { name: "browse" } };
+  if (page.name === "sale") return { section: "sales", category: null, page: { name: "browse" } };
   if (page.name === "detail") {
     return page.fromStore
       ? { ...rest, page: { name: "store", storeId: page.fromStore } }
@@ -106,6 +153,7 @@ function backTarget(loc: ShopLocation): ShopLocation | null {
 function pageDepth(loc: ShopLocation): number {
   const page = loc.page;
   if (page.name === "store") return 1;
+  if (page.name === "order" || page.name === "sale") return 1;
   if (page.name === "detail") return page.fromStore ? 2 : 1;
   if (page.name === "checkout") {
     if (!page.returnTo) return 1;
@@ -145,11 +193,12 @@ export class ShopHistory {
       this.stack[existing.i] = { depth: existing.depth, loc: existing.loc };
       return existing.loc;
     }
-    const frame = { depth: 0, loc: initial };
+    const resolved = typeof window !== "undefined" ? hashToInitial(window.location.hash, initial) : initial;
+    const frame = { depth: 0, loc: resolved };
     this.stack = [frame];
     this.cursor = 0;
-    this.history.replaceState(stamp(0, 0, initial), "");
-    return initial;
+    this.history.replaceState(stamp(0, 0, resolved), "", locationToHash(resolved));
+    return resolved;
   }
 
   listen(apply: (loc: ShopLocation) => void): () => void {
@@ -229,6 +278,23 @@ export class ShopHistory {
     this.history.back();
   }
 
+  /** Return to this page's parent list via history.back() when underneath, or push it directly (e.g. after a reload or toast deep-link). */
+  backToParent() {
+    if (this.pending) return;
+    const cur = this.current();
+    const parent = cur ? backTarget(cur.loc) : null;
+    if (!parent) {
+      this.history.back();
+      return;
+    }
+    const prev = this.cursor > 0 ? this.stack[this.cursor - 1] : undefined;
+    if (prev && same(prev.loc, parent)) {
+      this.history.back();
+      return;
+    }
+    this.push(parent, 0);
+  }
+
   /** Leave a product for the browse page under this visit (hide listing). */
   backToBrowse() {
     const cur = this.current();
@@ -276,8 +342,9 @@ export class ShopHistory {
 
   private write(index: number, depth: number, loc: ShopLocation, mode: "push" | "replace") {
     const state = stamp(index, depth, loc);
-    if (mode === "push") this.history.pushState(state, "");
-    else this.history.replaceState(state, "");
+    const url = locationToHash(loc);
+    if (mode === "push") this.history.pushState(state, "", url);
+    else this.history.replaceState(state, "", url);
     if (mode === "push") this.stack.length = index;
     this.stack[index] = { depth, loc };
     this.cursor = index;

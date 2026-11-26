@@ -158,6 +158,15 @@ export async function setStoreAcceptsZec(seller: string, accept: boolean): Promi
 export async function fetchZecBackend(): Promise<ZecBackend> {
   return parseZecBackend(record(await paired('/network')).zecBackend)
 }
+export async function enableZcash(indexers: string): Promise<ZecBackend> {
+  return parseZecBackend(
+    await paired('/zec/enable', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ indexers })
+    })
+  )
+}
 
 export function parseZecWallet(value: unknown): ZecWallet {
   const r = record(value)

@@ -1,4 +1,5 @@
-import { fetchZecBackend, fetchZecStores, setStoreAcceptsZec, type ZecBackend, type ZecStores } from '../zec'
+import { useState, type FormEvent } from 'react'
+import { enableZcash, fetchZecBackend, fetchZecStores, setStoreAcceptsZec, type ZecBackend, type ZecStores } from '../zec'
 import { useNodeResource } from '../useNodeResource'
 import { RailMark } from './RailMark'
 import { FormError, useSubmit } from './WalletLock'
@@ -15,7 +16,15 @@ export function ZcashSettings() {
   const backend = useNodeResource(fetchZecBackend, 15000)
   const stores = useNodeResource(fetchZecStores, 30000)
   const toggle = useSubmit()
+  const [indexerUrl, setIndexerUrl] = useState('http://127.0.0.1:8137')
   const zec = backend.data
+  function submitEnable(e: FormEvent) {
+    e.preventDefault()
+    void toggle.run(async () => {
+      backend.update(await enableZcash(indexerUrl))
+      await stores.refresh()
+    }, 'Zcash could not be enabled.')
+  }
   async function accept(seller: string, on: boolean) {
     await toggle.run(async () => {
       stores.update(await setStoreAcceptsZec(seller, on))
@@ -35,11 +44,21 @@ export function ZcashSettings() {
         <section className='ob-settings-card'>
           <h2>Zcash is off on this node</h2>
           <p>
-            Start the node with an indexer to read Zcash blocks from: your own Zebra and Zaino, <code>ob-node serve --proxy socks5h://127.0.0.1:9050 --zec-indexer http://127.0.0.1:8137</code>, or a public
-            one over Tor, <code>ob-node serve --proxy socks5h://127.0.0.1:9050 --zec-indexer https://…</code>. There is no default server.
-            Your own indexer is read directly. With it the proxy is only for the ZEC price, which the node asks for over Tor, and without a price no Zcash order can be placed.
+            Connect a Zcash indexer URL (Zebra + Zaino locally, or a public indexer over Tor) to enable Zcash on the fly.
             {zec.network === 'testnet' ? ' On testnet4 the node pays on Zcash testnet.' : ''}
           </p>
+          <form onSubmit={submitEnable} className='ob-form-stack'>
+            <label className='ob-field'>
+              <span>Zcash indexer URL</span>
+              <input value={indexerUrl} onChange={e => setIndexerUrl(e.target.value)} placeholder='http://127.0.0.1:8137' required />
+            </label>
+            <FormError message={toggle.error} />
+            <div className='ob-form-actions'>
+              <button type='submit' className='ob-primary' disabled={toggle.busy || !indexerUrl.trim()}>
+                {toggle.busy ? 'Enabling…' : 'Enable Zcash'}
+              </button>
+            </div>
+          </form>
         </section>
         {/* A store whose record still takes Zcash: say that its Zcash orders are declined, and let it be switched off. */}
         {stores.data?.stores.some(store => store.problem) && (

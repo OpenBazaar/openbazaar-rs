@@ -457,6 +457,9 @@ impl Node {
         if body["kind"] == "bid" {
             return self.receive_bid(&opened.sender.0, &body);
         }
+        if body["kind"] == "contact" {
+            return self.receive_contact(&opened.sender.0, &body);
+        }
         let id = body["sale"].as_str().unwrap_or("");
         let sender = hex(&opened.sender.0);
         let Some(sale) = self.sales().get(id).cloned() else {

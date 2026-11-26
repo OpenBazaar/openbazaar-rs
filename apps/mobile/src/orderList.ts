@@ -1,8 +1,10 @@
 export type OrderListRow = {
   id: string; title: string; subtitle: string; status: string; amount: number;
   created: number; attention: boolean; closed: boolean; hint: string;
+  rail?: string;
   awaitingPayment?: boolean; paymentStatus?: string; fulfillmentStatus?: string;
   itemSummary?: string; deliveryKind?: 'physical' | 'digital';
+  messageCount?: number; unreadMessages?: number;
 }
 export type OrderFilter = 'all' | 'attention' | 'awaiting' | 'progress' | 'closed'
 export type OrderSort = 'priority' | 'newest' | 'oldest' | 'highest' | 'lowest'
@@ -11,7 +13,7 @@ export type OrderQuery = { filter: OrderFilter; search: string; sort: OrderSort;
 
 export const orderTime = (created: number) => created < 1e12 ? created * 1000 : created
 export function indexOrders(rows: OrderListRow[]) {
-  return rows.map(row => ({ row, time: orderTime(row.created), search: `${row.title} ${row.subtitle} ${row.id}`.toLocaleLowerCase() }))
+  return rows.map(row => ({ row, time: orderTime(row.created), search: `${row.title} ${row.subtitle} ${row.id} ${row.rail ?? ''}`.toLocaleLowerCase() }))
 }
 
 // Calendar boundaries keep the end date inclusive, including across DST changes.

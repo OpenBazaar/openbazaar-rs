@@ -458,8 +458,11 @@ impl Node {
     /// Sync every `every` on this thread until `stop`. Idle nodes wait [`IDLE`],
     /// and catch up on the next tick once an order or sale is placed or a wallet is still behind.
     pub(crate) fn run_zec(&self, every: Duration, stop: &AtomicBool) {
-        if self.zec.chain().is_none() {
-            return;
+        while self.zec.chain().is_none() {
+            if stop.load(Ordering::Relaxed) {
+                return;
+            }
+            std::thread::sleep(Duration::from_secs(1));
         }
         let mut next_sync = Instant::now();
         while !stop.load(Ordering::Relaxed) {

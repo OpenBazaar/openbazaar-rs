@@ -60,6 +60,21 @@ pub(crate) fn response(node: &Node, client: &Client, head: &str, method: &str, p
     let channel = rest.strip_prefix("/channels/").and_then(|tail| tail.strip_suffix("/close")).filter(|id| !id.is_empty() && !id.contains('/'));
     match (method, rest) {
         ("GET", "/status") => json_body("200 OK", &node.ln_status_value(), origin),
+        ("POST", "/enable") => match read_body(body, &[], origin) {
+            Ok(_) => {
+                let mut flags = super::LnFlags::default();
+                flags.on = true;
+                match flags.plan(node.network, node.local.egress.proxy.as_deref()) {
+                    Ok(Some(config)) => match node.enable_lightning(config) {
+                        Ok(()) => json_body("200 OK", &node.ln_status_value(), origin),
+                        Err(err) => json_error("409 Conflict", &err, origin),
+                    },
+                    Ok(None) => json_error("400 Bad Request", "Lightning could not be configured.", origin),
+                    Err(err) => json_error("400 Bad Request", &err, origin),
+                }
+            }
+            Err(response) => response,
+        },
         ("GET", "/stores") => json_body("200 OK", &node.ln_stores_value(), origin),
         ("PUT", "/stores") => match read_body(body, &["seller", "accept", "acknowledgeLsp"], origin) {
             Ok(map) => put_store(node, &map, origin),

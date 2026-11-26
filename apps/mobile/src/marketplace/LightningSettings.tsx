@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from 'react'
 import {
   closeLnChannel,
+  enableLightning,
   fetchLnStatus,
   fetchLnStores,
   lnNetworkLabel,
@@ -54,7 +55,21 @@ export function LightningSettings() {
       ) : !ln.enabled ? (
         <section className='ob-settings-card'>
           <h2>Lightning is off on this node</h2>
-          <p>Start the node with <code>ob-node serve --lightning</code>. On testnet4 it runs on Mutinynet, a test signet, through the public Mutinynet LSP. With <code>--ln-network testnet4</code> or <code>regtest</code>, name an LSP or turn it off and open channels yourself.</p>
+          <p>Turn Lightning on now to run an LDK node for direct orders. On testnet4 it connects to Mutinynet signet through the public Mutinynet LSP.</p>
+          <FormError message={toggle.error} />
+          <div className='ob-form-actions'>
+            <button
+              type='button'
+              className='ob-primary'
+              disabled={toggle.busy}
+              onClick={() => void toggle.run(async () => {
+                status.update(await enableLightning())
+                await stores.refresh()
+              }, 'Lightning could not be enabled.')}
+            >
+              {toggle.busy ? 'Enabling…' : 'Enable Lightning'}
+            </button>
+          </div>
         </section>
       ) : (
         <>
