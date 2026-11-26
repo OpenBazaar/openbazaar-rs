@@ -242,6 +242,9 @@ const orderPath = (id: string, rest: string) => `/ln/orders/${encodeURIComponent
 export async function fetchLnStatus(): Promise<LnStatus> {
   return parseLnStatus(await paired('/ln/status'))
 }
+export async function enableLightning(opts: { network?: string; lsp?: string; noLsp?: boolean } = {}): Promise<LnStatus> {
+  return parseLnStatus(await send('/ln/enable', opts))
+}
 export async function fetchLnStores(): Promise<LnStores> {
   return parseLnStores(await paired('/ln/stores'))
 }

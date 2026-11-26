@@ -197,3 +197,46 @@ fn expired_posts_drop_from_the_live_board() {
     assert!(listed["classifieds"].as_array().unwrap().is_empty(), "expired posts stay off the live board");
     assert_eq!(node.classifieds().posts.len(), 1, "the sealed pool still keeps the expired record");
 }
+
+#[test]
+fn classifieds_list_pages_with_limit_and_offset() {
+    let dir = TempDir::new();
+    let chain = MockChain::new();
+    let node = open_node(&dir.0, NetworkMode::Testnet4, &chain, 1, EscrowConfig::default());
+    let _ = open_store(&node);
+    unlock(&node);
+    let mut ids = Vec::new();
+    for i in 0..3 {
+        let body = json!({
+            "kind": "wtb",
+            "category": "goods",
+            "title": format!("Bike part {i}"),
+            "body": "Looking for a spare.",
+            "region": "Oregon",
+            "lifeDays": 7,
+        });
+        let (status, post) = request(&node, "POST", "/classifieds", &body.to_string());
+        assert!(status.contains("200"), "{status} {post}");
+        ids.push(post["id"].as_str().unwrap().to_string());
+    }
+    let (status, page) = request(&node, "GET", "/classifieds?limit=2&offset=0", "");
+    assert!(status.contains("200"), "{status} {page}");
+    assert_eq!(page["total"], 3);
+    assert_eq!(page["limit"], 2);
+    assert_eq!(page["offset"], 0);
+    assert_eq!(page["classifieds"].as_array().unwrap().len(), 2);
+
+    let (status, next) = request(&node, "GET", "/classifieds?limit=2&offset=2", "");
+    assert!(status.contains("200"), "{status} {next}");
+    assert_eq!(next["total"], 3);
+    assert_eq!(next["classifieds"].as_array().unwrap().len(), 1);
+    let first_ids: Vec<&str> = page["classifieds"].as_array().unwrap().iter().map(|row| row["id"].as_str().unwrap()).collect();
+    let second_id = next["classifieds"][0]["id"].as_str().unwrap();
+    assert!(!first_ids.contains(&second_id), "pages must not overlap");
+    assert!(ids.iter().any(|id| id == second_id));
+
+    let (status, filtered) = request(&node, "GET", "/classifieds?q=Bike+part+1&limit=50", "");
+    assert!(status.contains("200"), "{status} {filtered}");
+    assert_eq!(filtered["total"], 1);
+    assert_eq!(filtered["classifieds"][0]["title"], "Bike part 1");
+}

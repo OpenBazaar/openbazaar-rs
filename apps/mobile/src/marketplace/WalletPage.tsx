@@ -44,6 +44,10 @@ export function WalletPage({ currency, onOrders, onSales, onManage, onTor }: Pro
   if (lightning.data?.enabled) choices.push({ rail: 'lightning', name: 'Lightning', network: lightning.data.network === 'signet' ? 'Mutinynet signet' : lightning.data.network === 'bitcoin' ? 'Mainnet' : lightning.data.network ?? 'Starting', balance: lightning.data.balances ? `${lightning.data.balances.lightningSats.toLocaleString('en-US')} sats` : 'Balance unavailable' })
   if (moneroEnabled) choices.push({ rail: 'monero', name: 'Monero', network: network.data!.xmrBackend!.network === 'stagenet' ? 'Stagenet' : 'Mainnet', balance: monero.data?.balance ? `${formatXmr(monero.data.balance.unlocked)} XMR` : monero.loading ? 'Loading balance…' : 'Balance unavailable' })
   if (zcashEnabled) choices.push({ rail: 'zcash', name: 'Zcash', network: network.data!.zecBackend!.network === 'testnet' ? 'Testnet' : 'Mainnet', balance: zcash.data?.balance ? `${formatZec(zcash.data.balance.confirmed)} ZEC` : zcash.loading ? 'Loading balance…' : 'Balance unavailable' })
+  const availableToAdd: Array<{ rail: 'lightning' | 'monero' | 'zcash'; name: string; note: string }> = []
+  if (!lightning.data?.enabled) availableToAdd.push({ rail: 'lightning', name: 'Lightning', note: 'Instant Bitcoin payments' })
+  if (!moneroEnabled) availableToAdd.push({ rail: 'monero', name: 'Monero', note: 'Private XMR payments' })
+  if (!zcashEnabled) availableToAdd.push({ rail: 'zcash', name: 'Zcash', note: 'Shielded ZEC payments' })
   const active = choices.some(choice => choice.rail === selected) ? selected : 'bitcoin'
   function keyDown(event: KeyboardEvent<HTMLButtonElement>, index: number) {
     const next = event.key === 'ArrowRight' ? (index + 1) % choices.length : event.key === 'ArrowLeft' ? (index + choices.length - 1) % choices.length : event.key === 'Home' ? 0 : event.key === 'End' ? choices.length - 1 : null
@@ -81,6 +85,21 @@ export function WalletPage({ currency, onOrders, onSales, onManage, onTor }: Pro
     {zcashEnabled && <div id='ob-wallet-panel-zcash' className='ob-wallet-tabpanel' role='tabpanel' aria-labelledby='ob-wallet-tab-zcash' hidden={active !== 'zcash'}>
       <ZcashPanel resource={zcash} backend={network.data!.zecBackend!} waiting={waiting} onManage={() => onManage('zcash')} onSales={onSales}/>
     </div>}
+    {availableToAdd.length > 0 && <section className='ob-wallet-add' aria-label='Add another wallet'>
+      <div className='ob-wallet-add-head'>
+        <h2>Other wallets</h2>
+        <p>Enable additional payment rails for this node.</p>
+      </div>
+      <div className='ob-wallet-add-grid'>
+        {availableToAdd.map(item => <div key={item.rail} className='ob-wallet-add-card'>
+          <div className='ob-wallet-add-info'>
+            <RailMark rail={item.rail}/>
+            <div><strong>{item.name}</strong><span>{item.note}</span></div>
+          </div>
+          <button type='button' className='ob-secondary' onClick={() => onManage(item.rail)}>Set up</button>
+        </div>)}
+      </div>
+    </section>}
     {settings && <Dialog label='Wallet settings' className='ob-wallet-dialog' onCancel={() => setSettings(false)}><h2>Wallet settings</h2><WalletLockPanel lock={lock}/><div className='ob-form-actions'><button type='button' className='ob-secondary' onClick={() => setSettings(false)}>Done</button></div></Dialog>}
   </section>
 }

@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use bitcoin::hashes::{sha256, Hash, HashEngine};
 use openbazaar_protocol::{
-    add_days, day_from_unix, Classified, ClassifiedCategory, ClassifiedKind, SignedClassified,
+    add_days, Classified, ClassifiedCategory, ClassifiedKind, SignedClassified,
     DEFAULT_LIFE_DAYS, MAX_LIFE_DAYS,
 };
 use rand::rngs::StdRng;
@@ -180,11 +180,24 @@ impl Node {
         self.classifieds.lock().unwrap_or_else(|err| err.into_inner())
     }
 
-    /// `GET /classifieds`: live posts, newest first. Query `kind` / `category` filter.
-    pub(crate) fn classifieds_value(&self, kind: Option<&str>, category: Option<&str>) -> Value {
+    /// `GET /classifieds`: live posts, newest first.
+    /// Optional `kind` / `category` / `q` / `region`, plus `limit` (default 50, max 100) and `offset`.
+    pub(crate) fn classifieds_value(
+        &self,
+        kind: Option<&str>,
+        category: Option<&str>,
+        q: Option<&str>,
+        region: Option<&str>,
+        limit: Option<usize>,
+        offset: Option<usize>,
+    ) -> Value {
         let today = crate::own_store::today_yyyymmdd();
         let kind = kind.and_then(|name| ClassifiedKind::parse(name).ok());
         let category = category.and_then(|name| ClassifiedCategory::parse(name).ok());
+        let needle = q.map(str::trim).filter(|text| !text.is_empty()).map(|text| text.to_ascii_lowercase());
+        let region_needle = region.map(str::trim).filter(|text| !text.is_empty()).map(|text| text.to_ascii_lowercase());
+        let limit = limit.unwrap_or(50).clamp(1, 100);
+        let offset = offset.unwrap_or(0);
         let board = self.classifieds();
         let mut posts: Vec<&SignedClassified> = board
             .posts
@@ -192,10 +205,26 @@ impl Node {
             .filter(|post| !post.terms.expired_on(today))
             .filter(|post| kind.is_none_or(|want| post.terms.kind == want))
             .filter(|post| category.is_none_or(|want| post.terms.category == want))
+            .filter(|post| {
+                region_needle.as_ref().is_none_or(|want| post.terms.region.to_ascii_lowercase().contains(want))
+            })
+            .filter(|post| {
+                needle.as_ref().is_none_or(|want| {
+                    post.terms.title.to_ascii_lowercase().contains(want)
+                        || post.terms.body.to_ascii_lowercase().contains(want)
+                        || post.terms.region.to_ascii_lowercase().contains(want)
+                })
+            })
             .collect();
-        posts.sort_by_key(|post| std::cmp::Reverse(post.terms.created_on));
-        let items: Vec<Value> = posts.into_iter().map(|post| post_value(post, today)).collect();
-        json!({ "classifieds": items, "today": today })
+        posts.sort_by(|a, b| {
+            b.terms
+                .created_on
+                .cmp(&a.terms.created_on)
+                .then_with(|| b.terms.id.cmp(&a.terms.id))
+        });
+        let total = posts.len();
+        let items: Vec<Value> = posts.into_iter().skip(offset).take(limit).map(|post| post_value(post, today)).collect();
+        json!({ "classifieds": items, "today": today, "total": total, "limit": limit, "offset": offset })
     }
 
     pub(crate) fn classified_value(&self, id: &str) -> Option<Value> {
@@ -394,10 +423,11 @@ impl Node {
         });
         let bytes = body_bytes(&letter_body);
         let letter = seal_message(&bytes, &vendor, &from).map_err(|err| StoreError::Failed(err.to_string()))?;
-        let target = contact_target(&post.terms.onion, self.sale_reply_url().as_deref());
-        if let Some(url) = target {
-            let posted = letter.to_bytes();
-            let _ = self.order_outbox.send(mail_key(&url, &conversation, &bytes), &url, &posted);
+        let target = self.contact_mail_url(&post)?;
+        let posted = letter.to_bytes();
+        match self.order_outbox.send(mail_key(&target, &conversation, &bytes), &target, &posted) {
+            Ok(crate::escrow_outbox::Sent::Delivered | crate::escrow_outbox::Sent::Queued(_)) => {}
+            Err(err) => return Err(StoreError::Invalid(format!("The poster did not take that message. {err}"))),
         }
         self.contact_thread_value(&hex(&thread_id)).ok_or_else(|| StoreError::Failed("The contact thread could not be read.".into()))
     }
@@ -471,12 +501,64 @@ impl Node {
             });
             let bytes = body_bytes(&letter_body);
             let letter = seal_message(&bytes, &vendor, &from).map_err(|err| StoreError::Failed(err.to_string()))?;
-            if let Some(url) = contact_target(&post.terms.onion, self.sale_reply_url().as_deref()) {
-                let _ = self.order_outbox.send(mail_key(&url, &conversation, &bytes), &url, &letter.to_bytes());
+            let target = self.contact_mail_url(&post)?;
+            match self.order_outbox.send(mail_key(&target, &conversation, &bytes), &target, &letter.to_bytes()) {
+                Ok(crate::escrow_outbox::Sent::Delivered | crate::escrow_outbox::Sent::Queued(_)) => {}
+                Err(err) => return Err(StoreError::Invalid(format!("The poster did not take that message. {err}"))),
             }
             let _ = (peer, drop);
         }
         self.contact_thread_value(&hex(&id)).ok_or(StoreError::NotFound)
+    }
+
+    /// Where to post sealed contact for `post`: its onion, else a followed store URL.
+    fn contact_mail_url(&self, post: &SignedClassified) -> Result<String, StoreError> {
+        if let Some(url) = contact_target(&post.terms.onion, None) {
+            return Ok(url);
+        }
+        let poster = openbazaar_protocol::StoreId::from_bytes(post.terms.poster);
+        if let Some(base) = self.replicas().url_of(&poster) {
+            return Ok(format!("{base}{STORE_MAIL}"));
+        }
+        Err(StoreError::Invalid(
+            "Follow that store before contacting, or wait until its onion is on the post.".into(),
+        ))
+    }
+
+    /// A sealed reply on a contact thread this node opened (`as_poster: false`).
+    /// Returns `Ok(true)` when handled, `Ok(false)` when the drop is not ours.
+    pub(crate) fn receive_contact_reply(&self, drop: &[u8; 16], sealed: &tormail::SealedReply) -> Result<bool, MailError> {
+        let (classified_id, poster) = {
+            let board = self.classifieds();
+            let Some(thread) = board.threads.iter().find(|thread| thread.drop == *drop && !thread.as_poster) else {
+                return Ok(false);
+            };
+            (thread.classified_id, thread.poster)
+        };
+        let (secret, _) = self.contact_reply_secret(&classified_id, &poster).map_err(|err| retry(store_detail(err)))?;
+        let opened = tormail::open_reply(sealed, &secret).map_err(|_| refused("that reply does not open"))?;
+        let body: Value = serde_json::from_slice(&opened.body).map_err(|_| refused("that reply could not be read"))?;
+        if body["kind"] != "contact" {
+            return Err(refused("that reply is not a contact message"));
+        }
+        let (message_id, text) = messages::received(&body).ok_or_else(|| refused("that contact could not be read"))?;
+        let now = crate::escrow_outbox::now_secs();
+        let mut board = self.classifieds();
+        let Some(thread) = board.threads.iter_mut().find(|thread| thread.drop == *drop && !thread.as_poster) else {
+            return Ok(false);
+        };
+        if !thread.messages.is_array() {
+            thread.messages = json!([]);
+        }
+        let list = thread.messages.as_array_mut().expect("array");
+        if !list.iter().any(|message| message["id"] == message_id) {
+            list.push(json!({ "id": message_id, "from": "them", "text": text, "at": now }));
+            if list.len() > MAX_MESSAGES {
+                list.drain(..list.len() - MAX_MESSAGES);
+            }
+        }
+        board.save().map_err(|err| retry(store_detail(err)))?;
+        Ok(true)
     }
 
     /// A sealed contact letter for this store's mailbox.

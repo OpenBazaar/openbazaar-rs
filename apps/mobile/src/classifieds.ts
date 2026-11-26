@@ -119,12 +119,45 @@ export function parseClassifieds(value: unknown): Classified[] {
   return items.map(parseClassified);
 }
 
-export async function fetchClassifieds(filters?: { kind?: ClassifiedKind; category?: ClassifiedCategory }): Promise<Classified[]> {
+export type ClassifiedsPage = {
+  classifieds: Classified[];
+  total: number;
+  limit: number;
+  offset: number;
+};
+
+export type ClassifiedsQuery = {
+  kind?: ClassifiedKind;
+  category?: ClassifiedCategory;
+  q?: string;
+  region?: string;
+  limit?: number;
+  offset?: number;
+};
+
+export function parseClassifiedsPage(value: unknown): ClassifiedsPage {
+  const row = record(value);
+  const classifieds = parseClassifieds(row);
+  const total = row.total;
+  const limit = row.limit;
+  const offset = row.offset;
+  return {
+    classifieds,
+    total: Number.isInteger(total) && (total as number) >= 0 ? (total as number) : classifieds.length,
+    limit: Number.isInteger(limit) && (limit as number) > 0 ? (limit as number) : classifieds.length || 50,
+    offset: Number.isInteger(offset) && (offset as number) >= 0 ? (offset as number) : 0,
+  };
+}
+
+export async function fetchClassifieds(filters?: ClassifiedsQuery): Promise<ClassifiedsPage> {
   const query = new URLSearchParams();
   if (filters?.kind) query.set("kind", filters.kind);
   if (filters?.category) query.set("category", filters.category);
-  const suffix = query.toString() ? `?${query}` : "";
-  return parseClassifieds(await paired(`${CLASSIFIEDS_ROUTE}${suffix}`));
+  if (filters?.q?.trim()) query.set("q", filters.q.trim());
+  if (filters?.region?.trim()) query.set("region", filters.region.trim());
+  query.set("limit", String(filters?.limit ?? 50));
+  query.set("offset", String(filters?.offset ?? 0));
+  return parseClassifiedsPage(await paired(`${CLASSIFIEDS_ROUTE}?${query}`));
 }
 
 export function classifiedSubmission(draft: ClassifiedDraft): { path: string; body: Record<string, unknown> } {

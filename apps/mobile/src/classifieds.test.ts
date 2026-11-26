@@ -5,6 +5,7 @@ import {
   CLASSIFIEDS_ROUTE,
   classifiedSubmission,
   parseClassifieds,
+  parseClassifiedsPage,
   parseContactThread,
   parseContactThreads,
 } from "./classifieds.ts";
@@ -60,6 +61,35 @@ test("board and contact payloads parse into typed rows", () => {
   assert.equal(posts.length, 1);
   assert.equal(posts[0].kind, "wts");
   assert.equal(posts[0].category, "housing");
+
+  const page = parseClassifiedsPage({
+    classifieds: [
+      {
+        id: "11".repeat(16),
+        kind: "wts",
+        category: "housing",
+        title: "Spare room",
+        body: "Quiet street.",
+        region: "Portland",
+        priceHint: 0,
+        currency: "",
+        createdOn: 20261125,
+        expiresOn: 20261209,
+        lifeDays: 14,
+        expired: false,
+        poster: "22".repeat(32),
+        mailboxKey: "33".repeat(32),
+        onion: "",
+      },
+    ],
+    total: 40,
+    limit: 25,
+    offset: 25,
+  });
+  assert.equal(page.total, 40);
+  assert.equal(page.limit, 25);
+  assert.equal(page.offset, 25);
+  assert.equal(page.classifieds.length, 1);
 
   const threads = parseContactThreads({
     threads: [

@@ -1,6 +1,6 @@
 //! Routes for the classifieds board and contact threads.
 //!
-//! - `GET /classifieds`: live posts (optional `?kind=` / `?category=`).
+//! - `GET /classifieds`: live posts (optional `?kind=` / `?category=` / `?q=` / `?region=` / `?limit=` / `?offset=`).
 //! - `POST /classifieds`: sign and keep a post from this node's store key.
 //! - `GET /classifieds/{id}`: one post.
 //! - `DELETE /classifieds/{id}`: drop an own post.
@@ -86,7 +86,15 @@ pub(crate) fn response(
         let query = request_query(head);
         let kind = query_param(query, "kind");
         let category = query_param(query, "category");
-        return Some(json_body("200 OK", &node.classifieds_value(kind, category), origin));
+        let q = query_text(query, "q");
+        let region = query_text(query, "region");
+        let limit = query_param(query, "limit").and_then(|text| text.parse().ok());
+        let offset = query_param(query, "offset").and_then(|text| text.parse().ok());
+        return Some(json_body(
+            "200 OK",
+            &node.classifieds_value(kind, category, q.as_deref(), region.as_deref(), limit, offset),
+            origin,
+        ));
     }
     if method == "GET" {
         return Some(match node.classified_value(one.unwrap()) {
@@ -164,4 +172,36 @@ fn query_param<'a>(query: &'a str, name: &str) -> Option<&'a str> {
         let (key, value) = pair.split_once('=')?;
         (key == name && !value.is_empty()).then_some(value)
     })
+}
+
+/// Form-encoded text: `+` and `%20` become spaces; other `%HH` bytes are left alone.
+fn query_text(query: &str, name: &str) -> Option<String> {
+    let raw = query_param(query, name)?;
+    let mut out = String::with_capacity(raw.len());
+    let bytes = raw.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'+' => {
+                out.push(' ');
+                i += 1;
+            }
+            b'%' if i + 2 < bytes.len() => {
+                let hi = (bytes[i + 1] as char).to_digit(16);
+                let lo = (bytes[i + 2] as char).to_digit(16);
+                if let (Some(h), Some(l)) = (hi, lo) {
+                    out.push(char::from((h * 16 + l) as u8));
+                    i += 3;
+                } else {
+                    out.push('%');
+                    i += 1;
+                }
+            }
+            byte => {
+                out.push(char::from(byte));
+                i += 1;
+            }
+        }
+    }
+    (!out.is_empty()).then_some(out)
 }

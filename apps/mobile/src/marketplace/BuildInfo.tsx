@@ -30,7 +30,7 @@ export function BuildLine({
   if (!build.line) return null
   return (
     <button
-      className='ob-build-line'
+      className='ob-settings-build'
       type='button'
       title='Copy build info'
       onClick={() => {

@@ -94,31 +94,36 @@ export function NetworkBadge() {
   const { network } = usePairedNode()
   const info = network.data ? networkInfo(network.data) : null
   const warning = network.data ? privacyStatus(network.data) : ''
-  const networkLabel = info
+  const shortLabel = network.error
+    ? 'Offline'
+    : !info
+      ? 'Checking…'
+      : info.network === 'testnet4'
+        ? 'Testnet4'
+        : 'Mainnet'
+  const detailTitle = info
     ? info.network === 'testnet4'
       ? 'Testnet4 · test coins, no value'
       : 'Mainnet'
-    : ''
+    : shortLabel
   return (
-    <div
-      className={`ob-network-badge ${network.error ? 'is-offline' : !network.data ? 'is-loading' : ''}`}
-      role='status'
+    <details
+      className={`ob-network-pill ${network.error ? 'is-offline' : !network.data ? 'is-loading' : ''}`}
     >
-      <span className='ob-status-dot' aria-hidden='true' />
-      <span className='ob-network-facts'>
+      <summary title={info ? `${detailTitle} · ${chainHeightLabel(info)}` : shortLabel}>
+        <span className='ob-status-dot' aria-hidden='true' />
+        <span>{shortLabel}</span>
+      </summary>
+      <div className='ob-network-pill-panel' role='status'>
+        <strong>{detailTitle}</strong>
         {network.error
-          ? 'Network unavailable · payments disabled'
+          ? <p>Network unavailable · payments disabled</p>
           : !info
-            ? 'Checking bitcoin network…'
-            : (
-              <>
-                <span>{networkLabel}</span>
-                <span>{` · ${chainHeightLabel(info)}`}</span>
-              </>
-            )}
-      </span>
-      {warning ? <span className='ob-network-warning'>{warning}</span> : null}
-    </div>
+            ? <p>Checking bitcoin network…</p>
+            : <p>{chainHeightLabel(info)}</p>}
+        {warning ? <p>{warning}</p> : null}
+      </div>
+    </details>
   )
 }
 function ConnectionCard({ info }: { info: NetworkInfo }) {
@@ -370,10 +375,12 @@ function WalletActivityList({ activity, available, stale }: { activity: WalletAc
 }
 export function OrderPayment({
   id,
-  initial
+  initial,
+  hideStatus = false
 }: {
   id: string
   initial: BuyerOrder | SellerOrder
+  hideStatus?: boolean
 }) {
   const { network, wallet, lock, onWallet } = usePairedNode()
   const [error, setError] = useState(''),
@@ -390,7 +397,7 @@ export function OrderPayment({
   )
   const order = resource.data ?? initial
   // A Lightning order has no invoice until the seller's node answers.
-  if (order.payment?.ln) return <LightningOrderPayment id={id} initial={order} invoice={order.payment.ln} />
+  if (order.payment?.ln) return <LightningOrderPayment id={id} initial={order} invoice={order.payment.ln} hideStatus={hideStatus} />
   const fulfilled = order.status === 'Shipped' || order.status === ORDER_STATUS.completed
   const kind = payKind(order)
   const due =
@@ -494,7 +501,7 @@ export function OrderPayment({
       aria-label={`Payment for ${order.seller}`}
     >
       <div className='ob-payment-progress' aria-live='polite'>
-        <strong>{order.status}</strong>
+        {(!hideStatus || order.status !== initial.status) && <strong>{order.status}</strong>}
         {monero ? (
           <span>
             Received {monero.receivedXmr} / {monero.amountXmr} XMR
@@ -535,7 +542,7 @@ export function OrderPayment({
         </p>
       )}
       {directWarning && (
-        <p role='note' className='ob-form-error'>
+        <p role='note' className='ob-form-error ob-direct-pay-warning'>
           {directWarning}
         </p>
       )}

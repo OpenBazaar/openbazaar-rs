@@ -77,6 +77,33 @@ pub(crate) fn response(
     };
     match (method, rest) {
         ("GET", "/wallet") => wallet(node, origin),
+        ("POST", "/enable") => match read_body(body, &["indexers"], origin) {
+            Ok(map) => {
+                let raw = map.get("indexers").and_then(Value::as_str).unwrap_or("").trim();
+                let urls: Vec<String> = raw
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(ToOwned::to_owned)
+                    .collect();
+                if urls.is_empty() {
+                    return json_error("400 Bad Request", "Provide at least one Zcash indexer URL (for example http://127.0.0.1:8137).", origin);
+                }
+                let config = match openbazaar_zec::IndexerConfig::new(node.network.zcash(), &urls, node.local.egress.proxy.clone()) {
+                    Ok(config) => config,
+                    Err(err) => return json_error("400 Bad Request", &err.to_string(), origin),
+                };
+                let chain = match openbazaar_zec::IndexerChain::new(config) {
+                    Ok(chain) => chain,
+                    Err(err) => return json_error("400 Bad Request", &err.to_string(), origin),
+                };
+                match node.set_zec_chain(std::sync::Arc::new(chain)) {
+                    Ok(()) => json_body("200 OK", &node.zec.backend_value(), origin),
+                    Err(err) => json_error("409 Conflict", &err, origin),
+                }
+            }
+            Err(response) => response,
+        },
         ("POST", "/wallet/send/quote") => match read_body(body, &["address", "amountZatoshi"], origin) {
             Ok(map) => match node.zec_send_quote(&map) {
                 Ok(value) => json_body("200 OK", &value, origin),

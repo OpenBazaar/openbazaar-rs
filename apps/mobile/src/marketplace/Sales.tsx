@@ -4,8 +4,8 @@ import { EXTERNAL_TX_NOTE } from "../nodeWallet";
 import { decideReturn, fetchSales, fulfillSale, sendSaleMessage, type Sale } from "../seller";
 import { returnStateLabel } from "../returnCase";
 import { useNodeResource } from "../useNodeResource";
-import { sameOrderSnapshot, salesRefreshInterval, type OrderListRow } from "../orderList";
-import { Empty, Money } from "./Marketplace";
+import { orderTime, sameOrderSnapshot, salesRefreshInterval, type OrderListRow } from "../orderList";
+import { Empty, Icon, Money } from "./Marketplace";
 import { OfferInbox } from "./OfferInbox";
 import { PageHeading } from "./PageHeading";
 import { OrderWorkspace } from "./OrderWorkspace";
@@ -51,6 +51,12 @@ function deliverySummary(sale: Sale): string {
   const quantity = sale.lines.reduce((sum, line) => sum + line.quantity, 0);
   const delivery = sale.lines.some(line => line.kind === "physical") ? "Physical delivery" : "Digital delivery";
   return `${quantity} ${quantity === 1 ? "item" : "items"} · ${delivery}`;
+}
+
+function saleRailLabel(sale: Sale): string | undefined {
+  if (sale.zcash) return "Zcash";
+  if (sale.address) return "Bitcoin";
+  return undefined;
 }
 
 type FulfillmentDraft = { carrier: string; tracking: string; note: string; content: string };
@@ -109,38 +115,72 @@ function SaleDetail({ sale, rates, currency, onChange, drafts }: { sale: Sale; r
   const title = paid ? physical ? "Ready to ship" : "Ready for digital delivery" : sale.status === "Shipped" ? "Awaiting buyer confirmation" : sale.status === "Completed" ? "Order complete" : pending ? "Awaiting confirmed payment" : sale.status;
   const description = paid ? "Payment confirmed. Prepare the delivery below." : sale.status === "Shipped" ? "The buyer can confirm receipt from their order." : sale.status === "Completed" ? "The buyer confirmed receipt." : pending ? "Keep this order on hold until payment is confirmed." : "Review the current order status before taking action.";
   const destination = <>{sale.shipTo && <><h3>Delivery address</h3><p className="ob-sale-address">{sale.shipTo}</p></>}{sale.deliveryNote && <><h3>Buyer’s note</h3><p>{sale.deliveryNote}</p></>}</>;
-  return <div className="ob-order-expanded ob-sale-detail">
-    <div className="ob-order-next"><h2>{title}</h2><p>{description}</p></div>
-    <div className="ob-order-detail-grid">
-      <div className="ob-order-primary">
-        {paid && (sale.shipTo || sale.deliveryNote) && <section className="ob-sale-delivery-context">{destination}</section>}
-        {paid && <FulfillForm sale={sale} onDone={onChange} drafts={drafts}/>}
-        {sale.fulfillment && <section className="ob-order-delivery"><h3>Delivery record</h3>{physical ? <TrackingTimeline tracking={sale.tracking} carrier={sale.fulfillment.carrier} trackingNumber={sale.fulfillment.tracking}/> : <p>Delivered digitally</p>}{sale.fulfillment.note && <p>{sale.fulfillment.note}</p>}{sale.fulfillment.content && <p className="ob-sale-content">{sale.fulfillment.content}</p>}</section>}
-        <ReturnCase viewer="seller" status={sale.status} policy={sale.returnPolicy} returnCase={sale.returnCase} allowShipment={physical} onDecide={async (decision, text) => { onChange(await decideReturn(sale.id, decision, text)); }}/>
-        <MessageThread messages={sale.messages} viewer="seller" otherLabel="Buyer" onSend={async text => { onChange(await sendSaleMessage(sale.id, text)); }}/>
-        {sale.zcash?.expired ? <p className="ob-form-error" role="alert">The Zcash quote for this sale ran out before it was paid in full, so the sale stays unpaid. Do not ship it. What arrives at the address is still counted in the payment records.</p> : pending && !sale.fulfillment && <div className="ob-sale-payment-hold"><strong>{sale.status === "Payment seen" ? "Payment detected" : sale.sentTxid ? "Buyer reported payment" : "Payment outstanding"}</strong><p>{paymentSent(sale) ? "Wait for confirmation before fulfilling this order." : "The buyer has not completed payment. No delivery action is needed yet."}</p></div>}
-        <details className="ob-order-record">
-          <summary>Payment & transaction records</summary>
-          <dl className="ob-sale-facts">
-            <div><dt>Received</dt><dd>{received} · {sale.confirmations} confirmations</dd></div>
-            <div><dt>{sale.zcash ? "Zcash address" : "Payment address"}</dt><dd><CopyAddress value={sale.zcash?.address ?? sale.address} label={sale.zcash ? "Copy zcash address" : "Copy payment address"}/></dd></div>
-            {sale.sentTxid && !sale.txids.includes(sale.sentTxid) && <div><dt>Buyer reported transaction</dt><dd><TxId txid={sale.sentTxid}/></dd></div>}
-            {sale.txids.map(txid => <div key={txid}><dt>Transaction</dt><dd><TxId txid={txid}/></dd></div>)}
-          </dl>
-        </details>
+  const date = new Date(orderTime(sale.created));
+  const rail = saleRailLabel(sale);
+  const itemHeading = sale.lines.map(line => line.title).join(", ") || `Sale #${sale.id.slice(0, 8)}`;
+  const attention = sale.status === "Paid" || sale.returnCase?.state === "requested";
+  return (
+    <div className="ob-order-detail-body ob-sale-detail">
+      <header className="ob-order-detail-header">
+        <div className="ob-order-detail-title">
+          <div className="ob-order-detail-meta">
+            <span>#{sale.id.slice(0, 8)}</span>
+            <span aria-hidden="true">·</span>
+            <time dateTime={date.toISOString()}>{date.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })}</time>
+            {rail && <><span aria-hidden="true">·</span><span>{rail}</span></>}
+            <span aria-hidden="true">·</span>
+            <span>{deliverySummary(sale)}</span>
+          </div>
+          <h1>{itemHeading}</h1>
+        </div>
+        <div className="ob-order-detail-summary-meta">
+          <span className={`ob-order-status ${attention ? "is-actionable" : ""}`}>{sale.status}</span>
+          <Money sats={sale.totalSats} rates={rates} currency={currency}/>
+        </div>
+      </header>
+      <div className="ob-order-next"><h2>{title}</h2><p>{description}</p></div>
+      <div className="ob-order-detail-grid">
+        <div className="ob-order-primary">
+          {paid && (sale.shipTo || sale.deliveryNote) && <section className="ob-sale-delivery-context">{destination}</section>}
+          {paid && <FulfillForm sale={sale} onDone={onChange} drafts={drafts}/>}
+          {sale.fulfillment && <section className="ob-order-delivery"><h3>Delivery record</h3>{physical ? <TrackingTimeline tracking={sale.tracking} carrier={sale.fulfillment.carrier} trackingNumber={sale.fulfillment.tracking}/> : <p>Delivered digitally</p>}{sale.fulfillment.note && <p>{sale.fulfillment.note}</p>}{sale.fulfillment.content && <p className="ob-sale-content">{sale.fulfillment.content}</p>}</section>}
+          {sale.zcash?.expired ? <p className="ob-form-error" role="alert">The Zcash quote for this sale ran out before it was paid in full, so the sale stays unpaid. Do not ship it. What arrives at the address is still counted in the payment records.</p> : pending && !sale.fulfillment && <div className="ob-sale-payment-hold"><strong>{sale.status === "Payment seen" ? "Payment detected" : sale.sentTxid ? "Buyer reported payment" : "Payment outstanding"}</strong><p>{paymentSent(sale) ? "Wait for confirmation before fulfilling this order." : "The buyer has not completed payment. No delivery action is needed yet."}</p></div>}
+          <ReturnCase viewer="seller" status={sale.status} policy={sale.returnPolicy} returnCase={sale.returnCase} allowShipment={physical} onDecide={async (decision, text) => { onChange(await decideReturn(sale.id, decision, text)); }}/>
+          <MessageThread messages={sale.messages} viewer="seller" otherLabel="Buyer" onSend={async text => { onChange(await sendSaleMessage(sale.id, text)); }}/>
+          <details className="ob-order-record">
+            <summary>Payment & transaction records</summary>
+            <dl className="ob-sale-facts">
+              <div><dt>Received</dt><dd>{received} · {sale.confirmations} confirmations</dd></div>
+              <div><dt>{sale.zcash ? "Zcash address" : "Payment address"}</dt><dd><CopyAddress value={sale.zcash?.address ?? sale.address} label={sale.zcash ? "Copy zcash address" : "Copy payment address"}/></dd></div>
+              {sale.sentTxid && !sale.txids.includes(sale.sentTxid) && <div><dt>Buyer reported transaction</dt><dd><TxId txid={sale.sentTxid}/></dd></div>}
+              {sale.txids.map(txid => <div key={txid}><dt>Transaction</dt><dd><TxId txid={txid}/></dd></div>)}
+            </dl>
+          </details>
+        </div>
+        <aside className="ob-order-facts-panel">
+          <h3>Order summary</h3>
+          <ul>{sale.lines.map((line, index) => <li key={`${line.listingHash}-${index}`}><span>{line.title}</span><span>× {line.quantity}</span></li>)}</ul>
+          <dl><div><dt>Items</dt><dd><Money sats={sale.itemsSats} rates={rates} currency={currency}/></dd></div><div><dt>Shipping</dt><dd><Money sats={sale.shippingSats} rates={rates} currency={currency}/></dd></div><div><dt>Total</dt><dd><Money sats={sale.totalSats} rates={rates} currency={currency}/></dd></div></dl>
+          {!paid && (sale.shipTo || sale.deliveryNote) && <details className="ob-order-record"><summary>Delivery details</summary>{destination}</details>}
+          <details className="ob-order-record"><summary>Order reference</summary><code>{sale.id}</code></details>
+        </aside>
       </div>
-      <aside className="ob-order-facts-panel">
-        <h3>Order summary</h3>
-        <ul>{sale.lines.map((line, index) => <li key={`${line.listingHash}-${index}`}><span>{line.title}</span><span>× {line.quantity}</span></li>)}</ul>
-        <dl><div><dt>Items</dt><dd><Money sats={sale.itemsSats} rates={rates} currency={currency}/></dd></div><div><dt>Shipping</dt><dd><Money sats={sale.shippingSats} rates={rates} currency={currency}/></dd></div><div><dt>Total</dt><dd><Money sats={sale.totalSats} rates={rates} currency={currency}/></dd></div></dl>
-        {!paid && (sale.shipTo || sale.deliveryNote) && <details className="ob-order-record"><summary>Delivery details</summary>{destination}</details>}
-        <details className="ob-order-record"><summary>Order reference</summary><code>{sale.id}</code></details>
-      </aside>
     </div>
-  </div>;
+  );
 }
 
-export function Sales({ sales, rates, currency, onSeen }: { sales: SalesResource; rates: RateTable; currency: CurrencyCode; onSeen?: (list: Sale[]) => void }) {
+type SalesProps = {
+  sales: SalesResource;
+  rates: RateTable;
+  currency: CurrencyCode;
+  onSeen?: (list: Sale[]) => void;
+  selectedSaleId?: string | null;
+  unreadBySale?: Record<string, number>;
+  onSelectSale: (id: string) => void;
+  onBack: () => void;
+};
+
+export function Sales({ sales, rates, currency, onSeen, selectedSaleId = null, unreadBySale = {}, onSelectSale, onBack }: SalesProps) {
   const [view, setView] = useState("orders");
   const list = sales.data ?? [];
   const seen = useRef(onSeen);
@@ -150,6 +190,38 @@ export function Sales({ sales, rates, currency, onSeen }: { sales: SalesResource
   const drafts = useRef<Drafts>(new Map()).current;
   const latest = useRef(list);
   latest.current = list;
+
+  if (selectedSaleId) {
+    const sale = list.find(item => item.id === selectedSaleId) ?? null;
+    return (
+      <section className="ob-orders ob-sales ob-order-center ob-order-detail-page">
+        <button type="button" className="ob-back ob-order-back" onClick={onBack}>
+          <Icon name="arrow" size={16}/>Back to sales
+        </button>
+        {sales.error && <p className="ob-form-error" role="alert">{sales.error}</p>}
+        {sales.loading && !sales.data
+          ? <p role="status">Loading sale…</p>
+          : !sales.data
+            ? null
+            : !sale
+              ? <Empty icon="paper" title="Sale not found" text="This sale could not be found in your store history."><button type="button" className="ob-primary" onClick={onBack}>Back to sales</button></Empty>
+              : (
+                <SaleDetail
+                  key={sale.id}
+                  sale={sale}
+                  rates={rates}
+                  currency={currency}
+                  drafts={drafts}
+                  onChange={updated => {
+                    sales.update(latest.current.map(item => item.id === updated.id ? updated : item));
+                    void sales.refresh();
+                  }}
+                />
+              )}
+      </section>
+    );
+  }
+
   const rows = list.map((sale): OrderListRow => {
     const physical = sale.lines.some(line => line.kind === "physical");
     const confirmed = ["Paid", "Shipped", "Completed"].includes(sale.status);
@@ -160,7 +232,9 @@ export function Sales({ sales, rates, currency, onSeen }: { sales: SalesResource
       status: sale.status,
       paymentStatus: confirmed ? "Paid" : sale.status === "Payment seen" ? "Confirming" : sale.status === "Awaiting payment" ? (sale.zcash ? Number(sale.zcash.receivedZec) > 0 : sale.receivedSats > 0) ? "Partial" : sale.sentTxid ? "Reported" : "Unpaid" : "Review",
       fulfillmentStatus: sale.status === "Paid" ? "Unfulfilled" : sale.status === "Shipped" ? physical ? "Shipped" : "Delivered" : sale.status === "Completed" ? "Completed" : "On hold",
-      hint: [deliverySummary(sale), sale.returnCase ? returnStateLabel(sale.returnCase.state) : ""].filter(Boolean).join(" · ")
+      hint: [deliverySummary(sale), sale.returnCase ? returnStateLabel(sale.returnCase.state) : ""].filter(Boolean).join(" · "),
+      messageCount: sale.messages.length,
+      unreadMessages: unreadBySale[sale.id] ?? 0,
     };
   });
   return <section className="ob-orders ob-sales ob-order-center">
@@ -170,12 +244,6 @@ export function Sales({ sales, rates, currency, onSeen }: { sales: SalesResource
     {view === "offers" ? <><h2 className="ob-offers-title">Offers</h2><OfferInbox showEmpty/></>
       : sales.loading && !sales.data ? <p role="status">Loading sales…</p>
       : !list.length ? (sales.error ? null : <Empty icon="paper" title="No sales yet" text="Orders will appear here when buyers purchase from your store."/>)
-      : <OrderWorkspace seller rates={rates} currency={currency} rows={rows}
-          renderDetail={id => <SaleDetail sale={list.find(sale => sale.id === id)!}
-            rates={rates} currency={currency} drafts={drafts}
-            onChange={updated => {
-              sales.update(latest.current.map(item => item.id === updated.id ? updated : item));
-              void sales.refresh();
-            }}/>} />}
+      : <OrderWorkspace seller rates={rates} currency={currency} rows={rows} onSelect={onSelectSale}/>}
   </section>;
 }

@@ -244,9 +244,13 @@ impl Node {
         Ok(self.orders().get_value(id).unwrap_or_default())
     }
 
-    /// `POST /mail/reply`: a seller's reply to one of this node's orders.
+    /// `POST /mail/reply`: a seller's reply to one of this node's orders, or a
+    /// classified contact reply for a thread this node opened.
     pub(crate) fn receive_reply(&self, bytes: &[u8]) -> Result<(), MailError> {
         let (drop, sealed) = ReplyDelivery::from_frame(bytes).map_err(|_| refused("that is not a reply frame"))?;
+        if self.receive_contact_reply(&drop.0, &sealed)? {
+            return Ok(());
+        }
         let drop_hex = hex(&drop.0);
         let order = self
             .orders()

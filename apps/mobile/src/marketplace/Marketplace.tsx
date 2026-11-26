@@ -4,7 +4,8 @@ import { afterShopPair, fetchCatalog, fetchLabelers, fetchRates, hasNodeHost, No
 import { clearListingImages, fetchHostStore, fetchPublicCatalog, NOT_A_STORE, PAYMENT_NOTE, setDirectBrowse, setListingImages, STORE_KEY, storeBase, storeFromLocation } from "../directStore";
 import { loadPublicMarket } from "../publicMarket";
 import { servedByHomeNode } from "../homeNode/transport";
-import { conditionChoices, filterListings, matchingStores, narrowingActive, setSpecificChoice, specificChoices, storesWithoutListings } from "../search";
+import { listPage } from "../listPage";
+import { conditionChoices, filterListings, matchingStores, narrowingActive, setSpecificChoice, specificChoices } from "../search";
 import { CATEGORY_NAMES, categoryLabel, topCategory } from "../listingFields";
 import { CONDITION_LABELS } from "../commerce";
 import { fetchStore } from "../stores";
@@ -19,7 +20,7 @@ import { readSafety, writeSafety } from "../safety/storage";
 import { CoveredCard, HideActions, SafetyInterstitial, SafetySettingsPanel } from "./Safety";
 import { VendorLabelPicker } from "./VendorLabelPicker";
 import { LabelersPanel } from "./Labelers";
-import { CanopyDivider, MarketEmptyArtwork } from "./MarketArtwork";
+import { MarketEmptyArtwork } from "./MarketArtwork";
 import { NetworkBadge, NodePaymentsProvider, OrderPayment } from "./NodePayments";
 import { useNodeResource } from "../useNodeResource";
 import { PageHeading } from "./PageHeading";
@@ -43,7 +44,7 @@ import { Sales, useSales } from "./Sales";
 import { Orders } from "./Orders";
 import { OwnStore } from "./OwnStore";
 import { CatalogStore } from "./CatalogStore";
-import { shopHistory } from "./shopHistory";
+import { shopHistory, type ShopPage } from "./shopHistory";
 import { Follows } from "./Follows";
 import { admittedStoreIds, fetchDirectory } from "../follows";
 import { FollowButton } from "./FollowButton";
@@ -57,6 +58,7 @@ import { CatalogEmpty } from "./CatalogEmpty";
 import { sanitizeGuestLocation } from "./guestRoute";
 import { SidebarUtilities } from "./SidebarUtilities";
 import { Classifieds } from "./Classifieds";
+import { combineSalesBadge, useOrderMessageAlerts } from "./useOrderMessageAlerts";
 
 type IconName = "settings" | "wallet" | "sun" | "moon" | "compass" | "heart" | "bag" | "arrow" | "search" | "chevron" | "check" | "shield" | "globe" | "close" | "menu" | "book" | "cup" | "home" | "music" | "shirt" | "tool" | "paper" | "grid" | "pin" | "bolt" | "external" | "ticket";
 export function Icon({ name, size = 20, ...props }: { name: IconName; size?: number; className?: string }) {
@@ -115,7 +117,7 @@ function Brand({ theme }: { theme: "light" | "dark" }) { return <span className=
 export type Section = "discover" | "saved" | "orders" | "bag" | "addresses" | "safety" | "wallet" | "store-labels" | "home-node" | "browsers" | "lightning" | "zcash" | "monero" | "tor" | "follows" | "classifieds" | StoreSection;
 type StoreSection = "storefront" | "listings" | "coupons" | "sales" | "store";
 const STORE_SECTIONS: readonly Section[] = ["storefront", "listings", "coupons", "sales", "store"];
-type Page = { name: "browse" } | { name: "store"; storeId: string } | { name: "detail"; listing: ListingHeader; fromStore?: string } | { name: "checkout"; lines: CartLine[]; returnTo?: ListingHeader; fromStore?: string } | { name: "receipt"; receipt: CheckoutReceipt };
+type ToastNotice = string | { message: string; action?: { label: string; onClick: () => void } };
 function emptyFilters() { return { seller: "", kind: "", shipFrom: "", min: "", max: "", condition: "", specifics: {} as Record<string, string> }; }
 
 export default function Marketplace() {
@@ -131,10 +133,12 @@ export default function Marketplace() {
   const [rates, setRates] = useState<RateTable>({});
   const [currency, setCurrency] = useState<CurrencyCode>(readCurrency);
   const [section, setSection] = useState<Section>("discover");
-  const [page, setPage] = useState<Page>({ name: "browse" });
+  const [page, setPage] = useState<ShopPage>({ name: "browse" });
   const [category, setCategory] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [sort, setSort] = useState("newest");
+  const [listPageNum, setListPageNum] = useState(0);
+  const [pageSize, setPageSize] = useState(24);
   const [filters, setFilters] = useState(emptyFilters);
   const [saved, setSaved] = useState<string[]>(readSaved);
   const [watched, setWatched] = useState<WatchedListing[]>(readWatched);
@@ -143,7 +147,9 @@ export default function Marketplace() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [theme, setTheme] = useState<"light" | "dark">(() => { try { const t = localStorage.getItem("ob-theme"); if (t === "light" || t === "dark") return t; } catch {} return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light"; });
   useEffect(() => { document.documentElement.dataset.obTheme = theme; try { localStorage.setItem("ob-theme", theme); } catch {} }, [theme]);
-  const [toast, setToast] = useState("");
+  const [toast, setToast] = useState<ToastNotice>("");
+  const toastMessage = typeof toast === "string" ? toast : toast.message;
+  const toastAction = typeof toast === "string" ? undefined : toast.action;
   const guest = !!direct || publicMode || !hasNodeHost();
   const nodeAvailable = !guest;
   const build = useBuildInfo(nodeAvailable);
@@ -155,9 +161,35 @@ export default function Marketplace() {
   const seller = profile.data?.role === "seller";
   const sales = useSales(seller, sale => setToast(`New order: ${sale.lines.map(l => l.title).join(", ")}`), section === "sales");
   const storeKey = profile.data?.storeKey ?? "";
+  const activeOrderId = page.name === "order" ? page.orderId : null;
+  const activeSaleId = page.name === "sale" ? page.saleId : null;
+  const messageAlerts = useOrderMessageAlerts({
+    nodeAvailable,
+    seller,
+    storeKey,
+    viewingOrders: section === "orders",
+    viewingSales: section === "sales",
+    activeOrderId,
+    activeSaleId,
+    salesData: sales.data,
+    onAlert: setToast,
+    onNavigate: (side, orderId) => {
+      setToast("");
+      if (orderId) {
+        if (side === "orders") openOrder(orderId);
+        else openSale(orderId);
+      } else {
+        navigate(side);
+      }
+    },
+  });
+  useEffect(() => {
+    if (activeOrderId) messageAlerts.markOrderSeen("orders", activeOrderId);
+    else if (activeSaleId) messageAlerts.markOrderSeen("sales", activeSaleId);
+  }, [activeOrderId, activeSaleId, messageAlerts.markOrderSeen]);
   const [salesSeen, setSalesSeen] = useState<SalesSeen | null>(null);
   useEffect(() => { setSalesSeen(readSalesSeen(storeKey)); }, [storeKey]);
-  const salesCount = salesBadge(sales.data ?? [], salesSeen);
+  const salesCount = combineSalesBadge(salesBadge(sales.data ?? [], salesSeen), messageAlerts.unreadSales);
   function rememberSales(list: SaleSight[]) {
     if (!storeKey) return;
     const next = salesSeenSnapshot(list);
@@ -301,8 +333,9 @@ export default function Marketplace() {
   useEffect(() => { if (!nodeAvailable) return; const pull = () => void fetchLabelers().then(setLabelerState, () => setLabelerState(null)); pull(); return afterShopPair(pull); }, [nodeAvailable]);
   const labels = useMemo(() => labelers?.labels ?? [], [labelers]);
   useEffect(() => { if (!loading) content.current?.scrollTo({ top: 0, behavior: "instant" }); }, [loading]);
-  useEffect(() => { if (!toast) return; const timer = setTimeout(() => setToast(""), 2500); return () => clearTimeout(timer); }, [toast]);
-  useEffect(() => { content.current?.scrollTo({ top: 0, behavior: "instant" }); }, [page.name, section]);
+  useEffect(() => { if (!toastMessage) return; const timer = setTimeout(() => setToast(""), toastAction ? 4000 : 2500); return () => clearTimeout(timer); }, [toast, toastMessage, toastAction]);
+  const pageScrollKey = page.name === "order" ? `order:${page.orderId}` : page.name === "sale" ? `sale:${page.saleId}` : page.name;
+  useEffect(() => { content.current?.scrollTo({ top: 0, behavior: "instant" }); }, [pageScrollKey, section]);
   const guestRef = useRef(guest);
   guestRef.current = guest;
   useEffect(() => {
@@ -343,15 +376,42 @@ export default function Marketplace() {
   const allowed = useMemo(() => catalog ? visibleListings(catalog.listings, catalog.store.contentRating, safety, labels) : [], [catalog, safety, labels]);
   const categories = useMemo(() => publicMode ? [...CATEGORY_NAMES] : CATEGORY_NAMES.filter(name => new Set(allowed.map(topCategory)).has(name)), [allowed, publicMode]);
   const savedCount = useMemo(() => allowed.filter(l => saved.includes(l.hash)).length, [allowed, saved]);
+  const cartCount = useMemo(() => cart.reduce((n, l) => n + l.quantity, 0), [cart]);
   const visible = useMemo(() => {
     const subset = allowed.filter(l => (!category || topCategory(l) === category) && (!filters.seller || l.seller === filters.seller) && (!filters.kind || l.kind === filters.kind) && (!filters.shipFrom || l.shipFrom === filters.shipFrom) && (section !== "saved" || saved.includes(l.hash)));
     const results = filterListings(subset, query, [], filters);
     return [...results].sort((a, b) => sort === "price-asc" ? a.priceSats - b.priceSats : sort === "price-desc" ? b.priceSats - a.priceSats : sort === "newest" ? b.listedOn - a.listedOn : a.title.localeCompare(b.title));
   }, [catalog, allowed, category, section, saved, query, sort, filters]);
+  const paged = useMemo(() => listPage(visible, listPageNum, pageSize), [visible, listPageNum, pageSize]);
+  useEffect(() => { setListPageNum(0); }, [category, section, query, sort, filters, pageSize]);
   const filterCount = [filters.seller, filters.kind, filters.shipFrom].filter(Boolean).length + narrowingActive(filters);
+  function changeListPage(next: number) {
+    setListPageNum(next);
+    content.current?.scrollTo({ top: 0, behavior: "instant" });
+  }
+  function productsPagination(bottom = false) {
+    return <nav className="ob-order-pagination" aria-label={`Products pagination${bottom ? " bottom" : ""}`}>
+      <button type="button" aria-label="First page" disabled={paged.page === 0} onClick={() => changeListPage(0)}>«</button>
+      <button type="button" disabled={paged.page === 0} onClick={() => changeListPage(paged.page - 1)}>Previous</button>
+      <span>Page {paged.page + 1} of {paged.pages.toLocaleString()}</span>
+      <button type="button" disabled={paged.page + 1 >= paged.pages} onClick={() => changeListPage(paged.page + 1)}>Next</button>
+      <button type="button" aria-label="Last page" disabled={paged.page + 1 >= paged.pages} onClick={() => changeListPage(paged.pages - 1)}>»</button>
+    </nav>;
+  }
 
-  function addToBag(listing: ListingHeader, pick: BuyChoice = { quantity: 1 }) { const line = { hash: listing.hash, variant: pick.variant, storeId: listing.storeId, title: listing.title }; const key = lineKey(line); setCart(lines => { const old = lines.find(l => lineKey(l) === key); const quantity = Math.min(listing.commerce ? 99 : listing.stock, 99, (old?.quantity ?? 0) + pick.quantity); return old ? lines.map(l => lineKey(l) === key ? { ...l, quantity, storeId: listing.storeId, title: listing.title } : l) : [...lines, { ...line, quantity }]; }); setToast("Added to your bag"); }
-  function navigate(next: Section, nextCategory: string | null = null) { setSettingsOpen(false); content.current?.scrollTo({ top: 0, behavior: "instant" }); setFilters(emptyFilters()); setQuery(""); setMenu(false); setNewListing(0); shopHistory.section({ section: next, category: nextCategory, page: { name: "browse" } }); }
+  function addToBag(listing: ListingHeader, pick: BuyChoice = { quantity: 1 }) { const line = { hash: listing.hash, variant: pick.variant, storeId: listing.storeId, title: listing.title }; const key = lineKey(line); setCart(lines => { const old = lines.find(l => lineKey(l) === key); const quantity = Math.min(listing.commerce ? 99 : listing.stock, 99, (old?.quantity ?? 0) + pick.quantity); return old ? lines.map(l => lineKey(l) === key ? { ...l, quantity, storeId: listing.storeId, title: listing.title } : l) : [...lines, { ...line, quantity }]; }); setToast({ message: "Added to your bag", action: { label: "View bag", onClick: () => { setToast(""); navigate("bag"); } } }); }
+  function navigate(next: Section, nextCategory: string | null = null) {
+    setSettingsOpen(false);
+    content.current?.scrollTo({ top: 0, behavior: "instant" });
+    setFilters(emptyFilters());
+    setQuery("");
+    setMenu(false);
+    setNewListing(0);
+    setSection(next);
+    setCategory(nextCategory);
+    setPage({ name: "browse" });
+    shopHistory.section({ section: next, category: nextCategory, page: { name: "browse" } });
+  }
   function toggleSaved(listing: ListingHeader) {
     const exists = saved.includes(listing.hash);
     setSaved(a => exists ? a.filter(x => x !== listing.hash) : [...a, listing.hash]);
@@ -365,13 +425,25 @@ export default function Marketplace() {
     setToast(exists ? "Removed from saved goods" : "Added to your saved goods");
   }
   function open(listing: ListingHeader, fromStore?: string) { shopHistory.page({ section, category, page: fromStore ? { name: "detail", listing, fromStore } : { name: "detail", listing } }); }
-  const namedStores = useMemo(() => {
-    if (!catalog || section === "saved") return [];
-    const withAbout = catalog.stores.map(store => ({ ...store, about: store.record.details?.about ?? "" }));
-    if (query.trim()) return matchingStores(withAbout, query);
-    return storesWithoutListings(withAbout, allowed);
-  }, [catalog, section, query, allowed]);
+  function openOrder(orderId: string) {
+    setSettingsOpen(false);
+    setMenu(false);
+    shopHistory.page({ section: "orders", category: null, page: { name: "order", orderId } });
+  }
+  function openSale(saleId: string) {
+    setSettingsOpen(false);
+    setMenu(false);
+    shopHistory.page({ section: "sales", category: null, page: { name: "sale", saleId } });
+  }
   const admittedIds = useMemo(() => new Set(admittedStoreIds(directory.data ?? [])), [directory.data]);
+  // Empty store banners clutter Products; only surface stores when the buyer is searching by name.
+  const namedStores = useMemo(() => {
+    if (!catalog || section === "saved" || !query.trim()) return [];
+    const withAbout = catalog.stores
+      .filter(store => store.key !== storeKey)
+      .map(store => ({ ...store, about: store.record.details?.about ?? "" }));
+    return matchingStores(withAbout, query);
+  }, [catalog, section, query, storeKey]);
   const admittedNamed = useMemo(() => namedStores.filter(store => admittedIds.has(store.key)), [namedStores, admittedIds]);
   const otherNamed = useMemo(() => namedStores.filter(store => !admittedIds.has(store.key)), [namedStores, admittedIds]);
   async function openStore(storeId: string) {
@@ -397,30 +469,34 @@ export default function Marketplace() {
     try { setCatalog(await fetchCatalog()); } catch {}
   }
   const followable = (storeId: string) => !!profile.data && storeId !== profile.data.storeKey;
-  const activeTitle = section === "storefront" ? "Your storefront" : section === "listings" ? "Your listings" : section === "coupons" ? "Coupons" : section === "sales" ? "Sales" : section === "store" ? "Store settings" : section === "follows" ? "Followed stores" : section === "saved" ? "Saved goods" : section === "orders" ? "Your orders" : section === "bag" ? "Your bag" : section === "addresses" ? "Your addresses" : section === "wallet" ? "Wallet" : section === "safety" ? "Content filters" : section === "store-labels" ? "Store labels" : section === "home-node" ? "Home node" : section === "browsers" ? "Browsers" : section === "lightning" ? "Lightning" : section === "zcash" ? "Zcash" : section === "monero" ? "Monero" : section === "tor" ? "Tor" : "Products";
+  const activeTitle = section === "storefront" ? "Your storefront" : section === "listings" ? "Your listings" : section === "coupons" ? "Coupons" : section === "sales" ? "Sales" : section === "store" ? "Store settings" : section === "follows" ? "Followed stores" : section === "classifieds" ? "Classifieds" : section === "saved" ? "Saved goods" : section === "orders" ? "Your orders" : section === "bag" ? "Your bag" : section === "addresses" ? "Your addresses" : section === "wallet" ? "Wallet" : section === "safety" ? "Content filters" : section === "store-labels" ? "Store labels" : section === "home-node" ? "Home node" : section === "browsers" ? "Browsers" : section === "lightning" ? "Lightning" : section === "zcash" ? "Zcash" : section === "monero" ? "Monero" : section === "tor" ? "Tor" : "Products";
+  const navSection: Section = page.name === "receipt" || page.name === "order" ? "orders" : page.name === "sale" ? "sales" : section;
   const inSettings = ["safety", "addresses", "store-labels", "home-node", "browsers", "lightning", "zcash", "monero", "tor", "follows"].includes(section);
-  const inStore = STORE_SECTIONS.includes(section);
-  const merchantWorkspace = inStore && page.name === "browse";
+  const inStore = STORE_SECTIONS.includes(navSection);
+  const merchantWorkspace = inStore && (page.name === "browse" || page.name === "sale");
   const browsing = page.name === "browse" && (section === "discover" || (section === "saved" && saved.length > 0));
   const verdictOf = (listing: ListingHeader) => catalog ? safetyVerdict(listing, catalog.store.contentRating, safety, labels) : { action: "show" as const };
   const detailVerdict = page.name === "detail" ? verdictOf(page.listing) : null;
 
   const money = { rates, currency };
-  const navSection: Section = page.name === "receipt" ? "orders" : section;
-  const utilityView = page.name !== "browse" ? null : section === "saved" && saved.length === 0 ? <section><PageHeading title="Saved goods"/><Empty illustration="saved" icon="heart" title="No saved products" text="Save products using the heart button."><button className="ob-primary" onClick={() => navigate("discover")}>Browse products <Icon name="arrow" size={17}/></button></Empty></section> : section === "safety" ? <SafetySettingsPanel settings={safety} onChange={setSafety} labelSources={nodeAvailable ? <LabelersPanel state={labelers} onState={setLabelerState}/> : undefined}/> : guest ? storeView() : section === "wallet" ? <WalletPage {...money} onOrders={() => navigate("orders")} onSales={seller ? () => navigate("sales") : undefined} onManage={rail => navigate(rail)} onTor={() => navigate("tor")}/> : section === "lightning" ? <LightningSettings/> : section === "zcash" ? <ZcashSettings/> : section === "monero" ? <MoneroSettings/> : section === "tor" ? <TorSettings/> : section === "home-node" ? <div className="ob-settings-page"><header className="ob-settings-heading"><h1>Home node</h1><p>Run your store on an always-on computer and manage it from anywhere over Tor.</p></header><HomeNodePanel/></div> : section === "browsers" ? <BrowsersSettings/> : section === "addresses" ? <Addresses/> : section === "orders" ? <Orders {...money} onBrowse={() => navigate("discover")}/> : section === "follows" ? <Follows onChanged={message => { setToast(message); void load(); }} onOpen={id => void openStore(id)}/> : section === "classifieds" ? <Classifieds/> : storeView();
+  const utilityView = !guest && (page.name === "order" || (section === "orders" && page.name === "browse"))
+    ? <Orders {...money} selectedOrderId={page.name === "order" ? page.orderId : null} unreadByOrder={messageAlerts.unreadOrdersById} onSelectOrder={openOrder} onBack={() => shopHistory.backToParent()} onBrowse={() => navigate("discover")}/>
+    : !guest && (page.name === "sale" || (section === "sales" && page.name === "browse"))
+      ? storeView()
+      : page.name !== "browse" ? null : section === "saved" && saved.length === 0 ? <section><PageHeading title="Saved goods"/><Empty illustration="saved" icon="heart" title="No saved products" text="Save products using the heart button."><button className="ob-primary" onClick={() => navigate("discover")}>Browse products <Icon name="arrow" size={17}/></button></Empty></section> : section === "safety" ? <SafetySettingsPanel settings={safety} onChange={setSafety} labelSources={nodeAvailable ? <LabelersPanel state={labelers} onState={setLabelerState}/> : undefined}/> : guest ? storeView() : section === "wallet" ? <WalletPage {...money} onOrders={() => navigate("orders")} onSales={seller ? () => navigate("sales") : undefined} onManage={rail => navigate(rail)} onTor={() => navigate("tor")}/> : section === "lightning" ? <LightningSettings/> : section === "zcash" ? <ZcashSettings/> : section === "monero" ? <MoneroSettings/> : section === "tor" ? <TorSettings/> : section === "home-node" ? <div className="ob-settings-page"><header className="ob-settings-heading"><h1>Home node</h1><p>Run your store on an always-on computer and manage it from anywhere over Tor.</p></header><HomeNodePanel/></div> : section === "browsers" ? <BrowsersSettings/> : section === "addresses" ? <Addresses/> : section === "follows" ? <Follows onChanged={message => { setToast(message); void load(); }} onOpen={id => void openStore(id)}/> : section === "classifieds" ? <Classifieds/> : storeView();
   function storeView() {
     if (guest && inStore) return <SellGate/>;
     const own = profile.data;
     if (!inStore) return null;
     if (!own) return <p role="status">{profile.error || "Loading your store…"}</p>;
-    if (section === "sales") return <Sales sales={sales} {...money} onSeen={rememberSales}/>;
+    if (section === "sales" || page.name === "sale") return <Sales sales={sales} {...money} selectedSaleId={page.name === "sale" ? page.saleId : null} unreadBySale={messageAlerts.unreadSalesById} onSelectSale={openSale} onBack={() => shopHistory.backToParent()} onSeen={rememberSales}/>;
     if (section === "listings") return <StoreListings key={newListing} profile={own} {...money} startNew={newListing > 0} onChanged={storeChanged} onOpenSettings={() => navigate("store")}/>;
     if (section === "coupons") return <Coupons onChanged={storeChanged}/>;
     if (section === "storefront" && own.setUp) return <OwnStore profile={own} listings={catalog?.listings ?? []} {...money} onOpen={open} onEdit={() => navigate("store")} onAddListing={() => { navigate("listings"); setNewListing(n => n + 1); }}/>;
     return <StoreSetup key={own.storeKey} profile={own} onSaved={(next, message, viewStore = true) => { profile.update(next); storeChanged(message); if (viewStore) navigate("storefront"); }} onViewStore={() => navigate("storefront")}/>;
   }
   const needsRole = !!profile.data && profile.data.role === null;
-  return <NodePaymentsProvider enabled={nodeAvailable} activeWallet={section === "wallet" || section === "orders" || page.name === "receipt"} onWallet={() => navigate("wallet")}>{needsRole ? <Onboarding onChosen={next => { profile.update(next); if (next.role === "seller") navigate("store"); }}/> : <div className={`ob-app ${resizing ? "is-resizing" : ""} ${merchantWorkspace ? "is-merchant" : ""}`} style={{ "--ob-sidebar": `${!mobile && collapsed ? 72 : sidebarWidth}px` } as CSSProperties}>
+  return <NodePaymentsProvider enabled={nodeAvailable} activeWallet={section === "wallet" || section === "orders" || page.name === "receipt" || page.name === "order"} onWallet={() => navigate("wallet")}>{needsRole ? <Onboarding onChosen={next => { profile.update(next); if (next.role === "seller") navigate("store"); }}/> : <div className={`ob-app ${resizing ? "is-resizing" : ""} ${merchantWorkspace ? "is-merchant" : ""}`} style={{ "--ob-sidebar": `${!mobile && collapsed ? 72 : sidebarWidth}px` } as CSSProperties}>
     <a className="ob-skip" href="#ob-content">Skip to content</a>
     {menu && <button className="ob-menu-scrim" aria-label="Close navigation" onClick={() => setMenu(false)}/>}
     <aside ref={sidebarRef} className={`ob-sidebar ${menu ? "is-open" : ""} ${collapsed && !mobile ? "is-collapsed" : ""}`} aria-label="Main navigation" inert={(mobile && !menu)}>
@@ -432,7 +508,7 @@ export default function Marketplace() {
           <NavItem icon="compass" active={navSection === "discover" && !category} onClick={() => navigate("discover")}>Products</NavItem>
           <NavItem icon="paper" active={navSection === "classifieds"} onClick={() => navigate("classifieds")}>Classifieds</NavItem>
           <NavItem icon="heart" active={navSection === "saved"} onClick={() => navigate("saved")} count={savedCount || undefined}>Saved goods</NavItem>
-          <NavItem icon="bag" active={navSection === "bag"} onClick={() => navigate("bag")} count={cart.reduce((n, l) => n + l.quantity, 0) || undefined}>Your bag</NavItem>
+          <NavItem icon="bag" active={navSection === "bag"} onClick={() => navigate("bag")} count={cartCount || undefined}>Your bag</NavItem>
         </nav>
         {seller && <><div className="ob-nav-label ob-store-nav-label">Your store</div><nav className="ob-main-nav ob-store-nav" aria-label="Your store">
           <NavItem icon="home" active={navSection === "storefront"} onClick={() => navigate("storefront")}>Storefront</NavItem>
@@ -443,7 +519,7 @@ export default function Marketplace() {
         {openDesk && <><div className="ob-nav-label ob-store-nav-label">Moderation</div><nav className="ob-main-nav ob-store-nav" aria-label="Moderation">
           <NavItem icon="shield" active={false} onClick={openDesk}>Moderator desk</NavItem>
         </nav></>}
-        {!merchantWorkspace && <><CanopyDivider/>
+        {!merchantWorkspace && <><div className="ob-nav-hairline" aria-hidden="true"/>
         <div className="ob-nav-label" id="ob-categories-label">Categories</div>
         <nav className="ob-categories-nav" aria-label="Shopping categories">{categories.map(c => { const count = allowed.filter(l => topCategory(l) === c).length; return <NavItem key={c} icon={categoryIcons.get(c) ?? "grid"} active={navSection === "discover" && category === c} onClick={() => navigate("discover", c)} count={count || undefined}>{c}</NavItem>; })}</nav></>}
       </div>
@@ -471,36 +547,67 @@ export default function Marketplace() {
         onCurrency={c => { setCurrency(c); try { localStorage.setItem("ob-shop-currency", c); } catch {} }}
         build={build}
         onCopied={setToast}
+        unreadOrders={messageAlerts.unreadOrders}
       />
       {!collapsed && <div className="ob-sidebar-resize" role="separator" aria-label="Resize sidebar" aria-orientation="vertical" aria-valuemin={224} aria-valuemax={360} aria-valuenow={sidebarWidth} tabIndex={mobile ? -1 : 0} title="Drag to resize. Use arrow keys when focused." onDoubleClick={() => setSidebarWidth(244)} onKeyDown={e => { if (e.key === "ArrowLeft" || e.key === "ArrowRight") { e.preventDefault(); setSidebarWidth(w => Math.max(224, Math.min(360, w + (e.key === "ArrowRight" ? 16 : -16)))); } if (e.key === "Home") setSidebarWidth(224); if (e.key === "End") setSidebarWidth(360); }} onPointerDown={e => { e.currentTarget.setPointerCapture(e.pointerId); setResizing(true); }} onPointerMove={e => { if (e.currentTarget.hasPointerCapture(e.pointerId)) setSidebarWidth(Math.max(224, Math.min(360, e.clientX))); }} onPointerUp={e => { e.currentTarget.releasePointerCapture(e.pointerId); setResizing(false); }} onPointerCancel={() => setResizing(false)}/>}
     </aside>
     <div className="ob-workspace" inert={(mobile && menu)}>
       <header className="ob-topbar">
         <button className="ob-icon-button ob-mobile-menu" aria-label="Open navigation" aria-expanded={menu} onClick={() => setMenu(true)}><Icon name="menu"/></button>
-        <div className="ob-breadcrumb">{inSettings || inStore || (section !== "wallet" && section !== "orders") ? <><span>{inSettings ? "Settings" : inStore ? "Your store" : "Marketplace"}</span><Icon name="chevron" size={12}/></> : null}<strong>{page.name === "browse" ? activeTitle : page.name === "store" ? (catalog?.stores.find(store => store.key === page.storeId)?.name ?? catalog?.listings.find(listing => listing.storeId === page.storeId)?.seller ?? "Store") : page.name === "detail" ? page.listing.title : page.name === "checkout" ? "Checkout" : "Order details"}</strong></div>
-        <div className="ob-topbar-right">{openSignIn && <button className="ob-secondary" type="button" onClick={openSignIn}>Sign in</button>}<button className="ob-theme-toggle" role="switch" aria-checked={theme === "dark"} aria-label="Dark mode" title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"} onClick={() => setTheme(t => t === "dark" ? "light" : "dark")}><Icon name={theme === "dark" ? "moon" : "sun"} size={17}/><span className="ob-theme-track"><span/></span></button></div>
+        <div className="ob-breadcrumb">
+          {page.name === "order" ? (
+            <>
+              <button type="button" className="ob-breadcrumb-link" onClick={() => shopHistory.backToParent()}>Your orders</button>
+              <Icon name="chevron" size={12}/>
+              <strong>#{page.orderId.slice(0, 8)}</strong>
+            </>
+          ) : page.name === "sale" ? (
+            <>
+              <button type="button" className="ob-breadcrumb-link" onClick={() => navigate("storefront")}>Your store</button>
+              <Icon name="chevron" size={12}/>
+              <button type="button" className="ob-breadcrumb-link" onClick={() => shopHistory.backToParent()}>Sales</button>
+              <Icon name="chevron" size={12}/>
+              <strong>#{page.saleId.slice(0, 8)}</strong>
+            </>
+          ) : (
+            <>
+              {inSettings || inStore || (navSection !== "wallet" && navSection !== "orders") ? <><button type="button" className="ob-breadcrumb-link" onClick={() => { if (inSettings) { if (mobile) setMenu(true); setSettingsOpen(true); } else if (inStore) navigate("storefront"); else navigate("discover"); }}>{inSettings ? "Settings" : inStore ? "Your store" : "Marketplace"}</button><Icon name="chevron" size={12}/></> : null}
+              <strong>{page.name === "browse" ? activeTitle : page.name === "store" ? (catalog?.stores.find(store => store.key === page.storeId)?.name ?? catalog?.listings.find(listing => listing.storeId === page.storeId)?.seller ?? "Store") : page.name === "detail" ? page.listing.title : page.name === "checkout" ? "Checkout" : "Order details"}</strong>
+            </>
+          )}
+        </div>
+        <div className="ob-topbar-right">
+          {openSignIn && <button className="ob-secondary" type="button" onClick={openSignIn}>Sign in</button>}
+          {publicMode ? <div className="ob-network-pill" role="status"><span className="ob-status-dot" aria-hidden="true"/><span>Public</span></div> : direct ? null : nodeAvailable ? <NetworkBadge/> : null}
+          <button type="button" className={`ob-topbar-bag${navSection === "bag" ? " is-active" : ""}`} aria-label="Your bag" title="Your bag" aria-current={navSection === "bag" ? "page" : undefined} onClick={() => navigate("bag")}><Icon name="bag" size={17}/>{cartCount > 0 && <span className="ob-topbar-bag-count">{cartCount}</span>}</button>
+          <button className="ob-theme-toggle" role="switch" aria-checked={theme === "dark"} aria-label="Dark mode" title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"} onClick={() => setTheme(t => t === "dark" ? "light" : "dark")}><Icon name={theme === "dark" ? "moon" : "sun"} size={17}/><span className="ob-theme-track"><span/></span></button>
+        </div>
       </header>
       <HomeNodeBadge/>
-      {publicMode ? <div className="ob-network-badge" role="status"><span className="ob-status-dot" aria-hidden="true"/>{onionNote ?? "Browsing without a node. Buying and selling run on your own node."}</div> : direct ? <DirectBanner url={direct}/> : nodeAvailable ? <NetworkBadge/> : null}
+      {direct ? <DirectBanner url={direct}/> : null}
       {nodeAvailable && <PairingBanner/>}
       <BuildMismatchWarning build={build}/>
       <main className="ob-content" id="ob-content" ref={content}>
         <div className="ob-content-inner">
           {browsing && <div className="ob-discovery-bar"><div className="ob-search"><Icon name="search" size={18}/><input ref={searchRef} aria-label="Search stores and listings" placeholder="Search marketplace" value={query} onChange={e => { setQuery(e.target.value); setPage({ name: "browse" }); }}/>{query ? <button className="ob-icon-button" aria-label="Clear search" onClick={() => setQuery("")}><Icon name="close" size={16}/></button> : <kbd>⌘ K</kbd>}</div></div>}
           {utilityView ?? (loading ? <div className="ob-loading" role="status"><span className="ob-spinner"/><h1>{offline || !hasNodeHost() ? "Opening store" : "Loading products"}</h1><p>{offline || !hasNodeHost() ? "Reading public listings…" : "Connecting to your marketplace…"}</p></div> : loadError || !catalog ? <Empty icon="globe" title={offline ? "No node on this device" : "Unable to connect"} text={loadError || "Your node could not be reached."}>{offline && <OpenStoreForm value={storeDraft} busy={loading} onChange={setStoreDraft} onOpen={(url) => void load(url)}/>}<button className="ob-primary" onClick={() => void load()}>Try again <Icon name="arrow" size={16}/></button></Empty> : page.name === "store" ? <CatalogStore storeId={page.storeId} followable={followable(page.storeId)} onFollowChanged={message => void followChanged(message)} store={catalog.stores.find(store => store.key === page.storeId) ?? null} listings={openedShop?.id === page.storeId ? openedShop.listings : allowed.filter(listing => listing.storeId === page.storeId)} {...money} revealed={revealed} onReveal={hash => setRevealed(list => [...list, hash])} verdictOf={verdictOf} onOpen={listing => open(listing, page.storeId)} onStore={openStore} onBack={() => shopHistory.back()}/> : page.name === "detail" && detailVerdict && detailVerdict.action !== "show" && !revealed.includes(page.listing.hash) ? <SafetyInterstitial reason={detailVerdict.reason} onShow={() => setRevealed(r => [...r, page.listing.hash])} onBack={() => shopHistory.back()} backLabel={page.fromStore ? "Back to store" : "Back to products"}/> : page.name === "detail" ? <><ProductDetail key={page.listing.hash} guest={!!direct || publicMode} own={!!profile.data && page.listing.storeId === profile.data.storeKey} follow={followable(page.listing.storeId) && <FollowButton storeId={page.listing.storeId} onChanged={message => void followChanged(message)}/>} onEdit={() => navigate("listings")} listing={page.listing} alternatives={page.listing.product ? allowed.filter(l => l.product === page.listing.product && l.hash !== page.listing.hash) : []} onAlternative={open} {...money} saved={saved.includes(page.listing.hash)} onSave={() => toggleSaved(page.listing)} onBack={() => shopHistory.back()} backLabel={page.fromStore ? "Back to store" : "Back to products"} onStore={() => openStore(page.listing.storeId)} onAdd={pick => addToBag(page.listing, pick)} onBuy={pick => shopHistory.page({ section, category, page: { name: "checkout", lines: [{ hash: page.listing.hash, variant: pick.variant, quantity: pick.quantity }], returnTo: page.listing, ...(page.fromStore ? { fromStore: page.fromStore } : {}) } })}/><HideActions listing={page.listing} settings={safety} onChange={next => { setSafety(next); shopHistory.backToBrowse(); setToast("Hidden on this device. Undo in Content filters."); }}/></> : page.name === "checkout" && (direct || publicMode) ? <DirectPay onBack={() => shopHistory.back()} backLabel={page.returnTo ? "Back to product" : "Back to bag"}/> : page.name === "checkout" ? <MarketplaceCheckout lines={page.lines} catalog={catalog} {...money} backLabel={page.returnTo ? "Back to product" : "Back to bag"} onBack={() => shopHistory.back()} onDone={receipt => { const bought = new Set(receipt.orders.flatMap(o => o.lines.map(l => l.listingHash))); setCart(c => c.filter(l => !bought.has(l.hash))); shopHistory.replace({ section, category, page: { name: "receipt", receipt } }); }}/> : page.name === "receipt" ? <CheckoutConfirmation receipt={page.receipt} {...money} onBrowse={() => navigate("discover")}/> : section === "bag" ? <Bag catalog={catalog} lines={cart} {...money} onChange={(key, quantity) => setCart(c => quantity === 0 ? c.filter(l => lineKey(l) !== key) : c.map(l => lineKey(l) === key ? { ...l, quantity } : l))} onCheckout={() => shopHistory.page({ section, category, page: { name: "checkout", lines: cart } })} onBrowse={() => navigate("discover")} onRetry={() => void load()}/> : section === "store-labels" ? <div className="ob-settings-page"><header className="ob-settings-heading"><h1>Store labels</h1><p>Set the content ratings buyers see for your store and listings.</p></header><VendorLabelPicker catalog={catalog} onCatalog={setCatalog}/></div> : <>
-            <section className="ob-catalog" aria-labelledby="ob-catalog-title"><div className="ob-section-heading"><div><h1 id="ob-catalog-title">{section === "saved" ? "Saved goods" : query ? `Results for “${query}”` : category ? category : "All products"}<span aria-label={`${visible.length} products`}>{visible.length}</span></h1></div><label className="ob-sort">Sort by <select aria-label="Sort goods" value={sort} onChange={e => setSort(e.target.value)}><option value="name">Name</option><option value="newest">Newest first</option><option value="price-asc">Price: low to high</option><option value="price-desc">Price: high to low</option></select></label></div>
+            <section className="ob-catalog" aria-labelledby="ob-catalog-title"><div className="ob-section-heading"><div><h1 id="ob-catalog-title">{section === "saved" ? "Saved goods" : query ? `Results for “${query}”` : category ? category : "All products"}<span aria-label={`${visible.length} products`}>{visible.length}</span></h1></div><div className="ob-sort-row"><label className="ob-sort">Sort by <select aria-label="Sort goods" value={sort} onChange={e => setSort(e.target.value)}><option value="name">Name</option><option value="newest">Newest first</option><option value="price-asc">Price: low to high</option><option value="price-desc">Price: high to low</option></select></label><label className="ob-sort">Per page <select aria-label="Products per page" value={pageSize} onChange={e => setPageSize(Number(e.target.value))}><option value={24}>24</option><option value={48}>48</option></select></label></div></div>
               <div className="ob-filter-row" role="group" aria-label="Filter by category"><button className={`ob-filter ${!category ? "is-active" : ""}`} aria-pressed={!category} onClick={() => setCategory(null)}><Icon name="grid" size={15}/>All goods</button>{categories.map(c => <button key={c} className={`ob-filter ${category === c ? "is-active" : ""}`} aria-pressed={category === c} onClick={() => setCategory(c)}><Icon name={categoryIcons.get(c) ?? "grid"} size={15}/>{c}</button>)}</div>
               <details className="ob-advanced-filters"><summary>Filters <span>{filterCount ? `${filterCount} active` : "Seller, price & more"}</span><Icon name="chevron" size={13}/></summary><div className="ob-advanced-filter-grid"><label className="ob-field">Seller<select aria-label="Filter by seller" value={filters.seller} onChange={e => setFilters(f => ({ ...f, seller: e.target.value }))}><option value="">All sellers</option>{[...new Set(catalog.listings.map(l => l.seller))].map(s => <option key={s}>{s}</option>)}</select></label><label className="ob-field">Type of good<select aria-label="Filter by type" value={filters.kind} onChange={e => setFilters(f => ({ ...f, kind: e.target.value }))}><option value="">All goods</option><option value="physical">Physical goods</option><option value="digital">Digital goods</option></select></label><label className="ob-field">Ships from<select aria-label="Filter by origin" value={filters.shipFrom} onChange={e => setFilters(f => ({ ...f, shipFrom: e.target.value }))}><option value="">Anywhere</option>{[...new Set(catalog.listings.map(l => l.shipFrom))].map(s => <option key={s}>{s}</option>)}</select></label>{conditionChoices(allowed).length > 0 && <label className="ob-field">Condition<select aria-label="Filter by condition" value={filters.condition} onChange={e => setFilters(f => ({ ...f, condition: e.target.value }))}><option value="">Any condition</option>{conditionChoices(allowed).map(condition => <option key={condition} value={condition}>{CONDITION_LABELS[condition]}</option>)}</select></label>}<label className="ob-field">Min. price in sats<input type="number" min="0" inputMode="numeric" value={filters.min} placeholder="No minimum" onChange={e => setFilters(f => ({ ...f, min: e.target.value }))}/></label><label className="ob-field">Max. price in sats<input type="number" min="0" inputMode="numeric" value={filters.max} placeholder="No maximum" onChange={e => setFilters(f => ({ ...f, max: e.target.value }))}/></label>{specificChoices(allowed).map(group => <label key={group.key} className="ob-field">{group.label}<select aria-label={`Filter by ${group.label}`} value={Object.hasOwn(filters.specifics, group.key) ? filters.specifics[group.key] : ""} onChange={e => setFilters(f => ({ ...f, specifics: setSpecificChoice(f.specifics, group.key, e.target.value) }))}><option value="">{`Any ${group.label.toLowerCase()}`}</option>{group.values.map(value => <option key={value.signed} value={value.signed}>{value.label}</option>)}</select></label>)}<button className="ob-text-link" onClick={() => setFilters(emptyFilters())}>Reset filters</button></div></details>
               {admittedNamed.length > 0 && page.name === "browse" && <div className="ob-store-results"><h2 className="ob-admitted-heading">Stores the directory admitted</h2>{admittedNamed.map(store => <button key={store.key} type="button" className="ob-store-result" onClick={() => void openStore(store.key)}><span className="ob-seller-avatar" aria-hidden="true">{store.name.charAt(0)}</span><span><strong>{store.name}</strong><small>{[store.region, store.tagline].filter(Boolean).join(" · ") || "No goods yet"}</small></span></button>)}</div>}
               {otherNamed.length > 0 && page.name === "browse" && <div className="ob-store-results">{otherNamed.map(store => <button key={store.key} type="button" className="ob-store-result" onClick={() => void openStore(store.key)}><span className="ob-seller-avatar" aria-hidden="true">{store.name.charAt(0)}</span><span><strong>{store.name}</strong><small>{[store.region, store.tagline].filter(Boolean).join(" · ") || "No goods yet"}</small></span></button>)}</div>}
-              {visible.length ? <div className="ob-product-grid">{visible.map(listing => { const verdict = verdictOf(listing); return verdict.action === "cover" && !revealed.includes(listing.hash) ? <CoveredCard key={listing.hash} reason={verdict.reason} onShow={() => setRevealed(r => [...r, listing.hash])}/> : <ProductCard key={listing.hash} listing={listing} {...money} saved={saved.includes(listing.hash)} onSave={() => toggleSaved(listing)} onOpen={() => open(listing)} onStore={() => openStore(listing.storeId)}/>; })}</div> : namedStores.length ? null : <CatalogEmpty section={section} query={query} category={category} filterCount={filterCount} publicMode={publicMode} onionNote={onionNote} direct={direct} onDiscover={() => navigate("discover")} onResetFilters={() => { setQuery(""); setCategory(null); setFilters(emptyFilters()); if (section === "saved") navigate("discover"); }} onRetry={() => void load()}/>}
+              {visible.length ? <>
+                {visible.length > pageSize && <div className="ob-order-list-meta"><p role="status" aria-live="polite">{(paged.start + 1).toLocaleString()}–{Math.min(paged.start + pageSize, visible.length).toLocaleString()} of {visible.length.toLocaleString()} products</p>{productsPagination()}</div>}
+                <div className="ob-product-grid">{paged.items.map(listing => { const verdict = verdictOf(listing); return verdict.action === "cover" && !revealed.includes(listing.hash) ? <CoveredCard key={listing.hash} reason={verdict.reason} onShow={() => setRevealed(r => [...r, listing.hash])}/> : <ProductCard key={listing.hash} listing={listing} {...money} saved={saved.includes(listing.hash)} onSave={() => toggleSaved(listing)} onOpen={() => open(listing)} onStore={() => openStore(listing.storeId)}/>; })}</div>
+                {visible.length > pageSize && <div className="ob-order-pagination-footer">{productsPagination(true)}</div>}
+              </> : namedStores.length ? null : <CatalogEmpty section={section} query={query} category={category} filterCount={filterCount} publicMode={publicMode} onionNote={onionNote} direct={direct} onDiscover={() => navigate("discover")} onResetFilters={() => { setQuery(""); setCategory(null); setFilters(emptyFilters()); if (section === "saved") navigate("discover"); }} onRetry={() => void load()}/>}
             </section>
           </>)}
 
         </div>
       </main>
     </div>
-    {toast && <div className="ob-toast" role="status"><Icon name="check" size={17}/>{toast}</div>}
+    {toastMessage && <div className="ob-toast" role="status"><Icon name="check" size={17}/><span>{toastMessage}</span>{toastAction && <button type="button" className="ob-toast-action" onClick={toastAction.onClick}>{toastAction.label}</button>}</div>}
     <PairingDialog/>
   </div>}</NodePaymentsProvider>;
 }
@@ -523,9 +630,9 @@ function ProductDetail({ listing, guest = false, own, follow, onEdit, rates, cur
   const [alternate, setAlternate] = useState(false);
   const buy = useBuyChoice(listing);
   const [shown, setShown] = useState(listing.images[0]);
-  return <section className="ob-detail"><button className="ob-back" onClick={onBack}><Icon name="arrow" size={16}/>{backLabel}</button><div className="ob-detail-grid"><div className="ob-gallery">{listing.images.length ? <><ProductImage listing={listing} image={shown}/>{listing.images.length > 1 && <div className="ob-thumbnails">{listing.images.map((hash, i) => <button key={hash} aria-label={`Show photo ${i + 1}`} aria-pressed={shown === hash} onClick={() => setShown(hash)}><MediaImage hash={hash} alt={`Photo ${i + 1}`}/></button>)}</div>}</> : alternate ? <div className="ob-product-image"><img src="goods/paperback-open.jpg" alt="Paperback opened to its pages"/></div> : <ProductImage listing={listing}/ >}{listing.title === "Paperback novel" && <div className="ob-thumbnails"><button aria-label="Show book cover" aria-pressed={!alternate} onClick={() => setAlternate(false)}><img src="goods/paperback.jpg" alt="Book cover"/></button><button aria-label="Show inside pages" aria-pressed={alternate} onClick={() => setAlternate(true)}><img src="goods/paperback-open.jpg" alt="Inside pages"/></button></div>}</div><div className="ob-detail-copy"><span className="ob-eyebrow">{categoryLabel(listing)} · {listing.kind === "digital" ? "Digital" : "Physical item"}</span><h1>{listing.title}</h1><div className="ob-detail-seller-row">{onStore ? <button type="button" className="ob-detail-seller" onClick={onStore} aria-label={`Open store ${listing.seller}`}><span className="ob-seller-avatar" aria-hidden="true">{listing.seller.charAt(0)}</span><span>Sold by <strong>{listing.seller}</strong></span></button> : <div className="ob-detail-seller"><span className="ob-seller-avatar">{listing.seller.charAt(0)}</span><span>Sold by <strong>{listing.seller}</strong></span></div>}{follow}</div><ListingReviews listing={listing} own={own}/>{listing.commerce ? <ListingBuyTerms listing={listing} buy={buy} rates={rates}/> : <><Money sats={listing.priceSats} rates={rates} currency={currency} large/><p className="ob-btc-price">{btc(listing.priceSats)}{listing.price && ` · Seller's price ${formatPrice(listing.price.amount, listing.price.currency)}${listing.price.shipping ? ` + ${formatPrice(listing.price.shipping, listing.price.currency)} shipping` : ""}, paid in sats at the rate when you order`}</p></>}<p className="ob-description">{listing.description || "No description provided."}</p><div className="ob-product-facts"><span><Icon name={listing.kind === "digital" ? "bolt" : "pin"} size={18}/>{listing.kind === "digital" ? "Delivered digitally" : `Ships from ${listing.shipFrom}`}</span>{!listing.commerce && <span><span className={`ob-status-dot ${listing.stock <= 0 ? "is-offline" : ""}`}/>{listing.stock > 0 ? `${listing.stock} available` : "Currently out of stock"}</span>}</div><ListingBuyFacts listing={listing}/>{own ? <div className="ob-detail-actions"><p className="ob-page-intro">This is your listing.</p><button className="ob-secondary" onClick={onEdit}>Edit in your listings <Icon name="arrow" size={18}/></button></div> : <div className="ob-detail-actions">{(!listing.commerce || !listing.price) && <QuantityStepper quantity={buy.quantity} max={buy.max} onQuantity={buy.setQuantity}/>}<button className="ob-primary" disabled={!buy.canBuy} onClick={() => onAdd(buy.choice)}>Add to bag <Icon name="bag" size={18}/></button><button className="ob-secondary" disabled={!buy.canBuy} onClick={() => onBuy(buy.choice)}>Buy now <Icon name="arrow" size={18}/></button><button className={`ob-secondary ob-save-detail ${saved ? "is-saved" : ""}`} aria-pressed={saved} onClick={onSave}><Icon name="heart" size={18}/>{saved ? "Saved" : "Save for later"}</button>{guest ? <p className="ob-shipping-note">{PAYMENT_NOTE}</p> : <OfferSheet listing={listing} choice={buy.choice}/>}</div>}<ListingRails listing={listing}/>{alternatives.length > 0 && <div className="ob-other-sellers"><h2>Other sellers</h2>{alternatives.map(other => <button key={other.hash} onClick={() => onAlternative(other)}><span><strong>{other.seller}</strong><small>Ships from {other.shipFrom}</small></span><Money sats={other.priceSats} rates={rates} currency={currency}/><Icon name="arrow" size={16}/></button>)}</div>}</div></div></section>;}
-export function Payment({ receipt }: { receipt: BuyerOrder | import("../catalog").SellerOrder }) {
+  return <section className="ob-detail"><button className="ob-back" onClick={onBack}><Icon name="arrow" size={16}/>{backLabel}</button><div className="ob-detail-grid"><div className="ob-gallery">{listing.images.length ? <><ProductImage listing={listing} image={shown}/>{listing.images.length > 1 && <div className="ob-thumbnails">{listing.images.map((hash, i) => <button key={hash} aria-label={`Show photo ${i + 1}`} aria-pressed={shown === hash} onClick={() => setShown(hash)}><MediaImage hash={hash} alt={`Photo ${i + 1}`}/></button>)}</div>}</> : alternate ? <div className="ob-product-image"><img src="goods/paperback-open.jpg" alt="Paperback opened to its pages"/></div> : <ProductImage listing={listing}/ >}{listing.title === "Paperback novel" && <div className="ob-thumbnails"><button aria-label="Show book cover" aria-pressed={!alternate} onClick={() => setAlternate(false)}><img src="goods/paperback.jpg" alt="Book cover"/></button><button aria-label="Show inside pages" aria-pressed={alternate} onClick={() => setAlternate(true)}><img src="goods/paperback-open.jpg" alt="Inside pages"/></button></div>}</div><div className="ob-detail-copy"><span className="ob-eyebrow">{categoryLabel(listing)} · {listing.kind === "digital" ? "Digital" : "Physical item"}</span><h1>{listing.title}</h1><div className="ob-detail-seller-row">{onStore ? <button type="button" className="ob-detail-seller" onClick={onStore} aria-label={`Open store ${listing.seller}`}><span className="ob-seller-avatar" aria-hidden="true">{listing.seller.charAt(0)}</span><span>Sold by <strong>{listing.seller}</strong></span></button> : <div className="ob-detail-seller"><span className="ob-seller-avatar">{listing.seller.charAt(0)}</span><span>Sold by <strong>{listing.seller}</strong></span></div>}{follow}</div>{listing.commerce ? <ListingBuyTerms listing={listing} buy={buy} rates={rates}/> : <><Money sats={listing.priceSats} rates={rates} currency={currency} large/><p className="ob-btc-price">{btc(listing.priceSats)}{listing.price && ` · Seller's price ${formatPrice(listing.price.amount, listing.price.currency)}${listing.price.shipping ? ` + ${formatPrice(listing.price.shipping, listing.price.currency)} shipping` : ""}, paid in sats at the rate when you order`}</p></>}<p className="ob-description">{listing.description || "No description provided."}</p><div className="ob-product-facts"><span><Icon name={listing.kind === "digital" ? "bolt" : "pin"} size={18}/>{listing.kind === "digital" ? "Delivered digitally" : `Ships from ${listing.shipFrom}`}</span>{!listing.commerce && <span><span className={`ob-status-dot ${listing.stock <= 0 ? "is-offline" : ""}`}/>{listing.stock > 0 ? `${listing.stock} available` : "Currently out of stock"}</span>}</div><ListingBuyFacts listing={listing}/>{own ? <div className="ob-detail-actions"><p className="ob-page-intro">This is your listing.</p><button className="ob-secondary" onClick={onEdit}>Edit in your listings <Icon name="arrow" size={18}/></button></div> : <div className="ob-detail-actions">{(!listing.commerce || !listing.price) && <QuantityStepper quantity={buy.quantity} max={buy.max} onQuantity={buy.setQuantity}/>}<button className="ob-primary" disabled={!buy.canBuy} onClick={() => onAdd(buy.choice)}>Add to bag <Icon name="bag" size={18}/></button><button className="ob-secondary" disabled={!buy.canBuy} onClick={() => onBuy(buy.choice)}>Buy now <Icon name="arrow" size={18}/></button><button className={`ob-secondary ob-save-detail ${saved ? "is-saved" : ""}`} aria-pressed={saved} onClick={onSave}><Icon name="heart" size={18}/>{saved ? "Saved" : "Save for later"}</button>{guest ? <p className="ob-shipping-note">{PAYMENT_NOTE}</p> : <OfferSheet listing={listing} choice={buy.choice}/>}</div>}<ListingRails listing={listing}/><ListingReviews listing={listing} own={own}/>{alternatives.length > 0 && <div className="ob-other-sellers"><h2>Other sellers</h2>{alternatives.map(other => <button key={other.hash} onClick={() => onAlternative(other)}><span><strong>{other.seller}</strong><small>Ships from {other.shipFrom}</small></span><Money sats={other.priceSats} rates={rates} currency={currency}/><Icon name="arrow" size={16}/></button>)}</div>}</div></div></section>;}
+export function Payment({ receipt, hideStatus = false }: { receipt: BuyerOrder | import("../catalog").SellerOrder; hideStatus?: boolean }) {
   const id = "id" in receipt ? receipt.id : receipt.orderId;
-  if (receipt.payment?.ln) return <LightningOrderPayment key={id} id={id} initial={receipt} invoice={receipt.payment.ln}/>;
-  return <OrderPayment key={id} id={id} initial={receipt}/>;
+  if (receipt.payment?.ln) return <LightningOrderPayment key={id} id={id} initial={receipt} invoice={receipt.payment.ln} hideStatus={hideStatus}/>;
+  return <OrderPayment key={id} id={id} initial={receipt} hideStatus={hideStatus}/>;
 }

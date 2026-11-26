@@ -525,14 +525,13 @@ impl Node {
 
     /// The Lightning thread: start LDK when it can, then keep orders current.
     pub(crate) fn run_lightning(&self, stop: &AtomicBool) {
-        if self.ln.config().is_none() && self.ln.rail().is_none() {
-            return;
-        }
         while !stop.load(std::sync::atomic::Ordering::Relaxed) {
-            self.ln_start();
-            if self.ln.rail().is_some() {
-                self.ln_update_orders();
-                self.ln_update_sales();
+            if self.ln.config().is_some() || self.ln.rail().is_some() {
+                self.ln_start();
+                if self.ln.rail().is_some() {
+                    self.ln_update_orders();
+                    self.ln_update_sales();
+                }
             }
             std::thread::sleep(Duration::from_secs(2));
         }

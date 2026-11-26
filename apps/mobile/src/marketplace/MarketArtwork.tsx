@@ -1,13 +1,5 @@
 // Decorative line art follows the approved logo's canopy, valance, and counter.
 // Theme colors come from marketplace.css; these graphics carry no interface meaning.
-export function CanopyDivider() {
-  return (
-    <svg className="ob-canopy-divider" viewBox="0 0 144 10" preserveAspectRatio="none" aria-hidden="true" focusable="false">
-      <path d="M0 2Q12 14 24 2Q36 14 48 2Q60 14 72 2Q84 14 96 2Q108 14 120 2Q132 14 144 2" fill="none" stroke="currentColor" strokeWidth="1" vectorEffect="non-scaling-stroke"/>
-    </svg>
-  );
-}
-
 export function MarketEmptyArtwork({ variant }: { variant: "bag" | "saved" }) {
   return (
     <svg className="ob-market-artwork" viewBox="0 0 176 144" fill="none" aria-hidden="true" focusable="false">

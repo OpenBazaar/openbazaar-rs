@@ -249,6 +249,9 @@ export async function newXmrSubaddress(): Promise<XmrSubaddress> {
 export async function fetchXmrStores(): Promise<XmrStores> {
   return parseXmrStores(await paired('/xmr/stores'))
 }
+export async function enableMonero(daemons: string): Promise<XmrBackend> {
+  return parseXmrBackend(await send('/xmr/enable', { daemons }))
+}
 export async function setStoreAcceptsXmr(seller: string, accept: boolean): Promise<XmrStores> {
   return parseXmrStores(await send('/xmr/stores', { seller, accept }, 'PUT'))
 }

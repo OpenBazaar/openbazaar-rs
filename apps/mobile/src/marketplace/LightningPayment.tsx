@@ -16,7 +16,7 @@ import { RailMark } from './RailMark'
 import { Dialog, FormError, Passphrase, UnlockDialog, useSubmit } from './WalletLock'
 
 /** Payment of one order on the Lightning rail: the invoice, and paying it from this node. */
-export function LightningOrderPayment({ id, initial, invoice }: { id: string; initial: BuyerOrder | SellerOrder; invoice: LnInvoice }) {
+export function LightningOrderPayment({ id, initial, invoice, hideStatus = false }: { id: string; initial: BuyerOrder | SellerOrder; invoice: LnInvoice; hideStatus?: boolean }) {
   const { lock } = usePairedNode()
   const resource = useNodeResource(() => fetchOrder(id), 5000, true, o => o.status === 'Paid')
   const order = resource.data ?? initial
@@ -68,7 +68,7 @@ export function LightningOrderPayment({ id, initial, invoice }: { id: string; in
   return (
     <section className='ob-order-payment' aria-label={`Lightning payment for ${order.seller}`}>
       <div className='ob-payment-progress' aria-live='polite'>
-        <strong>{order.status}</strong>
+        {(!hideStatus || order.status !== initial.status) && <strong>{order.status}</strong>}
         <span className='ob-rail'><RailMark rail='lightning' size={16} /> {ln.amountSats.toLocaleString()} sats over Lightning</span>
         {paid && ln.lspFeeSats != null && ln.local && <span>The LSP kept {ln.lspFeeSats.toLocaleString()} sats to open the channel</span>}
       </div>
