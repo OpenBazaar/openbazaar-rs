@@ -153,7 +153,7 @@ fn fetch_coinbase(
         return Err(None);
     }
     let agent = egress
-        .ureq_agent(Duration::from_secs(3), Duration::from_secs(4))
+        .ureq_agent_isolated(Duration::from_secs(3), Duration::from_secs(4))
         .map_err(|_| None)?;
     let body = agent
         .get(source)

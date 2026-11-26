@@ -90,11 +90,30 @@ impl Egress {
     }
 
     /// A ureq agent with these timeouts that goes through the proxy, if any.
+    /// All requests through this agent share the same SOCKS credentials and
+    /// therefore the same Tor circuit. Use [`Self::ureq_agent_isolated`] when
+    /// successive requests should use different circuits.
     pub(crate) fn ureq_agent(&self, connect: Duration, read: Duration) -> Result<ureq::Agent, String> {
         let mut builder = ureq::AgentBuilder::new().timeout_connect(connect).timeout_read(read).redirects(0);
         if let Some(proxy) = &self.proxy {
             // ureq sends host names to a socks5:// proxy unresolved.
             let address = proxy.replacen("socks5h://", "socks5://", 1);
+            builder = builder.proxy(ureq::Proxy::new(address).map_err(|err| err.to_string())?);
+        }
+        Ok(builder.build())
+    }
+
+    /// Like [`Self::ureq_agent`] but with a unique SOCKS username so Tor
+    /// puts this request on its own circuit. Use for rate and price fetches
+    /// that should not share a circuit with prior requests.
+    pub(crate) fn ureq_agent_isolated(&self, connect: Duration, read: Duration) -> Result<ureq::Agent, String> {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let mut builder = ureq::AgentBuilder::new().timeout_connect(connect).timeout_read(read).redirects(0);
+        if let Some(proxy) = &self.proxy {
+            let authority = proxy.trim_start_matches("socks5h://");
+            let session = std::process::id();
+            let stream = NEXT.fetch_add(1, Ordering::Relaxed);
+            let address = format!("socks5://ob-rate-{session}-{stream}:x@{authority}");
             builder = builder.proxy(ureq::Proxy::new(address).map_err(|err| err.to_string())?);
         }
         Ok(builder.build())
