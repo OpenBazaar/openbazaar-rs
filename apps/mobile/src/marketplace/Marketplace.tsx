@@ -31,6 +31,9 @@ import { LightningSettings } from "./LightningSettings";
 import { ZcashSettings } from "./ZcashSettings";
 import { MoneroSettings } from "./MoneroSettings";
 import { TorSettings } from "./TorStatus";
+import { UpdateBanner } from "./UpdateBanner";
+import { UpdateSettings } from "./UpdateSettings";
+import { useDesktopUpdater } from "./useDesktopUpdater";
 import { fetchNetwork } from "../nodeWallet";
 import { LightningOrderPayment } from "./LightningPayment";
 import { priceDrops, rememberPrices, savedHashesAfterRefresh, sameWatches, signedPrice, type WatchedListing } from "../priceNotices";
@@ -114,7 +117,7 @@ function btc(sats: number) { return `${(sats / 1e8).toFixed(8).replace(/0+$/, ""
 export function Money({ sats, rates, currency, large = false }: { sats: number; rates: RateTable; currency: CurrencyCode; large?: boolean }) { const estimate = fiat(sats, rates, currency); return <div className={`ob-money ${large ? "ob-money-large" : ""}`}><span>{sats.toLocaleString("en-US")} <small>sats</small></span>{estimate && <span className="ob-estimate" title={`Estimated value in ${currency}`}>≈ {estimate}</span>}</div>; }
 function Brand({ theme }: { theme: "light" | "dark" }) { return <span className="ob-brand"><span className="ob-brand-icon"><img src={theme === "light" ? "brand/ob-market-logo-light.png" : "brand/ob-market-logo-256.png"} alt="" width={42} height={42}/></span><span>OpenBazaar<span className="ob-brand-dot">.</span></span></span>; }
 
-export type Section = "discover" | "saved" | "orders" | "bag" | "addresses" | "safety" | "wallet" | "store-labels" | "home-node" | "browsers" | "lightning" | "zcash" | "monero" | "tor" | "follows" | "classifieds" | StoreSection;
+export type Section = "discover" | "saved" | "orders" | "bag" | "addresses" | "safety" | "wallet" | "store-labels" | "home-node" | "browsers" | "lightning" | "zcash" | "monero" | "tor" | "updates" | "follows" | "classifieds" | StoreSection;
 type StoreSection = "storefront" | "listings" | "coupons" | "sales" | "store";
 const STORE_SECTIONS: readonly Section[] = ["storefront", "listings", "coupons", "sales", "store"];
 type ToastNotice = string | { message: string; action?: { label: string; onClick: () => void } };
@@ -153,6 +156,7 @@ export default function Marketplace() {
   const guest = !!direct || publicMode || !hasNodeHost();
   const nodeAvailable = !guest;
   const build = useBuildInfo(nodeAvailable);
+  const updater = useDesktopUpdater();
   const profile = useNodeResource(fetchProfile, 0, nodeAvailable);
   const directory = useNodeResource(fetchDirectory, 15000, nodeAvailable);
   const [openedShop, setOpenedShop] = useState<{ id: string; listings: ListingHeader[] } | null>(null);
@@ -478,9 +482,9 @@ export default function Marketplace() {
     catch (e) { setLoadError(e instanceof Error ? e.message : "Your node could not be reached."); }
   }
   const followable = (storeId: string) => !!profile.data && storeId !== profile.data.storeKey;
-  const activeTitle = section === "storefront" ? "Your storefront" : section === "listings" ? "Your listings" : section === "coupons" ? "Coupons" : section === "sales" ? "Sales" : section === "store" ? "Store settings" : section === "follows" ? "Followed stores" : section === "classifieds" ? "Classifieds" : section === "saved" ? "Saved goods" : section === "orders" ? "Your orders" : section === "bag" ? "Your bag" : section === "addresses" ? "Your addresses" : section === "wallet" ? "Wallet" : section === "safety" ? "Content filters" : section === "store-labels" ? "Store labels" : section === "home-node" ? "Home node" : section === "browsers" ? "Browsers" : section === "lightning" ? "Lightning" : section === "zcash" ? "Zcash" : section === "monero" ? "Monero" : section === "tor" ? "Tor" : "Products";
+  const activeTitle = section === "storefront" ? "Your storefront" : section === "listings" ? "Your listings" : section === "coupons" ? "Coupons" : section === "sales" ? "Sales" : section === "store" ? "Store settings" : section === "follows" ? "Followed stores" : section === "classifieds" ? "Classifieds" : section === "saved" ? "Saved goods" : section === "orders" ? "Your orders" : section === "bag" ? "Your bag" : section === "addresses" ? "Your addresses" : section === "wallet" ? "Wallet" : section === "safety" ? "Content filters" : section === "store-labels" ? "Store labels" : section === "home-node" ? "Home node" : section === "browsers" ? "Browsers" : section === "lightning" ? "Lightning" : section === "zcash" ? "Zcash" : section === "monero" ? "Monero" : section === "tor" ? "Tor" : section === "updates" ? "App updates" : "Products";
   const navSection: Section = page.name === "receipt" || page.name === "order" ? "orders" : page.name === "sale" ? "sales" : section;
-  const inSettings = ["safety", "addresses", "store-labels", "home-node", "browsers", "lightning", "zcash", "monero", "tor", "follows"].includes(section);
+  const inSettings = ["safety", "addresses", "store-labels", "home-node", "browsers", "lightning", "zcash", "monero", "tor", "updates", "follows"].includes(section);
   const inStore = STORE_SECTIONS.includes(navSection);
   const merchantWorkspace = inStore && (page.name === "browse" || page.name === "sale");
   const browsing = page.name === "browse" && (section === "discover" || (section === "saved" && saved.length > 0));
@@ -492,7 +496,7 @@ export default function Marketplace() {
     ? <Orders {...money} selectedOrderId={page.name === "order" ? page.orderId : null} unreadByOrder={messageAlerts.unreadOrdersById} onSelectOrder={openOrder} onBack={() => shopHistory.backToParent()} onBrowse={() => navigate("discover")}/>
     : !guest && (page.name === "sale" || (section === "sales" && page.name === "browse"))
       ? storeView()
-      : page.name !== "browse" ? null : section === "saved" && saved.length === 0 ? <section><PageHeading title="Saved goods"/><Empty illustration="saved" icon="heart" title="No saved products" text="Save products using the heart button."><button className="ob-primary" onClick={() => navigate("discover")}>Browse products <Icon name="arrow" size={17}/></button></Empty></section> : section === "safety" ? <SafetySettingsPanel settings={safety} onChange={setSafety} labelSources={nodeAvailable ? <LabelersPanel state={labelers} onState={setLabelerState}/> : undefined}/> : guest ? storeView() : section === "wallet" ? <WalletPage {...money} onOrders={() => navigate("orders")} onSales={seller ? () => navigate("sales") : undefined} onManage={rail => navigate(rail)} onTor={() => navigate("tor")}/> : section === "lightning" ? <LightningSettings/> : section === "zcash" ? <ZcashSettings/> : section === "monero" ? <MoneroSettings/> : section === "tor" ? <TorSettings/> : section === "home-node" ? <div className="ob-settings-page"><header className="ob-settings-heading"><h1>Home node</h1><p>Run your store on an always-on computer and manage it from anywhere over Tor.</p></header><HomeNodePanel/></div> : section === "browsers" ? <BrowsersSettings/> : section === "addresses" ? <Addresses/> : section === "follows" ? <Follows onChanged={message => { setToast(message); void load(); }} onOpen={id => void openStore(id)}/> : section === "classifieds" ? <Classifieds/> : storeView();
+      : page.name !== "browse" ? null : section === "saved" && saved.length === 0 ? <section><PageHeading title="Saved goods"/><Empty illustration="saved" icon="heart" title="No saved products" text="Save products using the heart button."><button className="ob-primary" onClick={() => navigate("discover")}>Browse products <Icon name="arrow" size={17}/></button></Empty></section> : section === "safety" ? <SafetySettingsPanel settings={safety} onChange={setSafety} labelSources={nodeAvailable ? <LabelersPanel state={labelers} onState={setLabelerState}/> : undefined}/> : guest ? storeView() : section === "wallet" ? <WalletPage {...money} onOrders={() => navigate("orders")} onSales={seller ? () => navigate("sales") : undefined} onManage={rail => navigate(rail)} onTor={() => navigate("tor")}/> : section === "lightning" ? <LightningSettings/> : section === "zcash" ? <ZcashSettings/> : section === "monero" ? <MoneroSettings/> : section === "tor" ? <TorSettings/> : section === "updates" ? <UpdateSettings updater={updater}/> : section === "home-node" ? <div className="ob-settings-page"><header className="ob-settings-heading"><h1>Home node</h1><p>Run your store on an always-on computer and manage it from anywhere over Tor.</p></header><HomeNodePanel/></div> : section === "browsers" ? <BrowsersSettings/> : section === "addresses" ? <Addresses/> : section === "follows" ? <Follows onChanged={message => { setToast(message); void load(); }} onOpen={id => void openStore(id)}/> : section === "classifieds" ? <Classifieds/> : storeView();
   function storeView() {
     if (guest && inStore) return <SellGate/>;
     const own = profile.data;
@@ -555,6 +559,7 @@ export default function Marketplace() {
         currency={currency}
         onCurrency={c => { setCurrency(c); try { localStorage.setItem("ob-shop-currency", c); } catch {} }}
         build={build}
+        updater={updater}
         onCopied={setToast}
         unreadOrders={messageAlerts.unreadOrders}
       />
@@ -596,6 +601,7 @@ export default function Marketplace() {
       {direct ? <DirectBanner url={direct}/> : null}
       {nodeAvailable && <PairingBanner/>}
       <BuildMismatchWarning build={build}/>
+      {section !== "updates" && <UpdateBanner updater={updater}/>}
       <main className="ob-content" id="ob-content" ref={content}>
         <div className="ob-content-inner">
           {browsing && <div className="ob-discovery-bar"><div className="ob-search"><Icon name="search" size={18}/><input ref={searchRef} aria-label="Search stores and listings" placeholder="Search marketplace" value={query} onChange={e => { setQuery(e.target.value); setPage({ name: "browse" }); }}/>{query ? <button className="ob-icon-button" aria-label="Clear search" onClick={() => setQuery("")}><Icon name="close" size={16}/></button> : <kbd>⌘ K</kbd>}</div></div>}

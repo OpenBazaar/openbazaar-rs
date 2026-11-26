@@ -535,7 +535,8 @@ svg {
   inset: 0;
   width: 100%;
   height: 100%;
-  object-fit: cover;
+  object-fit: contain;
+  object-position: center;
   display: block;
   transition: transform .5s cubic-bezier(.2,.65,.3,1);
 }
@@ -816,7 +817,9 @@ svg {
   display: block;
   width: 100%;
   height: 100%;
-  object-fit: cover;
+  object-fit: contain;
+  object-position: center;
+  background: var(--ob-subtle);
   border-radius: 3px;
 }
 .ob-detail-copy {
@@ -6089,6 +6092,42 @@ body:has(.ob-sales-detail-dialog[open]) .ob-content { overflow:hidden; }
   }
 }
 
-
-
-
+/* In-app updates: the strip under the top bar, the Settings card, and the sidebar pill. */
+.ob-update-banner { flex-shrink: 0; display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 12px 24px; padding: 12px var(--ob-gutter); border-bottom: 1px solid var(--ob-line); background: var(--ob-subtle); color: var(--ob-secondary); font-size: 13px; line-height: 1.5; }
+.ob-update-banner.is-error { color: #7a2e1d; background: #fbebe6; border-bottom-color: #efcfc4; }
+:root[data-ob-theme="dark"] .ob-update-banner.is-error { color: #f2b9a8; background: #2a1915; border-bottom-color: #4a2a22; }
+.ob-update-copy { flex: 1 1 240px; min-width: 0; display: grid; gap: 6px; }
+.ob-update-copy strong { color: var(--ob-ink); font-size: 14px; font-weight: 500; overflow-wrap: anywhere; }
+.ob-update-banner.is-error .ob-update-copy strong { color: inherit; }
+.ob-update-copy p,.ob-update-notes p { margin: 0; overflow-wrap: anywhere; }
+.ob-update-notes summary { width: fit-content; cursor: pointer; color: var(--ob-link); font-size: 13px; }
+.ob-update-notes p { max-height: 220px; margin-top: 8px; overflow: auto; white-space: pre-wrap; font-size: 13px; line-height: 1.6; color: var(--ob-secondary); }
+.ob-update-bar { position: relative; height: 6px; overflow: hidden; border-radius: 999px; background: var(--ob-line); }
+.ob-update-bar>span { display: block; height: 100%; border-radius: inherit; background: var(--ob-brand); transition: width .25s linear; }
+.ob-update-bar.is-indeterminate>span { width: 40%; animation: ob-update-slide 1.3s ease-in-out infinite; }
+@keyframes ob-update-slide { from { transform: translateX(-100%); } to { transform: translateX(250%); } }
+.ob-update-detail { display: flex; flex-wrap: wrap; gap: 2px 12px; font-size: 12px; font-variant-numeric: tabular-nums; color: var(--ob-muted); }
+.ob-update-detail span:first-child:not(:last-child) { color: var(--ob-ink); font-weight: 500; }
+.ob-update-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.ob-app .ob-update-actions :is(.ob-primary,.ob-secondary) { min-height: 36px; padding: 6px 14px; font-size: 13px; }
+.ob-update-problem { flex-basis: 100%; margin: 0; color: #a25640; font-size: 12px; }
+:root[data-ob-theme="dark"] .ob-update-problem { color: #ffc2ba; }
+.ob-update-summary { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; font-size: 14px; }
+.ob-update-summary strong { font-weight: 500; overflow-wrap: anywhere; }
+.ob-update-progress { display: grid; gap: 8px; margin-bottom: 16px; }
+.ob-update-warning { margin: 0 0 16px; padding: 12px 14px; border: 1px solid var(--ob-line); border-radius: 8px; background: var(--ob-subtle); }
+.ob-update-card .ob-update-notes { margin-bottom: 16px; }
+.ob-update-card .ob-update-actions { margin-bottom: 18px; }
+.ob-update-auto { margin-bottom: 12px; }
+.ob-update-pill { display: flex; align-items: center; gap: 8px; width: 100%; padding: 0 12px 12px; border: 0; color: var(--ob-secondary); font: inherit; font-size: 12px; line-height: 1.35; text-align: left; font-variant-numeric: tabular-nums; }
+.ob-update-pill strong { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ob-update-pill:hover strong { text-decoration: underline; }
+.ob-sidebar.is-collapsed .ob-update-pill { justify-content: center; padding-inline: 0; }
+.ob-sidebar.is-collapsed .ob-update-pill strong { display: none; }
+@media (prefers-reduced-motion: reduce) {
+  .ob-update-bar>span { transition: none; }
+  .ob-update-bar.is-indeterminate>span { width: 100%; opacity: .5; animation: none; }
+}
+@media (max-width: 719px) {
+  .ob-update-actions { width: 100%; }
+}

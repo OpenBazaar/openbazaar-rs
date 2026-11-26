@@ -21,6 +21,9 @@ tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-single-instance = "2"
 tauri-plugin-updater = "2"
+# The update status is sent to the page as JSON, and a download races a cancel signal.
+serde = { version = "1", features = ["derive"] }
+tokio = { version = "1", features = ["sync", "macros"] }
 # tauri::generate_context! embeds the `plugins` config with serde_json.
 serde_json = "1"
 # The updater's HTTP client, with SOCKS so update checks go through the node's Tor.
