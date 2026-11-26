@@ -50,8 +50,14 @@ pub(crate) fn response(
         return Some(match parsed {
             Some(value) => {
                 let mut taken = 0usize;
-                for item in value["classifieds"].as_array().into_iter().flatten().take(500) {
+                // Accept at most 50 classifieds per request (down from 500)
+                // and at most 4 KiB per encoded classified, to bound the CPU
+                // and disk cost of a single POST (#246).
+                for item in value["classifieds"].as_array().into_iter().flatten().take(50) {
                     if let Some(text) = item.as_str() {
+                        if text.len() > 8 * 1024 {
+                            continue;
+                        }
                         if let Ok(bytes) = crate::escrow_mail::unhex(text) {
                             if node.accept_classified(&bytes).unwrap_or(false) {
                                 taken += 1;
