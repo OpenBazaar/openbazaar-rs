@@ -375,4 +375,17 @@ fn a_remembered_device_unlocks_without_the_passphrase_but_spends_still_step_up()
     assert!(!dir.0.join("wallet.remember").exists());
 }
 
+#[test]
+fn file_remember_is_sealed_not_plaintext() {
+    let (dir, _chain, node) = testnet();
+    let body = json!({"passphrase": PASSPHRASE, "rememberDevice": true}).to_string();
+    request(&node, "PUT", "/lock/settings", &body);
+    let path = dir.0.join("wallet.remember");
+    assert!(path.exists());
+    let bytes = std::fs::read(&path).unwrap();
+    // A sealed vault file starts with the OBV1 magic, not raw key bytes.
+    assert!(bytes.starts_with(b"OBV1"), "wallet.remember should be vault-sealed");
+    assert!(bytes.len() > 32, "sealed file should be larger than a raw 32-byte key");
+}
+
 const _: () = assert!(SPEND_COST.memory_kib >= 256 * 1024 && SPEND_COST.passes >= 3 && SPEND_COST.lanes == 1);

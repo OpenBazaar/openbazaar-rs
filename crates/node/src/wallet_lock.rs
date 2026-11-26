@@ -505,7 +505,7 @@ impl WalletLock {
                     account
                 }
                 Remember::File => {
-                    replace_file(&self.dir.join(REMEMBER_FILE), &key[..])?;
+                    self.vault.write_sealed(&self.dir.join(REMEMBER_FILE), &key[..])?;
                     "file".to_string()
                 }
                 Remember::Unavailable => {
@@ -524,7 +524,8 @@ impl WalletLock {
         if account == "file" {
             let path = self.dir.join(REMEMBER_FILE);
             if path.exists() {
-                std::fs::write(&path, [0u8; 32])
+                // Overwrite the sealed contents before deleting.
+                std::fs::write(&path, [0u8; 64])
                     .and_then(|()| std::fs::remove_file(&path))
                     .map_err(|err| LockError::Failed(err.to_string()))?;
             }
@@ -546,7 +547,9 @@ impl WalletLock {
             .clone()
             .ok_or_else(|| LockError::Invalid("This device does not remember the wallet.".into()))?;
         let key = if account == "file" {
-            let bytes = std::fs::read(self.dir.join(REMEMBER_FILE)).map_err(|err| LockError::Failed(err.to_string()))?;
+            let bytes = self.vault.read_sealed(&self.dir.join(REMEMBER_FILE))
+                .map_err(|err| LockError::Failed(err.to_string()))?
+                .ok_or_else(|| LockError::Failed("wallet.remember is missing".into()))?;
             <[u8; 32]>::try_from(bytes.as_slice()).map_err(|_| LockError::Failed("wallet.remember is damaged".into()))?
         } else {
             OsKeyStore
