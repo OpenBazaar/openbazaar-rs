@@ -44,7 +44,9 @@ use crate::{BackendStatus, CommitmentTrees, ZecChain, ZecNetwork};
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(180);
 /// A connection older than this is replaced, on a new Tor circuit.
-const RENEW: Duration = Duration::from_secs(10 * 60);
+/// Shorter than the original 10 minutes to limit the window in which
+/// tip/block/tree queries share a circuit (#257).
+const RENEW: Duration = Duration::from_secs(2 * 60);
 /// lightwallet-protocol 0.5.0 (2026-06-30) added Ironwood actions to compact blocks.
 const MIN_PROTOCOL: (u64, u64, u64) = (0, 5, 0);
 
