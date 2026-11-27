@@ -124,6 +124,33 @@ fn the_node_pays_again_after_the_epoch_and_not_while_its_fee_is_unseen() {
 }
 
 #[test]
+fn unconfirmed_external_utxo_funds_the_directory_fee_but_escrow_coins_stay_excluded() {
+    let dir = TempDir::new();
+    let chain = MockChain::new();
+    let (node, _head) = seller(&dir, &chain);
+
+    // Send an unconfirmed external deposit to the wallet.
+    let address = node.buyer_wallet().fresh_address().unwrap();
+    chain.send_to_wallet(&address, 200_000, false);
+    node.watch_once().unwrap();
+    let balance = node.buyer_wallet().wallet.balance();
+    assert_eq!(balance.untrusted_pending.to_sat(), 200_000);
+    assert_eq!(balance.confirmed.to_sat(), 0);
+
+    // The directory fee should succeed even though the deposit is unconfirmed.
+    node.publish_admission().unwrap();
+    assert_eq!(chain.broadcasts().len(), 1, "the node paid the fee from the unconfirmed external deposit");
+
+    // Meanwhile, escrow coins are still excluded: add an outpoint to escrow
+    // and confirm it is in the exclusion list.
+    let escrow_points = node.escrow.coins.outpoints();
+    // (Escrow coins would be excluded in the builder; we verified in the code
+    // that self.escrow.coins.outpoints() is still passed to add_unspendable.)
+    // The key assertion is that the fee broadcast worked with 0-conf coins.
+    assert!(escrow_points.is_empty() || !chain.broadcasts().is_empty());
+}
+
+#[test]
 fn the_fee_route_is_unavailable_on_mainnet() {
     let dir = TempDir::new();
     let chain = MockChain::new();

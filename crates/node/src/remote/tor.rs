@@ -53,7 +53,7 @@ impl Tor {
 
     pub(crate) fn start(data_dir: &Path) -> Result<Self, String> {
         let runtime = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(2)
+            .worker_threads(4)
             .thread_name("ob-tor")
             .enable_all()
             .build()
