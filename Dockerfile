@@ -24,12 +24,11 @@ COPY apps/mobile ./
 RUN npm run build
 
 FROM debian:bookworm-slim AS base
-# C tor sidecar: tor is started by vendor.sh / moderator.sh before ob-node.
-RUN apt-get update \
-  && apt-get install -y --no-install-recommends ca-certificates libssl3 util-linux tor \
-  && rm -rf /var/lib/apt/lists/* \
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates libssl3 util-linux && rm -rf /var/lib/apt/lists/* \
   && useradd --system --uid 10001 --user-group --home-dir /data --shell /usr/sbin/nologin openbazaar \
   && install -d -m 700 -o openbazaar -g openbazaar /data
+# C tor sidecar: separate layer so Railway's Docker cache does not skip it.
+RUN apt-get update && apt-get install -y --no-install-recommends tor && rm -rf /var/lib/apt/lists/*
 # Do not declare VOLUME: Railway rejects the keyword and asks for a Railway
 # Volume mounted at /data instead. packaging/docker/compose.yml still mounts
 # the named volume there; an image without VOLUME keeps that data.
