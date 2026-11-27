@@ -264,10 +264,12 @@ impl Node {
         let fee_rate = self.pay_fee_rate().map_err(|err| format!("{err:?}"))?;
         let mut psbt = {
             let mut wallet = self.buyer_wallet();
-            let untrusted = wallet.untrusted_pending();
             let mut builder = wallet.wallet.build_tx();
             builder.add_recipient(script.to_owned(), Amount::from_sat(sats)).fee_rate(fee_rate);
-            for outpoint in untrusted.into_iter().chain(self.escrow.coins.outpoints()) {
+            // The directory fee may spend unconfirmed external receives
+            // (untrusted_pending) so a fresh deposit funds the fee without
+            // waiting for a confirmation. Escrow coins are still excluded.
+            for outpoint in self.escrow.coins.outpoints() {
                 builder.add_unspendable(outpoint);
             }
             let psbt = builder.finish().map_err(|err| format!("the wallet cannot pay the directory fee: {err}"))?;

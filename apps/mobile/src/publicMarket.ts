@@ -204,12 +204,59 @@ export type LoadedMarket = {
   images: { url: string; hashes: string[] }[];
 };
 
+/**
+ * Try `GET /public/catalog` on a moderator/intro node. Returns the signed
+ * store bodies when the endpoint exists, or `null` so the caller falls back
+ * to per-store fetching. Every record is verified client-side — zero extra
+ * trust in the moderator.
+ */
+async function readPublicCatalog(base: string, fetcher: Getter): Promise<unknown[] | null> {
+  try {
+    const response = await fetcher(`${base}/public/catalog`, publicGet());
+    if (!response.ok) return null;
+    const body = await readJson(response, 8 * 1024 * 1024);
+    if (!body || typeof body !== "object") return null;
+    const stores = (body as { stores?: unknown }).stores;
+    if (!Array.isArray(stores)) return null;
+    return stores;
+  } catch {
+    return null;
+  }
+}
+
 /** The market for this page. An https page does not fetch onion catalogs. */
 export async function loadPublicMarket(loc: PageAddress, fetcher: Getter = globalThis.fetch): Promise<LoadedMarket> {
   const onion = await saleOnion(loc, fetcher);
   const notice = marketNotice(loc.protocol, loc.hostname, onion);
   if (notice) return { catalog: emptyCatalog(), notice: notice.sentence, images: [] };
   const bases = [`http://${loc.hostname.toLowerCase()}`, ...INTRODUCTIONS.map((host) => `http://${host}`)];
+
+  // Fast path: one request to the moderator for every admitted store's
+  // signed records. Falls back gracefully when the endpoint is unavailable
+  // (e.g. an older node that does not serve /public/catalog).
+  for (const base of bases) {
+    const entries = await readPublicCatalog(base, fetcher);
+    if (entries && entries.length > 0) {
+      const bodies: unknown[] = [];
+      const images: LoadedMarket["images"] = [];
+      for (const entry of entries) {
+        try {
+          const catalog = catalogFromPublic(entry);
+          const store = catalog.stores[0];
+          if (!store) continue;
+          bodies.push(entry);
+          images.push({ url: base, hashes: catalog.listings.flatMap((listing) => listing.images) });
+        } catch {
+          // A single bad entry does not break the whole catalog.
+        }
+      }
+      if (bodies.length > 0) {
+        return { catalog: aggregatePublicStores(bodies), notice: null, images };
+      }
+    }
+  }
+
+  // Slow path: admission index → per-store fetch (N onion requests).
   let directory: { base: string; ids: string[] } | null = null;
   for (const base of bases) {
     const ids = await readAdmission(base, fetcher);

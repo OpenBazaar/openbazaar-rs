@@ -26,7 +26,7 @@ use crate::vault::Vault;
 use crate::{Error, Node};
 
 const FILE: &str = "replicas.obv";
-const FETCH_TIMEOUT: Duration = Duration::from_secs(5);
+const FETCH_TIMEOUT: Duration = Duration::from_secs(20);
 const MAX_FOLLOWS: usize = 64;
 const MAX_LISTINGS: usize = 500;
 /// The whole `GET /public/store` answer, hex-encoded records included.

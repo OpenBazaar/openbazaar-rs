@@ -139,6 +139,17 @@ test("buying and selling stay on the node's download", () => {
   ]).map((row) => row.storeId), ["aa".repeat(32)]);
 });
 
+test("aggregatePublicStores works with /public/catalog entries that each have store + listings", () => {
+  const { stores, listings } = raw();
+  // Simulate the shape /public/catalog returns: an array of { store, listings }
+  const entries = [storeBody("Marlow Goods", listings, null), storeBody("Hale Paper", listings, null)];
+  const market = aggregatePublicStores(entries);
+  assert.ok(market.stores.length >= 2);
+  assert.ok(market.listings.length > 0);
+  assert.ok(market.stores.some((s) => s.name === "Marlow Goods"));
+  assert.ok(market.stores.some((s) => s.name === "Hale Paper"));
+});
+
 test("an admission snapshot keeps only store ids the directory key signed", () => {
   const secret = sha256(new TextEncoder().encode("admission-test"));
   const key = schnorr.getPublicKey(secret);
