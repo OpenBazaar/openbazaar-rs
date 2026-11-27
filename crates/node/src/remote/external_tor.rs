@@ -64,51 +64,67 @@ pub(crate) fn expanded_key_to_base64(key: &[u8; 64]) -> String {
 /// keystore.  Returns `None` when the keystore or the key file does not
 /// exist, or the format is not recognised.
 ///
-/// Arti stores expanded keys in a PEM envelope:
-/// ```text
-/// -----BEGIN EXPANDED ED25519 SECRET KEY-----
-/// <base64 of 64 raw bytes>
-/// -----END EXPANDED ED25519 SECRET KEY-----
-/// ```
+/// Arti stores the HS identity key as an OpenSSH private key with key type
+/// `ed25519-expanded@spec.torproject.org`.  The file is named
+/// `ks_hs_id.ed25519_expanded_private` inside `hss/{nickname}/`.
+///
+/// The keystore lives under `{data_dir}/{network}/tor/state/keystore/`
+/// (the node's `--data-dir` / network subdirectory / tor state).
 pub(crate) fn read_arti_hs_key(data_dir: &Path, nickname: &str) -> Option<[u8; 64]> {
-    // Arti's native keystore path.
-    let keystore = data_dir.join("tor/state/keystore");
-    let candidates = [
-        keystore.join(format!("hss/{nickname}/hs_id")),
-        keystore.join(format!("hss/{nickname}/KP_hs_id")),
-        keystore.join(format!("hs/{nickname}/hs_id")),
-    ];
-    for path in &candidates {
-        if let Some(key) = try_read_pem_expanded(path) {
-            return Some(key);
+    let filename = "ks_hs_id.ed25519_expanded_private";
+    // Try every network subdirectory (testnet4, mainnet) and both the
+    // `--remote` Tor state (`tor/`) and the `--onion` Tor state (`tor-client/`).
+    for network in ["testnet4", "mainnet"] {
+        for tor_dir in ["tor", "tor-client"] {
+            let path = data_dir
+                .join(network)
+                .join(tor_dir)
+                .join("state/keystore/hss")
+                .join(nickname)
+                .join(filename);
+            if let Some(key) = try_read_openssh_expanded(&path) {
+                return Some(key);
+            }
         }
     }
-    // Also try every file in the nickname directory.
-    for dir_prefix in ["hss", "hs"] {
-        let dir = keystore.join(dir_prefix).join(nickname);
-        if let Ok(entries) = std::fs::read_dir(&dir) {
-            for entry in entries.flatten() {
-                if let Some(key) = try_read_pem_expanded(&entry.path()) {
-                    return Some(key);
-                }
-            }
+    // Also try without a network prefix (some layouts put tor/ directly under data_dir).
+    for tor_dir in ["tor", "tor-client"] {
+        let path = data_dir
+            .join(tor_dir)
+            .join("state/keystore/hss")
+            .join(nickname)
+            .join(filename);
+        if let Some(key) = try_read_openssh_expanded(&path) {
+            return Some(key);
         }
     }
     None
 }
 
-fn try_read_pem_expanded(path: &Path) -> Option<[u8; 64]> {
+/// Parse an OpenSSH private key file and extract the 64-byte expanded
+/// ed25519 secret key.
+///
+/// Format (unencrypted, single key):
+/// ```text
+/// -----BEGIN OPENSSH PRIVATE KEY-----
+/// <base64 of binary blob>
+/// -----END OPENSSH PRIVATE KEY-----
+/// ```
+/// Binary blob: `openssh-key-v1\0` magic, then length-prefixed strings
+/// for cipher, kdf, kdfoptions, nkeys, public key blob, private section.
+/// Inside the private section: checkint×2, keytype string, pubkey string,
+/// secret string (64 bytes for ed25519-expanded), comment, padding.
+fn try_read_openssh_expanded(path: &Path) -> Option<[u8; 64]> {
     let text = std::fs::read_to_string(path).ok()?;
-    // Look for the PEM body between BEGIN/END markers.
-    let mut in_block = false;
     let mut b64 = String::new();
+    let mut in_block = false;
     for line in text.lines() {
         let trimmed = line.trim();
-        if trimmed.contains("BEGIN") && trimmed.contains("ED25519") {
+        if trimmed.contains("BEGIN OPENSSH PRIVATE KEY") {
             in_block = true;
             continue;
         }
-        if trimmed.contains("END") {
+        if trimmed.contains("END OPENSSH PRIVATE KEY") {
             break;
         }
         if in_block {
@@ -116,23 +132,77 @@ fn try_read_pem_expanded(path: &Path) -> Option<[u8; 64]> {
         }
     }
     if b64.is_empty() {
-        // Maybe raw binary (64 bytes)?
-        let raw = std::fs::read(path).ok()?;
-        if raw.len() == 64 {
-            let mut key = [0u8; 64];
-            key.copy_from_slice(&raw);
-            return Some(key);
-        }
         return None;
     }
-    let bytes = BASE64.decode(b64.as_bytes()).ok()?;
-    if bytes.len() == 64 {
+    let blob = BASE64.decode(b64.as_bytes()).ok()?;
+    parse_openssh_expanded_key(&blob)
+}
+
+/// Extract the 64-byte expanded ed25519 secret from a decoded OpenSSH blob.
+fn parse_openssh_expanded_key(blob: &[u8]) -> Option<[u8; 64]> {
+    let magic = b"openssh-key-v1\0";
+    if !blob.starts_with(magic) {
+        return None;
+    }
+    let mut off = magic.len();
+
+    // Skip cipher, kdf, kdfoptions.
+    for _ in 0..3 {
+        let (_, next) = read_openssh_string(blob, off)?;
+        off = next;
+    }
+    // nkeys (u32 big-endian).
+    if off + 4 > blob.len() {
+        return None;
+    }
+    let nkeys = u32::from_be_bytes([blob[off], blob[off + 1], blob[off + 2], blob[off + 3]]);
+    off += 4;
+    if nkeys == 0 {
+        return None;
+    }
+    // Skip public key blob.
+    let (_, next) = read_openssh_string(blob, off)?;
+    off = next;
+    // Private section blob.
+    let (priv_blob, _) = read_openssh_string(blob, off)?;
+    // Inside the private section: skip checkint×2 (8 bytes).
+    if priv_blob.len() < 8 {
+        return None;
+    }
+    let mut poff = 8usize;
+    // Skip keytype string.
+    let (_, next) = read_openssh_string(priv_blob, poff)?;
+    poff = next;
+    // Skip public key string.
+    let (_, next) = read_openssh_string(priv_blob, poff)?;
+    poff = next;
+    // Secret key string — should be 64 bytes for expanded ed25519.
+    let (secret, _) = read_openssh_string(priv_blob, poff)?;
+    if secret.len() == 64 {
         let mut key = [0u8; 64];
-        key.copy_from_slice(&bytes);
+        key.copy_from_slice(secret);
         Some(key)
     } else {
         None
     }
+}
+
+/// Read one OpenSSH length-prefixed string: 4-byte big-endian length, then data.
+fn read_openssh_string(data: &[u8], offset: usize) -> Option<(&[u8], usize)> {
+    if offset + 4 > data.len() {
+        return None;
+    }
+    let len = u32::from_be_bytes([
+        data[offset],
+        data[offset + 1],
+        data[offset + 2],
+        data[offset + 3],
+    ]) as usize;
+    let end = offset + 4 + len;
+    if end > data.len() {
+        return None;
+    }
+    Some((&data[offset + 4..end], end))
 }
 
 /// Save a 64-byte expanded key so it can be read back on the next start.
@@ -691,18 +761,29 @@ mod tests {
     }
 
     #[test]
-    fn pem_parsing() {
-        // 64 zero bytes in base64 is 88 chars (with padding).
-        let b64 = BASE64.encode(&[0u8; 64]);
-        let pem = format!(
-            "-----BEGIN EXPANDED ED25519 SECRET KEY-----\n{b64}\n-----END EXPANDED ED25519 SECRET KEY-----\n"
-        );
-        let dir = std::env::temp_dir().join(format!("ob-pem-test-{}", std::process::id()));
+    fn openssh_key_parsing() {
+        // This is the actual OpenSSH format Arti writes for
+        // ed25519-expanded@spec.torproject.org keys.
+        let openssh = "-----BEGIN OPENSSH PRIVATE KEY-----\n\
+b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAATAAAACRlZDI1NT\n\
+E5LWV4cGFuZGVkQHNwZWMudG9ycHJvamVjdC5vcmcAAAAgv7GJG/2FhCoxYFyaA8Is20SI\n\
+23Ss3UdNJK7mgBAJ1jIAAACgQKnq90Cp6vcAAAAkZWQyNTUxOS1leHBhbmRlZEBzcGVjLn\n\
+RvcnByb2plY3Qub3JnAAAAIL+xiRv9hYQqMWBcmgPCLNtEiNt0rN1HTSSu5oAQCdYyAAAA\n\
+QKLfj+jxu+hpJXUPGrn2aVMFrVKIZQbosNQsh85me+kFO4s83OwNQr9XJySe7X+e4EN/au\n\
+2eOkiK8bsJLByS0JoAAAAAAQIDBA==\n\
+-----END OPENSSH PRIVATE KEY-----\n";
+        let dir = std::env::temp_dir().join(format!("ob-openssh-test-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
-        let path = dir.join("test.pem");
-        std::fs::write(&path, &pem).unwrap();
-        let key = try_read_pem_expanded(&path).unwrap();
-        assert_eq!(key, [0u8; 64]);
+        let path = dir.join("ks_hs_id.ed25519_expanded_private");
+        std::fs::write(&path, openssh).unwrap();
+        let key = try_read_openssh_expanded(&path).unwrap();
+        assert_eq!(key.len(), 64);
+        // Known expanded secret from the test key above.
+        assert_eq!(
+            &key[..4],
+            &[0xa2, 0xdf, 0x8f, 0xe8],
+            "first 4 bytes of expanded key"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
