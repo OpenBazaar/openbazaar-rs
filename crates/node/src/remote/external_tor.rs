@@ -72,22 +72,10 @@ pub(crate) fn expanded_key_to_base64(key: &[u8; 64]) -> String {
 /// (the node's `--data-dir` / network subdirectory / tor state).
 pub(crate) fn read_arti_hs_key(data_dir: &Path, nickname: &str) -> Option<[u8; 64]> {
     let filename = "ks_hs_id.ed25519_expanded_private";
-    // Try every network subdirectory (testnet4, mainnet) and both the
-    // `--remote` Tor state (`tor/`) and the `--onion` Tor state (`tor-client/`).
-    for network in ["testnet4", "mainnet"] {
-        for tor_dir in ["tor", "tor-client"] {
-            let path = data_dir
-                .join(network)
-                .join(tor_dir)
-                .join("state/keystore/hss")
-                .join(nickname)
-                .join(filename);
-            if let Some(key) = try_read_openssh_expanded(&path) {
-                return Some(key);
-            }
-        }
-    }
-    // Also try without a network prefix (some layouts put tor/ directly under data_dir).
+    // `data_dir` is the node's network-qualified data directory, e.g.
+    // `/data/testnet4`.  Arti's keystore lives directly under it at
+    // `tor/state/keystore/hss/{nickname}/`.  Try both the `--remote`
+    // Tor state (`tor/`) and the `--onion` state (`tor-client/`).
     for tor_dir in ["tor", "tor-client"] {
         let path = data_dir
             .join(tor_dir)
@@ -95,6 +83,7 @@ pub(crate) fn read_arti_hs_key(data_dir: &Path, nickname: &str) -> Option<[u8; 6
             .join(nickname)
             .join(filename);
         if let Some(key) = try_read_openssh_expanded(&path) {
+            eprintln!("ob-node: external tor: migrated Arti key for {nickname}");
             return Some(key);
         }
     }

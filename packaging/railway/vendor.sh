@@ -34,4 +34,16 @@ while [ "$waited" -lt 60 ]; do
 done
 
 # ── start ob-node ────────────────────────────────────────────────────
-exec /usr/local/bin/ob-node "$@" --external-tor "$TOR_DATA"
+# Strip --tor (embedded Arti SOCKS) from the CMD args — C tor handles it.
+# Add --proxy to route chain queries and Lightning through C tor's SOCKS port.
+args=""
+skip_next=false
+for arg in "$@"; do
+  if $skip_next; then skip_next=false; continue; fi
+  case "$arg" in
+    --tor) continue ;;  # drop embedded Arti
+    *) args="$args $arg" ;;
+  esac
+done
+# shellcheck disable=SC2086
+exec /usr/local/bin/ob-node $args --proxy socks5h://127.0.0.1:9050 --external-tor "$TOR_DATA"
