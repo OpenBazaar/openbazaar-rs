@@ -8,7 +8,7 @@
 
 FROM rust:1-bookworm AS node-build
 RUN apt-get update && apt-get install -y --no-install-recommends pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
-ARG OB_BUILD_COMMIT=unknown
+ARG OB_BUILD_COMMIT=d0eba5f
 ARG OB_BUILD_DIRTY=false
 ARG OB_BUILD_KIND=dev
 ENV OB_BUILD_COMMIT=$OB_BUILD_COMMIT OB_BUILD_DIRTY=$OB_BUILD_DIRTY OB_BUILD_KIND=$OB_BUILD_KIND
