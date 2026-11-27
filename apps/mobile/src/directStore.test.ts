@@ -135,6 +135,12 @@ test("a selling bare onion opens that store; a non-selling onion falls through t
   );
   assert.equal(notSelling, null);
 
+  // A store record with zero listings (e.g. the moderator node) is not selling.
+  const emptyStore = await fetchHostStore(loc, false, async () =>
+    new Response(JSON.stringify({ store: stores[0].record, listings: [] }), { status: 200 }),
+  );
+  assert.equal(emptyStore, null, "a host store with 0 listings should return null so the page falls through to loadPublicMarket");
+
   let homeCalled = 0;
   assert.equal(await fetchHostStore(loc, true, async () => { homeCalled += 1; return new Response(""); }), null);
   assert.equal(homeCalled, 0);

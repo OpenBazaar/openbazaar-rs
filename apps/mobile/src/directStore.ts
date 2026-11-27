@@ -131,6 +131,9 @@ export async function fetchHostStore(
   if (!url) return null;
   try {
     const catalog = await fetchPublicCatalog(url, fetcher);
+    // A node with no listings is not selling (moderator, introduction seed).
+    // Return null so the caller falls through to loadPublicMarket().
+    if (catalog.listings.length === 0) return null;
     return { url, catalog };
   } catch {
     return null;
