@@ -23,21 +23,25 @@
 
 FROM rust:1-bookworm AS node-build
 RUN apt-get update && apt-get install -y --no-install-recommends pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
-ARG OB_BUILD_COMMIT=unknown
-ARG OB_BUILD_DIRTY=false
-ARG OB_BUILD_KIND=dev
-ENV OB_BUILD_COMMIT=$OB_BUILD_COMMIT OB_BUILD_DIRTY=$OB_BUILD_DIRTY OB_BUILD_KIND=$OB_BUILD_KIND
 WORKDIR /src
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY crates crates
 COPY vendor vendor
 COPY scripts scripts
-RUN cargo build --release --locked -p ob-node && cp target/release/ob-node /ob-node
+ARG OB_BUILD_COMMIT=unknown
+ARG OB_BUILD_DIRTY=false
+ARG OB_BUILD_KIND=dev
+ENV OB_BUILD_COMMIT=$OB_BUILD_COMMIT OB_BUILD_DIRTY=$OB_BUILD_DIRTY OB_BUILD_KIND=$OB_BUILD_KIND
+RUN --mount=type=cache,id=cargo-registry,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,id=cargo-git,target=/usr/local/cargo/git,sharing=locked \
+    --mount=type=cache,id=cargo-target-ob-node,target=/src/target,sharing=locked \
+    cargo build --release --locked -p ob-node && cp target/release/ob-node /ob-node
 
 FROM node:22-bookworm-slim AS web-build
 WORKDIR /src/apps/mobile
 COPY apps/mobile/package.json apps/mobile/package-lock.json ./
-RUN npm ci
+RUN --mount=type=cache,id=npm-cache,target=/root/.npm \
+    npm ci
 COPY apps/mobile ./
 RUN npm run build
 
