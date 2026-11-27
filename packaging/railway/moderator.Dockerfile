@@ -32,16 +32,12 @@ ARG OB_BUILD_COMMIT=79d8efe
 ARG OB_BUILD_DIRTY=false
 ARG OB_BUILD_KIND=dev
 ENV OB_BUILD_COMMIT=$OB_BUILD_COMMIT OB_BUILD_DIRTY=$OB_BUILD_DIRTY OB_BUILD_KIND=$OB_BUILD_KIND
-RUN --mount=type=cache,id=cargo-registry,target=/usr/local/cargo/registry,sharing=locked \
-    --mount=type=cache,id=cargo-git,target=/usr/local/cargo/git,sharing=locked \
-    --mount=type=cache,id=cargo-target-ob-node,target=/src/target,sharing=locked \
-    cargo build --release --locked -p ob-node && cp target/release/ob-node /ob-node
+RUN cargo build --release --locked -p ob-node && cp target/release/ob-node /ob-node
 
 FROM node:22-bookworm-slim AS web-build
 WORKDIR /src/apps/mobile
 COPY apps/mobile/package.json apps/mobile/package-lock.json ./
-RUN --mount=type=cache,id=npm-cache,target=/root/.npm \
-    npm ci
+RUN npm ci
 COPY apps/mobile ./
 RUN npm run build
 
