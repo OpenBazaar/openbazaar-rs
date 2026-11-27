@@ -44,7 +44,7 @@ pub(crate) fn catalog_read(method: &str, path: &str) -> bool {
 
 pub(crate) fn allowed(method: &str, path: &str) -> bool {
     match (method, path) {
-        ("GET", "/public/store" | "/public/catalog" | "/public/admission-index" | "/public/admission-addresses" | "/public/moderator" | "/public/moderators") => true,
+        ("GET", "/public/store" | "/public/catalog" | "/public/admission-index" | "/public/admission-addresses" | "/public/moderator" | "/public/moderators" | "/public/classifieds-board") => true,
         ("GET", path) if media(path) => true,
         ("GET" | "POST", "/public/reviews") => true,
         ("POST", "/mail" | "/mail/reply" | "/mail/pull" | "/escrow/mail") => true,
@@ -197,6 +197,8 @@ mod tests {
         assert!(!allowed("GET", "/escrow/mail"));
         assert!(!allowed("GET", "/escrow/sales"));
         assert!(!allowed("POST", "/escrow/bump"));
+        assert!(allowed("GET", "/public/classifieds-board"));
+        assert!(!allowed("POST", "/public/classifieds-board"));
         assert!(!allowed("POST", "/wallet"));
         assert!(!allowed("POST", "/orders/x/pay"));
         assert!(!allowed("GET", "/wallet"));

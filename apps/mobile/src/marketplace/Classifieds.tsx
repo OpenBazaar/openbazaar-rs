@@ -4,6 +4,7 @@ import {
   createClassified,
   deleteClassified,
   fetchClassifieds,
+  fetchPublicClassifieds,
   fetchContactThreads,
   replyContact,
   type Classified,
@@ -32,7 +33,7 @@ function kindLabel(kind: ClassifiedKind): string {
 type Tab = "listings" | "inbox";
 
 /** Browse, post, and contact on the node's WTB / WTS board. */
-export function Classifieds() {
+export function Classifieds({ guest = false }: { guest?: boolean } = {}) {
   const [tab, setTab] = useState<Tab>("listings");
   const [kind, setKind] = useState<ClassifiedKind | "">("");
   const [category, setCategory] = useState<ClassifiedCategory | "">("");
@@ -43,9 +44,10 @@ export function Classifieds() {
   const [compose, setCompose] = useState(false);
   const [selected, setSelected] = useState<Classified | null>(null);
   const [thread, setThread] = useState<ContactThread | null>(null);
+  const fetcher = guest ? fetchPublicClassifieds : fetchClassifieds;
   const loadBoard = useCallback(
     () =>
-      fetchClassifieds({
+      fetcher({
         kind: kind || undefined,
         category: category || undefined,
         q: query.trim() || undefined,
@@ -53,10 +55,10 @@ export function Classifieds() {
         limit: pageSize,
         offset: listPage * pageSize,
       }),
-    [kind, category, query, region, pageSize, listPage],
+    [kind, category, query, region, pageSize, listPage, fetcher],
   );
   const board = useNodeResource(loadBoard, 15000, true);
-  const inbox = useNodeResource(fetchContactThreads, 15000, true);
+  const inbox = useNodeResource(fetchContactThreads, 15000, !guest);
   const threads = inbox.data ?? [];
   const posts = board.data?.classifieds ?? [];
   const total = board.data?.total ?? 0;
@@ -92,16 +94,16 @@ export function Classifieds() {
     <section className="ob-classifieds">
       <PageHeading
         title="Classifieds"
-        description="Want-to-buy and want-to-sell posts. Contact stays sealed to the poster — not order chat."
-        action={<button type="button" className="ob-primary" onClick={() => setCompose(true)}>+ New post</button>}
+        description={guest ? "Want-to-buy and want-to-sell posts from the network." : "Want-to-buy and want-to-sell posts. Contact stays sealed to the poster — not order chat."}
+        action={guest ? undefined : <button type="button" className="ob-primary" onClick={() => setCompose(true)}>+ New post</button>}
       />
 
       <nav className="ob-classifieds-tabs" aria-label="Classifieds views">
         <button type="button" aria-current={tab === "listings" ? "page" : undefined} onClick={() => setTab("listings")}>Listings</button>
-        <button type="button" aria-current={tab === "inbox" ? "page" : undefined} onClick={() => setTab("inbox")}>
+        {!guest && <button type="button" aria-current={tab === "inbox" ? "page" : undefined} onClick={() => setTab("inbox")}>
           Contact inbox
           {threads.length > 0 ? <span className="ob-classifieds-tab-count">{threads.length}</span> : null}
-        </button>
+        </button>}
       </nav>
 
       {tab === "listings" ? (
@@ -170,9 +172,9 @@ export function Classifieds() {
             <Empty
               icon="paper"
               title="No live classifieds match"
-              text={kind || category || query.trim() || region.trim() ? "Try another kind, category, or search." : "Post a want-to-buy or want-to-sell notice. Contact stays sealed to the poster."}
+              text={kind || category || query.trim() || region.trim() ? "Try another kind, category, or search." : guest ? "No classifieds are posted right now." : "Post a want-to-buy or want-to-sell notice. Contact stays sealed to the poster."}
             >
-              <button type="button" className="ob-primary" onClick={() => setCompose(true)}>+ New post</button>
+              {!guest && <button type="button" className="ob-primary" onClick={() => setCompose(true)}>+ New post</button>}
             </Empty>
           ) : total > 0 ? (
             <>
@@ -243,6 +245,7 @@ export function Classifieds() {
       {selected && !thread ? (
         <PostDetail
           post={selected}
+          guest={guest}
           onClose={() => setSelected(null)}
           onContacted={next => {
             setThread(next);
@@ -369,11 +372,13 @@ function ComposeDialog({ onClose, onPosted }: { onClose: () => void; onPosted: (
 
 function PostDetail({
   post,
+  guest = false,
   onClose,
   onContacted,
   onDeleted,
 }: {
   post: Classified;
+  guest?: boolean;
   onClose: () => void;
   onContacted: (thread: ContactThread) => void;
   onDeleted: () => void;
@@ -396,57 +401,63 @@ function PostDetail({
           <h2>{post.title}</h2>
           <p>{post.body}</p>
         </header>
-        <form
-          onSubmit={event => {
-            event.preventDefault();
-            setError("");
-            setBusy(true);
-            void run(async () => {
-              try {
-                onContacted(await contactClassified(post.id, text));
-                setText("");
-              } finally {
-                setBusy(false);
-              }
-            });
-          }}
-        >
-          <label className="ob-field">
-            <span>Contact</span>
-            <textarea
-              value={text}
-              maxLength={2000}
-              rows={3}
-              placeholder="Write a sealed message to the poster"
-              data-dialog-autofocus
-              onChange={event => setText(event.target.value)}
-            />
-          </label>
-          {error && <p className="ob-form-error" role="alert">{error}</p>}
+        {guest ? (
           <div className="ob-form-actions">
-            <button
-              type="button"
-              className="ob-secondary"
-              disabled={busy}
-              onClick={() => {
-                setError("");
-                setBusy(true);
-                void run(async () => {
-                  try {
-                    await deleteClassified(post.id);
-                    onDeleted();
-                  } finally {
-                    setBusy(false);
-                  }
-                });
-              }}
-            >
-              Delete
-            </button>
-            <button type="button" className="ob-secondary" disabled={busy} onClick={onClose}>Close</button>
-            <button type="submit" className="ob-primary" disabled={busy}>Send</button>
+            <button type="button" className="ob-secondary" onClick={onClose}>Close</button>
           </div>
-        </form>
+        ) : (
+          <form
+            onSubmit={event => {
+              event.preventDefault();
+              setError("");
+              setBusy(true);
+              void run(async () => {
+                try {
+                  onContacted(await contactClassified(post.id, text));
+                  setText("");
+                } finally {
+                  setBusy(false);
+                }
+              });
+            }}
+          >
+            <label className="ob-field">
+              <span>Contact</span>
+              <textarea
+                value={text}
+                maxLength={2000}
+                rows={3}
+                placeholder="Write a sealed message to the poster"
+                data-dialog-autofocus
+                onChange={event => setText(event.target.value)}
+              />
+            </label>
+            {error && <p className="ob-form-error" role="alert">{error}</p>}
+            <div className="ob-form-actions">
+              <button
+                type="button"
+                className="ob-secondary"
+                disabled={busy}
+                onClick={() => {
+                  setError("");
+                  setBusy(true);
+                  void run(async () => {
+                    try {
+                      await deleteClassified(post.id);
+                      onDeleted();
+                    } finally {
+                      setBusy(false);
+                    }
+                  });
+                }}
+              >
+                Delete
+              </button>
+              <button type="button" className="ob-secondary" disabled={busy} onClick={onClose}>Close</button>
+              <button type="submit" className="ob-primary" disabled={busy}>Send</button>
+            </div>
+          </form>
+        )}
         {dialog}
       </article>
     </Dialog>
