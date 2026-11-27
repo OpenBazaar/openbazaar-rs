@@ -3187,6 +3187,20 @@ svg {
   position: relative;
   flex-shrink: 0;
 }
+.ob-network-pill[role="status"] {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  padding: 0 12px;
+  border: 1px solid var(--ob-line);
+  border-radius: 999px;
+  background: var(--ob-surface);
+  color: var(--ob-secondary);
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+}
 .ob-network-pill > summary {
   list-style: none;
   display: inline-flex;
