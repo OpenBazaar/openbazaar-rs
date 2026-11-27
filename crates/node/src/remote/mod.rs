@@ -284,6 +284,13 @@ impl Remote {
             let onion = self.services.open_lightning_external(&ext, local)?;
             return Ok(format!("{onion}:{}", tor::LIGHTNING_PORT));
         }
+        // `enable_lightning` runs before `remote::run()`, so ext_tor may
+        // not be initialized yet.  Eagerly connect when the flag is set.
+        if self.uses_external_tor() {
+            let ext = self.ext_tor(data_dir)?;
+            let onion = self.services.open_lightning_external(&ext, local)?;
+            return Ok(format!("{onion}:{}", tor::LIGHTNING_PORT));
+        }
         let tor = self.tor(data_dir)?;
         let onion = self.services.open_lightning(&tor, local)?;
         Ok(format!("{onion}:{}", tor::LIGHTNING_PORT))
