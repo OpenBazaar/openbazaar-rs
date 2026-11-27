@@ -37,6 +37,7 @@ mod protocol;
 mod push;
 mod services;
 mod sync;
+pub(crate) mod external_tor;
 mod tor;
 mod tor_counts;
 mod tor_health;
@@ -106,6 +107,10 @@ pub struct RemoteConfig {
     /// `--web-listen ADDR` with `--web-origin https://HOST`: the admin
     /// gateway for a browser on the open web, behind a proxy that ends TLS.
     pub web: Option<(SocketAddr, WebOrigin)>,
+    /// `--external-tor /data/tor-c`: use a C `tor` sidecar process instead
+    /// of embedded Arti.  The value is the C `tor` DataDirectory, where the
+    /// `control_auth_cookie` lives.
+    pub external_tor: Option<PathBuf>,
 }
 
 impl RemoteConfig {
@@ -151,6 +156,9 @@ impl RemoteConfig {
                     push::gateway_target(&url)?;
                     config.push_gateway = Some(url);
                 }
+                "--external-tor" => {
+                    config.external_tor = Some(PathBuf::from(value("--external-tor")?));
+                }
                 _ => rest.push(arg.clone()),
             }
         }
@@ -179,6 +187,7 @@ pub(crate) struct Remote {
     pairing_gateway: OnceLock<SocketAddr>,
     pub(crate) services: services::Services,
     tor: OnceLock<Result<Arc<tor::Tor>, String>>,
+    ext_tor: OnceLock<Result<Arc<external_tor::ExternalTor>, String>>,
     tor_health: Mutex<tor_health::Tracker>,
     lan: lan::LanState,
     home: home::HomeState,
@@ -198,6 +207,7 @@ impl Remote {
             pairing_gateway: OnceLock::new(),
             services: services::Services::default(),
             tor: OnceLock::new(),
+            ext_tor: OnceLock::new(),
             tor_health: Mutex::new(tor_health::Tracker::new()),
             lan: lan::LanState::default(),
             home: home::HomeState::open(dir, vault)?,
@@ -249,6 +259,9 @@ impl Remote {
         _data_dir: &Path,
         seed: &[u8; 32],
     ) -> Result<String, String> {
+        if let Some(ext) = self.running_ext_tor() {
+            return self.services.open_reply_external(&ext, seed);
+        }
         let tor = self
             .running_tor()
             .ok_or_else(|| "Tor is not running".to_string())?;
@@ -266,6 +279,10 @@ impl Remote {
             return Err(format!(
                 "Lightning will not bind {local}: that is a public clearnet address"
             ));
+        }
+        if let Some(ext) = self.running_ext_tor() {
+            let onion = self.services.open_lightning_external(&ext, local)?;
+            return Ok(format!("{onion}:{}", tor::LIGHTNING_PORT));
         }
         let tor = self.tor(data_dir)?;
         let onion = self.services.open_lightning(&tor, local)?;
@@ -286,16 +303,53 @@ impl Remote {
             .and_then(|tor| tor.as_ref().ok().map(Arc::clone))
     }
 
+    /// Connect to the external C `tor` sidecar.
+    fn ext_tor(&self, data_dir: &Path) -> Result<Arc<external_tor::ExternalTor>, String> {
+        let config = self.config();
+        let Some(tor_data) = config.external_tor.as_deref() else {
+            return Err("--external-tor is not set".into());
+        };
+        let tor_data = tor_data.to_path_buf();
+        self.ext_tor
+            .get_or_init(|| {
+                let control: SocketAddr = external_tor::DEFAULT_CONTROL.parse().unwrap();
+                let socks: SocketAddr = external_tor::DEFAULT_SOCKS.parse().unwrap();
+                external_tor::ExternalTor::connect(control, socks, &tor_data, data_dir)
+                    .map(Arc::new)
+            })
+            .as_ref()
+            .map(Arc::clone)
+            .map_err(Clone::clone)
+    }
+
+    fn running_ext_tor(&self) -> Option<Arc<external_tor::ExternalTor>> {
+        self.ext_tor
+            .get()
+            .and_then(|r| r.as_ref().ok().map(Arc::clone))
+    }
+
+    /// Whether this node uses the C `tor` sidecar.
+    pub(crate) fn uses_external_tor(&self) -> bool {
+        self.config().external_tor.is_some()
+    }
+
     /// Look at Tor, and say so on the console when its health has changed.
     fn check_tor(&self) {
-        let Some(tor) = self.running_tor() else {
-            return;
-        };
         // This clock stops while the machine sleeps; the time of day does not.
         static START: OnceLock<Instant> = OnceLock::new();
         let awake = START.get_or_init(Instant::now).elapsed().as_secs();
         let now = now_secs();
-        let reading = tor.reading(self.services.long_lived(), self.services.store_answered());
+        let onions = self.services.long_lived();
+        let store_answered = self.services.store_answered();
+
+        let reading = if let Some(ext) = self.running_ext_tor() {
+            ext.reading(onions, store_answered)
+        } else if let Some(tor) = self.running_tor() {
+            tor.reading(onions, store_answered)
+        } else {
+            return;
+        };
+
         let tally = tor_counts::COUNTS
             .lock()
             .unwrap_or_else(|err| err.into_inner())
@@ -332,12 +386,23 @@ impl Remote {
         }
         let maker = by.clone().unwrap_or_else(|| "the node itself".into());
         let mut code = self.pairing().issue(by, Instant::now());
-        if let (Some(tor), Some(target)) = (self.running_tor(), self.pairing_gateway.get()) {
-            if let Some(reached) = self.services.open_pairing(&tor, &code, *target) {
-                code = self
-                    .pairing()
-                    .watch_onion(&code.id, reached)
-                    .unwrap_or(code);
+        if let Some(target) = self.pairing_gateway.get() {
+            if let Some(ext) = self.running_ext_tor() {
+                if self.services.open_pairing_external(&ext, &code, *target) {
+                    // External pairing onions are "reached" immediately.
+                    let reached = Arc::new(AtomicBool::new(true));
+                    code = self
+                        .pairing()
+                        .watch_onion(&code.id, reached)
+                        .unwrap_or(code);
+                }
+            } else if let Some(tor) = self.running_tor() {
+                if let Some(reached) = self.services.open_pairing(&tor, &code, *target) {
+                    code = self
+                        .pairing()
+                        .watch_onion(&code.id, reached)
+                        .unwrap_or(code);
+                }
             }
         }
         let onion = match code.onion(Instant::now()) {
@@ -364,7 +429,12 @@ impl Remote {
     /// Tell the admin onion which discovery keys may find it.
     pub(crate) fn refresh_discovery(&self) {
         let clients = self.devices().discovery_clients();
-        self.services.set_clients(&clients);
+        if let (Some(ext), Some(target)) = (self.running_ext_tor(), self.gateway.get()) {
+            self.services
+                .set_clients_external(&ext, &clients, *target);
+        } else {
+            self.services.set_clients(&clients);
+        }
     }
 
     /// Remove `id` and the devices it paired, everywhere they are known.
@@ -408,7 +478,60 @@ pub(crate) fn run(node: &Node, main_port: u16, stop: &AtomicBool) {
     };
     let _ = remote.gateway.set(admin_addr);
     let _ = remote.pairing_gateway.set(pairing_addr);
-    let sale_listener = if config.onion {
+    let sale_listener = if config.onion && config.external_tor.is_some() {
+        // ── external C `tor` sidecar path ──
+        match remote.ext_tor(&node.data_dir) {
+            Ok(ext) => {
+                let generation = remote.devices().generation;
+                let moving = remote.devices().moving;
+                remote.services.open_admin_external(
+                    &ext,
+                    generation,
+                    moving.map(|m| m.from),
+                    admin_addr,
+                );
+                remote.refresh_discovery();
+                match remote.services.onion() {
+                    Some(onion) => eprintln!(
+                        "ob-node: remote access at http://{onion}/ (C tor, paired devices only)"
+                    ),
+                    None => eprintln!("ob-node: remote access: the onion service has no address yet"),
+                }
+                match crate::sale_gate::bind() {
+                    Ok(listener) => match listener.local_addr() {
+                        Ok(addr) => {
+                            remote.services.open_sale_external(&ext, addr);
+                            match remote.services.sale_onion() {
+                                Some(onion) => eprintln!(
+                                    "ob-node: store at http://{onion}/ (C tor; catalog, order mail, reviews, and escrow mail)"
+                                ),
+                                None => eprintln!("ob-node: store onion has no address yet"),
+                            }
+                            if remote.services.has_sale() {
+                                node.republish_reply_onions();
+                                Some(listener)
+                            } else {
+                                None
+                            }
+                        }
+                        Err(err) => {
+                            eprintln!("ob-node: store onion: {err}");
+                            None
+                        }
+                    },
+                    Err(err) => {
+                        eprintln!("ob-node: store onion could not listen: {err}");
+                        None
+                    }
+                }
+            }
+            Err(err) => {
+                eprintln!("ob-node: external tor: {err}");
+                None
+            }
+        }
+    } else if config.onion {
+        // ── embedded Arti path (unchanged) ──
         match remote.tor(&node.data_dir) {
             Ok(tor) => {
                 node.peers.attach(Arc::clone(&tor));

@@ -28,6 +28,7 @@ use super::now_secs;
 use super::pair_log;
 use super::pairing::Code;
 use super::protocol::pairing_onion_seed;
+use super::external_tor::ExternalTor;
 use super::tor::{Service, Tor, ADMIN_PORT, LIGHTNING_PORT};
 use crate::Node;
 
@@ -123,7 +124,7 @@ impl Services {
         self.admin()
             .iter()
             .max_by_key(|(generation, _)| *generation)
-            .and_then(|(_, service)| service.forward.onion_address())
+            .and_then(|(_, service)| service.onion_address())
             .map(|onion| onion.to_string())
     }
 
@@ -134,7 +135,6 @@ impl Services {
             .iter()
             .find(|(_, service)| {
                 service
-                    .forward
                     .onion_address()
                     .is_some_and(|onion| onion.to_string() == host)
             })
@@ -144,15 +144,14 @@ impl Services {
     pub(crate) fn state(&self) -> Option<String> {
         self.admin()
             .last()
-            .map(|(_, service)| service.forward.state())
+            .map(|(_, service)| service.state())
     }
 
-    /// Each long-lived service: its role, Arti's state for it, and whether
-    /// Arti believes it reachable. For [`super::tor_health`].
+    /// Each long-lived service: its role, Tor's state for it, and whether
+    /// Tor believes it reachable. For [`super::tor_health`].
     pub(crate) fn long_lived(&self) -> Vec<(&'static str, String, bool)> {
         let look = |nickname: &str, service: &Service| {
-            let forward = &service.forward;
-            role(nickname).map(|role| (role, forward.state(), forward.is_published()))
+            role(nickname).map(|role| (role, service.state(), service.is_published()))
         };
         let admin = self.admin().last().and_then(|(_, service)| look("ob-home", service));
         let sale = self.sale().as_ref().and_then(|service| look("ob-sale", service));
@@ -163,12 +162,12 @@ impl Services {
     /// When the node's own Tor client last got an answer from the store
     /// onion. For [`super::tor_health`].
     pub(crate) fn store_answered(&self) -> Option<u64> {
-        self.sale().as_ref().and_then(|service| service.answered.at())
+        self.sale().as_ref().and_then(|service| service.answered().at())
     }
 
     pub(crate) fn set_clients(&self, clients: &[(String, String)]) {
         for (generation, service) in self.admin().iter() {
-            if let Err(err) = service.forward.set_clients(clients) {
+            if let Err(err) = service.set_clients(clients) {
                 eprintln!("ob-node: admin onion {generation}: could not update its devices: {err}");
             }
         }
@@ -196,7 +195,7 @@ impl Services {
         let expected = tormail::onion_for_seed(seed).to_string();
         let nickname = reply_nickname(seed);
         if let Some(service) = self.replies().get(&nickname) {
-            let got = service.forward.onion_address().map(|onion| onion.to_string()).unwrap_or_default();
+            let got = service.onion_address().map(|onion| onion.to_string()).unwrap_or_default();
             if got != expected {
                 return Err(format!("reply onion {nickname} is {got}, not {expected}"));
             }
@@ -204,7 +203,6 @@ impl Services {
         }
         let service = tor.serve_on(&nickname, Some(*seed), Discovery::Open, ADMIN_PORT, target)?;
         let got = service
-            .forward
             .onion_address()
             .map(|onion| onion.to_string())
             .ok_or_else(|| "reply onion has no address yet".to_string())?;
@@ -221,14 +219,12 @@ impl Services {
         let mut slot = self.lightning();
         if let Some(service) = slot.as_ref() {
             return service
-                .forward
                 .onion_address()
                 .map(|onion| onion.to_string())
                 .ok_or_else(|| "Lightning onion has no address yet".to_string());
         }
         let service = tor.serve_on("ob-ln", None, Discovery::Open, LIGHTNING_PORT, target)?;
         let onion = service
-            .forward
             .onion_address()
             .map(|onion| onion.to_string())
             .ok_or_else(|| "Lightning onion has no address yet".to_string())?;
@@ -244,7 +240,7 @@ impl Services {
     pub(crate) fn sale_onion(&self) -> Option<String> {
         self.sale()
             .as_ref()
-            .and_then(|service| service.forward.onion_address())
+            .and_then(|service| service.onion_address())
             .map(|onion| onion.to_string())
     }
 
@@ -287,6 +283,141 @@ impl Services {
     fn retire(&self, generation: u32, data_dir: &Path) {
         self.admin().retain(|(live, _)| *live != generation);
         forget_keys(data_dir, &admin_nickname(generation));
+    }
+}
+
+// ── external‐tor variants ──────────────────────────────────────────
+
+impl Services {
+    pub(crate) fn open_admin_external(
+        &self,
+        ext: &ExternalTor,
+        generation: u32,
+        previous: Option<u32>,
+        target: SocketAddr,
+    ) {
+        for gen in previous.into_iter().chain([generation]) {
+            match ext.serve(&admin_nickname(gen), None, &[], ADMIN_PORT, target) {
+                Ok(service) => self.admin().push((gen, Service::External(service))),
+                Err(err) => eprintln!("ob-node: admin onion {gen}: {err}"),
+            }
+        }
+    }
+
+    pub(crate) fn open_sale_external(&self, ext: &ExternalTor, target: SocketAddr) {
+        match ext.serve("ob-sale", None, &[], ADMIN_PORT, target) {
+            Ok(service) => {
+                *self.sale_target() = Some(target);
+                *self.sale() = Some(Service::External(service));
+            }
+            Err(err) => eprintln!("ob-node: store onion: {err}"),
+        }
+    }
+
+    pub(crate) fn open_reply_external(
+        &self,
+        ext: &ExternalTor,
+        seed: &[u8; 32],
+    ) -> Result<String, String> {
+        let target = (*self.sale_target())
+            .ok_or_else(|| "the sale gate is not listening".to_string())?;
+        let expected = tormail::onion_for_seed(seed).to_string();
+        let nickname = reply_nickname(seed);
+        if let Some(service) = self.replies().get(&nickname) {
+            let got = service
+                .onion_address()
+                .map(|o| o.to_string())
+                .unwrap_or_default();
+            if got != expected {
+                return Err(format!("reply onion {nickname} is {got}, not {expected}"));
+            }
+            return Ok(format!("http://{expected}"));
+        }
+        let service = ext.serve(&nickname, Some(*seed), &[], ADMIN_PORT, target)?;
+        let got = service
+            .onion_address()
+            .map(|o| o.to_string())
+            .ok_or_else(|| "reply onion has no address yet".to_string())?;
+        if got != expected {
+            return Err(format!("reply onion came up as {got}, not {expected}"));
+        }
+        self.replies()
+            .insert(nickname, Service::External(service));
+        Ok(format!("http://{expected}"))
+    }
+
+    pub(crate) fn open_lightning_external(
+        &self,
+        ext: &ExternalTor,
+        target: SocketAddr,
+    ) -> Result<String, String> {
+        let mut slot = self.lightning();
+        if let Some(service) = slot.as_ref() {
+            return service
+                .onion_address()
+                .map(|o| o.to_string())
+                .ok_or_else(|| "Lightning onion has no address yet".to_string());
+        }
+        let service =
+            ext.serve("ob-ln", None, &[], LIGHTNING_PORT, target)?;
+        let onion = service
+            .onion_address()
+            .map(|o| o.to_string())
+            .ok_or_else(|| "Lightning onion has no address yet".to_string())?;
+        *slot = Some(Service::External(service));
+        Ok(onion)
+    }
+
+    pub(crate) fn open_pairing_external(
+        &self,
+        ext: &ExternalTor,
+        code: &Code,
+        target: SocketAddr,
+    ) -> bool {
+        let seed = pairing_onion_seed(&code.secret);
+        match ext.serve(
+            &pairing_nickname(&code.id),
+            Some(seed),
+            &[],
+            ADMIN_PORT,
+            target,
+        ) {
+            Ok(service) => {
+                self.pairing()
+                    .insert(code.id.clone(), Service::External(service));
+                true
+            }
+            Err(err) => {
+                eprintln!("ob-node: pairing onion: {err}");
+                false
+            }
+        }
+    }
+
+    pub(crate) fn set_clients_external(
+        &self,
+        ext: &ExternalTor,
+        clients: &[(String, String)],
+        target: SocketAddr,
+    ) {
+        let mut admin = self.admin();
+        let mut updated = Vec::new();
+        for (gen, service) in admin.drain(..) {
+            match ext.serve(
+                &admin_nickname(gen),
+                None,
+                clients,
+                ADMIN_PORT,
+                target,
+            ) {
+                Ok(new) => updated.push((gen, Service::External(new))),
+                Err(err) => {
+                    eprintln!("ob-node: admin onion {gen}: could not update clients: {err}");
+                    updated.push((gen, service));
+                }
+            }
+        }
+        *admin = updated;
     }
 }
 
