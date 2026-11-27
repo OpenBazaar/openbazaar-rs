@@ -48,9 +48,19 @@ pub(crate) fn allowed(method: &str, path: &str) -> bool {
         ("GET", path) if media(path) => true,
         ("GET" | "POST", "/public/reviews") => true,
         ("POST", "/mail" | "/mail/reply" | "/mail/pull" | "/escrow/mail") => true,
+        ("OPTIONS", "/mail" | "/mail/pull") => true,
         _ => false,
     }
 }
+
+/// Routes where cross-origin browser requests (with `Origin` header) are
+/// permitted. The moderator shop page posts sealed orders to the vendor's
+/// `/mail` and pulls status via `/mail/pull` as cross-origin fetches.
+fn cors_mail(method: &str, path: &str) -> bool {
+    matches!((method, path), ("POST" | "OPTIONS", "/mail" | "/mail/pull"))
+}
+
+const CORS_HEADERS: &str = "Access-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type\r\nAccess-Control-Max-Age: 86400\r\n";
 
 fn media(path: &str) -> bool {
     let Some(hash) = path.strip_prefix("/public/media/") else {
@@ -87,22 +97,50 @@ pub(crate) fn handle(mut client: TcpStream, main_port: u16, web_dir: Option<&Pat
         let _ = client.write_all(&plain("404 Not Found", "not found"));
         return;
     }
-    // Refuse browser-originated requests: a page should not reach the sale
-    // onion. This keeps the Origin check in mail_drop effective even though
-    // rebuild() does not forward the header (#247).
-    if http_parse::header(request.head, "origin").is_some() {
+    // CORS preflight for /mail and /mail/pull (browser checkout from moderator page).
+    if request.method == "OPTIONS" && cors_mail(request.method, request.path) {
+        let _ = client.write_all(
+            format!("HTTP/1.1 204 No Content\r\n{CORS_HEADERS}Connection: close\r\n\r\n").as_bytes(),
+        );
+        return;
+    }
+    // Refuse browser-originated requests on all routes EXCEPT the mail
+    // endpoints. The moderator shop page needs cross-origin POST to the
+    // vendor's /mail and /mail/pull. Other routes stay locked (#247).
+    if http_parse::header(request.head, "origin").is_some() && !cors_mail(request.method, request.path) {
         let _ = client.write_all(&plain("403 Forbidden", "pages may not use this endpoint"));
         return;
     }
     let content_type = http_parse::header(request.head, "content-type").map(str::to_string);
     let outbound = rebuild(request.method, request.path, content_type.as_deref(), request.body, main_port);
     match forward(&outbound, main_port) {
-        Ok(bytes) => {
+        Ok(mut bytes) => {
+            // Append CORS header for cross-origin mail responses.
+            if cors_mail(request.method, request.path) {
+                bytes = append_cors_header(bytes);
+            }
             let _ = client.write_all(&bytes);
         }
         Err(_) => {
             let _ = client.write_all(&plain("502 Bad Gateway", "the shop did not answer"));
         }
+    }
+}
+
+/// Inject `Access-Control-Allow-Origin: *` into an HTTP response (after the
+/// status line, before the body). If the response is not parseable, return it
+/// unchanged — the browser will reject the opaque response on its own.
+fn append_cors_header(raw: Vec<u8>) -> Vec<u8> {
+    const INJECT: &[u8] = b"Access-Control-Allow-Origin: *\r\n";
+    if let Some(pos) = raw.windows(2).position(|w| w == b"\r\n") {
+        let insert = pos + 2; // right after the status line
+        let mut out = Vec::with_capacity(raw.len() + INJECT.len());
+        out.extend_from_slice(&raw[..insert]);
+        out.extend_from_slice(INJECT);
+        out.extend_from_slice(&raw[insert..]);
+        out
+    } else {
+        raw
     }
 }
 
@@ -306,6 +344,84 @@ mod tests {
         assert!(wallet.starts_with("HTTP/1.1 404"), "{wallet}");
         thread::sleep(Duration::from_millis(80));
         assert_eq!(opened.load(Ordering::SeqCst), 0, "the shop page was forwarded");
+        stop.store(true, Ordering::SeqCst);
+    }
+
+    #[test]
+    fn cors_preflight_and_mail_origin_allowed_while_other_routes_blocked() {
+        let backend = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = backend.local_addr().unwrap().port();
+        let opened = Arc::new(AtomicUsize::new(0));
+        let counting = opened.clone();
+        thread::spawn(move || {
+            for mut stream in backend.incoming().flatten() {
+                counting.fetch_add(1, Ordering::SeqCst);
+                let mut buf = vec![0u8; 2048];
+                let n = stream.read(&mut buf).unwrap_or(0);
+                let _ = n;
+                let reply = "HTTP/1.1 202 Accepted\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok";
+                let _ = stream.write_all(reply.as_bytes());
+            }
+        });
+        let gate = bind().unwrap();
+        let gate_addr = gate.local_addr().unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let stopping = stop.clone();
+        thread::spawn(move || serve(gate, port, None, &stopping));
+
+        // OPTIONS /mail preflight returns 204 with CORS headers, not forwarded.
+        let preflight = talk(
+            gate_addr,
+            "OPTIONS /mail HTTP/1.1\r\nHost: vendor.onion\r\nOrigin: http://moderator.onion\r\nConnection: close\r\n\r\n",
+        );
+        assert!(preflight.starts_with("HTTP/1.1 204"), "{preflight}");
+        assert!(preflight.contains("Access-Control-Allow-Origin: *"), "{preflight}");
+        assert!(preflight.contains("Access-Control-Allow-Methods:"), "{preflight}");
+        thread::sleep(Duration::from_millis(50));
+        assert_eq!(opened.load(Ordering::SeqCst), 0, "OPTIONS preflight was forwarded");
+
+        // OPTIONS /mail/pull preflight also works.
+        let preflight2 = talk(
+            gate_addr,
+            "OPTIONS /mail/pull HTTP/1.1\r\nHost: vendor.onion\r\nOrigin: http://moderator.onion\r\nConnection: close\r\n\r\n",
+        );
+        assert!(preflight2.starts_with("HTTP/1.1 204"), "{preflight2}");
+        assert_eq!(opened.load(Ordering::SeqCst), 0, "OPTIONS /mail/pull was forwarded");
+
+        // POST /mail with Origin succeeds and response has ACAO header.
+        let mail_with_origin = talk(
+            gate_addr,
+            "POST /mail HTTP/1.1\r\nHost: vendor.onion\r\nOrigin: http://moderator.onion\r\nContent-Length: 4\r\nConnection: close\r\n\r\ntest",
+        );
+        assert!(mail_with_origin.starts_with("HTTP/1.1 202"), "{mail_with_origin}");
+        assert!(mail_with_origin.contains("Access-Control-Allow-Origin: *"), "{mail_with_origin}");
+        assert_eq!(opened.load(Ordering::SeqCst), 1, "POST /mail should be forwarded");
+
+        // POST /mail/pull with Origin also succeeds.
+        let pull_with_origin = talk(
+            gate_addr,
+            "POST /mail/pull HTTP/1.1\r\nHost: vendor.onion\r\nOrigin: http://moderator.onion\r\nContent-Length: 4\r\nConnection: close\r\n\r\ntest",
+        );
+        assert!(pull_with_origin.starts_with("HTTP/1.1 202"), "{pull_with_origin}");
+        assert!(pull_with_origin.contains("Access-Control-Allow-Origin: *"), "{pull_with_origin}");
+        assert_eq!(opened.load(Ordering::SeqCst), 2);
+
+        // POST /wallet with Origin still blocked.
+        let wallet_origin = talk(
+            gate_addr,
+            "POST /wallet HTTP/1.1\r\nHost: vendor.onion\r\nOrigin: http://evil.example\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        );
+        assert!(wallet_origin.starts_with("HTTP/1.1 404"), "{wallet_origin}");
+        assert_eq!(opened.load(Ordering::SeqCst), 2, "/wallet must not be forwarded");
+
+        // GET /public/store with Origin still blocked.
+        let store_origin = talk(
+            gate_addr,
+            "GET /public/store HTTP/1.1\r\nHost: vendor.onion\r\nOrigin: http://evil.example\r\nConnection: close\r\n\r\n",
+        );
+        assert!(store_origin.starts_with("HTTP/1.1 403"), "{store_origin}");
+        assert_eq!(opened.load(Ordering::SeqCst), 2, "/public/store with Origin must not be forwarded");
+
         stop.store(true, Ordering::SeqCst);
     }
 
