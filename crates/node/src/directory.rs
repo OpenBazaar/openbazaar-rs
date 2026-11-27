@@ -390,6 +390,11 @@ impl Replica {
                 ids.push(*id);
             }
         }
+        for id in self.admissions.keys() {
+            if !ids.contains(id) {
+                ids.push(*id);
+            }
+        }
         ids
     }
 
@@ -615,7 +620,10 @@ impl Replica {
     }
 
     pub(crate) fn listing_wanted(&self, id: &[u8; 32], own: &[u8; 32]) -> bool {
-        id == own || self.followed.contains(id) || self.opened.iter().rev().take(OPENED_CAP).any(|open| open == id)
+        id == own
+            || self.followed.contains(id)
+            || self.opened.iter().rev().take(OPENED_CAP).any(|open| open == id)
+            || self.admissions.contains_key(id)
     }
 
     /// Names whose store record matches, then titles whose listing is held.
@@ -2309,11 +2317,11 @@ mod tests {
         let held = ids_of(&peer);
         assert!(held.contains(&own), "the own store's listing is on disk");
         assert!(held.contains(followed.id.as_bytes()), "a follow's listings are on disk");
-        assert!(!held.contains(store.id.as_bytes()), "an admitted store that was not opened has no listing file");
+        assert!(held.contains(store.id.as_bytes()), "an admitted store now has its listings pulled");
         let live = |_: &Admission| true;
         let (names, titles) = peer.search("Cedar", &own, &live);
         assert_eq!(names, vec!["Cedar Workshop".to_string()]);
-        assert!(titles.is_empty(), "a listing title does not match before the store is opened");
+        assert_eq!(titles, vec!["Cedar spoon".to_string()], "admitted stores' listings are searchable");
         let primary = Ok(vec![listing.encode().unwrap()]);
         assert_eq!(listings_after_dial(primary, Err("the introduction is not asked".into())).len(), 1);
         let timed_out: Result<Vec<Vec<u8>>, String> = Err("introduction timed out".into());
@@ -2431,8 +2439,8 @@ mod tests {
         assert_eq!(peer.stores.get(&id).unwrap().name, "Cedar Workshop");
         assert_eq!(fs::read(peer.store_path(&id)).unwrap(), record, "a later pass does not replace the kept record with a flipped one");
         assert!(
-            source.listings.borrow().is_empty(),
-            "listings stay limited to the own store, follows, and the last 50 opened"
+            source.listings.borrow().contains(&id),
+            "admitted stores now have their listings pulled"
         );
     }
 
@@ -2537,7 +2545,7 @@ mod tests {
         let live = |record: &Admission| crate::admission::fee_confirmed(&chain, NetworkMode::Testnet4, &head, record);
         intro.apply(&mut catalog, StoreId::from_bytes([1u8; 32]), |_| false, &live);
         assert!(catalog.stores.iter().any(|item| item.name == "Cedar Workshop"));
-        assert!(catalog.listings.is_empty(), "held back listings are not goods and checkout is not offered");
+        assert_eq!(catalog.listings.len(), 1, "admitted stores' listings appear in the catalog");
         let hidden = TempDir::new();
         let mut bare = Replica::open(&hidden.0).unwrap();
         bare.accept_document(&head.encode().unwrap(), &key).unwrap();

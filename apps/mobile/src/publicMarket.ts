@@ -202,6 +202,8 @@ export type LoadedMarket = {
   catalog: ShopCatalog;
   notice: string | null;
   images: { url: string; hashes: string[] }[];
+  /** Admitted store id → sale onion URL, for Tor Browser checkout. */
+  storeAddresses: Map<string, string>;
 };
 
 /**
@@ -228,7 +230,8 @@ async function readPublicCatalog(base: string, fetcher: Getter): Promise<unknown
 export async function loadPublicMarket(loc: PageAddress, fetcher: Getter = globalThis.fetch): Promise<LoadedMarket> {
   const onion = await saleOnion(loc, fetcher);
   const notice = marketNotice(loc.protocol, loc.hostname, onion);
-  if (notice) return { catalog: emptyCatalog(), notice: notice.sentence, images: [] };
+  const emptyAddresses = new Map<string, string>();
+  if (notice) return { catalog: emptyCatalog(), notice: notice.sentence, images: [], storeAddresses: emptyAddresses };
   const bases = [`http://${loc.hostname.toLowerCase()}`, ...INTRODUCTIONS.map((host) => `http://${host}`)];
 
   // Fast path: one request to the moderator for every admitted store's
@@ -251,7 +254,9 @@ export async function loadPublicMarket(loc: PageAddress, fetcher: Getter = globa
         }
       }
       if (bodies.length > 0) {
-        return { catalog: aggregatePublicStores(bodies), notice: null, images };
+        const addresses = await readAddresses(base, fetcher);
+        const storeAddresses = new Map(addresses.map((row) => [row.storeId, row.url]));
+        return { catalog: aggregatePublicStores(bodies), notice: null, images, storeAddresses };
       }
     }
   }
@@ -265,8 +270,9 @@ export async function loadPublicMarket(loc: PageAddress, fetcher: Getter = globa
       break;
     }
   }
-  if (!directory) return { catalog: emptyCatalog(), notice: null, images: [] };
-  const chosen = admittedAddresses(directory.ids, await readAddresses(directory.base, fetcher));
+  if (!directory) return { catalog: emptyCatalog(), notice: null, images: [], storeAddresses: emptyAddresses };
+  const allAddresses = await readAddresses(directory.base, fetcher);
+  const chosen = admittedAddresses(directory.ids, allAddresses);
   const bodies: unknown[] = [];
   const images: LoadedMarket["images"] = [];
   await mapPool(chosen, 4, async (row) => {
@@ -283,5 +289,6 @@ export async function loadPublicMarket(loc: PageAddress, fetcher: Getter = globa
       // One store that does not answer stays out of the grid.
     }
   });
-  return { catalog: aggregatePublicStores(bodies), notice: null, images };
+  const storeAddresses = new Map(chosen.map((row) => [row.storeId, row.url]));
+  return { catalog: aggregatePublicStores(bodies), notice: null, images, storeAddresses };
 }
