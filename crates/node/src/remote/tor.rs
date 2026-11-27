@@ -114,12 +114,12 @@ impl Tor {
             tormail::start_onion_forward(&self.client, nickname, identity, discovery, port, target)
                 .map_err(|err| err.to_string())?;
         let task = self.runtime.spawn(run);
-        Ok(Service {
+        Ok(Service::Arti(ArtiService {
             forward,
             task,
             watch: None,
             answered: Answered::default(),
-        })
+        }))
     }
 
     /// Follow a new pairing onion and set `reached` once this client has
@@ -130,24 +130,28 @@ impl Tor {
         label: String,
         reached: Arc<AtomicBool>,
     ) {
-        let watch = super::pair_ready::watch(
-            Arc::clone(&self.client),
-            service.forward.clone(),
-            label,
-            reached,
-        );
-        service.watch = Some(self.runtime.spawn(watch));
+        if let Some(forward) = service.arti_forward() {
+            let watch = super::pair_ready::watch(
+                Arc::clone(&self.client),
+                forward.clone(),
+                label,
+                reached,
+            );
+            service.set_watch(self.runtime.spawn(watch));
+        }
     }
 
     /// Dial the store onion from this client while Arti does not say it is
     /// published: see [`super::onion_check`].
     pub(crate) fn watch_store(&self, service: &mut Service) {
-        let watch = super::onion_check::watch(
-            Arc::clone(&self.client),
-            service.forward.clone(),
-            service.answered.clone(),
-        );
-        service.watch = Some(self.runtime.spawn(watch));
+        if let Some(forward) = service.arti_forward() {
+            let watch = super::onion_check::watch(
+                Arc::clone(&self.client),
+                forward.clone(),
+                service.answered().clone(),
+            );
+            service.set_watch(self.runtime.spawn(watch));
+        }
     }
 
     /// What Arti says of its connection and its directory right now, with
@@ -254,16 +258,78 @@ impl Tor {
     }
 }
 
-pub(crate) struct Service {
+/// One running onion service, backed by either Arti or C `tor`.
+pub(crate) enum Service {
+    Arti(ArtiService),
+    External(super::external_tor::ExternalService),
+}
+
+pub(crate) struct ArtiService {
     pub forward: OnionForward,
     task: tokio::task::JoinHandle<()>,
     watch: Option<tokio::task::JoinHandle<()>>,
-    /// When this client's own dial of the onion last got an answer. Only
-    /// [`Tor::watch_store`] dials.
     pub answered: Answered,
 }
 
-impl Drop for Service {
+impl Service {
+    pub fn onion_address(&self) -> Option<OnionAddress> {
+        match self {
+            Self::Arti(s) => s.forward.onion_address(),
+            Self::External(s) => s.onion_address(),
+        }
+    }
+
+    pub fn state(&self) -> String {
+        match self {
+            Self::Arti(s) => s.forward.state(),
+            Self::External(s) => s.state(),
+        }
+    }
+
+    pub fn is_published(&self) -> bool {
+        match self {
+            Self::Arti(s) => s.forward.is_published(),
+            Self::External(_) => true,
+        }
+    }
+
+    /// The Arti `OnionForward`, when this is an Arti service.
+    pub fn arti_forward(&self) -> Option<&OnionForward> {
+        match self {
+            Self::Arti(s) => Some(&s.forward),
+            Self::External(_) => None,
+        }
+    }
+
+    pub fn set_clients(&self, clients: &[(String, String)]) -> Result<(), String> {
+        match self {
+            Self::Arti(s) => s
+                .forward
+                .set_clients(clients)
+                .map_err(|e| e.to_string()),
+            Self::External(_) => {
+                // Client updates for external services go through
+                // ExternalTor::update_clients, called from Services.
+                Ok(())
+            }
+        }
+    }
+
+    pub fn answered(&self) -> &Answered {
+        match self {
+            Self::Arti(s) => &s.answered,
+            Self::External(s) => &s.answered,
+        }
+    }
+
+    pub fn set_watch(&mut self, handle: tokio::task::JoinHandle<()>) {
+        if let Self::Arti(s) = self {
+            s.watch = Some(handle);
+        }
+    }
+}
+
+impl Drop for ArtiService {
     fn drop(&mut self) {
         self.task.abort();
         if let Some(watch) = &self.watch {
