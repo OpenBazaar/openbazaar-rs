@@ -520,7 +520,7 @@ impl ExternalTor {
             None => "NEW:ED25519-V3".to_string(),
         };
 
-        let mut cmd = format!("ADD_ONION {key_part} Port={port},{target}");
+        let mut cmd = format!("ADD_ONION {key_part} Flags=Detach Port={port},{target}");
 
         // Client auth (server-side restricted discovery).
         for (_name, descriptor_key) in discovery_clients {
