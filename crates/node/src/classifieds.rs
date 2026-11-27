@@ -170,6 +170,26 @@ fn post_value(post: &SignedClassified, today: u32) -> Value {
     })
 }
 
+/// Read-only post for the public classifieds board: no mailbox key, onion, or record.
+fn public_post_value(post: &SignedClassified, today: u32) -> Value {
+    let life = post.terms.life_days().unwrap_or(0);
+    json!({
+        "id": hex(&post.terms.id),
+        "kind": post.terms.kind.as_str(),
+        "category": post.terms.category.as_str(),
+        "title": post.terms.title,
+        "body": post.terms.body,
+        "region": post.terms.region,
+        "priceHint": post.terms.price_hint,
+        "currency": post.terms.currency,
+        "createdOn": post.terms.created_on,
+        "expiresOn": post.terms.expires_on,
+        "lifeDays": life,
+        "expired": post.terms.expired_on(today),
+        "poster": hex(&post.terms.poster),
+    })
+}
+
 fn public_thread(thread: &Thread) -> Value {
     json!({
         "id": hex(&thread.id),
@@ -231,6 +251,54 @@ impl Node {
         });
         let total = posts.len();
         let items: Vec<Value> = posts.into_iter().skip(offset).take(limit).map(|post| post_value(post, today)).collect();
+        json!({ "classifieds": items, "today": today, "total": total, "limit": limit, "offset": offset })
+    }
+
+    /// `GET /public/classifieds-board`: read-only board for guest browsers.
+    /// Same filtering and pagination as `classifieds_value`, but strips private
+    /// fields (mailboxKey, onion, record) from every post.
+    pub(crate) fn public_classifieds_value(
+        &self,
+        kind: Option<&str>,
+        category: Option<&str>,
+        q: Option<&str>,
+        region: Option<&str>,
+        limit: Option<usize>,
+        offset: Option<usize>,
+    ) -> Value {
+        let today = crate::own_store::today_yyyymmdd();
+        let kind = kind.and_then(|name| ClassifiedKind::parse(name).ok());
+        let category = category.and_then(|name| ClassifiedCategory::parse(name).ok());
+        let needle = q.map(str::trim).filter(|text| !text.is_empty()).map(|text| text.to_ascii_lowercase());
+        let region_needle = region.map(str::trim).filter(|text| !text.is_empty()).map(|text| text.to_ascii_lowercase());
+        let limit = limit.unwrap_or(50).clamp(1, 100);
+        let offset = offset.unwrap_or(0);
+        let board = self.classifieds();
+        let mut posts: Vec<&SignedClassified> = board
+            .posts
+            .iter()
+            .filter(|post| !post.terms.expired_on(today))
+            .filter(|post| kind.is_none_or(|want| post.terms.kind == want))
+            .filter(|post| category.is_none_or(|want| post.terms.category == want))
+            .filter(|post| {
+                region_needle.as_ref().is_none_or(|want| post.terms.region.to_ascii_lowercase().contains(want))
+            })
+            .filter(|post| {
+                needle.as_ref().is_none_or(|want| {
+                    post.terms.title.to_ascii_lowercase().contains(want)
+                        || post.terms.body.to_ascii_lowercase().contains(want)
+                        || post.terms.region.to_ascii_lowercase().contains(want)
+                })
+            })
+            .collect();
+        posts.sort_by(|a, b| {
+            b.terms
+                .created_on
+                .cmp(&a.terms.created_on)
+                .then_with(|| b.terms.id.cmp(&a.terms.id))
+        });
+        let total = posts.len();
+        let items: Vec<Value> = posts.into_iter().skip(offset).take(limit).map(|post| public_post_value(post, today)).collect();
         json!({ "classifieds": items, "today": today, "total": total, "limit": limit, "offset": offset })
     }
 

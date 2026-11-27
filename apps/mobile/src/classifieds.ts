@@ -1,7 +1,9 @@
 // Classifieds board and contact threads against the paired node.
 import { paired } from "./catalog.ts";
+import { DIRECT_GET } from "./directStore.ts";
 
 export const CLASSIFIEDS_ROUTE = "/classifieds";
+export const PUBLIC_CLASSIFIEDS_BOARD = "/public/classifieds-board";
 export const CONTACT_ROUTE = "/contact";
 
 export type ClassifiedKind = "wtb" | "wts";
@@ -66,17 +68,15 @@ function parseClassified(value: unknown): Classified {
   const region = row.region;
   const currency = row.currency;
   const poster = row.poster;
-  const mailboxKey = row.mailboxKey;
-  const onion = row.onion;
+  const mailboxKey = typeof row.mailboxKey === "string" ? row.mailboxKey : "";
+  const onion = typeof row.onion === "string" ? row.onion : "";
   if (
     typeof id !== "string" ||
     typeof title !== "string" ||
     typeof body !== "string" ||
     typeof region !== "string" ||
     typeof currency !== "string" ||
-    typeof poster !== "string" ||
-    typeof mailboxKey !== "string" ||
-    typeof onion !== "string"
+    typeof poster !== "string"
   ) {
     throw new Error("The node sent classifieds the page could not read.");
   }
@@ -158,6 +158,22 @@ export async function fetchClassifieds(filters?: ClassifiedsQuery): Promise<Clas
   query.set("limit", String(filters?.limit ?? 50));
   query.set("offset", String(filters?.offset ?? 0));
   return parseClassifiedsPage(await paired(`${CLASSIFIEDS_ROUTE}?${query}`));
+}
+
+/** Guest/public read-only fetch from the public classifieds-board endpoint. */
+export async function fetchPublicClassifieds(filters?: ClassifiedsQuery): Promise<ClassifiedsPage> {
+  const query = new URLSearchParams();
+  if (filters?.kind) query.set("kind", filters.kind);
+  if (filters?.category) query.set("category", filters.category);
+  if (filters?.q?.trim()) query.set("q", filters.q.trim());
+  if (filters?.region?.trim()) query.set("region", filters.region.trim());
+  query.set("limit", String(filters?.limit ?? 50));
+  query.set("offset", String(filters?.offset ?? 0));
+  const signal = typeof AbortSignal !== "undefined" && typeof AbortSignal.timeout === "function" ? AbortSignal.timeout(20_000) : undefined;
+  const init: RequestInit = signal ? { ...DIRECT_GET, signal } : { ...DIRECT_GET };
+  const response = await fetch(`${PUBLIC_CLASSIFIEDS_BOARD}?${query}`, init);
+  if (!response.ok) throw new Error(`The classifieds board could not be loaded (${response.status}).`);
+  return parseClassifiedsPage(await response.json());
 }
 
 export function classifiedSubmission(draft: ClassifiedDraft): { path: string; body: Record<string, unknown> } {

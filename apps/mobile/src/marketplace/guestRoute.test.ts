@@ -25,7 +25,7 @@ test("guest mode redirects node-only sections and receipts cleanly", () => {
     );
   }
 
-  for (const section of ["discover", "saved", "bag", "safety", "store"]) {
+  for (const section of ["discover", "saved", "bag", "safety", "store", "classifieds", "stores"]) {
     const loc: ShopLocation = { section, category: section === "discover" ? "Books" : null, page: { name: "browse" } };
     assert.deepEqual(sanitizeGuestLocation(loc, true), loc, section);
   }

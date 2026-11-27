@@ -21,6 +21,7 @@ use crate::Node;
 const MAX_JSON: usize = 16 * 1024;
 const MAX_PUBLIC: usize = 256 * 1024;
 pub(crate) const PUBLIC_CLASSIFIEDS: &str = "/public/classifieds";
+pub(crate) const PUBLIC_CLASSIFIEDS_BOARD: &str = "/public/classifieds-board";
 
 pub(crate) fn response(
     node: &Node,
@@ -31,6 +32,22 @@ pub(crate) fn response(
     body: &[u8],
     origin: Option<&str>,
 ) -> Option<Vec<u8>> {
+    // Read-only public board for guest browsers (no private data, no Origin block).
+    if path == PUBLIC_CLASSIFIEDS_BOARD && method == "GET" {
+        let query = request_query(head);
+        let kind = query_param(query, "kind");
+        let category = query_param(query, "category");
+        let q = query_text(query, "q");
+        let region = query_text(query, "region");
+        let limit = query_param(query, "limit").and_then(|text| text.parse().ok());
+        let offset = query_param(query, "offset").and_then(|text| text.parse().ok());
+        return Some(json_body(
+            "200 OK",
+            &node.public_classifieds_value(kind, category, q.as_deref(), region.as_deref(), limit, offset),
+            None,
+        ));
+    }
+
     if path == PUBLIC_CLASSIFIEDS && (method == "GET" || method == "POST") {
         if has_header(head, "origin") {
             return Some(json_error("403 Forbidden", "Classifieds are copied by nodes, not pages.", None));

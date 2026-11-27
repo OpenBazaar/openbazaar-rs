@@ -62,6 +62,8 @@ import { sanitizeGuestLocation } from "./guestRoute";
 import { SidebarUtilities } from "./SidebarUtilities";
 import { Classifieds } from "./Classifieds";
 import { StoreDirectory } from "./StoreDirectory";
+import { StoreDirectoryCard } from "./StoreDirectoryCard";
+import { DEFAULT_OPTIONS, directoryCategories, filterAndSortStores, filtersActive, type DirectoryRail, type DirectorySort } from "../storeDirectory";
 import { combineSalesBadge, useOrderMessageAlerts } from "./useOrderMessageAlerts";
 
 type IconName = "settings" | "wallet" | "sun" | "moon" | "compass" | "heart" | "bag" | "arrow" | "search" | "chevron" | "check" | "shield" | "globe" | "close" | "menu" | "book" | "cup" | "home" | "music" | "shirt" | "tool" | "paper" | "grid" | "pin" | "bolt" | "external" | "ticket" | "store";
@@ -124,6 +126,59 @@ type StoreSection = "storefront" | "listings" | "coupons" | "sales" | "store";
 const STORE_SECTIONS: readonly Section[] = ["storefront", "listings", "coupons", "sales", "store"];
 type ToastNotice = string | { message: string; action?: { label: string; onClick: () => void } };
 function emptyFilters() { return { seller: "", kind: "", shipFrom: "", min: "", max: "", condition: "", specifics: {} as Record<string, string> }; }
+
+const GUEST_RAILS: [DirectoryRail, string][] = [["all", "All rails"], ["btc", "Bitcoin"], ["ln", "Lightning"], ["xmr", "Monero"], ["zec", "Zcash"]];
+const GUEST_SORTS: [DirectorySort, string][] = [["listings", "Most listings"], ["rating", "Top rated"], ["name", "Name A–Z"]];
+
+/** Read-only store directory for guest/public mode, powered by catalog.stores. */
+function GuestStoreDirectory({ catalog, onOpen }: { catalog: ShopCatalog | null; onOpen: (storeId: string) => void }) {
+  const [filters, setFilters] = useState(DEFAULT_OPTIONS);
+  const all = useMemo(() => catalog?.stores ?? [], [catalog]);
+  const emptyFollowed = useMemo(() => new Set<string>(), []);
+  const visible = useMemo(() => filterAndSortStores(all, { ...filters, scope: "all", followedIds: emptyFollowed }), [all, filters, emptyFollowed]);
+  const categories = useMemo(() => directoryCategories(all), [all]);
+  const set = (change: Partial<typeof DEFAULT_OPTIONS>) => setFilters(current => ({ ...current, ...change }));
+  const plural = (n: number) => `${n.toLocaleString("en-US")} store${n === 1 ? "" : "s"}`;
+
+  return <section className="ob-directory" aria-labelledby="ob-directory-title">
+    <header className="ob-directory-header">
+      <div>
+        <h1 id="ob-directory-title">Stores<span aria-label={plural(visible.length)}>{visible.length}</span></h1>
+        <p>Browse stores on the network. Open one to see its goods.</p>
+      </div>
+    </header>
+    <div className="ob-directory-controls">
+      <label className="ob-search ob-directory-search">
+        <Icon name="search" size={18}/>
+        <input aria-label="Search stores" placeholder="Search stores by name, region, or category…" value={filters.query} onChange={event => set({ query: event.target.value })}/>
+        {filters.query && <button type="button" className="ob-icon-button" aria-label="Clear search" onClick={() => set({ query: "" })}><Icon name="close" size={16}/></button>}
+      </label>
+      <div className="ob-directory-selects">
+        <label className="ob-directory-select"><span className="ob-sr-only">Category</span>
+          <select aria-label="Category" value={filters.category} onChange={event => set({ category: event.target.value })}>
+            <option value="">All categories</option>
+            {categories.map(category => <option key={category.name} value={category.name}>{category.name} ({category.count})</option>)}
+          </select>
+        </label>
+        <label className="ob-directory-select"><span className="ob-sr-only">Payment rail</span>
+          <select aria-label="Payment rail" value={filters.rail} onChange={event => set({ rail: event.target.value as DirectoryRail })}>
+            {GUEST_RAILS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+          </select>
+        </label>
+        <label className="ob-directory-select"><span className="ob-sr-only">Sort stores</span>
+          <select aria-label="Sort stores" value={filters.sort} onChange={event => set({ sort: event.target.value as DirectorySort })}>
+            {GUEST_SORTS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+          </select>
+        </label>
+        {filtersActive({ ...filters, scope: "all" }) && <button type="button" className="ob-text-link" onClick={() => setFilters(current => ({ ...DEFAULT_OPTIONS, sort: current.sort }))}>Clear filters</button>}
+      </div>
+    </div>
+    {visible.length ? <>
+      <p className="ob-directory-status" role="status" aria-live="polite">{visible.length === all.length ? plural(all.length) : `${visible.length.toLocaleString("en-US")} of ${plural(all.length)}`}</p>
+      <div className="ob-directory-grid">{visible.map(store => <article key={store.key} className="ob-directory-card"><div className="ob-directory-body"><div className="ob-directory-head"><span className="ob-directory-avatar" aria-hidden="true">{store.name.charAt(0).toUpperCase()}</span><div className="ob-directory-title"><h2><button type="button" className="ob-directory-open" aria-label={`Open store ${store.name}`} onClick={() => onOpen(store.key)}>{store.name}</button></h2></div></div>{store.tagline && <p className="ob-directory-tagline">{store.tagline}</p>}<p className="ob-directory-meta">{store.region && <span>{store.region}</span>}<span>{store.listingCount} {store.listingCount === 1 ? "item" : "items"}</span></p></div></article>)}</div>
+    </> : <Empty icon="store" title="No stores yet" text="No stores are published on this node right now."/>}
+  </section>;
+}
 
 export default function Marketplace() {
   const [catalog, setCatalog] = useState<ShopCatalog | null>(null);
@@ -498,7 +553,7 @@ export default function Marketplace() {
     ? <Orders {...money} selectedOrderId={page.name === "order" ? page.orderId : null} unreadByOrder={messageAlerts.unreadOrdersById} onSelectOrder={openOrder} onBack={() => shopHistory.backToParent()} onBrowse={() => navigate("discover")}/>
     : !guest && (page.name === "sale" || (section === "sales" && page.name === "browse"))
       ? storeView()
-      : page.name !== "browse" ? null : section === "saved" && saved.length === 0 ? <section><PageHeading title="Saved goods"/><Empty illustration="saved" icon="heart" title="No saved products" text="Save products using the heart button."><button className="ob-primary" onClick={() => navigate("discover")}>Browse products <Icon name="arrow" size={17}/></button></Empty></section> : section === "safety" ? <SafetySettingsPanel settings={safety} onChange={setSafety} labelSources={nodeAvailable ? <LabelersPanel state={labelers} onState={setLabelerState}/> : undefined}/> : guest ? storeView() : section === "wallet" ? <WalletPage {...money} onOrders={() => navigate("orders")} onSales={seller ? () => navigate("sales") : undefined} onManage={rail => navigate(rail)} onTor={() => navigate("tor")}/> : section === "lightning" ? <LightningSettings/> : section === "zcash" ? <ZcashSettings/> : section === "monero" ? <MoneroSettings/> : section === "tor" ? <TorSettings/> : section === "updates" ? <UpdateSettings updater={updater}/> : section === "home-node" ? <div className="ob-settings-page"><header className="ob-settings-heading"><h1>Home node</h1><p>Run your store on an always-on computer and manage it from anywhere over Tor.</p></header><HomeNodePanel/></div> : section === "browsers" ? <BrowsersSettings/> : section === "addresses" ? <Addresses/> : section === "follows" ? <Follows onChanged={message => { setToast(message); void load(); }} onOpen={id => void openStore(id)}/> : section === "classifieds" ? <Classifieds/> : section === "stores" ? <StoreDirectory onOpen={id => void openStore(id)} onFollowChanged={message => void followChanged(message)}/> : storeView();
+      : page.name !== "browse" ? null : section === "saved" && saved.length === 0 ? <section><PageHeading title="Saved goods"/><Empty illustration="saved" icon="heart" title="No saved products" text="Save products using the heart button."><button className="ob-primary" onClick={() => navigate("discover")}>Browse products <Icon name="arrow" size={17}/></button></Empty></section> : section === "safety" ? <SafetySettingsPanel settings={safety} onChange={setSafety} labelSources={nodeAvailable ? <LabelersPanel state={labelers} onState={setLabelerState}/> : undefined}/> : guest && section === "classifieds" ? <Classifieds guest/> : guest && section === "stores" ? <GuestStoreDirectory catalog={catalog} onOpen={id => void openStore(id)}/> : guest ? storeView() : section === "wallet" ? <WalletPage {...money} onOrders={() => navigate("orders")} onSales={seller ? () => navigate("sales") : undefined} onManage={rail => navigate(rail)} onTor={() => navigate("tor")}/> : section === "lightning" ? <LightningSettings/> : section === "zcash" ? <ZcashSettings/> : section === "monero" ? <MoneroSettings/> : section === "tor" ? <TorSettings/> : section === "updates" ? <UpdateSettings updater={updater}/> : section === "home-node" ? <div className="ob-settings-page"><header className="ob-settings-heading"><h1>Home node</h1><p>Run your store on an always-on computer and manage it from anywhere over Tor.</p></header><HomeNodePanel/></div> : section === "browsers" ? <BrowsersSettings/> : section === "addresses" ? <Addresses/> : section === "follows" ? <Follows onChanged={message => { setToast(message); void load(); }} onOpen={id => void openStore(id)}/> : section === "classifieds" ? <Classifieds/> : section === "stores" ? <StoreDirectory onOpen={id => void openStore(id)} onFollowChanged={message => void followChanged(message)}/> : storeView();
   function storeView() {
     if (guest && inStore) return <SellGate/>;
     const own = profile.data;

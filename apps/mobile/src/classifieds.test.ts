@@ -107,3 +107,55 @@ test("board and contact payloads parse into typed rows", () => {
   assert.equal(threads[0].messages[0].from, "them");
   assert.equal(parseContactThread(threads[0]).title, "Spare room");
 });
+
+test("public classifieds parse without mailboxKey and onion", () => {
+  const posts = parseClassifieds({
+    classifieds: [
+      {
+        id: "aa".repeat(16),
+        kind: "wtb",
+        category: "goods",
+        title: "Old radio",
+        body: "Looking for a shortwave set.",
+        region: "Denver",
+        priceHint: 5000,
+        currency: "USD",
+        createdOn: 20261127,
+        expiresOn: 20261211,
+        lifeDays: 14,
+        expired: false,
+        poster: "bb".repeat(32),
+      },
+    ],
+  });
+  assert.equal(posts.length, 1);
+  assert.equal(posts[0].title, "Old radio");
+  assert.equal(posts[0].mailboxKey, "");
+  assert.equal(posts[0].onion, "");
+
+  const page = parseClassifiedsPage({
+    classifieds: [
+      {
+        id: "aa".repeat(16),
+        kind: "wtb",
+        category: "goods",
+        title: "Old radio",
+        body: "Looking for a shortwave set.",
+        region: "Denver",
+        priceHint: 5000,
+        currency: "USD",
+        createdOn: 20261127,
+        expiresOn: 20261211,
+        lifeDays: 14,
+        expired: false,
+        poster: "bb".repeat(32),
+      },
+    ],
+    total: 1,
+    limit: 50,
+    offset: 0,
+  });
+  assert.equal(page.total, 1);
+  assert.equal(page.classifieds[0].mailboxKey, "");
+  assert.equal(page.classifieds[0].onion, "");
+});
