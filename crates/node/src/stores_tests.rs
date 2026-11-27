@@ -74,6 +74,65 @@ fn store_list_has_the_demo_stores_and_this_nodes_own_store() {
     assert_eq!(marlow["avatar"].as_str().unwrap().len(), 64);
 }
 
+/// A verified review of `store` from the order key `order`, written with `rating` stars.
+fn review_of(node: &Node, store: &openbazaar_protocol::StoreId, order: u8, rating: u8) -> openbazaar_protocol::SignedReview {
+    use bitcoin::secp256k1::{Secp256k1, SecretKey};
+    use openbazaar_protocol::{ListingId, Receipt, Review, SignedReceipt, SignedReview};
+    let order_secret = SecretKey::from_slice(&[order; 32]).unwrap();
+    let review_key = order_secret.x_only_public_key(&Secp256k1::new()).0.serialize();
+    let receipt = Receipt { store_id: *store, listing_id: ListingId([7; 16]), review_key, paid_on: 20261101 };
+    let receipt = SignedReceipt::sign(receipt, &node.store_secret(store).unwrap()).unwrap();
+    SignedReview::sign(Review { receipt, rating, text: String::new(), written_on: 20261110 }, &order_secret).unwrap()
+}
+
+#[test]
+fn store_list_and_catalog_carry_what_a_directory_shows() {
+    let (_dir, node) = testnet();
+    let hale = node.catalog().stores[1].id;
+    node.catalog_mut().stores[1].details.as_mut().unwrap().accepts_lightning = true;
+    let reviews = vec![review_of(&node, &hale, 1, 5), review_of(&node, &hale, 2, 4), review_of(&node, &hale, 3, 4)];
+    node.reviews().merge(reviews, vec![], |_| true);
+
+    let (_, listed) = request(&node, "GET", "/stores", "");
+    let (_, catalog) = request(&node, "GET", "/catalog", "");
+    for value in [&listed, &catalog] {
+        let stores = value["stores"].as_array().unwrap();
+        let by = |name: &str| stores.iter().find(|store| store["name"] == name).unwrap();
+        let (marlow, hale_summary, own) = (by("Marlow Goods"), by("Hale Paper"), by("My store"));
+
+        let details = node.catalog().stores[0].details.clone().unwrap();
+        let banner: String = details.profile.banner.unwrap().iter().map(|b| format!("{b:02x}")).collect();
+        assert_eq!(marlow["banner"], banner);
+        assert_eq!(marlow["acceptsLightning"], false);
+        assert_eq!(marlow["categories"], json!(["Books", "Clothing", "Home", "Music", "Paper"]));
+        assert_eq!((marlow["reviewCount"].as_u64(), marlow["reviewAverage"].is_null()), (Some(0), true));
+
+        assert_eq!(hale_summary["acceptsLightning"], true);
+        assert_eq!(hale_summary["categories"], json!(["Clothing", "Paper", "Tools"]));
+        assert_eq!((hale_summary["reviewCount"].as_u64(), hale_summary["reviewAverage"].as_f64()), (Some(3), Some(4.3)));
+
+        assert_eq!(own["categories"], json!([]));
+        assert_eq!(own["reviewCount"], 0);
+        for store in stores {
+            assert!(store["listingCount"].is_number() && store["key"].is_string() && store["record"].is_string(), "existing fields stay");
+        }
+    }
+    let (_, page) = request(&node, "GET", &format!("/stores/{}/reviews", hale.to_hex()), "");
+    let hale_summary = listed["stores"].as_array().unwrap().iter().find(|store| store["name"] == "Hale Paper").unwrap();
+    assert_eq!((hale_summary["reviewCount"].clone(), hale_summary["reviewAverage"].clone()), (page["count"].clone(), page["average"].clone()));
+}
+
+#[test]
+fn the_signed_catalog_value_has_no_directory_fields() {
+    let (_dir, node) = testnet();
+    let value = crate::catalog_value(&node.catalog()).unwrap();
+    for store in value["stores"].as_array().unwrap() {
+        for key in ["banner", "acceptsLightning", "categories", "reviewCount", "reviewAverage"] {
+            assert!(store.get(key).is_none(), "{key}");
+        }
+    }
+}
+
 #[test]
 fn store_page_carries_the_profile_listings_and_moderators() {
     let (_dir, node) = testnet();

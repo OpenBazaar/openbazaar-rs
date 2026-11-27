@@ -1,15 +1,19 @@
 import { useState } from "react";
-import { fetchDirectory, followNotice, followStore, unfollowStore } from "../follows";
+import { fetchDirectory, followNotice, followStore, unfollowStore, type DirectoryStore } from "../follows";
 import { useNodeResource } from "../useNodeResource";
 import { Icon } from "./Marketplace";
+
+/** The node's directory list, when a page already holds it for many buttons. */
+export type SharedDirectory = { stores: DirectoryStore[] | null; onUpdate: (stores: DirectoryStore[]) => void };
 
 /**
  * Follow or unfollow one store. It is drawn only for a store the node's
  * directory holds: the node says whether such a store is followed, and
  * following is what keeps it once the directory stops naming it.
  */
-export function FollowButton({ storeId, onChanged }: { storeId: string; onChanged: (message: string) => void }) {
-  const directory = useNodeResource(fetchDirectory, 0);
+export function FollowButton({ storeId, onChanged, shared }: { storeId: string; onChanged: (message: string) => void; shared?: SharedDirectory }) {
+  const own = useNodeResource(fetchDirectory, 0, !shared);
+  const directory = shared ? { data: shared.stores, update: shared.onUpdate } : own;
   const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
