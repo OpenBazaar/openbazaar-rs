@@ -45,6 +45,7 @@ pub(crate) fn catalog_response(node: &Node, origin: Option<&str>) -> Vec<u8> {
         }
     };
     add_xmr_flags(node, &mut value);
+    crate::stores::add_directory_fields(node, &mut value["stores"]);
     crate::lightning::add_ln_flags(node, &mut value);
     crate::zec::add_zec_flags(node, &mut value);
     json_body("200 OK", &value, origin)

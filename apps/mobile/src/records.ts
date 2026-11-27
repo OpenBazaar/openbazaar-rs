@@ -10,7 +10,7 @@ import { sha256 } from "@noble/hashes/sha2.js";
 
 import type { ContentRating, ListingHeader, ListingKind } from "./catalog";
 import { readCommerce, type Commerce } from "./commerce.ts";
-import { plainLabel } from "./safeText.ts";
+import { displayText, plainLabel } from "./safeText.ts";
 
 const STORE_TAG = "ob/store/v1";
 const LISTING_TAG = "ob/listing/v1";
@@ -283,14 +283,17 @@ export function verifyListingRecord(hex: unknown): ListingRecord | null {
   return { ...result.record, hash: sha256Hex(result.body) };
 }
 
-/// One store in a store list, from its verified record. `listingCount` and
-/// `own` are the node's bookkeeping, not signed.
+/// One store in a store list, from its verified record. `listingCount`,
+/// `own`, `categories`, `reviewCount` and `reviewAverage` are the node's
+/// bookkeeping, not signed. An older node sends none of the last three.
 export type StoreSummary = {
   key: string;
   name: string;
   region: string;
   tagline: string;
   avatar: string | null;
+  /** 64-hex SHA-256 of the banner image, from the signed record. */
+  banner: string | null;
   contentRating: ContentRating;
   /** From the signed record: the store takes Monero direct pay. */
   acceptsXmr: boolean;
@@ -299,10 +302,30 @@ export type StoreSummary = {
   /** From the signed record: the store takes Zcash direct pay. */
   acceptsZec: boolean;
   listingCount: number;
+  /** Sorted, distinct categories of the store's listings. Empty from an older node. */
+  categories: string[];
+  /** Verified reviews of the store. 0 from an older node. */
+  reviewCount: number;
+  /** Average stars to one decimal, or null when there are no reviews. */
+  reviewAverage: number | null;
   own: boolean;
   version: number;
   record: StoreRecord;
 };
+
+function categoriesOf(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const names = value.filter((name): name is string => typeof name === "string").map(name => displayText(name, 40)).filter(Boolean);
+  return [...new Set(names)].sort();
+}
+
+function reviewStats(item: Record<string, unknown>): { reviewCount: number; reviewAverage: number | null } {
+  const count = item.reviewCount;
+  const average = item.reviewAverage;
+  const reviewCount = typeof count === "number" && Number.isSafeInteger(count) && count > 0 ? count : 0;
+  const reviewAverage = reviewCount > 0 && typeof average === "number" && average >= 1 && average <= 5 ? average : null;
+  return { reviewCount, reviewAverage };
+}
 
 function recordOf(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" ? (value as Record<string, unknown>) : null;
@@ -319,11 +342,14 @@ export function verifiedStore(value: unknown): StoreSummary | null {
     region: record.region,
     tagline: record.details?.tagline ?? "",
     avatar: record.details?.avatar ?? null,
+    banner: record.details?.banner ?? null,
     contentRating: record.contentRating,
     acceptsXmr: record.details?.acceptsXmr ?? false,
     acceptsLightning: record.details?.acceptsLightning ?? false,
     acceptsZec: record.details?.acceptsZec ?? false,
     listingCount: typeof item.listingCount === "number" ? item.listingCount : 0,
+    categories: categoriesOf(item.categories),
+    ...reviewStats(item),
     own: item.own === true,
     version: record.version,
     record,

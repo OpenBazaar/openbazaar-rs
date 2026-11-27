@@ -40,6 +40,22 @@ pub(crate) fn paid_month(day: u32) -> u32 {
     day / 100 * 100 + 1
 }
 
+/// How many reviews gave each of 1 to 5 stars.
+fn star_counts<'a>(reviews: impl IntoIterator<Item = &'a SignedReview>) -> [u64; 5] {
+    let mut stars = [0u64; 5];
+    for review in reviews {
+        stars[usize::from(review.terms.rating - 1)] += 1;
+    }
+    stars
+}
+
+/// The review count and the average stars, to one decimal. `None` with no reviews.
+fn summarize(stars: &[u64; 5]) -> (u64, Option<f64>) {
+    let count: u64 = stars.iter().sum();
+    let total: u64 = stars.iter().enumerate().map(|(i, n)| (i as u64 + 1) * n).sum();
+    (count, (count > 0).then(|| (total * 10 / count) as f64 / 10.0))
+}
+
 pub(crate) struct ReviewPool {
     path: PathBuf,
     vault: Vault,
@@ -166,20 +182,21 @@ impl ReviewPool {
         self.reviews.retain(|review| review.store_id() != *store);
     }
 
+    /// How many reviews `store` has and their average stars, as `GET
+    /// /stores/{key}/reviews` reports them.
+    pub(crate) fn summary(&self, store: &StoreId) -> (u64, Option<f64>) {
+        summarize(&star_counts(self.reviews.iter().filter(|review| review.store_id() == *store)))
+    }
+
     /// `GET /stores/{key}/reviews`: the store's reviews, newest first, with
     /// its replies, and the stars they add up to.
     pub(crate) fn store_value(&self, listings: &[Listing], store: &StoreId) -> Value {
         let mut reviews: Vec<&SignedReview> = self.reviews.iter().filter(|review| review.store_id() == *store).collect();
         reviews.sort_by_key(|review| std::cmp::Reverse(review.terms.written_on));
-        let mut stars = [0u64; 5];
-        for review in &reviews {
-            stars[usize::from(review.terms.rating - 1)] += 1;
-        }
-        let count = reviews.len() as u64;
-        let total: u64 = stars.iter().enumerate().map(|(i, n)| (i as u64 + 1) * n).sum();
-        let average = if count == 0 { Value::Null } else { json!((total * 10 / count) as f64 / 10.0) };
+        let stars = star_counts(reviews.iter().copied());
+        let (count, average) = summarize(&stars);
         let items: Vec<Value> = reviews.into_iter().map(|review| self.review_value(listings, review)).collect();
-        json!({ "storeId": store.to_hex(), "count": count, "average": average, "stars": stars, "reviews": items })
+        json!({ "storeId": store.to_hex(), "count": count, "average": json!(average), "stars": stars, "reviews": items })
     }
 
     fn review_value(&self, listings: &[Listing], review: &SignedReview) -> Value {

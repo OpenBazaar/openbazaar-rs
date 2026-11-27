@@ -99,3 +99,26 @@ test("an image is returned only when its bytes hash to the signed hash", () => {
   const big = new Uint8Array(MAX_MEDIA_BYTES + 1);
   assert.equal(checkStoreImage(sha256Hex(big), "image/png", big), null);
 });
+
+test("a store list carries the directory fields, and an older node's list gets clean defaults", () => {
+  const catalog = raw();
+  const enriched = parseStoreList({
+    stores: [{ ...catalog.stores[0], categories: ["Home", "Books", "Home", 7, "  "], reviewCount: 12, reviewAverage: 4.8 }],
+  }).stores[0];
+  assert.deepEqual(enriched.categories, ["Books", "Home"]);
+  assert.equal(enriched.reviewCount, 12);
+  assert.equal(enriched.reviewAverage, 4.8);
+  assert.ok(enriched.banner, "the banner is the signed one");
+  assert.equal(enriched.acceptsLightning, false, "the Lightning flag is the signed one");
+
+  const older = parseStoreList({ stores: catalog.stores }).stores[0];
+  assert.deepEqual([older.categories, older.reviewCount, older.reviewAverage], [[], 0, null]);
+
+  for (const bad of [{ reviewCount: -1, reviewAverage: 5 }, { reviewCount: 1.5, reviewAverage: 5 }, { reviewCount: 2, reviewAverage: 9 }, { reviewCount: 0, reviewAverage: 4 }, { reviewCount: "3", reviewAverage: "4" }, { categories: "Home" }]) {
+    const parsed = parseStoreList({ stores: [{ ...catalog.stores[0], ...bad }] }).stores[0];
+    assert.ok(parsed.reviewAverage === null || (parsed.reviewCount > 0 && parsed.reviewAverage >= 1), JSON.stringify(bad));
+  }
+  const forged = parseStoreList({ stores: [{ ...catalog.stores[0], acceptsLightning: true, banner: "00".repeat(32) }] }).stores[0];
+  assert.equal(forged.acceptsLightning, false);
+  assert.notEqual(forged.banner, "00".repeat(32));
+});

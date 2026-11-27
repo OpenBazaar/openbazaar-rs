@@ -10,7 +10,7 @@ import { MediaImage } from "./SellerKit";
 import { FollowButton } from "./FollowButton";
 
 /** A store this node already holds: its signed record and the catalog listings for that key. */
-export function CatalogStore({ storeId, followable, onFollowChanged, store, listings, rates, currency, revealed, onReveal, verdictOf, onOpen, onStore, onBack }: {
+export function CatalogStore({ storeId, followable, onFollowChanged, store, listings, rates, currency, revealed, onReveal, verdictOf, onOpen, onStore, backLabel = "Back to products", onBack }: {
   storeId: string;
   /** False for this node's own store. */
   followable: boolean;
@@ -24,6 +24,7 @@ export function CatalogStore({ storeId, followable, onFollowChanged, store, list
   verdictOf: (listing: ListingHeader) => Verdict;
   onOpen: (listing: ListingHeader) => void;
   onStore: (storeId: string) => void;
+  backLabel?: string;
   onBack: () => void;
 }) {
   const details = store?.record.details ?? null;
@@ -58,7 +59,7 @@ export function CatalogStore({ storeId, followable, onFollowChanged, store, list
   }
 
   return <section className="ob-storefront" aria-labelledby="ob-store-page-name">
-    <button className="ob-back" onClick={onBack}><Icon name="arrow" size={16}/>Back to products</button>
+    <button className="ob-back" onClick={onBack}><Icon name="arrow" size={16}/>{backLabel}</button>
     <div className="ob-storefront-banner">{images.banner && <MediaImage hash={images.banner} alt="" className="ob-store-banner-img"/>}</div>
     <header className="ob-storefront-head">
       <span className="ob-store-avatar is-large">{images.avatar ? <MediaImage hash={images.avatar} alt={`${name} avatar`}/> : name.charAt(0)}</span>

@@ -145,6 +145,50 @@ pub(crate) fn store_summary(catalog: &Catalog, store: &Store, own: Option<&Store
     }))
 }
 
+/// Sorted, deduplicated, non-empty categories of the listings `store` signs.
+fn listing_categories(catalog: &Catalog, store: &StoreId) -> Vec<String> {
+    let mut categories: Vec<String> = catalog
+        .listings
+        .iter()
+        .filter(|listing| listing.store_id == *store)
+        .map(|listing| listing.category.trim().to_string())
+        .filter(|category| !category.is_empty())
+        .collect();
+    categories.sort();
+    categories.dedup();
+    categories
+}
+
+/// What a store directory needs on top of [`store_summary`]: the banner, the
+/// Lightning claim in the signed record, the store's listing categories, and
+/// its verified review count and average (the numbers `GET
+/// /stores/{key}/reviews` reports). Added to `GET /stores` and `GET
+/// /catalog` only, so the signed catalog value stays as it was.
+///
+/// Takes the review pool lock, then the catalog lock, as other review code
+/// does, so call it with neither held.
+pub(crate) fn add_directory_fields(node: &Node, summaries: &mut Value) {
+    let Some(summaries) = summaries.as_array_mut() else { return };
+    let ids: Vec<Option<StoreId>> = summaries
+        .iter()
+        .map(|summary| summary["key"].as_str().and_then(unhex32).map(StoreId::from_bytes))
+        .collect();
+    let stats: Vec<(u64, Option<f64>)> = {
+        let reviews = node.reviews();
+        ids.iter().map(|id| id.map_or((0, None), |id| reviews.summary(&id))).collect()
+    };
+    let catalog = node.catalog();
+    for ((summary, id), (count, average)) in summaries.iter_mut().zip(ids).zip(stats) {
+        let store = id.and_then(|id| catalog.store(&id));
+        let details = store.and_then(|store| store.details.as_ref());
+        summary["banner"] = json!(details.and_then(|d| d.profile.banner).map(|hash| hex(&hash)));
+        summary["acceptsLightning"] = json!(details.is_some_and(|d| d.accepts_lightning));
+        summary["categories"] = json!(id.map_or_else(Vec::new, |id| listing_categories(&catalog, &id)));
+        summary["reviewCount"] = json!(count);
+        summary["reviewAverage"] = json!(average);
+    }
+}
+
 /// The full public profile, the store's listings, and its moderators.
 pub(crate) fn store_detail(catalog: &Catalog, store: &Store, own: Option<&StoreId>) -> Result<Value, openbazaar_protocol::Error> {
     let mut summary = store_summary(catalog, store, own)?;
@@ -191,14 +235,16 @@ pub(crate) fn list_response(node: &Node, client: &Client, head: &str, origin: Op
     if let Err(response) = local_guard(node, client, head, origin) {
         return response;
     }
-    let catalog = node.catalog();
-    let stores: Result<Vec<Value>, _> = catalog
-        .stores
-        .iter()
-        .map(|store| store_summary(&catalog, store, Some(&node.own_store)))
-        .collect();
+    let stores: Result<Vec<Value>, _> = {
+        let catalog = node.catalog();
+        catalog.stores.iter().map(|store| store_summary(&catalog, store, Some(&node.own_store))).collect()
+    };
     match stores {
-        Ok(stores) => json_body("200 OK", &json!({ "stores": stores }), origin),
+        Ok(stores) => {
+            let mut stores = Value::Array(stores);
+            add_directory_fields(node, &mut stores);
+            json_body("200 OK", &json!({ "stores": stores }), origin)
+        }
         Err(err) => {
             eprintln!("ob-node: stores: {err}");
             json_error("500 Internal Server Error", "The stores could not be read.", origin)

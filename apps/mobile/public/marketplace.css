@@ -6131,3 +6131,70 @@ body:has(.ob-sales-detail-dialog[open]) .ob-content { overflow:hidden; }
 @media (max-width: 719px) {
   .ob-update-actions { width: 100%; }
 }
+
+/* Store directory: a grid of quiet store cards with search and filters. */
+.ob-directory { width: 100%; min-width: 0; display: flex; flex-direction: column; gap: 16px; }
+.ob-directory-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px 20px; flex-wrap: wrap; margin-bottom: 8px; }
+.ob-directory-header > div { min-width: 0; }
+.ob-directory-header h1 { margin: 0; font: 500 32px/1.2 'Instrument Sans',Arial,sans-serif; letter-spacing: -.8px; overflow-wrap: anywhere; }
+.ob-directory-header h1 > span { display: inline-flex; align-items: center; justify-content: center; vertical-align: middle; min-width: 28px; min-height: 25px; margin-left: 12px; padding: 5px 7px; border: 1px solid var(--ob-line); border-radius: 6px; color: var(--ob-secondary); font-size: 12px; line-height: 1; font-weight: 400; letter-spacing: 0; font-variant-numeric: tabular-nums; }
+.ob-directory-header p { margin: 10px 0 0; max-width: 42rem; color: var(--ob-secondary); font-size: 15px; line-height: 1.65; }
+.ob-directory-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.ob-directory-controls .ob-directory-search { flex: 1 1 280px; max-width: none; min-width: 0; }
+.ob-directory-segment { display: inline-flex; gap: 0; padding: 3px; border: 1px solid var(--ob-line); border-radius: 8px; background: var(--ob-surface); }
+.ob-directory-segment button { display: inline-flex; align-items: center; gap: 8px; min-height: 40px; padding: 0 12px; border-radius: 6px; color: var(--ob-secondary); font-size: 13px; line-height: 1.3; white-space: nowrap; }
+.ob-directory-segment button span { font-variant-numeric: tabular-nums; color: var(--ob-muted); }
+.ob-directory-segment button:hover { color: var(--ob-ink); }
+.ob-directory-segment button[aria-pressed="true"] { background: var(--ob-selected); color: var(--ob-ink); box-shadow: inset 0 0 0 1px var(--ob-line); font-weight: 600; }
+.ob-directory-selects { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; flex: 1 1 100%; }
+.ob-directory-select { display: block; flex: 0 1 auto; min-width: 0; margin: 0; }
+.ob-directory-select select { display: block; min-height: 44px; min-width: 150px; max-width: 100%; padding: 0 12px; border: 1px solid var(--ob-line); border-radius: 8px; background: var(--ob-surface); color: var(--ob-ink); font-size: 14px; }
+.ob-directory-status { margin: 0; color: var(--ob-muted); font-size: 13px; line-height: 1.4; font-variant-numeric: tabular-nums; }
+.ob-directory-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+.ob-directory-card { position: relative; display: flex; flex-direction: column; min-width: 0; overflow: hidden; border: 1px solid var(--ob-line); border-radius: 10px; background: var(--ob-surface); color: var(--ob-ink); transition: border-color .15s; }
+.ob-directory-card:hover { border-color: var(--ob-line-hover); }
+.ob-directory-card:has(.ob-directory-open:focus-visible) { outline: 2px solid var(--ob-link); outline-offset: 2px; }
+.ob-directory-banner { height: 76px; flex: none; overflow: hidden; background: color-mix(in srgb, var(--ob-selected) 55%, var(--ob-surface)); }
+.ob-directory-banner-img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.ob-directory-body { display: flex; flex-direction: column; gap: 10px; min-width: 0; padding: 0 16px 16px; }
+.ob-directory-head { display: flex; align-items: flex-start; gap: 12px; min-width: 0; }
+.ob-directory-avatar { display: inline-flex; flex: none; align-items: center; justify-content: center; width: 48px; height: 48px; margin-top: -24px; border: 3px solid var(--ob-surface); border-radius: 12px; overflow: hidden; background: var(--ob-selected); color: var(--ob-ink); font-size: 20px; font-weight: 600; box-sizing: border-box; }
+.ob-directory-avatar img { width: 100%; height: 100%; object-fit: cover; }
+.ob-directory-title { flex: 1 1 auto; min-width: 0; padding-top: 10px; display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
+.ob-directory-title h2 { margin: 0; min-width: 0; max-width: 100%; font: 600 16px/1.35 'Instrument Sans',Arial,sans-serif; letter-spacing: -.1px; overflow-wrap: anywhere; }
+.ob-directory-open { display: block; padding: 0; max-width: 100%; color: inherit; font: inherit; text-align: left; overflow-wrap: anywhere; background: none; border: 0; cursor: pointer; }
+.ob-directory-open::after { content: ""; position: absolute; inset: 0; }
+.ob-directory-open:focus-visible { outline: none; }
+.ob-directory-own { display: inline-flex; align-items: center; min-height: 20px; padding: 0 7px; border: 1px solid var(--ob-line); border-radius: 999px; color: var(--ob-secondary); font-size: 11px; line-height: 1.2; }
+.ob-directory-follow { position: relative; z-index: 1; flex: none; padding-top: 8px; }
+.ob-directory-follow .ob-follow { align-items: flex-end; }
+.ob-app .ob-directory-follow .ob-secondary { min-height: 34px; padding: 4px 12px; font-size: 13px; gap: 6px; }
+.ob-directory-follow .ob-follow-undo { display: none; }
+.ob-directory-tagline { margin: 0; color: var(--ob-secondary); font-size: 14px; line-height: 1.5; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+.ob-directory-meta { margin: 0; display: flex; flex-wrap: wrap; gap: 4px 12px; color: var(--ob-muted); font-size: 13px; line-height: 1.4; font-variant-numeric: tabular-nums; }
+.ob-directory-rating { color: var(--ob-ink); }
+.ob-directory-rating span { color: var(--ob-muted); }
+.ob-directory-pills { list-style: none; margin: 2px 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
+.ob-directory-pill { display: inline-flex; align-items: center; min-height: 22px; padding: 0 8px; border: 1px solid var(--ob-line); border-radius: 999px; color: var(--ob-secondary); font-size: 12px; line-height: 1.2; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ob-directory-pill.is-rail { color: var(--ob-ink); font-weight: 600; letter-spacing: .02em; background: var(--ob-subtle); }
+.ob-directory .ob-empty { margin: 24px auto; max-width: 28rem; padding: 36px 28px; border: 1px solid var(--ob-line); border-radius: 12px; background: var(--ob-surface); }
+.ob-directory-dialog { max-width: 32rem; width: calc(100vw - 2rem); }
+.ob-directory-follow-form { display: flex; flex-direction: column; gap: 16px; }
+.ob-directory-follow-form > header h2 { margin: 0; font-size: 24px; line-height: 1.25; }
+.ob-directory-follow-form > header p { margin: 8px 0 0; color: var(--ob-secondary); font-size: 14px; line-height: 1.6; }
+.ob-directory-follow-form .ob-field { display: flex; flex-direction: column; gap: 8px; font-size: 12px; color: var(--ob-muted); }
+.ob-directory-follow-form .ob-field input { min-height: 44px; padding: 11px 12px; border: 1px solid var(--ob-line); border-radius: 8px; background: var(--ob-paper); color: var(--ob-ink); font-size: 15px; }
+.ob-directory-follow-form .ob-form-actions { justify-content: flex-end; gap: 10px; margin-top: 4px; }
+@media (max-width: 1023px) {
+  .ob-directory-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 639px) {
+  .ob-directory-grid { grid-template-columns: minmax(0, 1fr); }
+  .ob-directory-header h1 { font-size: 28px; line-height: 1.25; }
+  .ob-directory-header > .ob-secondary { width: 100%; }
+  .ob-directory-segment { width: 100%; }
+  .ob-directory-segment button { flex: 1 1 0; justify-content: center; }
+  .ob-directory-select { flex: 1 1 140px; }
+  .ob-directory-select select { width: 100%; min-width: 0; }
+  .ob-directory .ob-empty { padding: 28px 20px; }
+}
