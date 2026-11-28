@@ -17,12 +17,15 @@
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
+use std::io::{Read, Write};
+use std::net::TcpStream;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::thread;
 use std::time::Duration;
 
+use bitcoin::secp256k1::{Secp256k1, SecretKey};
 use openbazaar_protocol::{
     Admission, AdmissionIndex, Catalog, CatalogIndex, Listing, SeedDocument, Store, StoreId, ADMISSION_LEN,
 };
@@ -34,49 +37,171 @@ use crate::orders::OrderError;
 use crate::seeds::DOCUMENT_KEY;
 use crate::{listing_value, Error, Node};
 
+const DIRECTORY_TIMEOUT: Duration = Duration::from_secs(60);
+const FRAME_VERSION: u8 = 1;
+const QUERY_MAGIC: &[u8; 4] = b"OBQR";
+const SUBMIT_MAGIC: &[u8; 4] = b"OBSB";
+static NEXT_DIR_STREAM: AtomicU64 = AtomicU64::new(0);
+
 /// One compiled introduction. A checksum that Arti refuses is "down": the
 /// pull skips it and keeps what is already stored.
 struct Introduction {
     onion: String,
     state_dir: PathBuf,
+    proxy: Option<String>,
 }
 
 impl Source for Introduction {
     fn seed_bytes(&self) -> Result<Vec<u8>, String> {
-        ask(&self.state_dir, &self.onion, tormail::QUERY_SEED, [0u8; 32])?
+        ask(&self.state_dir, &self.onion, self.proxy.as_deref(), tormail::QUERY_SEED, [0u8; 32])?
             .ok_or_else(|| "introduction has no document".into())
     }
 
     fn head_bytes(&self) -> Result<Option<Vec<u8>>, String> {
-        ask(&self.state_dir, &self.onion, tormail::QUERY_HEAD, [0u8; 32])
+        ask(&self.state_dir, &self.onion, self.proxy.as_deref(), tormail::QUERY_HEAD, [0u8; 32])
     }
 
     fn store_bytes(&self, id: &[u8; 32]) -> Result<Option<Vec<u8>>, String> {
-        ask(&self.state_dir, &self.onion, tormail::QUERY_STORE, *id)
+        ask(&self.state_dir, &self.onion, self.proxy.as_deref(), tormail::QUERY_STORE, *id)
     }
 
     fn listing_bytes(&self, id: &[u8; 32]) -> Result<Vec<Vec<u8>>, String> {
-        match ask(&self.state_dir, &self.onion, tormail::QUERY_LISTINGS, *id)? {
+        match ask(&self.state_dir, &self.onion, self.proxy.as_deref(), tormail::QUERY_LISTINGS, *id)? {
             Some(blob) => split_listings(&blob),
             None => Ok(Vec::new()),
         }
     }
 
     fn admission_bytes(&self, cursor: &[u8; 32]) -> Result<Option<Vec<u8>>, String> {
-        ask(&self.state_dir, &self.onion, tormail::QUERY_ADMISSIONS, *cursor)
+        ask(&self.state_dir, &self.onion, self.proxy.as_deref(), tormail::QUERY_ADMISSIONS, *cursor)
     }
 
     fn catalog_index_bytes(&self, id: &[u8; 32]) -> Result<Option<Vec<u8>>, String> {
-        ask(&self.state_dir, &self.onion, tormail::QUERY_CATALOG_INDEX, *id)
+        ask(&self.state_dir, &self.onion, self.proxy.as_deref(), tormail::QUERY_CATALOG_INDEX, *id)
     }
 
     fn admission_index_bytes(&self) -> Result<Option<Vec<u8>>, String> {
-        ask(&self.state_dir, &self.onion, tormail::QUERY_ADMISSION_INDEX, [0u8; 32])
+        ask(&self.state_dir, &self.onion, self.proxy.as_deref(), tormail::QUERY_ADMISSION_INDEX, [0u8; 32])
     }
 }
 
-fn submit_record(state_dir: &Path, onion: &str, kind: u8, body: &[u8]) -> Result<bool, String> {
+fn socks5_connect(proxy: &str, host: &str, port: u16, timeout: Duration) -> Result<TcpStream, String> {
+    let addr = crate::egress::proxy_addr(proxy)?;
+    let mut stream = TcpStream::connect_timeout(&addr, timeout).map_err(|err| err.to_string())?;
+    stream.set_read_timeout(Some(timeout)).map_err(|err| err.to_string())?;
+    stream.set_write_timeout(Some(timeout)).map_err(|err| err.to_string())?;
+
+    // Offer no-auth (0) and username/password (2) so Tor's IsolateSOCKSAuth gives a fresh circuit.
+    stream.write_all(&[5, 2, 0, 2]).map_err(|err| err.to_string())?;
+    let mut method = [0u8; 2];
+    stream.read_exact(&mut method).map_err(|err| err.to_string())?;
+    if method[0] != 5 {
+        return Err("not a SOCKS5 proxy".into());
+    }
+    if method[1] == 2 {
+        let id = NEXT_DIR_STREAM.fetch_add(1, Ordering::Relaxed);
+        let user = format!("ob-dir-{}-{id}", std::process::id());
+        let pass = b"x";
+        let mut auth = Vec::with_capacity(3 + user.len() + pass.len());
+        auth.push(1);
+        auth.push(u8::try_from(user.len()).map_err(|_| "SOCKS5 username too long".to_string())?);
+        auth.extend_from_slice(user.as_bytes());
+        auth.push(pass.len() as u8);
+        auth.extend_from_slice(pass);
+        stream.write_all(&auth).map_err(|err| err.to_string())?;
+        let mut reply = [0u8; 2];
+        stream.read_exact(&mut reply).map_err(|err| err.to_string())?;
+        if reply[1] != 0 {
+            return Err("SOCKS5 auth rejected".into());
+        }
+    } else if method[1] != 0 {
+        return Err(format!("SOCKS5 proxy chose unsupported auth method {}", method[1]));
+    }
+
+    let host_bytes = host.as_bytes();
+    let host_len = u8::try_from(host_bytes.len()).map_err(|_| "onion host too long".to_string())?;
+    let mut cmd = Vec::with_capacity(7 + host_bytes.len());
+    cmd.extend_from_slice(&[5, 1, 0, 3, host_len]);
+    cmd.extend_from_slice(host_bytes);
+    cmd.push((port >> 8) as u8);
+    cmd.push(port as u8);
+    stream.write_all(&cmd).map_err(|err| err.to_string())?;
+
+    let mut hdr = [0u8; 4];
+    stream.read_exact(&mut hdr).map_err(|err| err.to_string())?;
+    if hdr[0] != 5 || hdr[1] != 0 {
+        return Err(format!("SOCKS5 CONNECT failed with code {}", hdr[1]));
+    }
+    match hdr[3] {
+        1 => {
+            let mut skip = [0u8; 6];
+            stream.read_exact(&mut skip).map_err(|err| err.to_string())?;
+        }
+        3 => {
+            let mut len = [0u8; 1];
+            stream.read_exact(&mut len).map_err(|err| err.to_string())?;
+            let mut skip = vec![0u8; len[0] as usize + 2];
+            stream.read_exact(&mut skip).map_err(|err| err.to_string())?;
+        }
+        4 => {
+            let mut skip = [0u8; 18];
+            stream.read_exact(&mut skip).map_err(|err| err.to_string())?;
+        }
+        other => return Err(format!("SOCKS5 unknown address type {other}")),
+    }
+    Ok(stream)
+}
+
+fn submit_via_socks5(proxy: &str, onion: &tormail::OnionAddress, kind: u8, body: &[u8]) -> Result<bool, String> {
+    if body.len() > tormail::MAX_QUERY_LEN {
+        return Err("directory submission too large".into());
+    }
+    let len = u32::try_from(body.len()).map_err(|_| "directory submission too large".to_string())?;
+    let mut stream = socks5_connect(proxy, onion.as_str(), tormail::ORDER_PORT, DIRECTORY_TIMEOUT)?;
+    stream.write_all(SUBMIT_MAGIC).map_err(|err| err.to_string())?;
+    stream.write_all(&[FRAME_VERSION, kind]).map_err(|err| err.to_string())?;
+    stream.write_all(&len.to_le_bytes()).map_err(|err| err.to_string())?;
+    stream.write_all(body).map_err(|err| err.to_string())?;
+    stream.flush().map_err(|err| err.to_string())?;
+    let mut status = [0u8; 1];
+    stream.read_exact(&mut status).map_err(|err| err.to_string())?;
+    match status[0] {
+        0 => Ok(true),
+        1 => Ok(false),
+        _ => Err("malformed directory submission reply".into()),
+    }
+}
+
+fn ask_via_socks5(proxy: &str, onion: &tormail::OnionAddress, kind: u8, id: [u8; 32]) -> Result<Option<Vec<u8>>, String> {
+    let mut stream = socks5_connect(proxy, onion.as_str(), tormail::ORDER_PORT, DIRECTORY_TIMEOUT)?;
+    stream.write_all(QUERY_MAGIC).map_err(|err| err.to_string())?;
+    stream.write_all(&[FRAME_VERSION, kind]).map_err(|err| err.to_string())?;
+    stream.write_all(&id).map_err(|err| err.to_string())?;
+    stream.flush().map_err(|err| err.to_string())?;
+    let mut status = [0u8; 1];
+    stream.read_exact(&mut status).map_err(|err| err.to_string())?;
+    let mut len_bytes = [0u8; 4];
+    stream.read_exact(&mut len_bytes).map_err(|err| err.to_string())?;
+    let len = u32::from_le_bytes(len_bytes) as usize;
+    if len > tormail::MAX_QUERY_LEN {
+        return Err("directory reply too large".into());
+    }
+    let mut body = vec![0u8; len];
+    if len > 0 {
+        stream.read_exact(&mut body).map_err(|err| err.to_string())?;
+    }
+    match status[0] {
+        0 => Ok(Some(body)),
+        1 => Ok(None),
+        _ => Err("malformed directory query reply".into()),
+    }
+}
+
+fn submit_record(state_dir: &Path, onion: &str, proxy: Option<&str>, kind: u8, body: &[u8]) -> Result<bool, String> {
     let onion = tormail::OnionAddress::parse(onion).map_err(|err| err.to_string())?;
+    if let Some(proxy) = proxy {
+        return submit_via_socks5(proxy, &onion, kind, body);
+    }
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -85,7 +210,7 @@ fn submit_record(state_dir: &Path, onion: &str, kind: u8, body: &[u8]) -> Result
         .block_on(async {
             let client = tormail::open_client(state_dir)?;
             tokio::time::timeout(
-                Duration::from_secs(30),
+                DIRECTORY_TIMEOUT,
                 tormail::submit_directory(&client, &onion, kind, body),
             )
             .await
@@ -94,8 +219,11 @@ fn submit_record(state_dir: &Path, onion: &str, kind: u8, body: &[u8]) -> Result
         .map_err(|err| err.to_string())
 }
 
-fn ask(state_dir: &Path, onion: &str, kind: u8, id: [u8; 32]) -> Result<Option<Vec<u8>>, String> {
+fn ask(state_dir: &Path, onion: &str, proxy: Option<&str>, kind: u8, id: [u8; 32]) -> Result<Option<Vec<u8>>, String> {
     let onion = tormail::OnionAddress::parse(onion).map_err(|err| err.to_string())?;
+    if let Some(proxy) = proxy {
+        return ask_via_socks5(proxy, &onion, kind, id);
+    }
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -103,7 +231,7 @@ fn ask(state_dir: &Path, onion: &str, kind: u8, id: [u8; 32]) -> Result<Option<V
     runtime
         .block_on(async {
             let client = tormail::open_client(state_dir)?;
-            tokio::time::timeout(Duration::from_secs(30), tormail::ask_directory(&client, &onion, kind, id))
+            tokio::time::timeout(DIRECTORY_TIMEOUT, tormail::ask_directory(&client, &onion, kind, id))
                 .await
                 .map_err(|_| tormail::Error::Transport("introduction timed out"))?
         })
@@ -280,9 +408,7 @@ impl Replica {
                 }
             }
             if let Ok(admission) = Admission::decode(chunk) {
-                let id = admission.store_id;
-                self.admissions.insert(id, admission);
-                self.save_admission_file(id)?;
+                self.insert_admission(admission)?;
             }
         }
         if count < page_cap() {
@@ -486,10 +612,20 @@ impl Replica {
         self.save_listing(*hash.as_bytes(), &listing)
     }
 
-    /// Keep a verified admission. A flipped byte does not replace a good one.
+    /// Keep a verified admission. A flipped byte or an older block height does
+    /// not replace a newer valid admission for the same store.
     pub(crate) fn accept_admission(&mut self, bytes: &[u8]) -> Result<(), String> {
         let admission = Admission::decode(bytes).map_err(|err| err.to_string())?;
+        self.insert_admission(admission)
+    }
+
+    fn insert_admission(&mut self, admission: Admission) -> Result<(), String> {
         let id = admission.store_id;
+        if let Some(held) = self.admissions.get(&id) {
+            if admission.height < held.height || *held == admission {
+                return Ok(());
+            }
+        }
         self.admissions.insert(id, admission);
         self.save_admission_file(id)
     }
@@ -1122,6 +1258,133 @@ impl Node {
         }
     }
 
+    /// Configure the directory operator secret key for automatic `OBAX`
+    /// admission snapshot signing. Refuses a key that does not match [`DOCUMENT_KEY`].
+    pub fn set_admission_signer(&self, secret_bytes: [u8; 32]) -> Result<(), String> {
+        let secret = SecretKey::from_slice(&secret_bytes)
+            .map_err(|_| "the admission signing key is not a valid secret key".to_string())?;
+        if secret.x_only_public_key(&Secp256k1::new()).0.serialize() != DOCUMENT_KEY {
+            return Err("the admission signing key does not match the directory key shipped in this binary".into());
+        }
+        *self.admission_signer.lock().unwrap_or_else(|err| err.into_inner()) = Some(secret);
+        Ok(())
+    }
+
+    pub(crate) fn has_admission_signer(&self) -> bool {
+        self.admission_signer.lock().unwrap_or_else(|err| err.into_inner()).is_some()
+    }
+
+    /// SOCKS5 proxy for outbound directory queries and submissions, when the
+    /// node runs with `--proxy` or `--external-tor`.
+    pub(crate) fn directory_proxy(&self) -> Option<String> {
+        self.local.egress.proxy.clone().or_else(|| {
+            self.remote
+                .uses_external_tor()
+                .then(|| format!("socks5h://{}", crate::remote::external_tor::DEFAULT_SOCKS))
+        })
+    }
+
+    fn own_onions(&self) -> Vec<String> {
+        let mut onions = Vec::new();
+        if let Some(onion) = self.advertised_onion() {
+            onions.push(onion);
+        }
+        if let Some(onion) = self.remote.services.sale_onion() {
+            if !onions.iter().any(|existing| existing == &onion) {
+                onions.push(onion);
+            }
+        }
+        onions
+    }
+
+    fn is_introduction(&self) -> bool {
+        let own = self.own_onions();
+        if own.is_empty() {
+            return false;
+        }
+        let hosts = self.seed_replica.lock().unwrap_or_else(|err| err.into_inner()).introduction_hosts();
+        hosts.iter().any(|host| own.iter().any(|mine| mine == host))
+    }
+
+    /// Verify all admissions on-chain and, if the set of live admitted stores
+    /// changed (or no `OBAX` snapshot exists yet for the current head), sign
+    /// and atomically persist a new `AdmissionIndex` (`OBAX`) with a monotonic
+    /// sequence number. Returns `Ok(Some((sequence, encoded_bytes)))` when a
+    /// new snapshot was issued.
+    pub(crate) fn try_issue_admission_index(&self) -> Result<Option<(u64, Vec<u8>)>, String> {
+        let secret = *self.admission_signer.lock().unwrap_or_else(|err| err.into_inner());
+        let Some(secret) = secret else {
+            return Ok(None);
+        };
+        self.try_issue_admission_index_with(&secret, &DOCUMENT_KEY)
+    }
+
+    pub(crate) fn try_issue_admission_index_with(
+        &self,
+        secret: &SecretKey,
+        expected_key: &[u8; 32],
+    ) -> Result<Option<(u64, Vec<u8>)>, String> {
+        if secret.x_only_public_key(&Secp256k1::new()).0.serialize() != *expected_key {
+            return Err("admission signer does not match expected directory key".into());
+        }
+        let (head, admissions, existing_snapshot_stores) = {
+            let replica = self.seed_replica.lock().unwrap_or_else(|err| err.into_inner());
+            let head = replica.head();
+            let admissions = replica.admissions();
+            let existing = replica.current_snapshot().map(|snap| snap.stores.clone());
+            (head, admissions, existing)
+        };
+        let Some(head) = head else {
+            return Ok(None);
+        };
+        if head.signer != *expected_key {
+            return Ok(None);
+        }
+        // Do not wipe a pre-existing non-empty snapshot before any admission
+        // records have been pulled, and do not sign an empty snapshot when no
+        // admissions have ever been seen.
+        if admissions.is_empty() {
+            return Ok(None);
+        }
+        let live_set = crate::admission::verified_live_admissions(
+            self.chain.as_ref(),
+            self.network,
+            &head,
+            &admissions,
+        )?;
+        let mut live_stores: Vec<[u8; 32]> = live_set.iter().copied().collect();
+        live_stores.sort();
+        // If no existing snapshot and no live stores yet, wait until at least
+        // one valid admission is confirmed before issuing seq 1.
+        if existing_snapshot_stores.is_none() && live_stores.is_empty() {
+            self.seed_replica.lock().unwrap_or_else(|err| err.into_inner()).set_live(live_set);
+            return Ok(None);
+        }
+        let mut replica = self.seed_replica.lock().unwrap_or_else(|err| err.into_inner());
+        replica.set_live(live_set);
+        let Some(current_head) = replica.head() else {
+            return Ok(None);
+        };
+        if current_head.sequence != head.sequence || current_head.signer != *expected_key {
+            return Ok(None);
+        }
+        if replica.current_snapshot().is_some_and(|snap| snap.stores == live_stores) {
+            return Ok(None);
+        }
+        let next_seq = replica.admission_index_sequence().saturating_add(1);
+        let index = AdmissionIndex::sign(
+            next_seq,
+            crate::own_store::today_yyyymmdd(),
+            current_head.sequence,
+            live_stores,
+            secret,
+        )
+        .map_err(|err| err.to_string())?;
+        let bytes = index.encode().map_err(|err| err.to_string())?;
+        replica.keep_admission_index(index)?;
+        Ok(Some((next_seq, bytes)))
+    }
+
     /// Keep a signed store, listing, admission, or a higher head.
     pub(crate) fn directory_submit(&self, kind: u8, body: &[u8]) -> bool {
         let tip = if kind == tormail::SUBMIT_DOCUMENT { self.chain.tip_height().ok() } else { None };
@@ -1139,6 +1402,16 @@ impl Node {
         };
         if accepted.is_ok() {
             self.recheck_admissions();
+            if matches!(kind, tormail::SUBMIT_ADMISSION | tormail::SUBMIT_DOCUMENT) {
+                match self.try_issue_admission_index() {
+                    Ok(Some((seq, bytes))) => {
+                        eprintln!("ob-node: issued OBAX seq {seq}");
+                        self.spawn_propagate_admission_index(seq, bytes);
+                    }
+                    Ok(None) => {}
+                    Err(err) => eprintln!("ob-node: automatic OBAX issuance skipped: {err}"),
+                }
+            }
             self.refresh_market();
         }
         accepted.is_ok()
@@ -1266,6 +1539,15 @@ impl Node {
             if let Err(err) = self.pull_directory(&refs) {
                 eprintln!("ob-node: introduction: {err}");
             }
+            match self.try_issue_admission_index() {
+                Ok(Some((seq, _))) => {
+                    eprintln!("ob-node: issued OBAX seq {seq}");
+                    self.refresh_market();
+                }
+                Ok(None) => {}
+                Err(err) => eprintln!("ob-node: automatic OBAX issuance skipped: {err}"),
+            }
+            self.propagate_admission_index(&sources);
             for _ in 0..60 {
                 if stop.load(Ordering::Relaxed) {
                     return;
@@ -1285,13 +1567,19 @@ impl Node {
         };
         for source in sources {
             if let Some(bytes) = &store {
-                let _ = submit_record(&source.state_dir, &source.onion, tormail::SUBMIT_STORE, bytes);
+                if let Err(err) = submit_record(&source.state_dir, &source.onion, source.proxy.as_deref(), tormail::SUBMIT_STORE, bytes) {
+                    eprintln!("ob-node: submit store to {}: {err}", source.onion);
+                }
             }
             if let Some(bytes) = &admission {
-                let _ = submit_record(&source.state_dir, &source.onion, tormail::SUBMIT_ADMISSION, bytes);
+                if let Err(err) = submit_record(&source.state_dir, &source.onion, source.proxy.as_deref(), tormail::SUBMIT_ADMISSION, bytes) {
+                    eprintln!("ob-node: submit admission to {}: {err}", source.onion);
+                }
             }
             if let Some(bytes) = &catalog_index {
-                let _ = submit_record(&source.state_dir, &source.onion, tormail::SUBMIT_CATALOG_INDEX, bytes);
+                if let Err(err) = submit_record(&source.state_dir, &source.onion, source.proxy.as_deref(), tormail::SUBMIT_CATALOG_INDEX, bytes) {
+                    eprintln!("ob-node: submit catalog index to {}: {err}", source.onion);
+                }
             }
         }
         for (name, bytes) in &listings {
@@ -1301,7 +1589,7 @@ impl Node {
             }
             let mut kept = false;
             for source in sources {
-                if submit_record(&source.state_dir, &source.onion, tormail::SUBMIT_LISTING, bytes).ok() == Some(true) {
+                if submit_record(&source.state_dir, &source.onion, source.proxy.as_deref(), tormail::SUBMIT_LISTING, bytes).ok() == Some(true) {
                     kept = true;
                     break;
                 }
@@ -1311,6 +1599,89 @@ impl Node {
                 let _ = replica.mark_listing_sent(name);
             }
         }
+    }
+
+    /// Push the current `OBAX` admission snapshot to peer introduction hosts
+    /// that have not yet acknowledged this sequence. Runs only on nodes that
+    /// sign admissions or are themselves listed as introductions.
+    fn propagate_admission_index(&self, sources: &[Introduction]) {
+        if !self.has_admission_signer() && !self.is_introduction() {
+            return;
+        }
+        let snapshot = {
+            let replica = self.seed_replica.lock().unwrap_or_else(|err| err.into_inner());
+            replica.current_snapshot().and_then(|snap| {
+                snap.encode().ok().map(|bytes| (snap.sequence, bytes))
+            })
+        };
+        let Some((seq, bytes)) = snapshot else {
+            return;
+        };
+        for source in sources {
+            let already = self
+                .admission_index_pushed
+                .lock()
+                .unwrap_or_else(|err| err.into_inner())
+                .get(&source.onion)
+                .copied()
+                .unwrap_or(0);
+            if already >= seq {
+                continue;
+            }
+            match submit_record(
+                &source.state_dir,
+                &source.onion,
+                source.proxy.as_deref(),
+                tormail::SUBMIT_ADMISSION_INDEX,
+                &bytes,
+            ) {
+                Ok(true) => {
+                    self.admission_index_pushed
+                        .lock()
+                        .unwrap_or_else(|err| err.into_inner())
+                        .insert(source.onion.clone(), seq);
+                    eprintln!("ob-node: propagated OBAX seq {seq} to {}", source.onion);
+                }
+                Ok(false) => {
+                    eprintln!("ob-node: {} rejected OBAX seq {seq}", source.onion);
+                }
+                Err(err) => {
+                    eprintln!("ob-node: propagate OBAX seq {seq} to {}: {err}", source.onion);
+                }
+            }
+        }
+    }
+
+    /// Best-effort asynchronous push of a newly issued `OBAX` snapshot to all
+    /// peer introductions so they receive it without waiting for the next
+    /// 60-second pass and without blocking the incoming `OBSB` handler.
+    fn spawn_propagate_admission_index(&self, seq: u64, bytes: Vec<u8>) {
+        if !self.local.introductions {
+            return;
+        }
+        let own = self.own_onions();
+        let peers: Vec<String> = self
+            .seed_replica
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .introduction_hosts()
+            .into_iter()
+            .filter(|onion| !own.iter().any(|mine| mine == onion))
+            .collect();
+        if peers.is_empty() {
+            return;
+        }
+        let state_dir = self.data_dir.join("tor-client");
+        let proxy = self.directory_proxy();
+        thread::spawn(move || {
+            for onion in peers {
+                match submit_record(&state_dir, &onion, proxy.as_deref(), tormail::SUBMIT_ADMISSION_INDEX, &bytes) {
+                    Ok(true) => eprintln!("ob-node: propagated OBAX seq {seq} to {onion}"),
+                    Ok(false) => eprintln!("ob-node: {onion} rejected OBAX seq {seq}"),
+                    Err(err) => eprintln!("ob-node: propagate OBAX seq {seq} to {onion}: {err}"),
+                }
+            }
+        });
     }
 
     pub(crate) fn pull_directory(&self, sources: &[&dyn Source]) -> Result<(), String> {
@@ -1346,8 +1717,9 @@ impl Node {
             replica.stores.get(&id).and_then(|store| store.details.as_ref()).map(|details| details.onion.clone())
         };
         let state_dir = self.data_dir.join("tor-client");
+        let proxy = self.directory_proxy();
         let primary = match onion.as_deref() {
-            Some(onion) if !onion.is_empty() => match ask(&state_dir, onion, tormail::QUERY_LISTINGS, id) {
+            Some(onion) if !onion.is_empty() => match ask(&state_dir, onion, proxy.as_deref(), tormail::QUERY_LISTINGS, id) {
                 Ok(Some(blob)) => split_listings(&blob),
                 Ok(None) => Ok(Vec::new()),
                 Err(err) => Err(err),
@@ -1365,10 +1737,11 @@ impl Node {
     /// Take a catalog index from the store onion, or from one introduction when
     /// that answer does not verify. A miss leaves the listings unchecked.
     fn keep_opened_index(&self, id: [u8; 32], onion: Option<&str>) {
+        let proxy = self.directory_proxy();
         let from_store = match onion {
             Some(onion) if !onion.is_empty() => {
                 let state_dir = self.data_dir.join("tor-client");
-                ask(&state_dir, onion, tormail::QUERY_CATALOG_INDEX, id).ok().flatten()
+                ask(&state_dir, onion, proxy.as_deref(), tormail::QUERY_CATALOG_INDEX, id).ok().flatten()
             }
             _ => None,
         };
@@ -1387,8 +1760,9 @@ impl Node {
         }
         let hosts = self.seed_replica.lock().unwrap_or_else(|err| err.into_inner()).introduction_hosts();
         let state_dir = self.data_dir.join("tor-client");
+        let proxy = self.directory_proxy();
         for onion in hosts.iter().take(PASS_ATTEMPTS) {
-            if let Ok(Some(bytes)) = ask(&state_dir, onion, tormail::QUERY_CATALOG_INDEX, id) {
+            if let Ok(Some(bytes)) = ask(&state_dir, onion, proxy.as_deref(), tormail::QUERY_CATALOG_INDEX, id) {
                 return Some(bytes);
             }
         }
@@ -1401,9 +1775,10 @@ impl Node {
         }
         let hosts = self.seed_replica.lock().unwrap_or_else(|err| err.into_inner()).introduction_hosts();
         let state_dir = self.data_dir.join("tor-client");
+        let proxy = self.directory_proxy();
         let mut last = String::from("no introduction answered");
         for onion in hosts.iter().take(PASS_ATTEMPTS) {
-            match ask(&state_dir, onion, tormail::QUERY_LISTINGS, id) {
+            match ask(&state_dir, onion, proxy.as_deref(), tormail::QUERY_LISTINGS, id) {
                 Ok(Some(blob)) => return split_listings(&blob),
                 Ok(None) => return Ok(Vec::new()),
                 Err(err) => last = err,
@@ -1414,10 +1789,19 @@ impl Node {
 
     fn pass_introductions(&self, origin: usize) -> Vec<Introduction> {
         let state_dir = self.data_dir.join("tor-client");
-        let hosts = self.seed_replica.lock().unwrap_or_else(|err| err.into_inner()).introduction_hosts();
+        let proxy = self.directory_proxy();
+        let own = self.own_onions();
+        let hosts: Vec<String> = self
+            .seed_replica
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .introduction_hosts()
+            .into_iter()
+            .filter(|onion| !own.iter().any(|mine| mine == onion))
+            .collect();
         crate::seeds::pass_hosts(&hosts, origin)
             .into_iter()
-            .map(|onion| Introduction { onion, state_dir: state_dir.clone() })
+            .map(|onion| Introduction { onion, state_dir: state_dir.clone(), proxy: proxy.clone() })
             .collect()
     }
 
@@ -1529,7 +1913,7 @@ pub(crate) fn pull_onions(dir: &Path, onions: &[String]) -> Result<(u64, Vec<Str
     let state_dir = dir.join("tor-client");
     let sources: Vec<Introduction> = onions
         .iter()
-        .map(|onion| Introduction { onion: onion.clone(), state_dir: state_dir.clone() })
+        .map(|onion| Introduction { onion: onion.clone(), state_dir: state_dir.clone(), proxy: None })
         .collect();
     let reported: Vec<Report<'_>> = sources.iter().map(|source| Report { inner: source }).collect();
     let refs: Vec<&dyn Source> = reported.iter().map(|source| source as &dyn Source).collect();
@@ -1555,7 +1939,7 @@ pub(crate) fn submit_admission_index(dir: &Path, onions: &[String], bytes: &[u8]
     let state_dir = dir.join("tor-client");
     let mut results = Vec::with_capacity(onions.len());
     for onion in onions {
-        let kept = submit_record(&state_dir, onion, tormail::SUBMIT_ADMISSION_INDEX, bytes)?;
+        let kept = submit_record(&state_dir, onion, None, tormail::SUBMIT_ADMISSION_INDEX, bytes)?;
         results.push((onion.clone(), kept));
     }
     Ok(results)
@@ -2838,5 +3222,362 @@ mod tests {
         let snapshot = AdmissionIndex::sign(3, 20261123, 7, vec![store_id], &dir_secret).unwrap();
         replica.accept_admission_index(&snapshot.encode().unwrap(), &dir_key).unwrap();
         assert_eq!(replica.admission_state().unwrap(), (7, 4, vec![store_id]));
+    }
+
+    fn pay_fee_tx(chain: &crate::harness::MockChain, script: bitcoin::ScriptBuf, sats: u64, input_vout: u32) -> bitcoin::Transaction {
+        use crate::chain::ChainSource;
+        let tx = bitcoin::Transaction {
+            version: bitcoin::transaction::Version::TWO,
+            lock_time: bitcoin::absolute::LockTime::ZERO,
+            input: vec![bitcoin::TxIn {
+                previous_output: bitcoin::OutPoint {
+                    txid: bitcoin::Txid::from_raw_hash(bitcoin::hashes::Hash::all_zeros()),
+                    vout: input_vout,
+                },
+                script_sig: bitcoin::ScriptBuf::new(),
+                sequence: bitcoin::Sequence::ENABLE_RBF_NO_LOCKTIME,
+                witness: bitcoin::Witness::default(),
+            }],
+            output: vec![bitcoin::TxOut {
+                value: bitcoin::Amount::from_sat(sats),
+                script_pubkey: script,
+            }],
+        };
+        chain.broadcast(&tx).unwrap();
+        tx
+    }
+
+    #[test]
+    fn automatic_admission_verifies_fee_issues_monotonic_obax_and_rejects_invalid_or_underpaid() {
+        use bitcoin::hashes::Hash;
+        use openbazaar_protocol::{EPOCH_BLOCKS, FEE_SATS};
+        use crate::admission::store_fee_address;
+        use crate::harness::{self, MockChain, TempDir};
+        use crate::network::NetworkMode;
+
+        let dir = TempDir::new();
+        let chain = MockChain::new();
+        let intro = harness::open_node(&dir.0, NetworkMode::Testnet4, &chain, 1, harness::unreachable_escrow());
+        let dir_secret = secret_from_label("auto-admit-dir");
+        let dir_key = xonly(&dir_secret);
+        let head = SeedDocument::sign(
+            1,
+            vec![onion('a'), onion('b')],
+            DirectoryTerms::standard(dir_key),
+            None,
+            &dir_secret,
+        )
+        .unwrap();
+        intro
+            .seed_replica
+            .lock()
+            .unwrap()
+            .accept_document(&head.encode().unwrap(), &dir_key)
+            .unwrap();
+
+        let (seller_a_secret, store_a) = shop("auto-seller-a", "Cedar Works");
+        let (seller_b_secret, store_b) = shop("auto-seller-b", "Birch Works");
+        let id_a = *store_a.id.as_bytes();
+        let id_b = *store_b.id.as_bytes();
+
+        // 1. Underpaid fee for seller A is rejected from OBAX.
+        let addr_a = store_fee_address(&dir_key, &id_a, NetworkMode::Testnet4.bitcoin()).unwrap();
+        let short_tx = pay_fee_tx(&chain, addr_a.script_pubkey(), FEE_SATS - 1, 1);
+        chain.mine();
+        let short_admit = Admission::sign(id_a, short_tx.compute_txid().to_byte_array(), 0, chain.tip(), &seller_a_secret).unwrap();
+        intro.seed_replica.lock().unwrap().accept_admission(&short_admit.encode().unwrap()).unwrap();
+        assert!(
+            intro.try_issue_admission_index_with(&dir_secret, &dir_key).unwrap().is_none(),
+            "underpaid fee must not issue OBAX"
+        );
+
+        // 2. Unconfirmed full fee for seller B is rejected from OBAX until mined.
+        let addr_b = store_fee_address(&dir_key, &id_b, NetworkMode::Testnet4.bitcoin()).unwrap();
+        let tx_b = pay_fee_tx(&chain, addr_b.script_pubkey(), FEE_SATS, 2);
+        let unconf_admit = Admission::sign(id_b, tx_b.compute_txid().to_byte_array(), 0, chain.tip() + 1, &seller_b_secret).unwrap();
+        intro.seed_replica.lock().unwrap().accept_admission(&unconf_admit.encode().unwrap()).unwrap();
+        assert!(
+            intro.try_issue_admission_index_with(&dir_secret, &dir_key).unwrap().is_none(),
+            "unconfirmed fee must not issue OBAX"
+        );
+
+        // 3. Full confirmed fee for seller A issues OBAX seq 1.
+        let tx_a = pay_fee_tx(&chain, addr_a.script_pubkey(), FEE_SATS, 3);
+        chain.mine();
+        let height_a = chain.tip();
+        let admit_a = Admission::sign(id_a, tx_a.compute_txid().to_byte_array(), 0, height_a, &seller_a_secret).unwrap();
+        intro.seed_replica.lock().unwrap().accept_admission(&admit_a.encode().unwrap()).unwrap();
+        let (seq1, bytes1) = intro
+            .try_issue_admission_index_with(&dir_secret, &dir_key)
+            .unwrap()
+            .expect("confirmed fee issues OBAX seq 1");
+        assert_eq!(seq1, 1);
+        let snap1 = AdmissionIndex::decode(&bytes1).unwrap();
+        snap1.verify_signer(&dir_key).unwrap();
+        assert_eq!((snap1.sequence, snap1.head_sequence), (1, 1));
+        // Note: mining also confirmed tx_b at height_a, whose admission already matched height_a!
+        let mut expected = vec![id_a, id_b];
+        expected.sort();
+        assert_eq!(snap1.stores, expected);
+
+        // 4. Idempotent when nothing changed: no redundant seq bump.
+        assert!(
+            intro.try_issue_admission_index_with(&dir_secret, &dir_key).unwrap().is_none(),
+            "unchanged live set must not bump OBAX sequence"
+        );
+
+        // 5. Persisted atomically to disk and survives reload.
+        let reloaded = Replica::open(&dir.0).unwrap();
+        assert_eq!(reloaded.admission_index_sequence(), 1);
+        assert_eq!(reloaded.admission_index.as_ref().unwrap().stores, expected);
+
+        // 6. A third seller joins -> monotonic seq 2.
+        let (seller_c_secret, store_c) = shop("auto-seller-c", "Maple Works");
+        let id_c = *store_c.id.as_bytes();
+        let addr_c = store_fee_address(&dir_key, &id_c, NetworkMode::Testnet4.bitcoin()).unwrap();
+        let tx_c = pay_fee_tx(&chain, addr_c.script_pubkey(), FEE_SATS, 4);
+        chain.mine();
+        let admit_c = Admission::sign(id_c, tx_c.compute_txid().to_byte_array(), 0, chain.tip(), &seller_c_secret).unwrap();
+        intro.seed_replica.lock().unwrap().accept_admission(&admit_c.encode().unwrap()).unwrap();
+        let (seq2, bytes2) = intro
+            .try_issue_admission_index_with(&dir_secret, &dir_key)
+            .unwrap()
+            .expect("new seller bumps OBAX to seq 2");
+        assert_eq!(seq2, 2);
+        let snap2 = AdmissionIndex::decode(&bytes2).unwrap();
+        let mut expected2 = vec![id_a, id_b, id_c];
+        expected2.sort();
+        assert_eq!(snap2.stores, expected2);
+
+        // 7. Advance past EPOCH_BLOCKS -> expired sellers are dropped in seq 3.
+        *chain.0.tip.lock().unwrap() = chain.tip() + EPOCH_BLOCKS + 10;
+        let (seq3, bytes3) = intro
+            .try_issue_admission_index_with(&dir_secret, &dir_key)
+            .unwrap()
+            .expect("expired admissions update OBAX to seq 3");
+        assert_eq!(seq3, 3);
+        let snap3 = AdmissionIndex::decode(&bytes3).unwrap();
+        assert!(snap3.stores.is_empty(), "all expired stores removed from OBAX");
+    }
+
+    #[test]
+    fn transient_chain_error_preserves_existing_obax() {
+        use crate::harness::TempDir;
+        use crate::network::NetworkMode;
+
+        let dir = TempDir::new();
+        let node = Node::open_local(
+            &dir.0,
+            crate::load_catalog(NetworkMode::Testnet4).unwrap(),
+            crate::NodeConfig::offline(NetworkMode::Testnet4),
+            crate::LocalConfig::headless(),
+        )
+        .unwrap();
+        let dir_secret = secret_from_label("offline-chain-dir");
+        let dir_key = xonly(&dir_secret);
+        let head = SeedDocument::sign(1, vec![onion('a')], DirectoryTerms::standard(dir_key), None, &dir_secret).unwrap();
+        let (seller_secret, store) = shop("offline-seller", "Oak Works");
+        let id = *store.id.as_bytes();
+        let admit = Admission::sign(id, [5u8; 32], 0, 100, &seller_secret).unwrap();
+        let existing = AdmissionIndex::sign(2, 20261123, 1, vec![id], &dir_secret).unwrap();
+        {
+            let mut replica = node.seed_replica.lock().unwrap();
+            replica.accept_document(&head.encode().unwrap(), &dir_key).unwrap();
+            replica.accept_admission(&admit.encode().unwrap()).unwrap();
+            replica.accept_admission_index(&existing.encode().unwrap(), &dir_key).unwrap();
+        }
+        assert!(
+            node.try_issue_admission_index_with(&dir_secret, &dir_key).is_err(),
+            "offline chain must return Err rather than wiping OBAX"
+        );
+        let replica = node.seed_replica.lock().unwrap();
+        assert_eq!(replica.admission_index_sequence(), 2);
+        assert_eq!(replica.current_snapshot().unwrap().stores, vec![id]);
+    }
+
+    #[test]
+    fn older_admission_cannot_downgrade_newer_admission() {
+        let dir = TempDir::new();
+        let mut replica = Replica::open(&dir.0).unwrap();
+        let secret = secret_from_label("downgrade-seller");
+        let id = xonly(&secret);
+        let newer = Admission::sign(id, [2u8; 32], 0, 200, &secret).unwrap();
+        let older = Admission::sign(id, [1u8; 32], 0, 100, &secret).unwrap();
+        replica.accept_admission(&newer.encode().unwrap()).unwrap();
+        replica.accept_admission(&older.encode().unwrap()).unwrap();
+        assert_eq!(replica.admissions.get(&id).unwrap().height, 200);
+        replica.keep_admission_page(&older.encode().unwrap()).unwrap();
+        assert_eq!(replica.admissions.get(&id).unwrap().height, 200);
+    }
+
+    #[test]
+    fn pass_introductions_filters_out_own_onion() {
+        use crate::harness::{self, MockChain, TempDir};
+        use crate::network::NetworkMode;
+
+        let dir = TempDir::new();
+        let chain = MockChain::new();
+        let intro_a = harness::open_node(&dir.0, NetworkMode::Testnet4, &chain, 1, harness::unreachable_escrow());
+        let onion_a = tormail::onion_for_seed(&[1u8; 32]).to_string();
+        let onion_b = tormail::onion_for_seed(&[2u8; 32]).to_string();
+        let dir_secret = secret_from_label("self-filter-dir");
+        let dir_key = xonly(&dir_secret);
+        let head = SeedDocument::sign(1, vec![onion_a.clone(), onion_b.clone()], DirectoryTerms::standard(dir_key), None, &dir_secret).unwrap();
+        intro_a.seed_replica.lock().unwrap().accept_document(&head.encode().unwrap(), &dir_key).unwrap();
+        intro_a.publish_onion(&tormail::OnionAddress::parse(&onion_a).unwrap()).unwrap();
+        let peers: Vec<String> = intro_a.pass_introductions(0).into_iter().map(|i| i.onion).collect();
+        assert_eq!(peers, vec![onion_b]);
+    }
+
+    #[test]
+    fn obax_propagates_from_intro_a_to_intro_b_and_moderator_via_socks5() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::sync::Arc;
+        use bitcoin::hashes::Hash;
+        use openbazaar_protocol::FEE_SATS;
+        use crate::admission::store_fee_address;
+        use crate::harness::{self, MockChain, TempDir};
+        use crate::network::NetworkMode;
+
+        let dir_secret = secret_from_label("socks5-prop-dir");
+        let dir_key = xonly(&dir_secret);
+        let onion_a = tormail::onion_for_seed(&[11u8; 32]).to_string();
+        let onion_b = tormail::onion_for_seed(&[22u8; 32]).to_string();
+        let head = SeedDocument::sign(
+            1,
+            vec![onion_a, onion_b.clone()],
+            DirectoryTerms::standard(dir_key),
+            None,
+            &dir_secret,
+        )
+        .unwrap();
+
+        let chain = MockChain::new();
+        let intro_a_dir = TempDir::new();
+        let intro_b_dir = TempDir::new();
+        let mod_dir = TempDir::new();
+
+        let intro_a = harness::open_node(&intro_a_dir.0, NetworkMode::Testnet4, &chain, 1, harness::unreachable_escrow());
+        intro_a.seed_replica.lock().unwrap().accept_document(&head.encode().unwrap(), &dir_key).unwrap();
+
+        let intro_b_replica = Arc::new(Mutex::new(Replica::open(&intro_b_dir.0).unwrap()));
+        intro_b_replica.lock().unwrap().accept_document(&head.encode().unwrap(), &dir_key).unwrap();
+
+        // Start a local mock SOCKS5 proxy that speaks SOCKS5 + OBQR/OBSB directly to `intro_b_replica`.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let proxy_url = format!("socks5h://{}", listener.local_addr().unwrap());
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_srv = Arc::clone(&stop);
+        let rep_srv = Arc::clone(&intro_b_replica);
+        let server = thread::spawn(move || {
+            listener.set_nonblocking(true).ok();
+            while !stop_srv.load(Ordering::Relaxed) {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    thread::sleep(Duration::from_millis(10));
+                    continue;
+                };
+                let _ = stream.set_nonblocking(false);
+                let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+                // SOCKS5 greeting
+                let mut g = [0u8; 2];
+                if stream.read_exact(&mut g).is_err() { continue; }
+                let mut methods = vec![0u8; g[1] as usize];
+                if stream.read_exact(&mut methods).is_err() { continue; }
+                // Choose username/password auth (method 2) to exercise IsolateSOCKSAuth path.
+                let _ = stream.write_all(&[5, 2]);
+                let mut u_hdr = [0u8; 2];
+                if stream.read_exact(&mut u_hdr).is_err() { continue; }
+                let mut user = vec![0u8; u_hdr[1] as usize];
+                if stream.read_exact(&mut user).is_err() { continue; }
+                let mut p_len = [0u8; 1];
+                if stream.read_exact(&mut p_len).is_err() { continue; }
+                let mut pass = vec![0u8; p_len[0] as usize];
+                if stream.read_exact(&mut pass).is_err() { continue; }
+                let _ = stream.write_all(&[1, 0]);
+                // SOCKS5 CONNECT
+                let mut req = [0u8; 5];
+                if stream.read_exact(&mut req).is_err() { continue; }
+                let mut host = vec![0u8; req[4] as usize];
+                if stream.read_exact(&mut host).is_err() { continue; }
+                let mut port = [0u8; 2];
+                if stream.read_exact(&mut port).is_err() { continue; }
+                let _ = stream.write_all(&[5, 0, 0, 1, 127, 0, 0, 1, 0, 80]);
+
+                // Directory frame: OBQR or OBSB
+                let mut magic = [0u8; 4];
+                if stream.read_exact(&mut magic).is_err() { continue; }
+                let mut vh = [0u8; 2];
+                if stream.read_exact(&mut vh).is_err() { continue; }
+                let kind = vh[1];
+                if &magic == QUERY_MAGIC {
+                    let mut id = [0u8; 32];
+                    if stream.read_exact(&mut id).is_err() { continue; }
+                    let reply = rep_srv.lock().unwrap().answer(kind, &id);
+                    match reply {
+                        Some(body) => {
+                            let _ = stream.write_all(&[0]);
+                            let _ = stream.write_all(&(body.len() as u32).to_le_bytes());
+                            let _ = stream.write_all(&body);
+                        }
+                        None => {
+                            let _ = stream.write_all(&[1, 0, 0, 0, 0]);
+                        }
+                    }
+                } else if &magic == SUBMIT_MAGIC {
+                    let mut lb = [0u8; 4];
+                    if stream.read_exact(&mut lb).is_err() { continue; }
+                    let len = u32::from_le_bytes(lb) as usize;
+                    let mut body = vec![0u8; len];
+                    if len > 0 && stream.read_exact(&mut body).is_err() { continue; }
+                    let mut rep = rep_srv.lock().unwrap();
+                    let ok = match kind {
+                        tormail::SUBMIT_STORE => rep.accept_store(&body).is_ok(),
+                        tormail::SUBMIT_ADMISSION => rep.accept_admission(&body).is_ok(),
+                        tormail::SUBMIT_ADMISSION_INDEX => rep.accept_admission_index(&body, &dir_key).is_ok(),
+                        _ => false,
+                    };
+                    let _ = stream.write_all(&[if ok { 0 } else { 1 }]);
+                }
+            }
+        });
+
+        // Seller pays fee, signs admission, submits store + admission to intro_a and intro_b via SOCKS5.
+        let (seller_secret, store) = shop("socks5-seller", "Harbor Craft");
+        let id = *store.id.as_bytes();
+        let addr = store_fee_address(&dir_key, &id, NetworkMode::Testnet4.bitcoin()).unwrap();
+        let tx = pay_fee_tx(&chain, addr.script_pubkey(), FEE_SATS, 10);
+        chain.mine();
+        let admit = Admission::sign(id, tx.compute_txid().to_byte_array(), 0, chain.tip(), &seller_secret).unwrap();
+
+        // Simulate vendor submitting store + admission through SOCKS5 proxy (no Arti tor-client created).
+        let vendor_state = TempDir::new();
+        assert!(submit_record(&vendor_state.0, &onion_b, Some(&proxy_url), tormail::SUBMIT_STORE, &store.encode().unwrap()).unwrap());
+        assert!(submit_record(&vendor_state.0, &onion_b, Some(&proxy_url), tormail::SUBMIT_ADMISSION, &admit.encode().unwrap()).unwrap());
+        assert!(!vendor_state.0.join("state").exists(), "SOCKS5 path must not open Arti");
+
+        // intro_a receives admission, auto-issues OBAX seq 1, and propagates to intro_b via SOCKS5.
+        intro_a.seed_replica.lock().unwrap().accept_admission(&admit.encode().unwrap()).unwrap();
+        let (seq, obax_bytes) = intro_a
+            .try_issue_admission_index_with(&dir_secret, &dir_key)
+            .unwrap()
+            .expect("intro_a issues OBAX seq 1");
+        assert_eq!(seq, 1);
+        assert!(submit_record(&intro_a_dir.0, &onion_b, Some(&proxy_url), tormail::SUBMIT_ADMISSION_INDEX, &obax_bytes).unwrap());
+
+        // Moderator pulls from intro_b via SOCKS5 and sees the seller admitted!
+        let source_b = Introduction {
+            onion: onion_b,
+            state_dir: mod_dir.0.join("tor-client"),
+            proxy: Some(proxy_url),
+        };
+        let mut moderator = Replica::open(&mod_dir.0).unwrap();
+        moderator.pull(&[&source_b], &dir_key, [0u8; 32]).unwrap();
+        assert_eq!(moderator.admission_index_sequence(), 1);
+        assert!(moderator.snapshot_names(&id), "moderator received OBAX naming the seller");
+        assert!(moderator.stores.contains_key(&id), "moderator fetched the seller's store record");
+
+        stop.store(true, Ordering::Relaxed);
+        server.join().unwrap();
     }
 }

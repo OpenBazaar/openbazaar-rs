@@ -50,6 +50,53 @@ pub(crate) fn fee_return(store_id: &[u8; 32]) -> Result<ScriptBuf, String> {
     Ok(ScriptBuf::new_op_return(&push))
 }
 
+/// Verify the fee payment for `admission`, distinguishing chain backend errors
+/// (`Err`) from definitively invalid, unconfirmed, underpaid, or expired
+/// admissions (`Ok(false)`).
+pub(crate) fn verify_fee_confirmed(
+    chain: &dyn ChainSource,
+    network: NetworkMode,
+    head: &SeedDocument,
+    admission: &Admission,
+) -> Result<bool, String> {
+    if admission.verify().is_err() {
+        return Ok(false);
+    }
+    let tip = chain.tip_height()?;
+    let Some(entry) = head.schedule.at(admission.height) else { return Ok(false) };
+    let terms = &entry.terms;
+    let script = match admission.version {
+        1 => fee_script(&terms.fee_key, network.bitcoin()),
+        _ => store_fee_address(&terms.fee_key, &admission.store_id, network.bitcoin()).map(|address| address.script_pubkey()),
+    };
+    let Ok(script) = script else { return Ok(false) };
+    let from = tip.saturating_sub(terms.epoch_blocks);
+    chain.script_txs(script.as_script(), from)?;
+    let txid = Txid::from_byte_array(admission.txid);
+    let Some((tx, height)) = chain.transaction(&txid)? else { return Ok(false) };
+    let Some(height) = height else { return Ok(false) };
+    if height != admission.height {
+        return Ok(false);
+    }
+    let age = tip.saturating_sub(height);
+    if age > terms.epoch_blocks {
+        return Ok(false);
+    }
+    let confs = age.saturating_add(1);
+    if confs < terms.fee_confs {
+        return Ok(false);
+    }
+    let Some(output) = tx.output.get(admission.vout as usize) else { return Ok(false) };
+    if output.script_pubkey != script || output.value.to_sat() < terms.fee_sats {
+        return Ok(false);
+    }
+    if admission.version != 1 {
+        return Ok(true);
+    }
+    let Ok(label) = fee_return(&admission.store_id) else { return Ok(false) };
+    Ok(tx.output.iter().any(|output| output.script_pubkey == label))
+}
+
 /// The payment proves the store id, a real output of at least `fee_sats` on
 /// the address the admission's version names, `fee_confs` confirmations, and
 /// a height inside `epoch_blocks` of the tip, all from the head's entry in
@@ -60,44 +107,7 @@ pub(crate) fn fee_confirmed(
     head: &SeedDocument,
     admission: &Admission,
 ) -> bool {
-    if admission.verify().is_err() {
-        return false;
-    }
-    let Ok(tip) = chain.tip_height() else { return false };
-    let Some(entry) = head.schedule.at(admission.height) else { return false };
-    let terms = &entry.terms;
-    let script = match admission.version {
-        1 => fee_script(&terms.fee_key, network.bitcoin()),
-        _ => store_fee_address(&terms.fee_key, &admission.store_id, network.bitcoin()).map(|address| address.script_pubkey()),
-    };
-    let Ok(script) = script else { return false };
-    let from = tip.saturating_sub(terms.epoch_blocks);
-    if chain.script_txs(script.as_script(), from).is_err() {
-        return false;
-    }
-    let txid = Txid::from_byte_array(admission.txid);
-    let Ok(Some((tx, height))) = chain.transaction(&txid) else { return false };
-    let Some(height) = height else { return false };
-    if height != admission.height {
-        return false;
-    }
-    let age = tip.saturating_sub(height);
-    if age > terms.epoch_blocks {
-        return false;
-    }
-    let confs = age.saturating_add(1);
-    if confs < terms.fee_confs {
-        return false;
-    }
-    let Some(output) = tx.output.get(admission.vout as usize) else { return false };
-    if output.script_pubkey != script || output.value.to_sat() < terms.fee_sats {
-        return false;
-    }
-    if admission.version != 1 {
-        return true;
-    }
-    let Ok(label) = fee_return(&admission.store_id) else { return false };
-    tx.output.iter().any(|output| output.script_pubkey == label)
+    verify_fee_confirmed(chain, network, head, admission).unwrap_or(false)
 }
 
 /// Store ids among `admissions` whose fee payment `chain` confirms now.
@@ -109,6 +119,26 @@ pub(crate) fn live_admissions(
 ) -> BTreeSet<[u8; 32]> {
     let Some(head) = head else { return BTreeSet::new() };
     admissions.iter().filter(|admission| fee_confirmed(chain, network, head, admission)).map(|admission| admission.store_id).collect()
+}
+
+/// Like [`live_admissions`], but returns `Err` if any chain query fails so
+/// automatic `OBAX` issuance never drops admitted stores on a transient chain
+/// outage.
+pub(crate) fn verified_live_admissions(
+    chain: &dyn ChainSource,
+    network: NetworkMode,
+    head: &SeedDocument,
+    admissions: &[Admission],
+) -> Result<BTreeSet<[u8; 32]>, String> {
+    // Check chain reachability up front even when `admissions` is empty.
+    let _ = chain.tip_height()?;
+    let mut live = BTreeSet::new();
+    for admission in admissions {
+        if verify_fee_confirmed(chain, network, head, admission)? {
+            live.insert(admission.store_id);
+        }
+    }
+    Ok(live)
 }
 
 enum FeePayment {

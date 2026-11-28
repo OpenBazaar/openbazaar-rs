@@ -195,6 +195,10 @@ pub struct ServeOptions {
     /// and serve the public shop routes there. The clearnet listener stays on
     /// loopback. Clearnet sale URLs stay refused.
     pub onion: bool,
+    /// `--admission-key FILE`: optional directory operator secret key file (64
+    /// hex chars) for automatic `OBAX` admission snapshot issuance on an
+    /// introduction node.
+    pub admission_key: Option<PathBuf>,
 }
 
 impl ServeOptions {
@@ -229,6 +233,7 @@ impl ServeOptions {
         let mut follows: Vec<String> = Vec::new();
         let mut local_shop = None;
         let mut onion = false;
+        let mut admission_key = None;
         let mut iter = args.iter();
         while let Some(arg) = iter.next() {
             let mut value = |name: &str| {
@@ -351,6 +356,7 @@ impl ServeOptions {
                 }
                 "--follow" => follows.push(crate::replicas::normalize(&value("--follow")?)?),
                 "--onion" => onion = true,
+                "--admission-key" => admission_key = Some(PathBuf::from(value("--admission-key")?)),
                 "--local-shop" => {
                     let path = PathBuf::from(value("--local-shop")?);
                     if !path.join("index.html").is_file() {
@@ -429,6 +435,7 @@ impl ServeOptions {
             follows,
             local_shop,
             onion,
+            admission_key,
         })
     }
 
@@ -1239,5 +1246,12 @@ mod tests {
         );
         assert!(bip21(&address, Amount::from_sat(100_000_000)).ends_with("amount=1"));
         assert!(bip21(&address, Amount::from_sat(1)).ends_with("amount=0.00000001"));
+    }
+
+    #[test]
+    fn admission_key_flag_parses() {
+        let options = ServeOptions::parse(&args(&["--admission-key", "/data/seed-document.key"])).unwrap();
+        assert_eq!(options.admission_key, Some(PathBuf::from("/data/seed-document.key")));
+        assert!(ServeOptions::parse(&args(&["--admission-key"])).is_err());
     }
 }
