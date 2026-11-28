@@ -136,20 +136,35 @@ pub(crate) fn handle(mut client: TcpStream, main_port: u16, web_dir: Option<&Pat
 }
 
 /// Inject `Access-Control-Allow-Origin: *` into an HTTP response (after the
-/// status line, before the body). If the response is not parseable, return it
-/// unchanged — the browser will reject the opaque response on its own.
+/// status line, before the body) unless the upstream response already includes
+/// an `Access-Control-Allow-Origin` header. If the response is not parseable,
+/// return it unchanged — the browser will reject the opaque response on its own.
 fn append_cors_header(raw: Vec<u8>) -> Vec<u8> {
     const INJECT: &[u8] = b"Access-Control-Allow-Origin: *\r\n";
-    if let Some(pos) = raw.windows(2).position(|w| w == b"\r\n") {
-        let insert = pos + 2; // right after the status line
-        let mut out = Vec::with_capacity(raw.len() + INJECT.len());
-        out.extend_from_slice(&raw[..insert]);
-        out.extend_from_slice(INJECT);
-        out.extend_from_slice(&raw[insert..]);
-        out
-    } else {
-        raw
+    let Some(pos) = raw.windows(2).position(|w| w == b"\r\n") else {
+        return raw;
+    };
+    let insert = pos + 2; // right after the status line
+    let head_end = raw.windows(4).position(|w| w == b"\r\n\r\n").unwrap_or(raw.len());
+    let headers = if head_end > insert { &raw[insert..head_end] } else { &[] };
+    if has_header(headers, b"access-control-allow-origin") {
+        return raw;
     }
+    let mut out = Vec::with_capacity(raw.len() + INJECT.len());
+    out.extend_from_slice(&raw[..insert]);
+    out.extend_from_slice(INJECT);
+    out.extend_from_slice(&raw[insert..]);
+    out
+}
+
+fn has_header(headers: &[u8], name: &[u8]) -> bool {
+    headers.split(|&b| b == b'\n').any(|line| {
+        let line = line.strip_suffix(b"\r").unwrap_or(line);
+        let Some(colon) = line.iter().position(|&b| b == b':') else {
+            return false;
+        };
+        line[..colon].eq_ignore_ascii_case(name)
+    })
 }
 
 fn rebuild(method: &str, path: &str, content_type: Option<&str>, body: &[u8], main_port: u16) -> Vec<u8> {
@@ -475,6 +490,55 @@ mod tests {
         assert_eq!(opened.load(Ordering::SeqCst), 4, "/public/catalog with Origin must not be forwarded");
 
         stop.store(true, Ordering::SeqCst);
+    }
+
+    #[test]
+    fn append_cors_header_does_not_duplicate_existing_acao() {
+        let backend = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = backend.local_addr().unwrap().port();
+        thread::spawn(move || {
+            for mut stream in backend.incoming().flatten() {
+                let mut buf = vec![0u8; 2048];
+                let _ = stream.read(&mut buf);
+                let reply = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}";
+                let _ = stream.write_all(reply.as_bytes());
+            }
+        });
+        let gate = bind().unwrap();
+        let gate_addr = gate.local_addr().unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let stopping = stop.clone();
+        thread::spawn(move || serve(gate, port, None, &stopping));
+
+        let resp = talk(
+            gate_addr,
+            "GET /public/store HTTP/1.1\r\nHost: vendor.onion\r\nOrigin: http://moderator.onion\r\nConnection: close\r\n\r\n",
+        );
+        assert!(resp.starts_with("HTTP/1.1 200"), "{resp}");
+        let head = resp.split_once("\r\n\r\n").unwrap().0;
+        let acao_count = head
+            .lines()
+            .filter(|line| line.to_ascii_lowercase().starts_with("access-control-allow-origin:"))
+            .count();
+        assert_eq!(acao_count, 1, "expected exactly one ACAO header, got {acao_count}: {head}");
+        stop.store(true, Ordering::SeqCst);
+
+        // Case-insensitive match on existing header.
+        let lower = b"HTTP/1.1 200 OK\r\naccess-control-allow-origin: *\r\n\r\n".to_vec();
+        assert_eq!(append_cors_header(lower.clone()), lower);
+
+        // Body containing header text does not suppress injection.
+        let in_body = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\nAccess-Control-Allow-Origin: *\r\n".to_vec();
+        let out = String::from_utf8(append_cors_header(in_body)).unwrap();
+        let out_head = out.split_once("\r\n\r\n").unwrap().0;
+        assert!(out_head.contains("Access-Control-Allow-Origin: *"), "{out_head}");
+
+        // Empty header block does not panic and injects once.
+        let empty = b"HTTP/1.1 200 OK\r\n\r\n".to_vec();
+        assert_eq!(
+            append_cors_header(empty),
+            b"HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\n\r\n"
+        );
     }
 
     fn talk(addr: SocketAddr, request: &str) -> String {
