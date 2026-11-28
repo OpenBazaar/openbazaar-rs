@@ -13,7 +13,7 @@ COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY crates crates
 COPY vendor vendor
 COPY scripts scripts
-ARG OB_BUILD_COMMIT=d0eba5f
+ARG OB_BUILD_COMMIT=unknown
 ARG OB_BUILD_DIRTY=false
 ARG OB_BUILD_KIND=dev
 ENV OB_BUILD_COMMIT=$OB_BUILD_COMMIT OB_BUILD_DIRTY=$OB_BUILD_DIRTY OB_BUILD_KIND=$OB_BUILD_KIND
