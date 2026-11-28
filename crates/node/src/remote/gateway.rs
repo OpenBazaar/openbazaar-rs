@@ -190,7 +190,7 @@ pub(crate) fn respond(node: &Node, raw: &[u8], entry: Entry, main_port: u16) -> 
         ("GET", _, None) if matches!(entry, Entry::Admin | Entry::Web) => match node
             .remote
             .web_dir()
-            .and_then(|dir| web::response(dir, path))
+            .and_then(|dir| web::response(dir, path, web::accepts_gzip(request.head)))
         {
             Some(file) => file,
             None => unauthorized("unsigned", "Pair this device with the node first."),

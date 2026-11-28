@@ -13,7 +13,9 @@
 use serde_json::{json, Value};
 
 use crate::escrow_mail::hex;
-use crate::http::{json_body, json_error, local_guard, public_json, public_response, Client};
+use crate::http::{
+    json_body, json_error, local_guard, public_immutable_response, public_json, Client,
+};
 use crate::http_parse::has_header;
 use crate::store_profile::Role;
 use crate::Node;
@@ -149,7 +151,7 @@ fn image(node: &Node, hash: &str) -> Vec<u8> {
         })
         .and_then(|hash| node.media.get(&hash));
     match found {
-        Some((content_type, bytes)) => public_response("200 OK", content_type, &bytes),
+        Some((content_type, bytes)) => public_immutable_response("200 OK", content_type, &bytes),
         None => public_error("404 Not Found", "That image is not on this store."),
     }
 }
@@ -336,5 +338,29 @@ mod tests {
         // /wallet requires pairing and returns 403 (no token) — that is correct.
         let (wallet_status, _) = peer_request(&node, "/wallet");
         assert!(!wallet_status.contains("200"), "wallet must not be open: {wallet_status}");
+    }
+
+    #[test]
+    fn public_media_is_served_with_immutable_cache_control() {
+        let chain = MockChain::new();
+        let dir = TempDir::new();
+        let node = harness::open_node(&dir.0, NetworkMode::Testnet4, &chain, 1, harness::unreachable_escrow());
+        let demo = openbazaar_protocol::fixture_media()[0];
+        use bitcoin::hashes::Hash;
+        let hash = bitcoin::hashes::sha256::Hash::hash(demo);
+        let hash_hex = format!("{hash:x}");
+        let req = format!("GET /public/media/{hash_hex} HTTP/1.1\r\nHost: 127.0.0.1:1\r\n\r\n");
+        let raw = crate::http::respond(
+            &node,
+            req.as_bytes(),
+            crate::http::Client { loopback: true, port: 1 },
+        );
+        let sep = raw.windows(4).position(|w| w == b"\r\n\r\n").unwrap();
+        let head = std::str::from_utf8(&raw[..sep]).unwrap();
+        assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
+        assert!(head.contains("Cache-Control: public, max-age=31536000, immutable"), "{head}");
+        assert!(!head.contains("Cache-Control: no-store"), "{head}");
+        assert!(head.contains("Access-Control-Allow-Origin: *"), "{head}");
+        assert_eq!(&raw[sep + 4..], demo);
     }
 }

@@ -227,18 +227,25 @@ async function readPublicCatalog(base: string, fetcher: Getter): Promise<unknown
 }
 
 /** The market for this page. An https page does not fetch onion catalogs. */
-export async function loadPublicMarket(loc: PageAddress, fetcher: Getter = globalThis.fetch): Promise<LoadedMarket> {
+export async function loadPublicMarket(
+  loc: PageAddress,
+  fetcher: Getter = globalThis.fetch,
+  onUpdate?: (market: LoadedMarket) => void,
+): Promise<LoadedMarket> {
   const onion = await saleOnion(loc, fetcher);
   const notice = marketNotice(loc.protocol, loc.hostname, onion);
   const emptyAddresses = new Map<string, string>();
   if (notice) return { catalog: emptyCatalog(), notice: notice.sentence, images: [], storeAddresses: emptyAddresses };
   const bases = [`http://${loc.hostname.toLowerCase()}`, ...INTRODUCTIONS.map((host) => `http://${host}`)];
 
-  // Fast path: one request to the moderator for every admitted store's
-  // signed records. Falls back gracefully when the endpoint is unavailable
-  // (e.g. an older node that does not serve /public/catalog).
+  // Fast path: fetch /public/catalog and /public/admission-addresses in parallel
+  // from the moderator/intro node. Falls back gracefully when /public/catalog
+  // is unavailable (e.g. an older node).
   for (const base of bases) {
-    const entries = await readPublicCatalog(base, fetcher);
+    const [entries, addresses] = await Promise.all([
+      readPublicCatalog(base, fetcher),
+      readAddresses(base, fetcher),
+    ]);
     if (entries && entries.length > 0) {
       const bodies: unknown[] = [];
       const images: LoadedMarket["images"] = [];
@@ -254,33 +261,44 @@ export async function loadPublicMarket(loc: PageAddress, fetcher: Getter = globa
         }
       }
       if (bodies.length > 0) {
-        const addresses = await readAddresses(base, fetcher);
         const storeAddresses = new Map(addresses.map((row) => [row.storeId, row.url]));
-        // Admitted stores whose listings the moderator has not replicated
-        // yet are fetched directly from the vendor's onion.
         const catalog = aggregatePublicStores(bodies);
+        // Render the replicated catalog immediately. Any admitted stores whose
+        // listings the moderator has not replicated yet are streamed in
+        // asynchronously from the vendor's onion via `onUpdate`.
         const emptyAdmitted = addresses.filter((row) => {
           const store = catalog.stores.find((s) => s.key === row.storeId);
           return store && catalog.listings.filter((l) => l.storeId === row.storeId).length === 0;
         });
-        await mapPool(emptyAdmitted, 2, async (row) => {
-          try {
-            const response = await fetcher(`${row.url}/public/store`, publicGet());
-            if (!response.ok) return;
-            const body = await readJson(response, 4 * 1024 * 1024);
-            if (!body) return;
-            const vendorCatalog = catalogFromPublic(body);
-            if (vendorCatalog.stores[0]?.key !== row.storeId) return;
-            for (const listing of vendorCatalog.listings) {
-              if (!catalog.listings.some((l) => l.hash === listing.hash)) {
-                catalog.listings.push(listing);
-              }
+        if (emptyAdmitted.length > 0 && onUpdate) {
+          let currentCatalog = catalog;
+          const mergedImages = [...images];
+          void mapPool(emptyAdmitted, 2, async (row) => {
+            try {
+              const response = await fetcher(`${row.url}/public/store`, publicGet());
+              if (!response.ok) return;
+              const body = await readJson(response, 4 * 1024 * 1024);
+              if (!body) return;
+              const vendorCatalog = catalogFromPublic(body);
+              if (vendorCatalog.stores[0]?.key !== row.storeId) return;
+              const added = vendorCatalog.listings.filter(
+                (listing) => !currentCatalog.listings.some((l) => l.hash === listing.hash),
+              );
+              if (added.length === 0) return;
+              const nextListings = [...currentCatalog.listings, ...added];
+              const nextStores = currentCatalog.stores.map((s) =>
+                s.key === row.storeId
+                  ? { ...s, listingCount: nextListings.filter((l) => l.storeId === row.storeId).length }
+                  : s,
+              );
+              currentCatalog = { ...currentCatalog, stores: nextStores, listings: nextListings };
+              mergedImages.push({ url: row.url, hashes: vendorCatalog.listings.flatMap((listing) => listing.images) });
+              onUpdate({ catalog: currentCatalog, notice: null, images: [...mergedImages], storeAddresses });
+            } catch {
+              // The vendor's onion is down; its store stays without listings.
             }
-            images.push({ url: row.url, hashes: vendorCatalog.listings.flatMap((listing) => listing.images) });
-          } catch {
-            // The vendor's onion is down; its store stays without listings.
-          }
-        });
+          });
+        }
         return { catalog, notice: null, images, storeAddresses };
       }
     }

@@ -316,12 +316,27 @@ export async function setVacation(away: boolean): Promise<SellerProfile> {
 
 /** Bytes in one uploaded image: the node's cap, `MAX_MEDIA` in crates/node/src/media.rs. */
 const MAX_IMAGE_BYTES = 2 * 1024 * 1024;
+/** Tor-friendly target size & dimensions when the browser can resize uploads. */
+const TOR_TARGET_IMAGE_BYTES = 300 * 1024;
+const TOR_MAX_IMAGE_SIDE = 1200;
+const TOR_JPEG_QUALITY = 0.82;
 const IMAGE_TOO_LARGE = `That image is larger than ${MAX_IMAGE_BYTES / (1024 * 1024)} MB. Choose a smaller one.`;
 const IMAGE_NOT_SHRUNK = `That image is larger than ${MAX_IMAGE_BYTES / (1024 * 1024)} MB and could not be shrunk to fit. Choose a smaller one.`;
 
-/// The image to send: `file` as it is when it fits the cap, a shrunk copy
-/// when it does not. The native app cannot shrink and refuses it.
-async function imageThatFits(file: Blob): Promise<Blob> {
+/// The image to send: resized/compressed to a Tor-friendly size (max 1200px,
+/// target <= 300 KB) when the browser supports canvas shrinking, falling back
+/// to the 2 MiB cap. The native app cannot shrink and refuses files over 2 MiB.
+export async function imageThatFits(file: Blob): Promise<Blob> {
+  if (canShrink() && file.type !== "image/gif") {
+    const torSized = await shrinkImage(file, TOR_TARGET_IMAGE_BYTES, {
+      maxSide: TOR_MAX_IMAGE_SIDE,
+      quality: TOR_JPEG_QUALITY,
+      fitShare: 1,
+    });
+    if (torSized && (torSized.size < file.size || file.size > MAX_IMAGE_BYTES)) {
+      return torSized;
+    }
+  }
   if (file.size <= MAX_IMAGE_BYTES) return file;
   if (!canShrink()) throw new Error(IMAGE_TOO_LARGE);
   const shrunk = await shrinkImage(file, MAX_IMAGE_BYTES);

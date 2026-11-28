@@ -250,7 +250,7 @@ pub(crate) fn shop_page(node: &Node, head: &str) -> Option<Vec<u8>> {
         return None;
     }
     let dir = node.local.local_shop.as_deref()?;
-    crate::remote::local_shop_page(dir, "/")
+    crate::remote::local_shop_page(dir, "/", head)
 }
 
 pub(crate) fn shop_file(node: &Node, method: &str, path: &str, head: &str) -> Option<Vec<u8>> {
@@ -258,11 +258,11 @@ pub(crate) fn shop_file(node: &Node, method: &str, path: &str, head: &str) -> Op
         return None;
     }
     let dir = node.local.local_shop.as_deref()?;
-    if let Some(file) = crate::remote::local_shop_page(dir, path) {
+    if let Some(file) = crate::remote::local_shop_page(dir, path, head) {
         return Some(file);
     }
     if wants_html(head) && !path.contains('.') {
-        return crate::remote::local_shop_page(dir, "/");
+        return crate::remote::local_shop_page(dir, "/", head);
     }
     None
 }

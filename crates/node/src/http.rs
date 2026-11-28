@@ -29,6 +29,7 @@ use crate::http_parse::{self, header, Request};
 use crate::{find_listing, labelers, listing_value, mail_drop, media, pairing, stores, vendor_labels, wallet_http, Node, OrderError};
 
 const PAIR_HEADER: &str = "X-Ob-Pair";
+const BASE_SECURITY_HEADERS: &str = "X-Content-Type-Options: nosniff\r\nContent-Security-Policy: default-src 'none'; frame-ancestors 'none'\r\nX-Frame-Options: DENY\r\nReferrer-Policy: no-referrer\r\n";
 /// Every response: never cached, never sniffed or framed, no referrer, and
 /// no content may load from it (API responses are not documents; the local
 /// shop files carry their own page policy).
@@ -58,6 +59,18 @@ pub(crate) fn http_response_cors(
 /// are not allowed.
 pub(crate) fn public_response(status: &str, content_type: &str, body: &[u8]) -> Vec<u8> {
     http_response_headers(status, content_type, body, None, "Access-Control-Allow-Origin: *\r\n")
+}
+
+/// Content-addressed public media (`/public/media/<sha256>`): bytes never
+/// change for a given SHA-256 hash, so browsers can cache them immutably.
+pub(crate) fn public_immutable_response(status: &str, content_type: &str, body: &[u8]) -> Vec<u8> {
+    let header = format!(
+        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: public, max-age=31536000, immutable\r\n{BASE_SECURITY_HEADERS}Access-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, {PAIR_HEADER}\r\nAccess-Control-Max-Age: 600\r\nVary: Origin\r\n\r\n",
+        body.len()
+    );
+    let mut response = header.into_bytes();
+    response.extend_from_slice(body);
+    response
 }
 
 pub(crate) fn public_json(status: &str, value: &Value) -> Vec<u8> {

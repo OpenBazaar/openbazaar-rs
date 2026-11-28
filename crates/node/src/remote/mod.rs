@@ -49,13 +49,13 @@ pub use web_origin::WebOrigin;
 
 /// The web export for a browser on this machine. Unlike [`web::response`],
 /// the page is not marked as a remote home-node client.
-pub(crate) fn local_shop_page(dir: &Path, path: &str) -> Option<Vec<u8>> {
-    web::local_page(dir, path)
+pub(crate) fn local_shop_page(dir: &Path, path: &str, head: &str) -> Option<Vec<u8>> {
+    web::local_page(dir, path, web::accepts_gzip(head))
 }
 
 /// The shop page on the public store onion. No sign-in marker.
-pub(crate) fn bare_shop_page(dir: &Path, path: &str) -> Option<Vec<u8>> {
-    web::bare_page(dir, path)
+pub(crate) fn bare_shop_page(dir: &Path, path: &str, head: &str) -> Option<Vec<u8>> {
+    web::bare_page(dir, path, web::accepts_gzip(head))
 }
 
 #[cfg(test)]
