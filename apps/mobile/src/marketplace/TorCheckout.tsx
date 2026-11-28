@@ -29,6 +29,7 @@ import { createWebBuyerStore } from "../buyerLight/webStore.ts";
 import { CopyButton } from "./CopyAddress.tsx";
 import { PageHeading } from "./PageHeading.tsx";
 import { TorOrderDetail, WordGrid } from "./TorOrderDetail.tsx";
+import { buildReceiptRestoreUrl, RECEIPT_LINK_HELPER_TEXT } from "./torReceiptLink.ts";
 
 const store = createWebBuyerStore();
 
@@ -96,6 +97,7 @@ export function TorCheckout({
   if (phase === "seed" || !seed || !phrase) {
     return (
       <SeedStep
+        vendorUrl={vendorUrl}
         onReady={(chosen) => {
           const clean = normalizeBuyerPhrase(chosen);
           void store.savePhrase(clean);
@@ -113,6 +115,7 @@ export function TorCheckout({
       <TorOrderDetail
         order={order}
         seed={seed}
+        phrase={phrase}
         onUpdated={(next) => {
           setOrder(next);
           void store.loadOrders().then((all) => {
@@ -147,10 +150,12 @@ export function TorCheckout({
 /* ── Seed step ────────────────────────────────────────────────── */
 
 function SeedStep({
+  vendorUrl,
   onReady,
   onBack,
   backLabel,
 }: {
+  vendorUrl: string;
   onReady: (phrase: string) => void;
   onBack: () => void;
   backLabel: string;
@@ -159,7 +164,17 @@ function SeedStep({
   const [generated, setGenerated] = useState("");
   const [backedUp, setBackedUp] = useState(false);
   const [restoreText, setRestoreText] = useState("");
+  const [showRestorePhrase, setShowRestorePhrase] = useState(false);
   const [error, setError] = useState("");
+
+  const receiptLink = useMemo(() => {
+    if (!generated || typeof window === "undefined") return "";
+    try {
+      return buildReceiptRestoreUrl(window.location.origin, generated, [vendorUrl]);
+    } catch {
+      return "";
+    }
+  }, [generated, vendorUrl]);
 
   if (mode === "create") {
     const words = generated.split(" ");
@@ -173,21 +188,63 @@ function SeedStep({
           description="These 12 words recover your orders and receipt codes. Keep them offline."
         />
         <WordGrid words={words} copyValue={generated} />
-        <label className="ob-tor-checkbox-row">
-          <input
-            type="checkbox"
-            checked={backedUp}
-            onChange={() => setBackedUp((v) => !v)}
-          />
-          <span>I wrote down all 12 words in order.</span>
-        </label>
-        <button
-          className="ob-primary"
-          disabled={!backedUp}
-          onClick={() => onReady(generated)}
+        {receiptLink && (
+          <div className="ob-tor-card">
+            <h3>1-tap receipt link</h3>
+            <p className="ob-meta">{RECEIPT_LINK_HELPER_TEXT}</p>
+            <div className="ob-tor-receipt-link-row">
+              <CopyButton value={receiptLink} label="Copy 1-tap receipt link" className="ob-secondary" />
+            </div>
+          </div>
+        )}
+        <form
+          className="ob-tor-autofill-form"
+          autoComplete="on"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (!backedUp) return;
+            onReady(generated);
+          }}
         >
-          Continue to checkout
-        </button>
+          <input
+            type="text"
+            name="username"
+            autoComplete="username"
+            value="OpenBazaar Receipt"
+            readOnly
+            tabIndex={-1}
+            aria-hidden="true"
+            className="ob-autofill-username"
+          />
+          <input
+            type="password"
+            name="password"
+            autoComplete="new-password"
+            value={generated}
+            readOnly
+            tabIndex={-1}
+            aria-hidden="true"
+            className="ob-autofill-username"
+          />
+          <label className="ob-tor-checkbox-row">
+            <input
+              type="checkbox"
+              checked={backedUp}
+              onChange={() => setBackedUp((v) => !v)}
+            />
+            <span>I saved my 12 words (or 1-tap receipt link).</span>
+          </label>
+          <button
+            className="ob-primary"
+            type="submit"
+            disabled={!backedUp}
+          >
+            Continue to checkout
+          </button>
+          <p className="ob-meta">
+            Continuing lets iOS Keychain or your password manager offer to save your 12-word receipt code for Face ID autofill.
+          </p>
+        </form>
       </section>
     );
   }
@@ -200,20 +257,14 @@ function SeedStep({
         </button>
         <PageHeading
           title="Restore from 12 recovery words"
-          description="Enter the 12-word receipt code from a previous order to restore your buyer identity."
+          description="Enter or autofill the 12-word receipt code from a previous order to restore your buyer identity."
         />
-        {error && <p className="ob-error">{error}</p>}
-        <textarea
-          className="ob-textarea"
-          value={restoreText}
-          onChange={(e) => setRestoreText(e.target.value)}
-          placeholder="twelve space-separated BIP 39 words"
-          rows={3}
-        />
-        <button
-          className="ob-primary"
-          disabled={!restoreText.trim()}
-          onClick={() => {
+        {error && <p className="ob-error" role="alert">{error}</p>}
+        <form
+          className="ob-tor-autofill-form"
+          autoComplete="on"
+          onSubmit={(e) => {
+            e.preventDefault();
             if (!isValidBuyerPhrase(restoreText)) {
               setError("That is not a valid 12-word recovery phrase.");
               return;
@@ -222,8 +273,49 @@ function SeedStep({
             onReady(restoreText);
           }}
         >
-          Restore & continue
-        </button>
+          <input
+            type="text"
+            name="username"
+            autoComplete="username"
+            value="OpenBazaar Receipt"
+            readOnly
+            tabIndex={-1}
+            aria-hidden="true"
+            className="ob-autofill-username"
+          />
+          <label className="ob-tor-compact-field">
+            <span>12-word receipt code</span>
+            <div className="ob-tor-secret-row">
+              <input
+                className="ob-tor-input"
+                type={showRestorePhrase ? "text" : "password"}
+                name="password"
+                autoComplete="current-password"
+                value={restoreText}
+                onChange={(e) => setRestoreText(e.target.value)}
+                placeholder="twelve space-separated BIP 39 words"
+                spellCheck={false}
+                autoCapitalize="off"
+                autoCorrect="off"
+              />
+              <button
+                className="ob-secondary ob-tor-secret-toggle"
+                type="button"
+                aria-pressed={showRestorePhrase}
+                onClick={() => setShowRestorePhrase((v) => !v)}
+              >
+                {showRestorePhrase ? "Hide" : "Show"}
+              </button>
+            </div>
+          </label>
+          <button
+            className="ob-primary"
+            type="submit"
+            disabled={!restoreText.trim()}
+          >
+            Restore & continue
+          </button>
+        </form>
       </section>
     );
   }

@@ -5,7 +5,7 @@
 // statuses across sellers, view/copy their 12-word BIP-39 receipt code, or
 // restore orders in a fresh Tor Browser session from their 12 words + store URL.
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { LightOrderRecord } from "../buyerLight/contracts.ts";
 import {
   pullLightOrderStatus,
@@ -22,6 +22,11 @@ import { createWebBuyerStore } from "../buyerLight/webStore.ts";
 import { CopyButton } from "./CopyAddress.tsx";
 import { PageHeading } from "./PageHeading.tsx";
 import { TorOrderDetail, torStatusMeta, WordGrid } from "./TorOrderDetail.tsx";
+import {
+  buildReceiptRestoreUrl,
+  RECEIPT_LINK_HELPER_TEXT,
+  type ParsedReceiptHash,
+} from "./torReceiptLink.ts";
 
 const store = createWebBuyerStore();
 
@@ -55,9 +60,15 @@ function mergeOrders(
 
 export function TorOrders({
   knownStores,
+  catalogLoading = false,
+  pendingRestore = null,
+  onConsumePendingRestore,
   onBrowse,
 }: {
   knownStores: readonly KnownVendorStore[];
+  catalogLoading?: boolean;
+  pendingRestore?: ParsedReceiptHash | null;
+  onConsumePendingRestore?: () => void;
   onBrowse: () => void;
 }) {
   const [booting, setBooting] = useState(true);
@@ -69,6 +80,7 @@ export function TorOrders({
   const [refreshingAll, setRefreshingAll] = useState(false);
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
+  const handledRestoreRef = useRef<ParsedReceiptHash | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -81,6 +93,75 @@ export function TorOrders({
     return () => { active = false; };
   }, []);
 
+  useEffect(() => {
+    if (!pendingRestore) return;
+    setPhrase(pendingRestore.phrase);
+    void store.savePhrase(pendingRestore.phrase);
+    setError("");
+    setNotice("Restoring orders from your receipt link…");
+    if (catalogLoading) return;
+    if (handledRestoreRef.current === pendingRestore) return;
+    handledRestoreRef.current = pendingRestore;
+
+    let active = true;
+    const urls: string[] = [];
+    const seen = new Set<string>();
+    for (const raw of [...pendingRestore.stores, ...knownStores.map((s) => s.url)]) {
+      const clean = raw.trim().replace(/\/+$/, "");
+      if (!clean || seen.has(clean)) continue;
+      seen.add(clean);
+      urls.push(clean);
+    }
+
+    void (async () => {
+      if (urls.length === 0) {
+        if (!active) return;
+        setNotice("Receipt code restored from link. Choose a store below to pull your orders.");
+        onConsumePendingRestore?.();
+        return;
+      }
+      try {
+        const restoreSeed = buyerSeedFromPhrase(pendingRestore.phrase, DEFAULT_BUYER_NETWORK);
+        const allRecovered: LightOrderRecord[] = [];
+        let lastErr: string | null = null;
+        for (const url of urls) {
+          try {
+            const found = await recoverLightOrdersFromStore({ seed: restoreSeed, vendorUrl: url });
+            allRecovered.push(...found);
+          } catch (err) {
+            lastErr = err instanceof Error ? err.message : `Could not reach ${url}.`;
+          }
+        }
+        if (!active) return;
+        const existing = await store.loadOrders();
+        const merged = mergeOrders(existing, allRecovered);
+        setOrders(merged);
+        void store.saveOrders(merged);
+        setShowRestore(false);
+        if (allRecovered.length > 0) {
+          setError("");
+          setNotice(
+            `Restored ${allRecovered.length} ${allRecovered.length === 1 ? "order" : "orders"} from your receipt link.`,
+          );
+        } else if (lastErr && urls.length === 1) {
+          setNotice("");
+          setError(lastErr);
+        } else {
+          setError("");
+          setNotice("Receipt code restored from link. No matching orders were found at the checked stores.");
+        }
+      } catch (err) {
+        if (!active) return;
+        setNotice("");
+        setError(err instanceof Error ? err.message : "Could not restore orders from receipt link.");
+      } finally {
+        if (active) onConsumePendingRestore?.();
+      }
+    })();
+
+    return () => { active = false; };
+  }, [pendingRestore, catalogLoading, knownStores, onConsumePendingRestore]);
+
   const seed = useMemo<BuyerSeed | null>(() => {
     if (!phrase) return null;
     try {
@@ -89,6 +170,19 @@ export function TorOrders({
       return null;
     }
   }, [phrase]);
+
+  const receiptLink = useMemo(() => {
+    if (!phrase || typeof window === "undefined") return "";
+    const storeUrls = [
+      ...orders.map((o) => o.sellerUrl),
+      ...knownStores.map((s) => s.url),
+    ];
+    try {
+      return buildReceiptRestoreUrl(window.location.origin, phrase, storeUrls);
+    } catch {
+      return "";
+    }
+  }, [phrase, orders, knownStores]);
 
   const persistOrders = (next: LightOrderRecord[]) => {
     const sorted = [...next].sort((a, b) => b.createdAt - a.createdAt);
@@ -141,6 +235,7 @@ export function TorOrders({
       <TorOrderDetail
         order={selectedOrder}
         seed={seed}
+        phrase={phrase ?? undefined}
         onUpdated={upsertOrder}
         onBack={() => setSelectedId(null)}
         backLabel="Back to my orders"
@@ -206,6 +301,14 @@ export function TorOrders({
             Keep these 12 words offline to recover your orders and check status in a new Tor Browser session.
           </p>
           {showReceiptCode && <WordGrid words={phrase.split(" ")} />}
+          {receiptLink && (
+            <div className="ob-tor-receipt-link-block">
+              <div className="ob-tor-receipt-link-row">
+                <CopyButton value={receiptLink} label="Copy 1-tap receipt link" className="ob-secondary" />
+              </div>
+              <p className="ob-meta">{RECEIPT_LINK_HELPER_TEXT}</p>
+            </div>
+          )}
         </div>
       )}
 
@@ -290,6 +393,7 @@ function RestoreOrdersCard({
 }) {
   const defaultTarget = knownStores.length > 1 ? "__all__" : (knownStores[0]?.url ?? "__custom__");
   const [phraseText, setPhraseText] = useState(initialPhrase);
+  const [showPhrase, setShowPhrase] = useState(false);
   const [target, setTarget] = useState(defaultTarget);
   const [customUrl, setCustomUrl] = useState("");
   const [busy, setBusy] = useState(false);
@@ -350,68 +454,99 @@ function RestoreOrdersCard({
     <div className="ob-tor-card">
       <h3>Restore with 12 words</h3>
       <p className="ob-meta">
-        Enter your 12-word receipt code to pull your order status, payment details, and seller messages directly from the seller's node.
+        Enter or autofill your 12-word receipt code to pull your order status, payment details, and seller messages directly from the seller's node.
       </p>
       {error && <p className="ob-error" role="alert">{error}</p>}
-      <label className="ob-tor-compact-field">
-        <span>12-word receipt code</span>
-        <textarea
-          className="ob-textarea"
-          value={phraseText}
-          onChange={(e) => setPhraseText(e.target.value)}
-          placeholder="twelve space-separated BIP 39 words"
-          rows={3}
-          spellCheck={false}
-          autoCapitalize="off"
+      <form
+        className="ob-tor-autofill-form"
+        autoComplete="on"
+        onSubmit={(e) => {
+          e.preventDefault();
+          void handleRestore();
+        }}
+      >
+        <input
+          type="text"
+          name="username"
+          autoComplete="username"
+          value="OpenBazaar Receipt"
+          readOnly
+          tabIndex={-1}
+          aria-hidden="true"
+          className="ob-autofill-username"
         />
-      </label>
-
-      {knownStores.length > 0 ? (
         <label className="ob-tor-compact-field">
-          <span>Store to check</span>
-          <select
-            className="ob-tor-select"
-            value={target}
-            onChange={(e) => setTarget(e.target.value)}
+          <span>12-word receipt code</span>
+          <div className="ob-tor-secret-row">
+            <input
+              className="ob-tor-input"
+              type={showPhrase ? "text" : "password"}
+              name="password"
+              autoComplete="current-password"
+              value={phraseText}
+              onChange={(e) => setPhraseText(e.target.value)}
+              placeholder="twelve space-separated BIP 39 words"
+              spellCheck={false}
+              autoCapitalize="off"
+              autoCorrect="off"
+            />
+            <button
+              className="ob-secondary ob-tor-secret-toggle"
+              type="button"
+              aria-pressed={showPhrase}
+              onClick={() => setShowPhrase((v) => !v)}
+            >
+              {showPhrase ? "Hide" : "Show"}
+            </button>
+          </div>
+        </label>
+
+        {knownStores.length > 0 ? (
+          <label className="ob-tor-compact-field">
+            <span>Store to check</span>
+            <select
+              className="ob-tor-select"
+              value={target}
+              onChange={(e) => setTarget(e.target.value)}
+            >
+              {knownStores.length > 1 && (
+                <option value="__all__">All known stores ({knownStores.length})</option>
+              )}
+              {knownStores.map((s) => (
+                <option key={s.url} value={s.url}>
+                  {s.name} ({s.url.replace(/^https?:\/\//, "").slice(0, 20)}…)
+                </option>
+              ))}
+              <option value="__custom__">Custom store .onion URL…</option>
+            </select>
+          </label>
+        ) : null}
+
+        {(target === "__custom__" || knownStores.length === 0) && (
+          <label className="ob-tor-compact-field">
+            <span>Seller store URL</span>
+            <input
+              className="ob-tor-input"
+              type="text"
+              value={customUrl}
+              onChange={(e) => setCustomUrl(e.target.value)}
+              placeholder="http://….onion"
+              spellCheck={false}
+              autoCapitalize="off"
+            />
+          </label>
+        )}
+
+        <div className="ob-tor-status-actions">
+          <button
+            className="ob-primary"
+            type="submit"
+            disabled={busy || !phraseText.trim()}
           >
-            {knownStores.length > 1 && (
-              <option value="__all__">All known stores ({knownStores.length})</option>
-            )}
-            {knownStores.map((s) => (
-              <option key={s.url} value={s.url}>
-                {s.name} ({s.url.replace(/^https?:\/\//, "").slice(0, 20)}…)
-              </option>
-            ))}
-            <option value="__custom__">Custom store .onion URL…</option>
-          </select>
-        </label>
-      ) : null}
-
-      {(target === "__custom__" || knownStores.length === 0) && (
-        <label className="ob-tor-compact-field">
-          <span>Seller store URL</span>
-          <input
-            className="ob-tor-input"
-            type="text"
-            value={customUrl}
-            onChange={(e) => setCustomUrl(e.target.value)}
-            placeholder="http://….onion"
-            spellCheck={false}
-            autoCapitalize="off"
-          />
-        </label>
-      )}
-
-      <div className="ob-tor-status-actions">
-        <button
-          className="ob-primary"
-          type="button"
-          disabled={busy || !phraseText.trim()}
-          onClick={() => void handleRestore()}
-        >
-          {busy ? "Restoring orders…" : "Restore orders"}
-        </button>
-      </div>
+            {busy ? "Restoring orders…" : "Restore orders"}
+          </button>
+        </div>
+      </form>
     </div>
   );
 }

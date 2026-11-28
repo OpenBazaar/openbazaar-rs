@@ -2,7 +2,7 @@
 // TorCheckout (immediately after placing an order) and TorOrders (when
 // reopening a saved or restored order).
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import QRCode from "qrcode";
 import type { LightOrderRecord } from "../buyerLight/contracts.ts";
 import {
@@ -13,6 +13,7 @@ import {
 import type { BuyerSeed } from "../buyerLight/keys.ts";
 import { CopyButton } from "./CopyAddress.tsx";
 import { PageHeading } from "./PageHeading.tsx";
+import { buildReceiptRestoreUrl, RECEIPT_LINK_HELPER_TEXT } from "./torReceiptLink.ts";
 
 /* ── Shared: status pill metadata ─────────────────────────────── */
 
@@ -105,12 +106,14 @@ export function CodeCopyRow({ value, label }: { value: string; label: string }) 
 export function TorOrderDetail({
   order,
   seed,
+  phrase,
   onUpdated,
   onBack,
   backLabel,
 }: {
   order: LightOrderRecord;
   seed: BuyerSeed;
+  phrase?: string;
   onUpdated: (order: LightOrderRecord) => void;
   onBack: () => void;
   backLabel: string;
@@ -118,6 +121,15 @@ export function TorOrderDetail({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [chatDraft, setChatDraft] = useState("");
+
+  const receiptLink = useMemo(() => {
+    if (!phrase || typeof window === "undefined") return "";
+    try {
+      return buildReceiptRestoreUrl(window.location.origin, phrase, [order.sellerUrl]);
+    } catch {
+      return "";
+    }
+  }, [phrase, order.sellerUrl]);
 
   const pullStatus = async () => {
     setBusy(true);
@@ -260,6 +272,17 @@ export function TorOrderDetail({
           </button>
         </div>
       </div>
+
+      {/* 1-tap receipt link card */}
+      {receiptLink && (
+        <div className="ob-tor-card">
+          <h3>Save 1-tap receipt link</h3>
+          <p className="ob-meta">{RECEIPT_LINK_HELPER_TEXT}</p>
+          <div className="ob-tor-receipt-link-row">
+            <CopyButton value={receiptLink} label="Copy 1-tap receipt link" className="ob-secondary" />
+          </div>
+        </div>
+      )}
 
       <p className="ob-meta">
         Pay directly from any wallet. No app download required. Keep your 12-word receipt code to check order status later.

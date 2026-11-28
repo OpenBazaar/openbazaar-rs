@@ -57,6 +57,7 @@ import { PhotoZoom } from "./PhotoZoom";
 import { PairingBanner, PairingDialog } from "./PairingDialog";
 import { DirectBanner, DirectPay, OpenStoreForm, SellGate } from "./DirectBrowse";
 import { TorOrders, type KnownVendorStore } from "./TorOrders";
+import { parseReceiptHash, type ParsedReceiptHash } from "./torReceiptLink";
 import { createWebBuyerStore, subscribeWebBuyerOrders } from "../buyerLight/webStore";
 import { BrowsersSettings } from "./BrowsersSettings";
 import { CatalogEmpty } from "./CatalogEmpty";
@@ -216,6 +217,7 @@ export default function Marketplace() {
   const guest = !!direct || publicMode || !hasNodeHost();
   const nodeAvailable = !guest;
   const [guestOrderCount, setGuestOrderCount] = useState(0);
+  const [pendingReceiptRestore, setPendingReceiptRestore] = useState<ParsedReceiptHash | null>(null);
   useEffect(() => {
     if (!guest) return;
     const webStore = createWebBuyerStore();
@@ -430,13 +432,38 @@ export default function Marketplace() {
   const guestRef = useRef(guest);
   guestRef.current = guest;
   useEffect(() => {
-    const restored = shopHistory.start({ section: "discover", category: null, page: { name: "browse" } });
+    const parsedReceipt = guestRef.current
+      ? parseReceiptHash(window.location.hash, window.location.origin)
+      : null;
+    if (parsedReceipt) {
+      window.history.replaceState(null, "", window.location.pathname + window.location.search);
+      void createWebBuyerStore().savePhrase(parsedReceipt.phrase);
+      setPendingReceiptRestore(parsedReceipt);
+    }
+    const initialLoc = parsedReceipt
+      ? { section: "orders", category: null, page: { name: "browse" as const } }
+      : { section: "discover", category: null, page: { name: "browse" as const } };
+    const restored = shopHistory.start(initialLoc);
     const loc = sanitizeGuestLocation(restored, guestRef.current);
     if (loc !== restored) shopHistory.replace(loc);
     setSection(loc.section as Section);
     setCategory(loc.category);
     setPage(loc.page);
-    return shopHistory.listen(next => {
+    const onHashChange = () => {
+      if (!guestRef.current) return;
+      const nextReceipt = parseReceiptHash(window.location.hash, window.location.origin);
+      if (!nextReceipt) return;
+      window.history.replaceState(null, "", window.location.pathname + window.location.search);
+      void createWebBuyerStore().savePhrase(nextReceipt.phrase);
+      setPendingReceiptRestore(nextReceipt);
+      const ordersLoc = { section: "orders", category: null, page: { name: "browse" as const } };
+      shopHistory.replace(ordersLoc);
+      setSection("orders");
+      setCategory(null);
+      setPage({ name: "browse" });
+    };
+    window.addEventListener("hashchange", onHashChange);
+    const unlisten = shopHistory.listen(next => {
       const safe = sanitizeGuestLocation(next, guestRef.current);
       if (safe !== next) {
         shopHistory.replace(safe);
@@ -446,6 +473,10 @@ export default function Marketplace() {
       setCategory(safe.category);
       setPage(safe.page);
     });
+    return () => {
+      window.removeEventListener("hashchange", onHashChange);
+      unlisten();
+    };
   }, []);
   useEffect(() => {
     if (!guest) return;
@@ -583,7 +614,7 @@ export default function Marketplace() {
     ? <Orders {...money} selectedOrderId={page.name === "order" ? page.orderId : null} unreadByOrder={messageAlerts.unreadOrdersById} onSelectOrder={openOrder} onBack={() => shopHistory.backToParent()} onBrowse={() => navigate("discover")}/>
     : !guest && (page.name === "sale" || (section === "sales" && page.name === "browse"))
       ? storeView()
-      : page.name !== "browse" ? null : section === "saved" && saved.length === 0 ? <section><PageHeading title="Saved goods"/><Empty illustration="saved" icon="heart" title="No saved products" text="Save products using the heart button."><button className="ob-primary" onClick={() => navigate("discover")}>Browse products <Icon name="arrow" size={17}/></button></Empty></section> : section === "safety" ? <SafetySettingsPanel settings={safety} onChange={setSafety} labelSources={nodeAvailable ? <LabelersPanel state={labelers} onState={setLabelerState}/> : undefined}/> : guest && section === "orders" ? <TorOrders knownStores={knownVendorStores} onBrowse={() => navigate("discover")}/> : guest && section === "classifieds" ? <Classifieds guest/> : guest && section === "stores" ? <GuestStoreDirectory catalog={catalog} onOpen={id => void openStore(id)}/> : guest ? storeView() : section === "wallet" ? <WalletPage {...money} onOrders={() => navigate("orders")} onSales={seller ? () => navigate("sales") : undefined} onManage={rail => navigate(rail)} onTor={() => navigate("tor")}/> : section === "lightning" ? <LightningSettings/> : section === "zcash" ? <ZcashSettings/> : section === "monero" ? <MoneroSettings/> : section === "tor" ? <TorSettings/> : section === "updates" ? <UpdateSettings updater={updater}/> : section === "home-node" ? <div className="ob-settings-page"><header className="ob-settings-heading"><h1>Home node</h1><p>Run your store on an always-on computer and manage it from anywhere over Tor.</p></header><HomeNodePanel/></div> : section === "browsers" ? <BrowsersSettings/> : section === "addresses" ? <Addresses/> : section === "follows" ? <Follows onChanged={message => { setToast(message); void load(); }} onOpen={id => void openStore(id)}/> : section === "classifieds" ? <Classifieds/> : section === "stores" ? <StoreDirectory onOpen={id => void openStore(id)} onFollowChanged={message => void followChanged(message)}/> : storeView();
+      : page.name !== "browse" ? null : section === "saved" && saved.length === 0 ? <section><PageHeading title="Saved goods"/><Empty illustration="saved" icon="heart" title="No saved products" text="Save products using the heart button."><button className="ob-primary" onClick={() => navigate("discover")}>Browse products <Icon name="arrow" size={17}/></button></Empty></section> : section === "safety" ? <SafetySettingsPanel settings={safety} onChange={setSafety} labelSources={nodeAvailable ? <LabelersPanel state={labelers} onState={setLabelerState}/> : undefined}/> : guest && section === "orders" ? <TorOrders knownStores={knownVendorStores} catalogLoading={loading} pendingRestore={pendingReceiptRestore} onConsumePendingRestore={() => setPendingReceiptRestore(null)} onBrowse={() => navigate("discover")}/> : guest && section === "classifieds" ? <Classifieds guest/> : guest && section === "stores" ? <GuestStoreDirectory catalog={catalog} onOpen={id => void openStore(id)}/> : guest ? storeView() : section === "wallet" ? <WalletPage {...money} onOrders={() => navigate("orders")} onSales={seller ? () => navigate("sales") : undefined} onManage={rail => navigate(rail)} onTor={() => navigate("tor")}/> : section === "lightning" ? <LightningSettings/> : section === "zcash" ? <ZcashSettings/> : section === "monero" ? <MoneroSettings/> : section === "tor" ? <TorSettings/> : section === "updates" ? <UpdateSettings updater={updater}/> : section === "home-node" ? <div className="ob-settings-page"><header className="ob-settings-heading"><h1>Home node</h1><p>Run your store on an always-on computer and manage it from anywhere over Tor.</p></header><HomeNodePanel/></div> : section === "browsers" ? <BrowsersSettings/> : section === "addresses" ? <Addresses/> : section === "follows" ? <Follows onChanged={message => { setToast(message); void load(); }} onOpen={id => void openStore(id)}/> : section === "classifieds" ? <Classifieds/> : section === "stores" ? <StoreDirectory onOpen={id => void openStore(id)} onFollowChanged={message => void followChanged(message)}/> : storeView();
   function storeView() {
     if (guest && inStore) return <SellGate/>;
     const own = profile.data;

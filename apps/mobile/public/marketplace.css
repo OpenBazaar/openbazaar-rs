@@ -6613,6 +6613,49 @@ body:has(.ob-sales-detail-dialog[open]) .ob-content { overflow:hidden; }
   font-size: 14px;
   box-sizing: border-box;
 }
+.ob-tor-autofill-form {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.ob-autofill-username {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  overflow: hidden;
+}
+.ob-tor-secret-row {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+}
+.ob-tor-secret-row .ob-tor-input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.ob-tor-secret-toggle {
+  flex: 0 0 auto;
+  min-height: 40px;
+  padding: 0 14px;
+}
+.ob-tor-receipt-link-block {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 10px;
+  border-top: 1px solid var(--ob-line);
+}
+.ob-tor-receipt-link-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
 
 /* Responsive */
 @media (max-width: 480px) {
