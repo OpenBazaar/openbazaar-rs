@@ -14,9 +14,14 @@ use tormail::OnionAddress;
 
 use crate::escrow_mail::{check_loopback, loopback_request};
 
+enum TorClient {
+    Arti(std::sync::Arc<crate::remote::Tor>),
+    External(std::sync::Arc<crate::remote::external_tor::ExternalTor>),
+}
+
 /// How this process reaches an onion. Set when `--remote` starts Tor.
 pub(crate) struct PeerLink {
-    tor: OnceLock<std::sync::Arc<crate::remote::Tor>>,
+    tor: OnceLock<TorClient>,
     #[cfg(test)]
     fake: OnceLock<std::sync::Arc<dyn OnionDial>>,
 }
@@ -38,7 +43,11 @@ impl Default for PeerLink {
 
 impl PeerLink {
     pub(crate) fn attach(&self, tor: std::sync::Arc<crate::remote::Tor>) {
-        let _ = self.tor.set(tor);
+        let _ = self.tor.set(TorClient::Arti(tor));
+    }
+
+    pub(crate) fn attach_external(&self, tor: std::sync::Arc<crate::remote::external_tor::ExternalTor>) {
+        let _ = self.tor.set(TorClient::External(tor));
     }
 
     #[cfg(test)]
@@ -52,7 +61,8 @@ impl PeerLink {
             return fake.exchange(onion.as_str(), request, max);
         }
         match self.tor.get() {
-            Some(tor) => tor.exchange(onion, request, max),
+            Some(TorClient::Arti(tor)) => tor.exchange(onion, request, max),
+            Some(TorClient::External(tor)) => tor.exchange(onion, request, max),
             None => Err("This node is not on Tor. Start it with --remote so a sale to an onion stays on Tor.".into()),
         }
     }

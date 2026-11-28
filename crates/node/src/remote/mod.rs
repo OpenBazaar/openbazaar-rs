@@ -489,6 +489,7 @@ pub(crate) fn run(node: &Node, main_port: u16, stop: &AtomicBool) {
         // ── external C `tor` sidecar path ──
         match remote.ext_tor(&node.data_dir) {
             Ok(ext) => {
+                node.peers.attach_external(Arc::clone(&ext));
                 let generation = remote.devices().generation;
                 let moving = remote.devices().moving;
                 remote.services.open_admin_external(
