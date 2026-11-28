@@ -9,6 +9,23 @@ import type { BuyerLightStoreAdapter, LightOrderRecord } from "./contracts.ts";
 const PREFIX = "ob-buyer-light-";
 const PHRASE_KEY = `${PREFIX}phrase`;
 const ORDERS_KEY = `${PREFIX}orders`;
+const ORDERS_EVENT = "ob-buyer-light-orders";
+
+function notifyOrdersChanged() {
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new Event(ORDERS_EVENT));
+  }
+}
+
+export function subscribeWebBuyerOrders(listener: () => void): () => void {
+  if (typeof window === "undefined") return () => {};
+  window.addEventListener(ORDERS_EVENT, listener);
+  window.addEventListener("storage", listener);
+  return () => {
+    window.removeEventListener(ORDERS_EVENT, listener);
+    window.removeEventListener("storage", listener);
+  };
+}
 
 export function createWebBuyerStore(): BuyerLightStoreAdapter {
   return {
@@ -41,6 +58,7 @@ export function createWebBuyerStore(): BuyerLightStoreAdapter {
       } catch {
         // Storage full or unavailable.
       }
+      notifyOrdersChanged();
     },
     async clearAll() {
       try {
@@ -49,6 +67,7 @@ export function createWebBuyerStore(): BuyerLightStoreAdapter {
       } catch {
         // No-op.
       }
+      notifyOrdersChanged();
     },
   };
 }

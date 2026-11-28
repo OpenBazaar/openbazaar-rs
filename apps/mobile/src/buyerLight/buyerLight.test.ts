@@ -11,7 +11,9 @@ import { verifyStoreRecord } from "../records.ts";
 import {
   confirmLightOrderComplete,
   fetchVerifiedStore,
+  nextTorCheckoutId,
   pullLightOrderStatus,
+  recoverLightOrdersFromStore,
   sendLightOrderMessage,
   submitLightOrder,
 } from "./client.ts";
@@ -606,4 +608,61 @@ test("locally retained signed escrow contract constructs offline-seller dispute 
     () => buildOfflineDisputeBundle(order, mainnetSeed, "Seller vanished."),
     new RegExp(ESCROW_MAINNET_REFUSAL),
   );
+});
+
+test("nextTorCheckoutId increments per-store sequential ids and recoverLightOrdersFromStore stops at gapLimit", async () => {
+  const storeA = "aa".repeat(32);
+  const storeB = "bb".repeat(32);
+  assert.equal(nextTorCheckoutId([], storeA), "tor-0");
+  assert.equal(
+    nextTorCheckoutId(
+      [
+        { storeId: storeA, checkoutId: "random-hex" } as LightOrderRecord,
+        { storeId: storeB, checkoutId: "tor-4" } as LightOrderRecord,
+      ],
+      storeA,
+    ),
+    "tor-0",
+  );
+  assert.equal(
+    nextTorCheckoutId(
+      [
+        { storeId: storeA, checkoutId: "tor-0" } as LightOrderRecord,
+        { storeId: storeA, checkoutId: "tor-2" } as LightOrderRecord,
+      ],
+      storeA,
+    ),
+    "tor-3",
+  );
+
+  const { stores, listings } = rawCatalog();
+  const storeRec = verifyStoreRecord(stores[0].record);
+  assert.ok(storeRec?.details?.mailboxKey);
+  const storeListings = listings.filter((l) => l.storeId === storeRec.key);
+  const seed = buyerSeedFromPhrase(TEST_PHRASE, "testnet4");
+  const storeUrl = "https://shop.example";
+  let pullCalls = 0;
+
+  const mockFetch = async (url: string): Promise<Response> => {
+    if (url === `${storeUrl}/public/store`) {
+      return new Response(
+        JSON.stringify({ store: stores[0].record, listings: storeListings.map((l) => l.record) }),
+        { status: 200 },
+      );
+    }
+    if (url === `${storeUrl}/mail/pull`) {
+      pullCalls += 1;
+      return new Response(JSON.stringify({ error: "unauthorized" }), { status: 403 });
+    }
+    return new Response("not found", { status: 404 });
+  };
+
+  const recovered = await recoverLightOrdersFromStore({
+    seed,
+    vendorUrl: storeUrl,
+    gapLimit: 3,
+    fetcher: mockFetch,
+  });
+  assert.deepEqual(recovered, []);
+  assert.equal(pullCalls, 3);
 });

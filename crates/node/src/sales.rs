@@ -445,6 +445,20 @@ impl Node {
             "sellerSawPayment": matches!(status, PAID | SHIPPED | COMPLETED),
             "sellerCompleted": status == COMPLETED,
         });
+        if let Some(created) = sale["created"].as_u64() {
+            snapshot["created"] = json!(created);
+        }
+        if let Some(line) = sale["lines"].as_array().and_then(|l| l.first()) {
+            if let Some(title) = line["title"].as_str() {
+                snapshot["title"] = json!(title);
+            }
+            if let Some(qty) = line["quantity"].as_u64() {
+                snapshot["quantity"] = json!(qty);
+            }
+            if let Some(hash) = line["listingHash"].as_str() {
+                snapshot["listingHash"] = json!(hash);
+            }
+        }
         if let Some(address) = sale["address"].as_str() {
             snapshot["address"] = json!(address);
         }

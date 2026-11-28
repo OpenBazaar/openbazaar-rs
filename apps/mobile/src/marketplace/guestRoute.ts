@@ -1,6 +1,6 @@
 import type { ShopLocation } from "./shopHistory";
 
-const GUEST_SECTIONS = new Set(["discover", "saved", "bag", "safety", "store", "classifieds", "stores"]);
+const GUEST_SECTIONS = new Set(["discover", "saved", "bag", "orders", "safety", "store", "classifieds", "stores"]);
 const STORE_SECTIONS = new Set(["storefront", "listings", "coupons", "sales", "store"]);
 
 /** Keep restored or deep-linked history entries on screens that work without a node. */

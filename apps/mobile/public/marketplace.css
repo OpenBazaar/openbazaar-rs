@@ -6387,11 +6387,13 @@ body:has(.ob-sales-detail-dialog[open]) .ob-content { overflow:hidden; }
 .ob-tor-status-badge.is-paid { background: #d4edda; color: #155724; border-color: #28a745; }
 .ob-tor-status-badge.is-shipped { background: #d1ecf1; color: #0c5460; border-color: #17a2b8; }
 .ob-tor-status-badge.is-complete { background: #d4edda; color: #155724; border-color: #28a745; }
+.ob-tor-status-badge.is-declined { background: #fde8e8; color: #9b1c1c; border-color: #f87171; }
 :root[data-ob-theme="dark"] .ob-tor-status-badge.is-waiting { background: #332d1a; color: #eed29a; border-color: #665a2e; }
 :root[data-ob-theme="dark"] .ob-tor-status-badge.is-seen { background: #142838; color: #7dd3fc; border-color: #0284c7; }
 :root[data-ob-theme="dark"] .ob-tor-status-badge.is-paid { background: #1a2e1f; color: #a3d9ad; border-color: #2a5433; }
 :root[data-ob-theme="dark"] .ob-tor-status-badge.is-shipped { background: #1a2c33; color: #9ad4e6; border-color: #2a4d5a; }
 :root[data-ob-theme="dark"] .ob-tor-status-badge.is-complete { background: #1a2e1f; color: #a3d9ad; border-color: #2a5433; }
+:root[data-ob-theme="dark"] .ob-tor-status-badge.is-declined { background: #361a1a; color: #fca5a5; border-color: #7f1d1d; }
 .ob-tor-total {
   font-size: 18px;
   font-weight: 600;
@@ -6515,9 +6517,107 @@ body:has(.ob-sales-detail-dialog[open]) .ob-content { overflow:hidden; }
   align-self: flex-end;
 }
 
+/* My Orders & Restore */
+.ob-tor-orders-head {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.ob-tor-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.ob-tor-notice {
+  margin: 0;
+  padding: 10px 14px;
+  border: 1px solid var(--ob-line);
+  border-radius: 8px;
+  background: var(--ob-surface);
+  color: var(--ob-ink);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.ob-tor-orders-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.ob-tor-order-row {
+  width: 100%;
+  text-align: left;
+  border: 1px solid var(--ob-line);
+  border-radius: 10px;
+  background: var(--ob-surface);
+  padding: 16px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  cursor: pointer;
+  color: var(--ob-ink);
+  font: inherit;
+  transition: border-color .15s ease, background-color .15s ease;
+}
+.ob-tor-order-row:hover {
+  border-color: var(--ob-brand);
+}
+.ob-tor-order-row:focus-visible {
+  outline: 2px solid var(--ob-brand);
+  outline-offset: 2px;
+}
+.ob-tor-order-row-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.ob-tor-order-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ob-ink);
+}
+.ob-tor-order-row-meta {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  font-size: 13px;
+  color: var(--ob-secondary);
+}
+.ob-tor-order-row-foot {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding-top: 8px;
+  border-top: 1px solid var(--ob-line);
+  font-size: 12px;
+  color: var(--ob-muted);
+}
+.ob-tor-order-row-foot code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  color: var(--ob-muted);
+}
+.ob-tor-select,
+.ob-tor-input {
+  width: 100%;
+  min-height: 40px;
+  padding: 8px 12px;
+  border: 1px solid var(--ob-line);
+  border-radius: 8px;
+  background: var(--ob-paper);
+  color: var(--ob-ink);
+  font: inherit;
+  font-size: 14px;
+  box-sizing: border-box;
+}
+
 /* Responsive */
 @media (max-width: 480px) {
   .ob-tor-word-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .ob-tor-checkout { padding: 20px 16px 40px; }
   .ob-tor-card { padding: 16px; }
+  .ob-tor-order-row { padding: 14px; }
 }

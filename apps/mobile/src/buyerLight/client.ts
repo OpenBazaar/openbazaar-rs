@@ -14,7 +14,7 @@ import { bytesToHex, hexToBytes, randomBytes, utf8ToBytes } from "@noble/hashes/
 import type { ListingHeader, ShopCatalog } from "../catalog.ts";
 import { catalogFromPublic, DIRECT_GET, NOT_A_STORE, storeBase } from "../directStore.ts";
 import { verifyListingRecord, verifyStoreRecord } from "../records.ts";
-import { applySellerUpdate, type LightOrderRecord } from "./contracts.ts";
+import { applySellerUpdate, sanitizeSellerText, type LightOrderRecord } from "./contracts.ts";
 import { deriveOrderKeys, type BuyerSeed } from "./keys.ts";
 import { assertEscrowAllowed, type PaymentRailKind } from "./escrowVerify.ts";
 import { openSealedReply, sealMessageLetter, sealOrderLetter } from "./tormail.ts";
@@ -319,4 +319,171 @@ export async function confirmLightOrderComplete(
     throw new Error(`The seller's node refused the completion (HTTP ${response.status}).`);
   }
   return { ...order, status: "Completed" };
+}
+
+/**
+ * Deterministic sequential checkout ID (`tor-0`, `tor-1`, …) for a given store
+ * so orders placed in Tor Browser can be recovered in a fresh session using
+ * only the 12-word BIP-39 receipt phrase and the store's `.onion` URL.
+ */
+export function nextTorCheckoutId(
+  existingOrders: readonly LightOrderRecord[],
+  storeId: string,
+): string {
+  let maxIndex = -1;
+  for (const order of existingOrders) {
+    if (order.storeId !== storeId) continue;
+    const match = /^tor-(\d+)$/.exec(order.checkoutId);
+    if (match) {
+      const idx = Number.parseInt(match[1], 10);
+      if (Number.isSafeInteger(idx) && idx > maxIndex) maxIndex = idx;
+    }
+  }
+  return `tor-${maxIndex + 1}`;
+}
+
+/**
+ * Recover deterministic Tor Browser orders (`tor-0`, `tor-1`, …) from a
+ * seller's `POST /mail/pull` endpoint using only the buyer's 12-word seed and
+ * the seller's store URL. Stops after `gapLimit` consecutive unauthorized/not-
+ * found indices (similar to BIP-44 address gap scanning).
+ */
+export async function recoverLightOrdersFromStore(params: {
+  seed: BuyerSeed;
+  vendorUrl: string;
+  gapLimit?: number;
+  maxIndex?: number;
+  fetcher?: LightFetcher;
+}): Promise<LightOrderRecord[]> {
+  const fetcher = params.fetcher ?? globalThis.fetch;
+  const gapLimit = params.gapLimit ?? 3;
+  const maxIndex = params.maxIndex ?? 50;
+  const verifiedStore = await fetchVerifiedStore(params.vendorUrl, fetcher);
+  const storeId = verifiedStore.catalog.store.id;
+  const sellerName = verifiedStore.catalog.store.name;
+  const recovered: LightOrderRecord[] = [];
+
+  let consecutiveMisses = 0;
+  for (let index = 0; index < maxIndex && consecutiveMisses < gapLimit; index++) {
+    const checkoutId = `tor-${index}`;
+    const keys = deriveOrderKeys(params.seed, checkoutId, storeId);
+    const nonceHex = bytesToHex(randomBytes(16));
+    const payload = utf8ToBytes(
+      JSON.stringify({
+        v: 1,
+        kind: "pull",
+        sale: keys.dropIdHex,
+        nonce: nonceHex,
+      }),
+    );
+    const sealed = sealMessageLetter(payload, verifiedStore.storeMailboxHex, keys.senderSecret);
+    const response = await fetcher(`${verifiedStore.url}/mail/pull`, {
+      method: "POST",
+      cache: "no-store",
+      credentials: "omit",
+      redirect: "error",
+      referrerPolicy: "no-referrer",
+      headers: { "Content-Type": "application/octet-stream" },
+      body: sealed as unknown as BodyInit,
+    });
+    if (response.status === 403 || response.status === 404) {
+      consecutiveMisses += 1;
+      continue;
+    }
+    if (!response.ok) {
+      throw new Error(`Could not reach ${sellerName} while restoring orders (HTTP ${response.status}).`);
+    }
+    const answer = (await response.json().catch(() => ({}))) as { reply?: unknown };
+    if (typeof answer.reply !== "string" || !/^[0-9a-f]+$/i.test(answer.reply)) {
+      consecutiveMisses += 1;
+      continue;
+    }
+    const opened = openSealedReply(hexToBytes(answer.reply.toLowerCase()), keys.replySecret);
+    const body = JSON.parse(new TextDecoder().decode(opened.body)) as Record<string, unknown>;
+    if (body.kind !== "status" || body.nonce !== nonceHex) {
+      throw new Error("The seller's restore answer failed its freshness check.");
+    }
+
+    consecutiveMisses = 0;
+    const nowSecs = Math.floor(Date.now() / 1000);
+    const amountSats =
+      typeof body.amountSats === "number" && Number.isSafeInteger(body.amountSats) && body.amountSats > 0
+        ? body.amountSats
+        : 0;
+    const itemsSats =
+      typeof body.itemsSats === "number" && Number.isSafeInteger(body.itemsSats) && body.itemsSats >= 0
+        ? body.itemsSats
+        : amountSats;
+    const shippingSats =
+      typeof body.shippingSats === "number" && Number.isSafeInteger(body.shippingSats) && body.shippingSats >= 0
+        ? body.shippingSats
+        : 0;
+    const listingHash =
+      typeof body.listingHash === "string" && /^[0-9a-f]{64}$/i.test(body.listingHash)
+        ? body.listingHash.toLowerCase()
+        : "";
+    const catalogListing = listingHash
+      ? verifiedStore.catalog.listings.find((l) => l.hash === listingHash)
+      : undefined;
+    const listingRecordHex = listingHash ? verifiedStore.listingRecordsByHash[listingHash] : undefined;
+    const title =
+      (typeof body.title === "string" && body.title.trim()
+        ? sanitizeSellerText(body.title, 200, false)
+        : "") ||
+      catalogListing?.title ||
+      `Order #${keys.dropIdHex.slice(0, 8)}`;
+    const quantity =
+      typeof body.quantity === "number" && Number.isSafeInteger(body.quantity) && body.quantity >= 1
+        ? body.quantity
+        : 1;
+    const createdAt =
+      typeof body.created === "number" && Number.isSafeInteger(body.created) && body.created > 0
+        ? body.created
+        : nowSecs;
+
+    const base: LightOrderRecord = {
+      version: 1,
+      id: keys.dropIdHex,
+      checkoutId,
+      dropIdHex: keys.dropIdHex,
+      createdAt,
+      network: params.seed.network,
+      settlement: "direct",
+      rail: "btc",
+      sellerName,
+      sellerUrl: verifiedStore.url,
+      storeId,
+      storeMailboxHex: verifiedStore.storeMailboxHex,
+      storeRecordHex: verifiedStore.storeRecordHex,
+      listingRecordsHex: listingRecordHex ? [listingRecordHex] : [],
+      listingHash,
+      title,
+      quantity,
+      estimateSats: amountSats,
+      fiatPriced: false,
+      itemsSats,
+      shippingSats,
+      totalSats: amountSats,
+      status: "Awaiting seller",
+      paymentAddress: null,
+      paymentUri: null,
+      receivedSats: 0,
+      confirmations: 0,
+      txids: [],
+      pinnedSellerHex: null,
+      delivered: true,
+      declinedReason: null,
+      fulfillment: null,
+      trackingStatus: null,
+      returnPolicy: null,
+      returnCase: null,
+      messages: [],
+      lastPulledAt: nowSecs,
+      escrow: null,
+    };
+
+    recovered.push(applySellerUpdate(base, body, opened.senderHex, nowSecs));
+  }
+
+  return recovered;
 }

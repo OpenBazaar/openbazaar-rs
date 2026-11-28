@@ -56,6 +56,8 @@ import { MediaImage } from "./SellerKit";
 import { PhotoZoom } from "./PhotoZoom";
 import { PairingBanner, PairingDialog } from "./PairingDialog";
 import { DirectBanner, DirectPay, OpenStoreForm, SellGate } from "./DirectBrowse";
+import { TorOrders, type KnownVendorStore } from "./TorOrders";
+import { createWebBuyerStore, subscribeWebBuyerOrders } from "../buyerLight/webStore";
 import { BrowsersSettings } from "./BrowsersSettings";
 import { CatalogEmpty } from "./CatalogEmpty";
 import { sanitizeGuestLocation } from "./guestRoute";
@@ -213,6 +215,32 @@ export default function Marketplace() {
   const toastAction = typeof toast === "string" ? undefined : toast.action;
   const guest = !!direct || publicMode || !hasNodeHost();
   const nodeAvailable = !guest;
+  const [guestOrderCount, setGuestOrderCount] = useState(0);
+  useEffect(() => {
+    if (!guest) return;
+    const webStore = createWebBuyerStore();
+    const sync = () => { void webStore.loadOrders().then((list) => setGuestOrderCount(list.length)); };
+    sync();
+    return subscribeWebBuyerOrders(sync);
+  }, [guest]);
+  const knownVendorStores = useMemo<KnownVendorStore[]>(() => {
+    const out: KnownVendorStore[] = [];
+    const seen = new Set<string>();
+    const add = (name: string, url: string) => {
+      const clean = url.trim().replace(/\/+$/, "");
+      if (!clean || seen.has(clean)) return;
+      seen.add(clean);
+      out.push({ name: name || clean, url: clean });
+    };
+    if (direct) {
+      add(catalog?.store.name ?? direct, direct);
+    }
+    for (const [storeId, url] of storeAddresses.entries()) {
+      const match = catalog?.stores.find((s) => s.key === storeId);
+      add(match?.name ?? url, url);
+    }
+    return out;
+  }, [direct, storeAddresses, catalog]);
   const build = useBuildInfo(nodeAvailable);
   const updater = useDesktopUpdater();
   const profile = useNodeResource(fetchProfile, 0, nodeAvailable);
@@ -555,7 +583,7 @@ export default function Marketplace() {
     ? <Orders {...money} selectedOrderId={page.name === "order" ? page.orderId : null} unreadByOrder={messageAlerts.unreadOrdersById} onSelectOrder={openOrder} onBack={() => shopHistory.backToParent()} onBrowse={() => navigate("discover")}/>
     : !guest && (page.name === "sale" || (section === "sales" && page.name === "browse"))
       ? storeView()
-      : page.name !== "browse" ? null : section === "saved" && saved.length === 0 ? <section><PageHeading title="Saved goods"/><Empty illustration="saved" icon="heart" title="No saved products" text="Save products using the heart button."><button className="ob-primary" onClick={() => navigate("discover")}>Browse products <Icon name="arrow" size={17}/></button></Empty></section> : section === "safety" ? <SafetySettingsPanel settings={safety} onChange={setSafety} labelSources={nodeAvailable ? <LabelersPanel state={labelers} onState={setLabelerState}/> : undefined}/> : guest && section === "classifieds" ? <Classifieds guest/> : guest && section === "stores" ? <GuestStoreDirectory catalog={catalog} onOpen={id => void openStore(id)}/> : guest ? storeView() : section === "wallet" ? <WalletPage {...money} onOrders={() => navigate("orders")} onSales={seller ? () => navigate("sales") : undefined} onManage={rail => navigate(rail)} onTor={() => navigate("tor")}/> : section === "lightning" ? <LightningSettings/> : section === "zcash" ? <ZcashSettings/> : section === "monero" ? <MoneroSettings/> : section === "tor" ? <TorSettings/> : section === "updates" ? <UpdateSettings updater={updater}/> : section === "home-node" ? <div className="ob-settings-page"><header className="ob-settings-heading"><h1>Home node</h1><p>Run your store on an always-on computer and manage it from anywhere over Tor.</p></header><HomeNodePanel/></div> : section === "browsers" ? <BrowsersSettings/> : section === "addresses" ? <Addresses/> : section === "follows" ? <Follows onChanged={message => { setToast(message); void load(); }} onOpen={id => void openStore(id)}/> : section === "classifieds" ? <Classifieds/> : section === "stores" ? <StoreDirectory onOpen={id => void openStore(id)} onFollowChanged={message => void followChanged(message)}/> : storeView();
+      : page.name !== "browse" ? null : section === "saved" && saved.length === 0 ? <section><PageHeading title="Saved goods"/><Empty illustration="saved" icon="heart" title="No saved products" text="Save products using the heart button."><button className="ob-primary" onClick={() => navigate("discover")}>Browse products <Icon name="arrow" size={17}/></button></Empty></section> : section === "safety" ? <SafetySettingsPanel settings={safety} onChange={setSafety} labelSources={nodeAvailable ? <LabelersPanel state={labelers} onState={setLabelerState}/> : undefined}/> : guest && section === "orders" ? <TorOrders knownStores={knownVendorStores} onBrowse={() => navigate("discover")}/> : guest && section === "classifieds" ? <Classifieds guest/> : guest && section === "stores" ? <GuestStoreDirectory catalog={catalog} onOpen={id => void openStore(id)}/> : guest ? storeView() : section === "wallet" ? <WalletPage {...money} onOrders={() => navigate("orders")} onSales={seller ? () => navigate("sales") : undefined} onManage={rail => navigate(rail)} onTor={() => navigate("tor")}/> : section === "lightning" ? <LightningSettings/> : section === "zcash" ? <ZcashSettings/> : section === "monero" ? <MoneroSettings/> : section === "tor" ? <TorSettings/> : section === "updates" ? <UpdateSettings updater={updater}/> : section === "home-node" ? <div className="ob-settings-page"><header className="ob-settings-heading"><h1>Home node</h1><p>Run your store on an always-on computer and manage it from anywhere over Tor.</p></header><HomeNodePanel/></div> : section === "browsers" ? <BrowsersSettings/> : section === "addresses" ? <Addresses/> : section === "follows" ? <Follows onChanged={message => { setToast(message); void load(); }} onOpen={id => void openStore(id)}/> : section === "classifieds" ? <Classifieds/> : section === "stores" ? <StoreDirectory onOpen={id => void openStore(id)} onFollowChanged={message => void followChanged(message)}/> : storeView();
   function storeView() {
     if (guest && inStore) return <SellGate/>;
     const own = profile.data;
@@ -582,6 +610,7 @@ export default function Marketplace() {
           <NavItem icon="store" active={navSection === "stores"} onClick={() => navigate("stores")}>Stores</NavItem>
           <NavItem icon="heart" active={navSection === "saved"} onClick={() => navigate("saved")} count={savedCount || undefined}>Saved goods</NavItem>
           <NavItem icon="bag" active={navSection === "bag"} onClick={() => navigate("bag")} count={cartCount || undefined}>Your bag</NavItem>
+          {guest && <NavItem icon="paper" active={navSection === "orders"} onClick={() => navigate("orders")} count={guestOrderCount || undefined}>My orders</NavItem>}
         </nav>
         {seller && <><div className="ob-nav-label ob-store-nav-label">Your store</div><nav className="ob-main-nav ob-store-nav" aria-label="Your store">
           <NavItem icon="home" active={navSection === "storefront"} onClick={() => navigate("storefront")}>Storefront</NavItem>

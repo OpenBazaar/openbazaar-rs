@@ -9,7 +9,7 @@ test("guest mode redirects node-only sections and receipts cleanly", () => {
   assert.deepEqual(sanitizeGuestLocation(wallet, false), wallet);
   assert.deepEqual(sanitizeGuestLocation(wallet, true), { section: "discover", category: null, page: { name: "browse" } });
 
-  for (const section of ["orders", "addresses", "home-node", "browsers", "lightning", "zcash", "monero", "tor", "follows", "store-labels"]) {
+  for (const section of ["addresses", "home-node", "browsers", "lightning", "zcash", "monero", "tor", "follows", "store-labels"]) {
     assert.deepEqual(
       sanitizeGuestLocation({ section, category: null, page: { name: "browse" } }, true),
       { section: "discover", category: null, page: { name: "browse" } },
@@ -25,7 +25,7 @@ test("guest mode redirects node-only sections and receipts cleanly", () => {
     );
   }
 
-  for (const section of ["discover", "saved", "bag", "safety", "store", "classifieds", "stores"]) {
+  for (const section of ["discover", "saved", "bag", "orders", "safety", "store", "classifieds", "stores"]) {
     const loc: ShopLocation = { section, category: section === "discover" ? "Books" : null, page: { name: "browse" } };
     assert.deepEqual(sanitizeGuestLocation(loc, true), loc, section);
   }
