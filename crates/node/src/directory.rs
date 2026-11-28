@@ -519,6 +519,13 @@ impl Replica {
                 ids.push(*id);
             }
         }
+        if let Some(index) = self.current_snapshot() {
+            for id in &index.stores {
+                if !ids.contains(id) {
+                    ids.push(*id);
+                }
+            }
+        }
         ids
     }
 
@@ -758,6 +765,7 @@ impl Replica {
             || self.followed.contains(id)
             || self.opened.iter().rev().take(OPENED_CAP).any(|open| open == id)
             || self.admissions.contains_key(id)
+            || self.snapshot_names(id)
     }
 
     /// Names whose store record matches, then titles whose listing is held.
@@ -1427,13 +1435,14 @@ impl Node {
         self.seed_replica.lock().unwrap_or_else(|err| err.into_inner()).set_live(live);
     }
 
-    fn refresh_market(&self) {
-        // Stores followed by URL are served from `replicas.rs`; the directory
-        // replica does not know them, so `apply` drops any it has no record
-        // of. Those are put back. A store both sources hold keeps the
-        // directory's handling, as before. Copied before the other locks,
-        // which `replicate` takes in the other order.
-        let followed_by_url = self.replicas().served_copies();
+    pub(crate) fn refresh_market(&self) {
+        // Stores followed by URL and admitted stores replicated over HTTP are
+        // kept in `replicas.rs`. Copy them before taking `seed_replica` and
+        // `catalog`, matching the lock order in `replicate`.
+        let (followed_by_url, admitted_by_url) = {
+            let replicas = self.replicas();
+            (replicas.served_copies(), replicas.served_admitted_copies())
+        };
         let replica = self.seed_replica.lock().unwrap_or_else(|err| err.into_inner());
         let own = self.own_store;
         let mut catalog = self.catalog.write().unwrap_or_else(|err| err.into_inner());
@@ -1443,11 +1452,50 @@ impl Node {
             |store| store.id == own || crate::demo_secret(store).is_some(),
             |admission| replica.is_live(admission),
         );
-        for copy in &followed_by_url {
-            if !catalog.stores.iter().any(|store| store.id == copy.store.id) {
+        for copy in &admitted_by_url {
+            if copy.store.id == own || crate::demo_secret(&copy.store).is_some() {
+                continue;
+            }
+            if catalog.stores.iter().any(|store| store.id == copy.store.id) {
                 crate::replicas::serve_replica(&mut catalog, copy);
             }
         }
+        for copy in &followed_by_url {
+            if copy.store.id == own || crate::demo_secret(&copy.store).is_some() {
+                continue;
+            }
+            crate::replicas::serve_replica(&mut catalog, copy);
+        }
+    }
+
+    /// Sale URLs (`http://<v3>.onion`) of directory-admitted or followed stores
+    /// that this node should replicate over HTTP for fresh listings and media.
+    pub(crate) fn admitted_replica_urls(&self) -> Vec<String> {
+        let replica = self.seed_replica.lock().unwrap_or_else(|err| err.into_inner());
+        let live = |admission: &Admission| replica.is_live(admission);
+        let own_url = self.own_url().map(str::to_string);
+        let reply_url = self.sale_reply_url();
+        let mut urls = Vec::new();
+        for store in replica.stores.values() {
+            if store.id == self.own_store
+                || crate::demo_secret(store).is_some()
+                || self.store_wallets.contains_key(&store.name)
+            {
+                continue;
+            }
+            if !replica.show_store(store.id.as_bytes(), &live) {
+                continue;
+            }
+            let onion = store.details.as_ref().map(|details| details.onion.as_str()).unwrap_or("");
+            let Some(url) = sale_url(onion) else { continue };
+            if own_url.as_deref() == Some(url.as_str()) || reply_url.as_deref() == Some(url.as_str()) {
+                continue;
+            }
+            if !urls.contains(&url) {
+                urls.push(url);
+            }
+        }
+        urls
     }
 
     /// Listing hashes in the catalog index when that index names this store's
@@ -3577,5 +3625,34 @@ mod tests {
 
         stop.store(true, Ordering::Relaxed);
         server.join().unwrap();
+    }
+
+    #[test]
+    fn snapshot_admitted_store_wants_and_pulls_listings() {
+        let dir_secret = secret_from_label("snapshot-listings-dir");
+        let dir_key = xonly(&dir_secret);
+        let (store_secret, store) = shop("snapshot-listings-shop", "Cedar Workshop");
+        let listing = goods(&store, &store_secret, "Cedar bowl", 4_200);
+        let head = SeedDocument::sign(4, vec![onion('a')], DirectoryTerms::standard(dir_key), None, &dir_secret).unwrap();
+        let snapshot = AdmissionIndex::sign(1, 20261128, 4, vec![*store.id.as_bytes()], &dir_secret).unwrap();
+
+        let intro_dir = TempDir::new();
+        let mut intro = Replica::open(&intro_dir.0).unwrap();
+        intro.accept_document(&head.encode().unwrap(), &dir_key).unwrap();
+        intro.accept_store(&store.encode().unwrap()).unwrap();
+        intro.accept_listing(&listing.encode().unwrap()).unwrap();
+        intro.accept_admission_index(&snapshot.encode().unwrap(), &dir_key).unwrap();
+
+        let peer_dir = TempDir::new();
+        let mut peer = Replica::open(&peer_dir.0).unwrap();
+        peer.pull(&[&intro], &dir_key, [0u8; 32]).unwrap();
+        assert!(peer.listing_wanted(store.id.as_bytes(), &[0u8; 32]), "snapshot-admitted store wants listings");
+        assert_eq!(peer.listings.len(), 1, "snapshot-admitted store listings are pulled from introduction");
+
+        let mut catalog = Catalog { stores: vec![], moderator: fixture_catalog().moderator, listings: vec![] };
+        peer.apply(&mut catalog, StoreId::from_bytes([1u8; 32]), |_| false, |_| false);
+        assert_eq!(catalog.stores.len(), 1);
+        assert_eq!(catalog.listings.len(), 1);
+        assert_eq!(catalog.listings[0].title, "Cedar bowl");
     }
 }
