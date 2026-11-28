@@ -277,8 +277,8 @@ test('an image over the node’s size cap is shrunk in the browser and uploaded'
   expect(type).toBe('image/jpeg')
   expect(body!.length).toBeLessThan(2 * 1024 * 1024)
   expect(body!.subarray(0, 3).equals(Buffer.from([0xff, 0xd8, 0xff]))).toBe(true)
-  // The first step: the longest side at 2000 pixels, the same shape.
-  expect(jpegSize(body!)).toEqual([2000, 1333])
+  // The first step: the longest side at 1200 pixels, the same shape.
+  expect(jpegSize(body!)).toEqual([1200, 800])
 })
 
 // An image over the cap that the browser cannot shrink (it does not decode,
