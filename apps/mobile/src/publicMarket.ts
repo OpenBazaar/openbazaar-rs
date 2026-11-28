@@ -256,7 +256,32 @@ export async function loadPublicMarket(loc: PageAddress, fetcher: Getter = globa
       if (bodies.length > 0) {
         const addresses = await readAddresses(base, fetcher);
         const storeAddresses = new Map(addresses.map((row) => [row.storeId, row.url]));
-        return { catalog: aggregatePublicStores(bodies), notice: null, images, storeAddresses };
+        // Admitted stores whose listings the moderator has not replicated
+        // yet are fetched directly from the vendor's onion.
+        const catalog = aggregatePublicStores(bodies);
+        const emptyAdmitted = addresses.filter((row) => {
+          const store = catalog.stores.find((s) => s.key === row.storeId);
+          return store && catalog.listings.filter((l) => l.storeId === row.storeId).length === 0;
+        });
+        await mapPool(emptyAdmitted, 2, async (row) => {
+          try {
+            const response = await fetcher(`${row.url}/public/store`, publicGet());
+            if (!response.ok) return;
+            const body = await readJson(response, 4 * 1024 * 1024);
+            if (!body) return;
+            const vendorCatalog = catalogFromPublic(body);
+            if (vendorCatalog.stores[0]?.key !== row.storeId) return;
+            for (const listing of vendorCatalog.listings) {
+              if (!catalog.listings.some((l) => l.hash === listing.hash)) {
+                catalog.listings.push(listing);
+              }
+            }
+            images.push({ url: row.url, hashes: vendorCatalog.listings.flatMap((listing) => listing.images) });
+          } catch {
+            // The vendor's onion is down; its store stays without listings.
+          }
+        });
+        return { catalog, notice: null, images, storeAddresses };
       }
     }
   }
