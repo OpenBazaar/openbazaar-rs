@@ -39,8 +39,6 @@ use crate::{listing_value, Error, Node};
 
 const DIRECTORY_TIMEOUT: Duration = Duration::from_secs(60);
 const FRAME_VERSION: u8 = 1;
-const QUERY_MAGIC: &[u8; 4] = b"OBQR";
-const SUBMIT_MAGIC: &[u8; 4] = b"OBSB";
 static NEXT_DIR_STREAM: AtomicU64 = AtomicU64::new(0);
 
 /// One compiled introduction. A checksum that Arti refuses is "down": the
@@ -158,7 +156,7 @@ fn submit_via_socks5(proxy: &str, onion: &tormail::OnionAddress, kind: u8, body:
     }
     let len = u32::try_from(body.len()).map_err(|_| "directory submission too large".to_string())?;
     let mut stream = socks5_connect(proxy, onion.as_str(), tormail::ORDER_PORT, DIRECTORY_TIMEOUT)?;
-    stream.write_all(SUBMIT_MAGIC).map_err(|err| err.to_string())?;
+    stream.write_all(tormail::SUBMIT_MAGIC).map_err(|err| err.to_string())?;
     stream.write_all(&[FRAME_VERSION, kind]).map_err(|err| err.to_string())?;
     stream.write_all(&len.to_le_bytes()).map_err(|err| err.to_string())?;
     stream.write_all(body).map_err(|err| err.to_string())?;
@@ -174,7 +172,7 @@ fn submit_via_socks5(proxy: &str, onion: &tormail::OnionAddress, kind: u8, body:
 
 fn ask_via_socks5(proxy: &str, onion: &tormail::OnionAddress, kind: u8, id: [u8; 32]) -> Result<Option<Vec<u8>>, String> {
     let mut stream = socks5_connect(proxy, onion.as_str(), tormail::ORDER_PORT, DIRECTORY_TIMEOUT)?;
-    stream.write_all(QUERY_MAGIC).map_err(|err| err.to_string())?;
+    stream.write_all(tormail::QUERY_MAGIC).map_err(|err| err.to_string())?;
     stream.write_all(&[FRAME_VERSION, kind]).map_err(|err| err.to_string())?;
     stream.write_all(&id).map_err(|err| err.to_string())?;
     stream.flush().map_err(|err| err.to_string())?;
@@ -3510,7 +3508,7 @@ mod tests {
                 let mut vh = [0u8; 2];
                 if stream.read_exact(&mut vh).is_err() { continue; }
                 let kind = vh[1];
-                if &magic == QUERY_MAGIC {
+                if &magic == tormail::QUERY_MAGIC {
                     let mut id = [0u8; 32];
                     if stream.read_exact(&mut id).is_err() { continue; }
                     let reply = rep_srv.lock().unwrap().answer(kind, &id);
@@ -3524,7 +3522,7 @@ mod tests {
                             let _ = stream.write_all(&[1, 0, 0, 0, 0]);
                         }
                     }
-                } else if &magic == SUBMIT_MAGIC {
+                } else if &magic == tormail::SUBMIT_MAGIC {
                     let mut lb = [0u8; 4];
                     if stream.read_exact(&mut lb).is_err() { continue; }
                     let len = u32::from_le_bytes(lb) as usize;
