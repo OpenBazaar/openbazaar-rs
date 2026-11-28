@@ -41,7 +41,7 @@ export function PairingOffer({ code, expires, onion, since, onDone }: { code: Pa
   const waited = useElapsed(since);
   useEffect(() => {
     let active = true;
-    void QRCode.toDataURL(code.link, { width: 208, margin: 2, errorCorrectionLevel: "M", color: { dark: "#063853", light: "#ffffff" } }).then(src => { if (active) setQr(src); }, () => undefined);
+    void QRCode.toString(code.link, { type: "svg", margin: 2, errorCorrectionLevel: "M", color: { dark: "#063853", light: "#ffffff" } }).then(svg => { if (active) setQr(`data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`); }, () => undefined);
     return () => { active = false; };
   }, [code.link]);
   if (onion === "publishing" && !code.lan) return <div className="ob-pairing-offer" role="group" aria-label="New pairing code">

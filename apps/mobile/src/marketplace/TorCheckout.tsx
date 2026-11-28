@@ -45,13 +45,15 @@ function TorPaymentQr({ value, label = "Bitcoin payment QR code" }: { value: str
     let active = true;
     setSrc("");
     setError(false);
-    void QRCode.toDataURL(value, {
-      width: 224,
-      margin: 4,
+    void QRCode.toString(value, {
+      type: "svg",
+      margin: 2,
       errorCorrectionLevel: "M",
-      color: { dark: "#071824", light: "#ffffff" },
+      color: { dark: "#000000", light: "#ffffff" },
     }).then(
-      (s: string) => { if (active) setSrc(s); },
+      (svg: string) => {
+        if (active) setSrc(`data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`);
+      },
       () => { if (active) setError(true); },
     );
     return () => { active = false; };

@@ -193,14 +193,14 @@ export function PaymentQr({ value, paper = false, label = 'Bitcoin payment QR co
     let active = true
     setSrc('')
     setError(false)
-    void QRCode.toDataURL(value, {
-      width: paper ? 448 : 224,
+    void QRCode.toString(value, {
+      type: 'svg',
       margin: paper ? 2 : 4,
       errorCorrectionLevel: 'M',
       color: { dark: '#071824', light: paper ? '#fbfaf7' : '#ffffff' }
     }).then(
-      s => {
-        if (active) setSrc(s)
+      svg => {
+        if (active) setSrc(`data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`)
       },
       () => {
         if (active) setError(true)
