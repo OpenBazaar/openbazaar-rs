@@ -8,10 +8,10 @@
 // Key management uses the same deterministic BIP-39 seed derivation as
 // the native BuyerLightApp, stored in localStorage via webStore.ts.
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import QRCode from "qrcode";
 import type { ListingHeader } from "../catalog.ts";
 import type { LightOrderRecord } from "../buyerLight/contracts.ts";
-import { applySellerUpdate, buildBip21Uri } from "../buyerLight/contracts.ts";
 import {
   fetchVerifiedStore,
   pullLightOrderStatus,
@@ -35,6 +35,71 @@ import { PageHeading } from "./PageHeading.tsx";
 const store = createWebBuyerStore();
 
 type Phase = "seed" | "form" | "placed";
+
+/* ── Shared: QR code rendered locally (works over Tor) ────────── */
+
+function TorPaymentQr({ value, label = "Bitcoin payment QR code" }: { value: string; label?: string }) {
+  const [src, setSrc] = useState("");
+  const [error, setError] = useState(false);
+  useEffect(() => {
+    let active = true;
+    setSrc("");
+    setError(false);
+    void QRCode.toDataURL(value, {
+      width: 224,
+      margin: 4,
+      errorCorrectionLevel: "M",
+      color: { dark: "#071824", light: "#ffffff" },
+    }).then(
+      (s: string) => { if (active) setSrc(s); },
+      () => { if (active) setError(true); },
+    );
+    return () => { active = false; };
+  }, [value]);
+
+  if (error) return <p className="ob-tor-qr-error" role="alert">QR code unavailable. Copy the address instead.</p>;
+  if (!src) return <p className="ob-meta" role="status">Preparing QR code…</p>;
+  return (
+    <div className="ob-tor-qr-frame">
+      <img className="ob-tor-qr-img" width={200} height={200} src={src} alt={label} data-payment-uri={value} />
+    </div>
+  );
+}
+
+/* ── Shared: 3×4 word grid with numbered chips ────────────────── */
+
+function WordGrid({ words, copyValue }: { words: string[]; copyValue?: string }) {
+  return (
+    <div className="ob-tor-word-card">
+      <div className="ob-tor-word-grid">
+        {words.map((w, i) => (
+          <span key={i} className="ob-tor-word-chip">
+            <span className="ob-tor-word-num">{i + 1}</span>
+            <span>{w}</span>
+          </span>
+        ))}
+      </div>
+      {copyValue && (
+        <div className="ob-tor-word-copy">
+          <CopyButton value={copyValue} label="Copy all 12 words" />
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ── Shared: monospace code box with inline copy ──────────────── */
+
+function CodeCopyRow({ value, label }: { value: string; label: string }) {
+  return (
+    <div className="ob-tor-code-row">
+      <code>{value}</code>
+      <CopyButton value={value} label={label} />
+    </div>
+  );
+}
+
+/* ── Root ─────────────────────────────────────────────────────── */
 
 export function TorCheckout({
   listing,
@@ -78,7 +143,7 @@ export function TorCheckout({
 
   if (booting || (!verifiedStore && !storeError)) {
     return (
-      <section className="ob-checkout">
+      <section className="ob-tor-checkout">
         <p className="ob-meta">Loading checkout…</p>
       </section>
     );
@@ -86,7 +151,7 @@ export function TorCheckout({
 
   if (storeError) {
     return (
-      <section className="ob-checkout">
+      <section className="ob-tor-checkout">
         <button className="ob-back" type="button" onClick={onBack}>{backLabel}</button>
         <p className="ob-error">{storeError}</p>
       </section>
@@ -146,6 +211,8 @@ export function TorCheckout({
   );
 }
 
+/* ── Seed step ────────────────────────────────────────────────── */
+
 function SeedStep({
   onReady,
   onBack,
@@ -164,7 +231,7 @@ function SeedStep({
   if (mode === "create") {
     const words = generated.split(" ");
     return (
-      <section className="ob-checkout">
+      <section className="ob-tor-checkout">
         <button className="ob-back" type="button" onClick={() => setMode("choose")}>
           Back
         </button>
@@ -172,20 +239,14 @@ function SeedStep({
           title="Write down your 12 recovery words"
           description="These 12 words recover your orders and receipt codes. Keep them offline."
         />
-        <div className="ob-seed-grid">
-          {words.map((w, i) => (
-            <span key={i} className="ob-seed-word">
-              {i + 1}. {w}
-            </span>
-          ))}
-        </div>
-        <label className="ob-field">
+        <WordGrid words={words} copyValue={generated} />
+        <label className="ob-tor-checkbox-row">
           <input
             type="checkbox"
             checked={backedUp}
             onChange={() => setBackedUp((v) => !v)}
-          />{" "}
-          I wrote down all 12 words in order.
+          />
+          <span>I wrote down all 12 words in order.</span>
         </label>
         <button
           className="ob-primary"
@@ -200,7 +261,7 @@ function SeedStep({
 
   if (mode === "restore") {
     return (
-      <section className="ob-checkout">
+      <section className="ob-tor-checkout">
         <button className="ob-back" type="button" onClick={() => setMode("choose")}>
           Back
         </button>
@@ -235,7 +296,7 @@ function SeedStep({
   }
 
   return (
-    <section className="ob-checkout">
+    <section className="ob-tor-checkout">
       <button className="ob-back" type="button" onClick={onBack}>
         {backLabel}
       </button>
@@ -261,6 +322,8 @@ function SeedStep({
     </section>
   );
 }
+
+/* ── Checkout form ────────────────────────────────────────────── */
 
 function CheckoutForm({
   listing,
@@ -309,53 +372,61 @@ function CheckoutForm({
   };
 
   const words = phrase.split(" ");
+  const unitPrice = listing.priceSats;
+  const total = unitPrice * quantity;
 
   return (
-    <section className="ob-checkout">
+    <section className="ob-tor-checkout">
       <button className="ob-back" type="button" onClick={onBack}>
         {backLabel}
       </button>
-      <PageHeading title={listing.title} description={`${listing.priceSats.toLocaleString()} sats · ${listing.seller}`} />
+      <PageHeading title={listing.title} description={`${unitPrice.toLocaleString()} sats · ${listing.seller}`} />
 
-      <div className="ob-checkout-receipt">
-        <h3>Your 12-word receipt code</h3>
+      <div className="ob-tor-card">
+        <div className="ob-tor-card-header">
+          <h3>Your 12-word receipt code</h3>
+          <CopyButton value={phrase} label="Copy receipt code" />
+        </div>
         <p className="ob-meta">
           Save these 12 words to check order status and tracking later.
         </p>
-        <div className="ob-seed-grid">
-          {words.map((w, i) => (
-            <span key={i} className="ob-seed-word">
-              {i + 1}. {w}
-            </span>
-          ))}
-        </div>
-        <CopyButton value={phrase} label="Copy receipt code" />
+        <WordGrid words={words} />
       </div>
 
-      <label className="ob-field">
-        <span>Quantity</span>
-        <input
-          type="number"
-          min={1}
-          max={99}
-          value={quantity}
-          onChange={(e) => setQuantity(Math.max(1, Math.min(99, Number(e.target.value) || 1)))}
-        />
-      </label>
-      <label className="ob-field">
-        <span>{listing.kind === "physical" ? "Shipping address" : "Delivery note"}</span>
-        <textarea
-          className="ob-textarea"
-          value={shipTo}
-          onChange={(e) => setShipTo(e.target.value)}
-          placeholder={
-            listing.kind === "physical"
-              ? "Name, street, city, region, postal code, country"
-              : "How should the seller deliver this?"
-          }
-          rows={3}
-        />
-      </label>
+      <div className="ob-tor-card">
+        <h3>Order details</h3>
+        <label className="ob-tor-compact-field">
+          <span>Quantity</span>
+          <input
+            className="ob-tor-qty"
+            type="number"
+            min={1}
+            max={99}
+            value={quantity}
+            onChange={(e) => setQuantity(Math.max(1, Math.min(99, Number(e.target.value) || 1)))}
+          />
+        </label>
+        <div className="ob-tor-order-summary">
+          <span>{listing.title}</span>
+          <span>{quantity} × {unitPrice.toLocaleString()} sats</span>
+          <strong>Total: {total.toLocaleString()} sats</strong>
+        </div>
+        <label className="ob-tor-compact-field">
+          <span>{listing.kind === "physical" ? "Shipping address" : "Delivery note"}</span>
+          <textarea
+            className="ob-textarea"
+            value={shipTo}
+            onChange={(e) => setShipTo(e.target.value)}
+            placeholder={
+              listing.kind === "physical"
+                ? "Name, street, city, region, postal code, country"
+                : "How should the seller deliver this?"
+            }
+            rows={3}
+          />
+        </label>
+      </div>
+
       {error && <p className="ob-error">{error}</p>}
       <button className="ob-primary" disabled={busy || !shipTo.trim()} onClick={() => void submit()}>
         {busy ? "Placing order…" : "Place order & get payment address"}
@@ -366,6 +437,8 @@ function CheckoutForm({
     </section>
   );
 }
+
+/* ── Order / payment status ───────────────────────────────────── */
 
 function OrderStatus({
   order,
@@ -427,59 +500,57 @@ function OrderStatus({
     }
   };
 
+  const statusClass =
+    order.status === "Awaiting payment" ? "is-waiting" :
+    order.status === "Shipped" ? "is-shipped" :
+    order.status === "Completed" ? "is-complete" : "";
+
   return (
-    <section className="ob-checkout">
+    <section className="ob-tor-checkout">
       <button className="ob-back" type="button" onClick={onBack}>
         {backLabel}
       </button>
-      <PageHeading title={`Order: ${order.title}`} description={`${order.sellerName} · ${order.status}`} />
+      <PageHeading title={`Order: ${order.title}`} description={`${order.sellerName}`} />
       {error && <p className="ob-error">{error}</p>}
       {order.declinedReason && <p className="ob-error">{order.declinedReason}</p>}
 
-      <div className="ob-order-facts">
-        <dl>
-          <dt>Status</dt><dd>{order.status}</dd>
-          <dt>Total</dt><dd>{order.totalSats.toLocaleString()} sats</dd>
-          {order.receivedSats > 0 && <><dt>Received</dt><dd>{order.receivedSats.toLocaleString()} sats ({order.confirmations} confs)</dd></>}
-        </dl>
-        <button className="ob-secondary" disabled={busy} onClick={() => void pullStatus()}>
-          {busy ? "Refreshing…" : "Refresh status from seller"}
-        </button>
-        {order.status === "Shipped" && (
-          <button className="ob-primary" disabled={busy} onClick={() => void confirmArrival()}>
-            Confirm it arrived
-          </button>
+      {/* Status card */}
+      <div className="ob-tor-card">
+        <div className="ob-tor-status-header">
+          <span className={`ob-tor-status-badge ${statusClass}`}>{order.status}</span>
+          <strong className="ob-tor-total">{order.totalSats.toLocaleString()} sats</strong>
+        </div>
+        {order.receivedSats > 0 && (
+          <p className="ob-meta">Received {order.receivedSats.toLocaleString()} sats · {order.confirmations} confirmations</p>
         )}
+        <div className="ob-tor-status-actions">
+          <button className="ob-secondary" disabled={busy} onClick={() => void pullStatus()}>
+            {busy ? "Refreshing…" : "Refresh status from seller"}
+          </button>
+          {order.status === "Shipped" && (
+            <button className="ob-primary" disabled={busy} onClick={() => void confirmArrival()}>
+              Confirm it arrived
+            </button>
+          )}
+        </div>
       </div>
 
+      {/* Payment card */}
       {order.paymentAddress && order.paymentUri && (
-        <div className="ob-payment-box">
+        <div className="ob-tor-card">
           <h3>Pay from any Bitcoin wallet</h3>
           <p className="ob-meta">
-            Send exactly <strong>{order.totalSats.toLocaleString()} sats</strong> to the address below.
-            Scan the QR code or copy the address.
+            Send exactly <strong>{order.totalSats.toLocaleString()} sats</strong> to the address below. Scan the QR code or copy the address.
           </p>
-          <div className="ob-qr-placeholder">
-            <img
-              src={`https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(order.paymentUri)}`}
-              alt="Payment QR code"
-              width={200}
-              height={200}
-            />
-          </div>
-          <div className="ob-copy-address">
-            <code>{order.paymentAddress}</code>
-            <CopyButton value={order.paymentAddress} label="Copy address" />
-          </div>
-          <div className="ob-copy-address">
-            <code className="ob-meta">{order.paymentUri}</code>
-            <CopyButton value={order.paymentUri} label="Copy BIP-21 URI" />
-          </div>
+          <TorPaymentQr value={order.paymentUri} />
+          <CodeCopyRow value={order.paymentAddress} label="Copy address" />
+          <CodeCopyRow value={order.paymentUri} label="Copy BIP-21 URI" />
         </div>
       )}
 
+      {/* Fulfillment card */}
       {order.fulfillment && (
-        <div className="ob-fulfillment-box">
+        <div className="ob-tor-card">
           <h3>{order.fulfillment.content ? "Digital delivery" : "Shipment"}</h3>
           {order.fulfillment.carrier && <p><strong>Carrier:</strong> {order.fulfillment.carrier}</p>}
           {order.fulfillment.tracking && <p><strong>Tracking:</strong> {order.fulfillment.tracking}</p>}
@@ -489,29 +560,36 @@ function OrderStatus({
         </div>
       )}
 
+      {/* Messages card */}
       {order.messages.length > 0 && (
-        <div className="ob-messages">
+        <div className="ob-tor-card">
           <h3>Messages</h3>
-          {order.messages.map((msg) => (
-            <div key={msg.id} className={`ob-message ob-message-${msg.from}`}>
-              <strong>{msg.from === "buyer" ? "You" : order.sellerName}</strong>
-              <p>{msg.text}</p>
-            </div>
-          ))}
+          <div className="ob-tor-messages">
+            {order.messages.map((msg) => (
+              <div key={msg.id} className={`ob-tor-msg ${msg.from === "buyer" ? "is-mine" : "is-theirs"}`}>
+                <strong>{msg.from === "buyer" ? "You" : order.sellerName}</strong>
+                <p>{msg.text}</p>
+              </div>
+            ))}
+          </div>
         </div>
       )}
 
-      <div className="ob-chat-box">
-        <textarea
-          className="ob-textarea"
-          value={chatDraft}
-          onChange={(e) => setChatDraft(e.target.value)}
-          placeholder="Message seller…"
-          rows={2}
-        />
-        <button className="ob-secondary" disabled={busy || !chatDraft.trim()} onClick={() => void sendMessage()}>
-          Send message
-        </button>
+      {/* Chat input card */}
+      <div className="ob-tor-card">
+        <h3>Message seller</h3>
+        <div className="ob-tor-chat-input">
+          <textarea
+            className="ob-textarea"
+            value={chatDraft}
+            onChange={(e) => setChatDraft(e.target.value)}
+            placeholder="Message seller…"
+            rows={2}
+          />
+          <button className="ob-primary" disabled={busy || !chatDraft.trim()} onClick={() => void sendMessage()}>
+            Send message
+          </button>
+        </div>
       </div>
 
       <p className="ob-meta">

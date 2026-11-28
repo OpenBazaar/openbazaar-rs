@@ -6212,3 +6212,308 @@ body:has(.ob-sales-detail-dialog[open]) .ob-content { overflow:hidden; }
   .ob-directory-select select { width: 100%; min-width: 0; }
   .ob-directory .ob-empty { padding: 28px 20px; }
 }
+
+/* ── Tor Checkout ─────────────────────────────────────────────── */
+.ob-tor-checkout {
+  max-width: 640px;
+  margin: 0 auto;
+  padding: 24px var(--ob-gutter, 20px) 48px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+.ob-tor-checkout .ob-page-heading {
+  margin-bottom: 0;
+}
+.ob-tor-checkout .ob-page-heading h1 {
+  font: 500 28px/1.25 'Instrument Sans', Arial, sans-serif;
+  letter-spacing: -.6px;
+}
+
+/* Cards */
+.ob-tor-card {
+  border: 1px solid var(--ob-line);
+  border-radius: 10px;
+  background: var(--ob-surface);
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.ob-tor-card h3 {
+  font-size: 15px;
+  font-weight: 600;
+  margin: 0;
+  color: var(--ob-ink);
+}
+.ob-tor-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+.ob-tor-card-header h3 { margin: 0; }
+
+/* Word grid: 3×4 numbered chips */
+.ob-tor-word-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.ob-tor-word-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+.ob-tor-word-chip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border: 1px solid var(--ob-line);
+  border-radius: 6px;
+  background: var(--ob-paper);
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--ob-ink);
+}
+.ob-tor-word-num {
+  flex-shrink: 0;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--ob-muted);
+  min-width: 16px;
+}
+.ob-tor-word-copy {
+  display: flex;
+  align-items: center;
+}
+.ob-tor-word-copy .ob-copy-button {
+  font-size: 13px;
+  color: var(--ob-link);
+}
+
+/* Checkbox row */
+.ob-tor-checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--ob-secondary);
+  cursor: pointer;
+}
+.ob-tor-checkbox-row input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  margin: 0;
+  accent-color: var(--ob-brand);
+  cursor: pointer;
+}
+
+/* Compact fields */
+.ob-tor-compact-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--ob-secondary);
+}
+.ob-tor-compact-field .ob-textarea {
+  width: 100%;
+  min-height: 72px;
+  padding: 10px 12px;
+  border: 1px solid var(--ob-line);
+  border-radius: 8px;
+  background: var(--ob-paper);
+  color: var(--ob-ink);
+  font: inherit;
+  font-size: 14px;
+  line-height: 1.5;
+  resize: vertical;
+  box-sizing: border-box;
+}
+.ob-tor-qty {
+  max-width: 100px;
+  min-height: 40px;
+  padding: 8px 12px;
+  border: 1px solid var(--ob-line);
+  border-radius: 8px;
+  background: var(--ob-paper);
+  color: var(--ob-ink);
+  font: inherit;
+  font-size: 14px;
+  box-sizing: border-box;
+}
+
+/* Order summary line */
+.ob-tor-order-summary {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 4px 16px;
+  padding: 12px 0;
+  border-top: 1px solid var(--ob-line);
+  font-size: 14px;
+  color: var(--ob-secondary);
+}
+.ob-tor-order-summary strong {
+  flex-basis: 100%;
+  text-align: right;
+  font-size: 15px;
+  color: var(--ob-ink);
+}
+
+/* Status header */
+.ob-tor-status-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+.ob-tor-status-badge {
+  display: inline-flex;
+  padding: 4px 12px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 500;
+  background: var(--ob-subtle);
+  color: var(--ob-secondary);
+  border: 1px solid var(--ob-line);
+}
+.ob-tor-status-badge.is-waiting { background: #fef3cd; color: #856404; border-color: #ffc107; }
+.ob-tor-status-badge.is-shipped { background: #d1ecf1; color: #0c5460; border-color: #17a2b8; }
+.ob-tor-status-badge.is-complete { background: #d4edda; color: #155724; border-color: #28a745; }
+:root[data-ob-theme="dark"] .ob-tor-status-badge.is-waiting { background: #332d1a; color: #eed29a; border-color: #665a2e; }
+:root[data-ob-theme="dark"] .ob-tor-status-badge.is-shipped { background: #1a2c33; color: #9ad4e6; border-color: #2a4d5a; }
+:root[data-ob-theme="dark"] .ob-tor-status-badge.is-complete { background: #1a2e1f; color: #a3d9ad; border-color: #2a5433; }
+.ob-tor-total {
+  font-size: 18px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--ob-ink);
+}
+.ob-tor-status-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+/* Code copy rows */
+.ob-tor-code-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border: 1px solid var(--ob-line);
+  border-radius: 8px;
+  background: var(--ob-paper);
+  min-width: 0;
+}
+.ob-tor-code-row code {
+  flex: 1;
+  min-width: 0;
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 13px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+  color: var(--ob-ink);
+}
+.ob-tor-code-row .ob-copy-button {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+/* QR code frame */
+.ob-tor-qr-frame {
+  display: flex;
+  justify-content: center;
+  padding: 16px;
+  background: #fff;
+  border: 1px solid var(--ob-line);
+  border-radius: 8px;
+  align-self: center;
+}
+.ob-tor-qr-img {
+  display: block;
+  width: 200px;
+  height: 200px;
+}
+.ob-tor-qr-error {
+  font-size: 14px;
+  color: var(--ob-secondary);
+  padding: 12px;
+  text-align: center;
+}
+
+/* Messages */
+.ob-tor-messages {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 300px;
+  overflow-y: auto;
+}
+.ob-tor-msg {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 12px;
+  max-width: 80%;
+  border-radius: 10px;
+  font-size: 14px;
+  line-height: 1.45;
+  word-break: break-word;
+}
+.ob-tor-msg strong {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ob-muted);
+}
+.ob-tor-msg p { margin: 0; }
+.ob-tor-msg.is-theirs {
+  align-self: flex-start;
+  background: var(--ob-subtle);
+  border: 1px solid var(--ob-line);
+  color: var(--ob-ink);
+  border-radius: 10px 10px 10px 4px;
+}
+.ob-tor-msg.is-mine {
+  align-self: flex-end;
+  background: color-mix(in srgb, var(--ob-brand) 22%, var(--ob-surface));
+  border: 1px solid color-mix(in srgb, var(--ob-brand) 38%, var(--ob-line));
+  color: var(--ob-ink);
+  border-radius: 10px 10px 4px 10px;
+}
+
+/* Chat input */
+.ob-tor-chat-input {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.ob-tor-chat-input .ob-textarea {
+  width: 100%;
+  min-height: 56px;
+  padding: 10px 12px;
+  border: 1px solid var(--ob-line);
+  border-radius: 8px;
+  background: var(--ob-paper);
+  color: var(--ob-ink);
+  font: inherit;
+  font-size: 14px;
+  line-height: 1.5;
+  resize: vertical;
+  box-sizing: border-box;
+}
+.ob-tor-chat-input .ob-primary {
+  align-self: flex-end;
+}
+
+/* Responsive */
+@media (max-width: 480px) {
+  .ob-tor-word-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .ob-tor-checkout { padding: 20px 16px 40px; }
+  .ob-tor-card { padding: 16px; }
+}
