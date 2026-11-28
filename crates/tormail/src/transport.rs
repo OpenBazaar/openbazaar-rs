@@ -9,7 +9,7 @@ use crate::seal::{SealedLetter, MAX_SEALED_LEN};
 use crate::Error;
 
 pub(crate) const FRAME_MAGIC: &[u8; 4] = b"OBML";
-pub(crate) const QUERY_MAGIC: &[u8; 4] = b"OBQR";
+pub const QUERY_MAGIC: &[u8; 4] = b"OBQR";
 const FRAME_VERSION: u8 = 1;
 /// A directory reply larger than this is refused.
 pub const MAX_QUERY_LEN: usize = 1_048_576;
@@ -21,7 +21,7 @@ pub const QUERY_ADMISSIONS: u8 = 5;
 pub const QUERY_HEAD: u8 = 6;
 pub const QUERY_CATALOG_INDEX: u8 = 7;
 pub const QUERY_ADMISSION_INDEX: u8 = 8;
-pub(crate) const SUBMIT_MAGIC: &[u8; 4] = b"OBSB";
+pub const SUBMIT_MAGIC: &[u8; 4] = b"OBSB";
 pub const SUBMIT_STORE: u8 = 1;
 pub const SUBMIT_LISTING: u8 = 2;
 pub const SUBMIT_DOCUMENT: u8 = 3;

@@ -43,6 +43,8 @@ sign-admission-index --key FILE [--data-dir DIR] [--head-sequence N] [--sequence
 const PASSPHRASE_ENV: &str = "OB_VAULT_PASSPHRASE";
 const TRACKING_KEY_ENV: &str = "OB_TRACKING_API_KEY";
 const WEB_KEY_ENV: &str = "OB_WEB_ACCESS_KEY";
+const ADMISSION_KEY_ENV: &str = "OB_ADMISSION_KEY";
+const ADMISSION_KEY_FILE_ENV: &str = "OB_ADMISSION_KEY_FILE";
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
@@ -326,6 +328,32 @@ fn serve(args: &[String]) -> ExitCode {
     }
     if options.onion {
         node.listen_onion(options.data_dir().join("tor"));
+    }
+    let admission_key_text = if let Some(path) = options
+        .admission_key
+        .clone()
+        .or_else(|| env::var(ADMISSION_KEY_FILE_ENV).ok().filter(|v| !v.trim().is_empty()).map(PathBuf::from))
+    {
+        match fs::read_to_string(&path) {
+            Ok(text) => Some(text),
+            Err(err) => {
+                eprintln!("ob-node: admission key {}: {err}", path.display());
+                return ExitCode::from(1);
+            }
+        }
+    } else {
+        env::var(ADMISSION_KEY_ENV).ok().filter(|v| !v.trim().is_empty())
+    };
+    if let Some(key_text) = admission_key_text {
+        let Some(secret) = unhex32(key_text.trim()) else {
+            eprintln!("ob-node: admission key must be 64 hex characters");
+            return ExitCode::from(2);
+        };
+        if let Err(err) = node.set_admission_signer(secret) {
+            eprintln!("ob-node: admission key: {err}");
+            return ExitCode::from(1);
+        }
+        eprintln!("ob-node: automatic OBAX admission signing enabled");
     }
     if let Err(err) = node.serve(options.port, Duration::from_secs(options.poll_secs)) {
         eprintln!("ob-node: {err}");

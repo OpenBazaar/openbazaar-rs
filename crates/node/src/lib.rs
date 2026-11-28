@@ -396,6 +396,10 @@ pub struct Node {
     seed_replica: Mutex<directory::Replica>,
     /// What the last directory pass saw of this store's fee. Requests read it; they do not ask the chain.
     directory_fee: Mutex<Option<admission::FeeSeen>>,
+    /// Optional directory operator key for automatic `OBAX` admission snapshot signing.
+    admission_signer: Mutex<Option<bitcoin::secp256k1::SecretKey>>,
+    /// Highest `OBAX` sequence successfully pushed to each peer introduction onion.
+    admission_index_pushed: Mutex<BTreeMap<String, u64>>,
     pub(crate) escrow: escrow_mail::Escrow,
     pairing_token: String,
     /// True only in the process that created `pairing.token`.
@@ -585,6 +589,8 @@ impl Node {
             advertised_onion: Mutex::new(None),
             seed_replica: Mutex::new(seed_replica),
             directory_fee: Mutex::new(None),
+            admission_signer: Mutex::new(None),
+            admission_index_pushed: Mutex::new(BTreeMap::new()),
             escrow: escrow_mail::Escrow::open(
                 config.escrow,
                 escrow_inbox,
