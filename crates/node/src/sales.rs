@@ -15,11 +15,12 @@ use openbazaar_protocol::{Listing, ListingKind, Returns};
 use serde_json::{json, Value};
 use tormail::{open_message, open_order, reply_frame, seal_reply, DropId, Opened, Order, ReplyPublic, SealedLetter, StoreSecret};
 
+use crate::chain::AddressTx;
 use crate::escrow_mail::hex;
 use crate::order_mail::{body_bytes, mail_key, MailError, REPLY_MAIL};
 use crate::own_listings::StoreError;
 use crate::vault::Vault;
-use crate::watch::{direct_status, AWAITING_PAYMENT, COMPLETED, PAID, PAYMENT_SEEN, SHIPPED};
+use crate::watch::{direct_status, Observation, AWAITING_PAYMENT, COMPLETED, PAID, PAYMENT_SEEN, SHIPPED};
 use crate::{Error, Node};
 
 const FILE: &str = "sales.obv";
@@ -670,27 +671,60 @@ impl Node {
 
     /// One watcher round over open sales. Returns how many changed.
     pub(crate) fn watch_sales(&self, tip: u32) -> usize {
-        let open: Vec<(String, String, u64)> = self
+        let open: Vec<(String, String, u64, String)> = self
             .sales()
             .list()
             .filter(|sale| sale["status"] == AWAITING_PAYMENT || sale["status"] == PAYMENT_SEEN)
             .filter_map(|sale| {
-                Some((sale["id"].as_str()?.to_string(), sale["address"].as_str()?.to_string(), sale["totalSats"].as_u64()?))
+                Some((
+                    sale["id"].as_str()?.to_string(),
+                    sale["address"].as_str()?.to_string(),
+                    sale["totalSats"].as_u64()?,
+                    sale["status"].as_str()?.to_string(),
+                ))
             })
             .collect();
         let mut changed = 0;
-        for (id, address, due) in open {
+        for (id, address, due, current_status) in open {
             let Ok(address) = crate::network::address_for(&address, self.network) else { continue };
-            let txs = match self.chain.address_txs(&address) {
-                Ok(txs) => txs,
+            let primary = match self.chain.address_txs(&address) {
+                Ok(txs) => Some(direct_status(due, &txs, tip, self.settings.confirmations)),
                 Err(err) => {
                     eprintln!("ob-node: chain query for sale {id}: {err}");
-                    continue;
+                    None
                 }
             };
-            let seen = direct_status(due, &txs, tip, self.settings.confirmations);
+            // Only query Tor-isolated public Esplora for 0-conf mempool hints while
+            // the sale is still Awaiting payment (never once already Payment seen or
+            // Paid — BIP-157 handles the 1-conf+ transition to Paid).
+            let seen = if current_status == AWAITING_PAYMENT
+                && primary.as_ref().map_or(true, |obs| obs.status == AWAITING_PAYMENT)
+            {
+                let hint = match self.chain.mempool_address_txs(&address) {
+                    Ok(txs) if !txs.is_empty() => Some(mempool_hint_status(due, &txs, tip, self.settings.confirmations)),
+                    Ok(_) => None,
+                    Err(err) => {
+                        eprintln!("ob-node: mempool hint for sale {id}: {err}");
+                        None
+                    }
+                };
+                match (primary, hint) {
+                    (Some(p), Some(h)) if h.received_sats > p.received_sats => h,
+                    (Some(p), _) => p,
+                    (None, Some(h)) => h,
+                    (None, None) => continue,
+                }
+            } else {
+                let Some(p) = primary else { continue };
+                p
+            };
             let (mut moved, mut became_paid) = (false, false);
             let result = self.sales().update(&id, |sale| {
+                // Do not regress a 0-conf Payment seen sale back to Awaiting payment
+                // while waiting for BIP-157 to observe the confirmed block.
+                if sale["status"] == PAYMENT_SEEN && seen.status == AWAITING_PAYMENT {
+                    return;
+                }
                 let before = sale.clone();
                 became_paid = seen.status == PAID && sale["status"] != PAID;
                 sale["status"] = json!(seen.status);
@@ -762,6 +796,23 @@ pub(crate) struct Priced {
     pub return_policy: Option<String>,
 }
 
+/// Evaluate Esplora mempool-hint transactions strictly as 0-conf.
+///
+/// Strips any `height` field and requires at least 1 confirmation for `Paid`,
+/// so an Esplora mempool hint can ONLY produce `Payment seen` (0-conf) and
+/// can never promote a sale to `Paid`.
+pub(crate) fn mempool_hint_status(due: u64, txs: &[AddressTx], tip: u32, needed: u32) -> Observation {
+    let unconfirmed: Vec<AddressTx> = txs
+        .iter()
+        .cloned()
+        .map(|mut tx| {
+            tx.height = None;
+            tx
+        })
+        .collect();
+    direct_status(due, &unconfirmed, tip, needed.max(1))
+}
+
 /// Where replies in one sale go.
 struct Route {
     url: String,
@@ -775,5 +826,171 @@ impl Route {
         let key = crate::stores::unhex32(sale["replyKey"].as_str().unwrap_or("")).ok_or_else(bad)?;
         let drop: [u8; 16] = crate::escrow_mail::parse_id(sale["id"].as_str().unwrap_or("")).ok_or_else(bad)?;
         Ok(Self { url: sale["replyUrl"].as_str().unwrap_or("").to_string(), key, drop })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    use bdk_wallet::Update;
+    use bitcoin::hashes::Hash;
+    use bitcoin::{Address, OutPoint, Script, Transaction, TxOut, Txid};
+
+    use super::*;
+    use crate::chain::{ChainSource, WalletRequest};
+    use crate::harness::{test_catalog, TempDir};
+    use crate::network::NetworkMode;
+    use crate::NodeConfig;
+
+    #[test]
+    fn mempool_hint_status_strips_confirmations_and_never_produces_paid() {
+        let tx = AddressTx {
+            txid: Txid::from_byte_array([0x42; 32]),
+            outputs: vec![(0, 50_000)],
+            height: Some(100),
+        };
+        // Even with height=Some(100) at tip=105 (6 confs) and needed=1 (or 0),
+        // mempool_hint_status MUST strip height and only yield Payment seen (0-conf).
+        let obs1 = mempool_hint_status(50_000, &[tx.clone()], 105, 1);
+        assert_eq!(obs1.status, PAYMENT_SEEN);
+        assert_eq!(obs1.confirmations, 0);
+        assert_eq!(obs1.received_sats, 50_000);
+
+        let obs0 = mempool_hint_status(50_000, &[tx], 105, 0);
+        assert_eq!(obs0.status, PAYMENT_SEEN, "must never promote to Paid even if needed == 0");
+        assert_eq!(obs0.confirmations, 0);
+    }
+
+    struct SplitMockChain {
+        primary_txs: Arc<Mutex<Vec<AddressTx>>>,
+        mempool_txs: Arc<Mutex<Vec<AddressTx>>>,
+        mempool_calls: Arc<AtomicUsize>,
+    }
+
+    impl ChainSource for SplitMockChain {
+        fn tip_height(&self) -> Result<u32, String> {
+            Ok(100)
+        }
+        fn address_txs(&self, _address: &Address) -> Result<Vec<AddressTx>, String> {
+            Ok(self.primary_txs.lock().unwrap().clone())
+        }
+        fn mempool_address_txs(&self, _address: &Address) -> Result<Vec<AddressTx>, String> {
+            self.mempool_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(self.mempool_txs.lock().unwrap().clone())
+        }
+        fn script_txs(&self, _script: &Script, _from: u32) -> Result<Vec<AddressTx>, String> {
+            Ok(Vec::new())
+        }
+        fn fee_rate(&self) -> Result<f64, String> {
+            Ok(2.0)
+        }
+        fn broadcast(&self, _tx: &Transaction) -> Result<(), String> {
+            Ok(())
+        }
+        fn wallet_update(&self, _request: WalletRequest) -> Result<Update, String> {
+            Ok(Update::default())
+        }
+        fn output(&self, _outpoint: &OutPoint) -> Result<Option<(TxOut, Option<u32>)>, String> {
+            Ok(None)
+        }
+        fn transaction(&self, _txid: &Txid) -> Result<Option<(Transaction, Option<u32>)>, String> {
+            Ok(None)
+        }
+    }
+
+    #[test]
+    fn watch_sales_queries_mempool_only_while_awaiting_payment_and_finalizes_via_primary() {
+        let primary_txs = Arc::new(Mutex::new(Vec::new()));
+        let mempool_txs = Arc::new(Mutex::new(Vec::new()));
+        let mempool_calls = Arc::new(AtomicUsize::new(0));
+
+        let chain = SplitMockChain {
+            primary_txs: Arc::clone(&primary_txs),
+            mempool_txs: Arc::clone(&mempool_txs),
+            mempool_calls: Arc::clone(&mempool_calls),
+        };
+        let dir = TempDir::new();
+        let mut config = NodeConfig::offline(NetworkMode::Testnet4);
+        config.chain = Box::new(chain);
+        config.confirmations = 1;
+        let node = Node::open_with(&dir.0, test_catalog(NetworkMode::Testnet4), config).unwrap();
+
+        let sale_id = "0123456789abcdef0123456789abcdef";
+        let address = "tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx";
+        node.sales()
+            .insert(json!({
+                "id": sale_id,
+                "created": 1_700_000_000u64,
+                "status": AWAITING_PAYMENT,
+                "lines": [],
+                "itemsSats": 50_000u64,
+                "shippingSats": 0u64,
+                "totalSats": 50_000u64,
+                "address": address,
+                "shipTo": "",
+                "deliveryNote": "",
+                "receivedSats": 0u64,
+                "confirmations": 0u32,
+                "txids": [],
+                "network": "testnet4",
+                "replyUrl": "",
+                "replyKey": "00".repeat(32),
+                "buyerSender": "11".repeat(32),
+                "quote": Value::Null,
+            }))
+            .unwrap();
+
+        let txid = Txid::from_byte_array([0xab; 32]);
+
+        // Tick 1: Primary (BIP-157) sees nothing; Esplora mempool hint returns a tx
+        // (even with height=Some(100) to test defense-in-depth stripping).
+        *mempool_txs.lock().unwrap() = vec![AddressTx {
+            txid,
+            outputs: vec![(0, 50_000)],
+            height: Some(100),
+        }];
+        let changed = node.watch_sales(100);
+        assert_eq!(changed, 1);
+        assert_eq!(mempool_calls.load(Ordering::SeqCst), 1);
+        let sale = node.sale_value(sale_id).unwrap();
+        assert_eq!(sale["status"], PAYMENT_SEEN, "Esplora hint must only set Payment seen, never Paid");
+        assert_eq!(sale["confirmations"], 0);
+        assert_eq!(sale["receivedSats"], 50_000);
+
+        // Tick 2: Primary still sees nothing (block not mined yet).
+        // Sale must NOT regress to Awaiting payment, and Esplora must NOT be queried again!
+        let changed = node.watch_sales(100);
+        assert_eq!(changed, 0);
+        assert_eq!(
+            mempool_calls.load(Ordering::SeqCst),
+            1,
+            "already-PaymentSeen sale must not trigger redundant Esplora queries"
+        );
+        let sale = node.sale_value(sale_id).unwrap();
+        assert_eq!(sale["status"], PAYMENT_SEEN, "Payment seen must not regress to Awaiting payment");
+
+        // Tick 3: Primary (BIP-157) sees 1-conf block -> transitions to Paid!
+        *primary_txs.lock().unwrap() = vec![AddressTx {
+            txid,
+            outputs: vec![(0, 50_000)],
+            height: Some(100),
+        }];
+        let changed = node.watch_sales(100);
+        assert_eq!(changed, 1);
+        assert_eq!(mempool_calls.load(Ordering::SeqCst), 1);
+        let sale = node.sale_value(sale_id).unwrap();
+        assert_eq!(sale["status"], PAID);
+        assert_eq!(sale["confirmations"], 1);
+
+        // Tick 4: Already Paid -> never queries Esplora again.
+        let changed = node.watch_sales(101);
+        assert_eq!(changed, 0);
+        assert_eq!(
+            mempool_calls.load(Ordering::SeqCst),
+            1,
+            "already-Paid sale must not trigger Esplora queries"
+        );
     }
 }

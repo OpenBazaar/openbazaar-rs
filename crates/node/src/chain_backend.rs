@@ -223,6 +223,13 @@ impl ChainSource for FallbackChain {
         self.primary.address_txs(address)
     }
 
+    fn mempool_address_txs(&self, address: &Address) -> Result<Vec<AddressTx>, String> {
+        // Best-effort 0-conf mempool hint over a fresh Tor stream-isolated
+        // circuit per address (skipped on clearnet; confirmation heights
+        // stripped so final Paid still requires BIP-157 primary confirmation).
+        self.fallback.mempool_address_txs(address)
+    }
+
     fn script_txs(&self, script: &bitcoin::Script, from: u32) -> Result<Vec<AddressTx>, String> {
         self.primary.script_txs(script, from)
     }

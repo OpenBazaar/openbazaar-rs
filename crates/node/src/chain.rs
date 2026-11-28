@@ -149,6 +149,16 @@ pub trait ChainSource: Send + Sync {
     }
     fn tip_height(&self) -> Result<u32, String>;
     fn address_txs(&self, address: &Address) -> Result<Vec<AddressTx>, String>;
+    /// Best-effort 0-conf mempool hint for a single address, queried over a
+    /// fresh Tor stream-isolated circuit when a Tor SOCKS5 proxy is configured.
+    ///
+    /// **Finality invariant:** every returned [`AddressTx`] MUST have
+    /// `height: None` (unconfirmed), so callers can only observe 0-conf
+    /// `Payment seen` from this hint. Final `Paid` (1-conf+) must still come
+    /// from [`Self::address_txs`] (e.g. BIP 157/158 compact block filters).
+    fn mempool_address_txs(&self, _address: &Address) -> Result<Vec<AddressTx>, String> {
+        Ok(Vec::new())
+    }
     /// Transactions paying `script`. A backend that finds transactions only
     /// by the scripts it follows (compact block filters) starts following
     /// `script` from block `from`, and answers with an error until that scan
@@ -186,6 +196,8 @@ pub struct EsploraChain {
     public: bool,
     /// The HTTP client uses the configured proxy, so a public server sees an exit, not this machine.
     proxied: bool,
+    /// Configured SOCKS5 proxy URL (`socks5h://HOST:PORT`) for per-address stream isolation.
+    proxy: Option<String>,
     retry: Mutex<Backoff>,
 }
 
@@ -261,6 +273,7 @@ impl EsploraChain {
             tip_height_known: AtomicBool::new(false),
             public: urls.iter().any(|url| !crate::network::is_private_url(url)),
             proxied: egress.proxy.is_some(),
+            proxy: egress.proxy.clone(),
             retry: Mutex::new(for_prices()),
         })
     }
@@ -419,6 +432,75 @@ impl ChainSource for EsploraChain {
 
     fn address_txs(&self, address: &Address) -> Result<Vec<AddressTx>, String> {
         self.script_txs(&address.script_pubkey(), 0)
+    }
+
+    /// Query Esplora for an address over a fresh Tor stream-isolated circuit
+    /// strictly as a 0-conf mempool hint.
+    ///
+    /// - **Privacy invariant:** if no SOCKS5/Tor proxy is configured (clearnet),
+    ///   skips cleanly and returns `Ok(Vec::new())` without contacting any server.
+    ///   Every query uses a fresh `socks5h://ob-<rand>:<rand>@<host>:<port>`
+    ///   client so Tor's `IsolateSOCKSAuth` assigns a dedicated circuit per address.
+    /// - **Finality invariant:** unconditionally strips confirmation height
+    ///   (`height: None`) even if Esplora reports `confirmed: true`, so callers
+    ///   can only observe 0-conf `Payment seen` and final `Paid` still requires BIP-157.
+    fn mempool_address_txs(&self, address: &Address) -> Result<Vec<AddressTx>, String> {
+        let Some(proxy) = self.proxy.as_deref() else {
+            return Ok(Vec::new());
+        };
+        let script = address.script_pubkey();
+        let mut failures = Vec::new();
+        for index in self.order() {
+            let server = &self.servers[index];
+            if server.network.load(Ordering::Relaxed) == NET_REJECTED {
+                failures.push(format!("{}: it serves a different bitcoin network", server.url));
+                continue;
+            }
+            let isolated_url = crate::egress::isolated_socks5_proxy_url(proxy)?;
+            let isolated_proxy =
+                reqwest::Proxy::all(&isolated_url).map_err(|err| err.to_string())?;
+            let http = reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .no_proxy()
+                .proxy(isolated_proxy)
+                .user_agent(USER_AGENT)
+                .connect_timeout(PROXY_CONNECT_TIMEOUT)
+                .timeout(PROXY_REQUEST_TIMEOUT)
+                .pool_max_idle_per_host(0)
+                .build()
+                .map_err(|err| err.to_string())?;
+            let client: AsyncClient = AsyncClient::from_client(server.url.clone(), http);
+            let result = self.runtime.block_on(async {
+                client
+                    .scripthash_txs(script.as_script(), None)
+                    .await
+                    .map_err(|err| err.to_string())
+            });
+            match result {
+                Ok(txs) => {
+                    self.preferred.store(index, Ordering::Relaxed);
+                    return Ok(txs
+                        .into_iter()
+                        .map(|tx| AddressTx {
+                            txid: tx.txid,
+                            outputs: tx
+                                .vout
+                                .iter()
+                                .enumerate()
+                                .filter(|(_, out)| out.scriptpubkey.as_script() == script.as_script())
+                                .map(|(vout, out)| (vout as u32, out.value))
+                                .collect(),
+                            // Finality invariant: strip confirmation height so
+                            // public Esplora can only act as a 0-conf hint.
+                            height: None,
+                        })
+                        .filter(|tx| !tx.outputs.is_empty())
+                        .collect());
+                }
+                Err(err) => failures.push(format!("{}: {err}", server.url)),
+            }
+        }
+        Err(failures.join("; "))
     }
 
     /// Esplora indexes every script, so `from` is not needed. A public server
@@ -995,5 +1077,149 @@ mod tests {
             0,
             "a redirect left the configured server"
         );
+    }
+
+    #[test]
+    fn mempool_address_txs_skips_cleanly_without_proxy() {
+        use std::str::FromStr;
+
+        let (url, paths) = local_esplora(|_| (200, "[]"));
+        let chain = EsploraChain::with_egress(&[url], Network::Testnet4, &Egress::default()).unwrap();
+        let address = Address::from_str("tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx")
+            .unwrap()
+            .require_network(Network::Testnet4)
+            .unwrap();
+        let txs = chain.mempool_address_txs(&address).unwrap();
+        assert!(txs.is_empty(), "clearnet must return empty without querying Esplora");
+        assert!(
+            paths.lock().unwrap().is_empty(),
+            "clearnet must not send any request to Esplora"
+        );
+    }
+
+    #[test]
+    fn mempool_address_txs_uses_fresh_tor_circuits_and_strips_confirmations() {
+        use std::io::{Read, Write};
+        use std::str::FromStr;
+
+        let address = Address::from_str("tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx")
+            .unwrap()
+            .require_network(Network::Testnet4)
+            .unwrap();
+        let script_hex = address.script_pubkey().to_hex_string();
+        let txid_hex = "1111111111111111111111111111111111111111111111111111111111111111";
+        // Esplora claims confirmed=true with block_height=800000; mempool_address_txs MUST strip height to None.
+        let body = serde_json::json!([{
+            "txid": txid_hex,
+            "version": 2,
+            "locktime": 0,
+            "vin": [],
+            "vout": [{
+                "scriptpubkey": script_hex,
+                "scriptpubkey_asm": "",
+                "scriptpubkey_type": "v0_p2wpkh",
+                "scriptpubkey_address": address.to_string(),
+                "value": 50_000
+            }],
+            "size": 110,
+            "weight": 440,
+            "fee": 200,
+            "status": {
+                "confirmed": true,
+                "block_height": 800000,
+                "block_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+                "block_time": 1700000000
+            }
+        }])
+        .to_string();
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let proxy = format!("socks5h://{}", listener.local_addr().unwrap());
+        let (cred_tx, creds) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            for mut stream in listener.incoming().flatten() {
+                let mut greeting = [0u8; 2];
+                let mut methods = [0u8; 255];
+                if stream.read_exact(&mut greeting).is_err()
+                    || stream.read_exact(&mut methods[..greeting[1] as usize]).is_err()
+                {
+                    continue;
+                }
+                let _ = stream.write_all(&[5, 2]);
+                let read_field = |s: &mut std::net::TcpStream| {
+                    let mut len = [0u8; 1];
+                    s.read_exact(&mut len).ok()?;
+                    let mut data = vec![0u8; len[0] as usize];
+                    s.read_exact(&mut data).ok()?;
+                    Some(String::from_utf8_lossy(&data).into_owned())
+                };
+                let mut ver = [0u8; 1];
+                if stream.read_exact(&mut ver).is_err() {
+                    continue;
+                }
+                let (Some(user), Some(pass)) = (read_field(&mut stream), read_field(&mut stream)) else {
+                    continue;
+                };
+                let _ = cred_tx.send((user, pass));
+                let _ = stream.write_all(&[1, 0]);
+                // Read SOCKS5 CONNECT header.
+                let mut req = [0u8; 4];
+                if stream.read_exact(&mut req).is_err() {
+                    continue;
+                }
+                match req[3] {
+                    3 => {
+                        let mut len = [0u8; 1];
+                        let _ = stream.read_exact(&mut len);
+                        let _ = stream.read_exact(&mut vec![0u8; len[0] as usize]);
+                    }
+                    1 => {
+                        let _ = stream.read_exact(&mut [0u8; 4]);
+                    }
+                    _ => continue,
+                }
+                let _ = stream.read_exact(&mut [0u8; 2]);
+                // Succeed CONNECT, read HTTP request, return Esplora JSON.
+                let _ = stream.write_all(&[5, 0, 0, 1, 0, 0, 0, 0, 0, 0]);
+                let mut req_buf = [0u8; 2048];
+                if stream.read(&mut req_buf).is_ok_and(|n| n > 0) {
+                    let _ = stream.write_all(response.as_bytes());
+                }
+            }
+        });
+
+        let egress = Egress {
+            proxy: Some(proxy),
+            live_rates: false,
+        };
+        let chain = EsploraChain::with_egress(
+            &["http://esplora.example/testnet4/api".to_string()],
+            Network::Testnet4,
+            &egress,
+        )
+        .unwrap();
+
+        let first = chain.mempool_address_txs(&address).unwrap();
+        let second = chain.mempool_address_txs(&address).unwrap();
+
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].txid.to_string(), txid_hex);
+        assert_eq!(first[0].outputs, vec![(0, 50_000)]);
+        assert_eq!(
+            first[0].height, None,
+            "finality invariant: confirmation height must be stripped from Esplora mempool hints"
+        );
+        assert_eq!(second[0].height, None);
+
+        let (u1, p1) = creds.recv_timeout(Duration::from_secs(5)).unwrap();
+        let (u2, p2) = creds.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(u1.starts_with("ob-") && u2.starts_with("ob-"));
+        assert_ne!(u1, u2, "each address query must use a fresh Tor circuit username");
+        assert_ne!(p1, p2, "each address query must use a fresh Tor circuit password");
     }
 }

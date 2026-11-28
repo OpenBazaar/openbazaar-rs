@@ -6383,9 +6383,13 @@ body:has(.ob-sales-detail-dialog[open]) .ob-content { overflow:hidden; }
   border: 1px solid var(--ob-line);
 }
 .ob-tor-status-badge.is-waiting { background: #fef3cd; color: #856404; border-color: #ffc107; }
+.ob-tor-status-badge.is-seen { background: #e0f2fe; color: #075985; border-color: #38bdf8; }
+.ob-tor-status-badge.is-paid { background: #d4edda; color: #155724; border-color: #28a745; }
 .ob-tor-status-badge.is-shipped { background: #d1ecf1; color: #0c5460; border-color: #17a2b8; }
 .ob-tor-status-badge.is-complete { background: #d4edda; color: #155724; border-color: #28a745; }
 :root[data-ob-theme="dark"] .ob-tor-status-badge.is-waiting { background: #332d1a; color: #eed29a; border-color: #665a2e; }
+:root[data-ob-theme="dark"] .ob-tor-status-badge.is-seen { background: #142838; color: #7dd3fc; border-color: #0284c7; }
+:root[data-ob-theme="dark"] .ob-tor-status-badge.is-paid { background: #1a2e1f; color: #a3d9ad; border-color: #2a5433; }
 :root[data-ob-theme="dark"] .ob-tor-status-badge.is-shipped { background: #1a2c33; color: #9ad4e6; border-color: #2a4d5a; }
 :root[data-ob-theme="dark"] .ob-tor-status-badge.is-complete { background: #1a2e1f; color: #a3d9ad; border-color: #2a5433; }
 .ob-tor-total {

@@ -13,7 +13,31 @@ use std::net::{Ipv4Addr, SocketAddr, ToSocketAddrs};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
+use rand::rngs::StdRng;
+use rand::{RngCore, SeedableRng};
 use serde_json::{json, Value};
+
+/// Build a stream-isolated SOCKS5h proxy URL with fresh random credentials:
+/// `socks5h://ob-<random_hex>:<random_hex>@<host>:<port>`.
+///
+/// Tor's `IsolateSOCKSAuth` assigns each unique username/password pair its own
+/// circuit, so separate address queries cannot be correlated at the exit or
+/// Esplora server. Rejects anything that is not a valid `socks5://` or
+/// `socks5h://HOST:PORT` proxy (including clearnet/http URLs).
+pub(crate) fn isolated_socks5_proxy_url(proxy: &str) -> Result<String, String> {
+    let normalized = Egress::parse_proxy(proxy)?;
+    let authority = normalized
+        .strip_prefix("socks5h://")
+        .ok_or_else(|| format!("proxy {proxy:?} is not socks5h"))?;
+    let mut rng = StdRng::from_os_rng();
+    let mut user_bytes = [0u8; 8];
+    let mut pass_bytes = [0u8; 8];
+    rng.fill_bytes(&mut user_bytes);
+    rng.fill_bytes(&mut pass_bytes);
+    let user = crate::escrow_mail::hex(&user_bytes);
+    let pass = crate::escrow_mail::hex(&pass_bytes);
+    Ok(format!("socks5h://ob-{user}:{pass}@{authority}"))
+}
 
 /// `socks5://` or `socks5h://HOST:PORT` as a socket address.
 ///
@@ -313,5 +337,43 @@ mod tests {
         let (url, _seen) = fake_socks::start();
         assert!(Egress::proxy_reachable(&url));
         assert!(!Egress::proxy_reachable("socks5h://127.0.0.1:1"));
+    }
+
+    #[test]
+    fn isolated_socks5_proxy_url_generates_unique_credentials_and_rejects_clearnet() {
+        let first = isolated_socks5_proxy_url("socks5h://127.0.0.1:9050").unwrap();
+        let second = isolated_socks5_proxy_url("socks5h://127.0.0.1:9050").unwrap();
+        assert_ne!(first, second, "each call must get unique Tor circuit credentials");
+
+        for url in [&first, &second] {
+            let parsed = url::Url::parse(url).expect("valid URL");
+            assert_eq!(parsed.scheme(), "socks5h");
+            assert_eq!(parsed.host_str(), Some("127.0.0.1"));
+            assert_eq!(parsed.port(), Some(9050));
+            assert!(parsed.username().starts_with("ob-"), "username: {}", parsed.username());
+            assert_eq!(parsed.username().len(), 3 + 16);
+            let pass = parsed.password().expect("password present");
+            assert_eq!(pass.len(), 16);
+        }
+
+        // Plain socks5:// is normalized to socks5h:// and preserves host:port.
+        let v5 = isolated_socks5_proxy_url("socks5://localhost:9150/").unwrap();
+        let parsed_v5 = url::Url::parse(&v5).unwrap();
+        assert_eq!(parsed_v5.scheme(), "socks5h");
+        assert_eq!(parsed_v5.host_str(), Some("localhost"));
+        assert_eq!(parsed_v5.port(), Some(9150));
+
+        // Clearnet / non-socks5 / malformed URLs are rejected.
+        for bad in [
+            "",
+            "http://127.0.0.1:8080",
+            "https://mempool.space",
+            "127.0.0.1:9050",
+            "socks5://127.0.0.1",
+            "socks5://u:p@127.0.0.1:9050",
+            "socks5h://:9050",
+        ] {
+            assert!(isolated_socks5_proxy_url(bad).is_err(), "should reject {bad:?}");
+        }
     }
 }

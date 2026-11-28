@@ -504,8 +504,17 @@ function OrderStatus({
 
   const statusClass =
     order.status === "Awaiting payment" ? "is-waiting" :
+    order.status === "Payment seen" ? "is-seen" :
+    order.status === "Paid" ? "is-paid" :
     order.status === "Shipped" ? "is-shipped" :
     order.status === "Completed" ? "is-complete" : "";
+
+  const statusLabel =
+    order.status === "Payment seen"
+      ? order.confirmations === 0
+        ? "Payment seen (unconfirmed)"
+        : "Payment seen (confirming)"
+      : order.status;
 
   return (
     <section className="ob-tor-checkout">
@@ -519,9 +528,16 @@ function OrderStatus({
       {/* Status card */}
       <div className="ob-tor-card">
         <div className="ob-tor-status-header">
-          <span className={`ob-tor-status-badge ${statusClass}`}>{order.status}</span>
+          <span className={`ob-tor-status-badge ${statusClass}`}>{statusLabel}</span>
           <strong className="ob-tor-total">{order.totalSats.toLocaleString()} sats</strong>
         </div>
+        {order.status === "Payment seen" && (
+          <p className="ob-meta">
+            {order.confirmations === 0
+              ? "Detected in the mempool — waiting for 1 block confirmation."
+              : `Confirming on-chain (${order.confirmations} confirmation${order.confirmations === 1 ? "" : "s"}) — waiting for finality.`}
+          </p>
+        )}
         {order.receivedSats > 0 && (
           <p className="ob-meta">Received {order.receivedSats.toLocaleString()} sats · {order.confirmations} confirmations</p>
         )}
