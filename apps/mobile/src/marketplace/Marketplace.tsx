@@ -361,7 +361,11 @@ export default function Marketplace() {
             setLoadError("");
             return;
           }
-          const market = await loadPublicMarket(window.location);
+          const market = await loadPublicMarket(window.location, globalThis.fetch, (updated) => {
+            if (!current()) return;
+            for (const image of updated.images) setListingImages(image.url, image.hashes);
+            setCatalog(updated.catalog);
+          });
           if (!current()) return;
           clearListingImages();
           for (const image of market.images) setListingImages(image.url, image.hashes);

@@ -150,7 +150,9 @@ export async function fetchStoreImage(hash: string): Promise<StoreImage> {
   const remote = imageHost(hash) ?? directBrowseBase();
   const imageUrl = remote ? directImageUrl(remote, hash) : null;
   if (remote && !imageUrl) throw new Error("That is not an image hash.");
-  const response = imageUrl ? await fetch(imageUrl, DIRECT_GET) : await pairedResponse(`/media/${hash}`);
+  const response = imageUrl
+    ? await fetch(imageUrl, { ...DIRECT_GET, cache: "force-cache" })
+    : await pairedResponse(`/media/${hash}`);
   if (!response.ok) throw new Error(response.status === 404 ? "This node does not have that image." : "The image could not be loaded.");
   const bytes = new Uint8Array(await response.arrayBuffer());
   const image = checkStoreImage(hash, response.headers.get("Content-Type") ?? "", bytes);

@@ -10,27 +10,79 @@
 use std::io::{Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
 use crate::http_parse;
 
 const ANSWER_MAX: usize = 4 * 1024 * 1024 + 8 * 1024;
+const MAX_CONCURRENT_CONNECTIONS: usize = 64;
+
+struct ConnectionGuard(Arc<AtomicUsize>);
+
+impl Drop for ConnectionGuard {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+fn try_acquire(active: &AtomicUsize, limit: usize) -> bool {
+    let mut current = active.load(Ordering::Acquire);
+    while current < limit {
+        match active.compare_exchange_weak(
+            current,
+            current + 1,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => return true,
+            Err(actual) => current = actual,
+        }
+    }
+    false
+}
 
 pub(crate) fn bind() -> std::io::Result<TcpListener> {
     TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
 }
 
 pub(crate) fn serve(listener: TcpListener, main_port: u16, web_dir: Option<PathBuf>, stop: &AtomicBool) {
+    serve_with_limit(listener, main_port, web_dir, stop, MAX_CONCURRENT_CONNECTIONS);
+}
+
+fn serve_with_limit(
+    listener: TcpListener,
+    main_port: u16,
+    web_dir: Option<PathBuf>,
+    stop: &AtomicBool,
+    max_concurrent: usize,
+) {
     listener.set_nonblocking(true).ok();
+    let active = Arc::new(AtomicUsize::new(0));
     while !stop.load(Ordering::Relaxed) {
         match listener.accept() {
-            Ok((stream, _)) => {
+            Ok((mut stream, _)) => {
                 let _ = stream.set_nonblocking(false);
-                handle(stream, main_port, web_dir.as_deref());
+                if !try_acquire(&active, max_concurrent) {
+                    let _ = stream.write_all(&plain("503 Service Unavailable", "server busy"));
+                    continue;
+                }
+                let active_clone = Arc::clone(&active);
+                let web_dir = web_dir.clone();
+                if thread::Builder::new()
+                    .name("ob-sale-gate".into())
+                    .spawn(move || {
+                        let _guard = ConnectionGuard(active_clone);
+                        handle(stream, main_port, web_dir.as_deref());
+                    })
+                    .is_err()
+                {
+                    active.fetch_sub(1, Ordering::AcqRel);
+                }
             }
-            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => thread::sleep(Duration::from_millis(50)),
+            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => thread::sleep(Duration::from_millis(20)),
             Err(_) => thread::sleep(Duration::from_millis(50)),
         }
     }
@@ -98,7 +150,7 @@ pub(crate) fn handle(mut client: TcpStream, main_port: u16, web_dir: Option<&Pat
         // The shop page, when this node has one. Closed routes stay closed:
         // a missing file is still 404, and it is not forwarded to the shop.
         if request.method == "GET" {
-            if let Some(page) = web_dir.and_then(|dir| crate::remote::bare_shop_page(dir, request.path)) {
+            if let Some(page) = web_dir.and_then(|dir| crate::remote::bare_shop_page(dir, request.path, request.head)) {
                 let _ = client.write_all(&page);
                 return;
             }
@@ -548,5 +600,41 @@ mod tests {
         let mut buf = Vec::new();
         let _ = stream.read_to_end(&mut buf);
         String::from_utf8_lossy(&buf).into_owned()
+    }
+
+    #[test]
+    fn concurrent_connections_do_not_block_and_respect_limit() {
+        let dir = crate::harness::TempDir::new();
+        let web = dir.0.join("web");
+        std::fs::create_dir_all(&web).unwrap();
+        std::fs::write(web.join("index.html"), "<html><head></head><body>fast</body></html>").unwrap();
+        let backend = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = backend.local_addr().unwrap().port();
+        let gate = bind().unwrap();
+        let gate_addr = gate.local_addr().unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let stopping = stop.clone();
+        thread::spawn(move || serve_with_limit(gate, port, Some(web), &stopping, 2));
+
+        // Open one slow client that sends nothing yet (would block a single-threaded accept loop).
+        let _slow1 = TcpStream::connect(gate_addr).unwrap();
+        thread::sleep(Duration::from_millis(40));
+
+        // A second client still gets answered immediately while _slow1 is open.
+        let started = std::time::Instant::now();
+        let resp = talk(gate_addr, "GET / HTTP/1.1\r\nHost: example.onion\r\nConnection: close\r\n\r\n");
+        assert!(resp.starts_with("HTTP/1.1 200"), "{resp}");
+        assert!(resp.contains("fast"), "{resp}");
+        assert!(started.elapsed() < Duration::from_secs(1), "second client was blocked: {:?}", started.elapsed());
+
+        // Fill both slots with slow clients, then a 3rd gets 503 immediately.
+        let _slow2 = TcpStream::connect(gate_addr).unwrap();
+        thread::sleep(Duration::from_millis(40));
+        let busy = talk(gate_addr, "GET / HTTP/1.1\r\nHost: example.onion\r\nConnection: close\r\n\r\n");
+        assert!(busy.starts_with("HTTP/1.1 503"), "expected 503 when full: {busy}");
+
+        drop(_slow1);
+        drop(_slow2);
+        stop.store(true, Ordering::SeqCst);
     }
 }

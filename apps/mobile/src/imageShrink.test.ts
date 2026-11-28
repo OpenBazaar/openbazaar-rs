@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { canShrink, hasAlpha, shrinkImage, shrinkSizes } from "./imageShrink.ts";
+import { imageThatFits } from "./seller.ts";
 
 const CAP = 2 * 1024 * 1024;
 
@@ -109,6 +110,20 @@ test("a GIF, an image that does not decode, and one too large at the smallest si
   try {
     assert.equal(await shrinkImage(new Blob([], { type: "image/png" }), CAP), null);
     assert.deepEqual([browser.canvas.width, browser.canvas.height], [800, 600]);
+  } finally {
+    browser.restore();
+  }
+});
+
+test("imageThatFits resizes and compresses sub-2MiB photos to Tor-friendly size when canvas is available", async () => {
+  // A 1.2 MB raw camera photo (under 2 MiB cap) is shrunk to <= 1200px / <= 300 KB.
+  const rawPhoto = new Blob([new Uint8Array(1_200_000)], { type: "image/jpeg" });
+  const browser = fakeBrowser({ width: 4000, height: 3000 }, 0.2);
+  try {
+    const out = await imageThatFits(rawPhoto);
+    assert.equal(out.type, "image/jpeg");
+    assert.ok(out.size <= 300 * 1024, `expected <= 300 KB, got ${out.size}`);
+    assert.deepEqual([browser.canvas.width, browser.canvas.height], [1200, 900]);
   } finally {
     browser.restore();
   }

@@ -10,11 +10,23 @@ export const FIT_SHARE = 0.9;
 
 export type Size = { width: number; height: number };
 
+export type ShrinkOptions = {
+  /** Cap the longest side in pixels (defaults to `SHRINK_SIDES[0]`). */
+  maxSide?: number;
+  /** JPEG quality between 0 and 1 (defaults to `JPEG_QUALITY`). */
+  quality?: number;
+  /** Share of `maxBytes` the encoded blob must fit within (defaults to `FIT_SHARE`). */
+  fitShare?: number;
+};
+
 /// The sizes to try for an image, largest first: the same shape, never larger
 /// than the image, and each size once.
-export function shrinkSizes(width: number, height: number): Size[] {
+export function shrinkSizes(width: number, height: number, maxSide?: number): Size[] {
+  const candidates = maxSide
+    ? [maxSide, ...SHRINK_SIDES.filter((side) => side < maxSide)]
+    : SHRINK_SIDES;
   const sizes: Size[] = [];
-  for (const side of SHRINK_SIDES) {
+  for (const side of candidates) {
     const scale = Math.min(1, side / Math.max(width, height));
     const size = { width: Math.max(1, Math.round(width * scale)), height: Math.max(1, Math.round(height * scale)) };
     const last = sizes[sizes.length - 1];
@@ -38,7 +50,7 @@ export function canShrink(): boolean {
 /// be: a GIF (a canvas keeps only the first frame of an animation), an image
 /// this browser cannot decode, or one still too large at the smallest size.
 /// The result is upright, a JPEG, or a PNG when the image has transparency.
-export async function shrinkImage(file: Blob, maxBytes: number): Promise<Blob | null> {
+export async function shrinkImage(file: Blob, maxBytes: number, options?: ShrinkOptions): Promise<Blob | null> {
   if (file.type === "image/gif") return null;
   let bitmap: ImageBitmap;
   try {
@@ -46,12 +58,14 @@ export async function shrinkImage(file: Blob, maxBytes: number): Promise<Blob | 
   } catch {
     return null;
   }
+  const quality = options?.quality ?? JPEG_QUALITY;
+  const fitShare = options?.fitShare ?? FIT_SHARE;
   try {
     const canvas = document.createElement("canvas");
     const context = canvas.getContext("2d");
     if (!context) return null;
     let type = "";
-    for (const { width, height } of shrinkSizes(bitmap.width, bitmap.height)) {
+    for (const { width, height } of shrinkSizes(bitmap.width, bitmap.height, options?.maxSide)) {
       // Setting the size clears the canvas and its settings.
       canvas.width = width;
       canvas.height = height;
@@ -59,8 +73,8 @@ export async function shrinkImage(file: Blob, maxBytes: number): Promise<Blob | 
       context.drawImage(bitmap, 0, 0, width, height);
       // A JPEG would paint transparent pixels black.
       type ||= file.type !== "image/jpeg" && hasAlpha(context.getImageData(0, 0, width, height).data) ? "image/png" : "image/jpeg";
-      const blob = await new Promise<Blob | null>((done) => canvas.toBlob(done, type, JPEG_QUALITY));
-      if (blob && blob.size <= maxBytes * FIT_SHARE) return blob;
+      const blob = await new Promise<Blob | null>((done) => canvas.toBlob(done, type, quality));
+      if (blob && blob.size <= maxBytes * fitShare) return blob;
     }
     return null;
   } finally {

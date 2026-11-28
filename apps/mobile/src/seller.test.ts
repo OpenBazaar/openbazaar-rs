@@ -211,7 +211,7 @@ test("with no canvas an image over the node's cap is refused before it is sent, 
   );
 });
 
-test("in a browser an image over the cap is sent shrunk, one that fits is sent as it is, and one that cannot be shrunk says so", async () => {
+test("in a browser large images are shrunk to Tor-friendly size, tiny ones stay as-is, and unshrinkable oversized ones say so", async () => {
   const globals = globalThis as { document?: unknown; createImageBitmap?: unknown };
   const canvas = {
     width: 0,
@@ -232,16 +232,19 @@ test("in a browser an image over the cap is sent shrunk, one that fits is sent a
     await withMediaNode(
       () => Response.json({ hash: IMAGE }),
       async (sent) => {
-        const small = new Blob([new Uint8Array(2 * 1024 * 1024)], { type: "image/png" });
-        assert.equal(await uploadImage(small), IMAGE);
-        assert.equal(sent[0], small);
+        const tiny = new Blob([new Uint8Array(500)], { type: "image/png" });
+        assert.equal(await uploadImage(tiny), IMAGE);
+        assert.equal(sent[0], tiny);
+        const raw2mb = new Blob([new Uint8Array(2 * 1024 * 1024)], { type: "image/png" });
+        assert.equal(await uploadImage(raw2mb), IMAGE);
+        assert.deepEqual([sent[1].size, sent[1].type, canvas.width, canvas.height], [1000, "image/jpeg", 1200, 900]);
         assert.equal(await uploadImage(new Blob([new Uint8Array(2 * 1024 * 1024 + 1)], { type: "image/png" })), IMAGE);
-        assert.deepEqual([sent[1].size, sent[1].type, canvas.width, canvas.height], [1000, "image/jpeg", 2000, 1500]);
+        assert.deepEqual([sent[2].size, sent[2].type, canvas.width, canvas.height], [1000, "image/jpeg", 1200, 900]);
         decodes = false;
         await assert.rejects(uploadImage(new Blob([new Uint8Array(2 * 1024 * 1024 + 1)])), {
           message: "That image is larger than 2 MB and could not be shrunk to fit. Choose a smaller one.",
         });
-        assert.equal(sent.length, 2);
+        assert.equal(sent.length, 3);
       },
     );
   } finally {

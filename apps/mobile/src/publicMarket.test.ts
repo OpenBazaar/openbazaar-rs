@@ -6,7 +6,7 @@ import { schnorr } from "@noble/curves/secp256k1.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 
 import { verifyAdmissionIndex, verifyCatalogIndex } from "./catalogIndex.ts";
-import { admittedAddresses, aggregatePublicStores, marketNotice, NODE_REQUIRED, nodeRequired } from "./publicMarket.ts";
+import { admittedAddresses, aggregatePublicStores, loadPublicMarket, marketNotice, NODE_REQUIRED, nodeRequired } from "./publicMarket.ts";
 import { bytesToHex, hexToBytes, verifyListingRecord, verifyStoreRecord } from "./records.ts";
 
 type Raw = { stores: { key: string; name: string; record: string }[]; listings: { storeId: string; record: string; title: string }[] };
@@ -168,4 +168,83 @@ test("an admission snapshot keeps only store ids the directory key signed", () =
   assert.deepEqual(verifyAdmissionIndex(signed, bytesToHex(key)), ["ab".repeat(32)]);
   assert.equal(verifyAdmissionIndex(`${signed.slice(0, -2)}00`, bytesToHex(key)), null);
   assert.equal(verifyAdmissionIndex(signed, "cd".repeat(32)), null);
+});
+
+test("loadPublicMarket fetches catalog and addresses in parallel and streams emptyAdmitted stores without blocking first paint", async () => {
+  const { stores, listings } = raw();
+  const marlow = stores.find((s) => s.name === "Marlow Goods")!;
+  const hale = stores.find((s) => s.name === "Hale Paper")!;
+  const marlowBody = storeBody("Marlow Goods", listings, null);
+  const haleFullBody = storeBody("Hale Paper", listings, null);
+  const haleEmptyBody = { store: hale.record, listings: [] };
+
+  const moderatorHost = "yc546t4ecasnoollz3voqrrqsevup3wk25g4d7mxaryfomtu7xh37ead.onion";
+  const haleOnion = `http://${"b".repeat(56)}.onion`;
+
+  let resolveVendor!: (resp: Response) => void;
+  const vendorPromise = new Promise<Response>((resolve) => {
+    resolveVendor = resolve;
+  });
+
+  const requested: string[] = [];
+  let catalogPending = false;
+  let sawParallelAddresses = false;
+
+  const fetcher = async (url: string): Promise<Response> => {
+    requested.push(url);
+    if (url === `http://${moderatorHost}/public/catalog`) {
+      catalogPending = true;
+      await Promise.resolve();
+      catalogPending = false;
+      return new Response(JSON.stringify({ stores: [marlowBody, haleEmptyBody] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    if (url === `http://${moderatorHost}/public/admission-addresses`) {
+      if (catalogPending) sawParallelAddresses = true;
+      return new Response(
+        JSON.stringify({ stores: [{ storeId: hale.key, url: haleOnion }] }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }
+    if (url === `${haleOnion}/public/store`) {
+      return vendorPromise;
+    }
+    return new Response("not found", { status: 404 });
+  };
+
+  let streamed: Awaited<ReturnType<typeof loadPublicMarket>> | null = null;
+  let resolveStreamed!: () => void;
+  const streamedDone = new Promise<void>((resolve) => {
+    resolveStreamed = resolve;
+  });
+
+  const initial = await loadPublicMarket(
+    { protocol: "http:", hostname: moderatorHost, search: "" },
+    fetcher,
+    (updated) => {
+      streamed = updated;
+      resolveStreamed();
+    },
+  );
+
+  assert.equal(sawParallelAddresses, true, "/public/admission-addresses should be fetched in parallel with /public/catalog");
+  assert.equal(initial.catalog.stores.length, 2);
+  assert.equal(initial.catalog.listings.length, marlowBody.listings.length, "initial paint returns immediately with replicated Marlow listings while Hale is still pending");
+  assert.equal(streamed, null, "vendor fetch has not resolved yet");
+
+  // Now resolve the slow vendor onion fetch and confirm onUpdate merges Hale's listings.
+  resolveVendor(
+    new Response(JSON.stringify(haleFullBody), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    }),
+  );
+  await streamedDone;
+  assert.ok(streamed !== null);
+  const updated = streamed as Awaited<ReturnType<typeof loadPublicMarket>>;
+  assert.equal(updated.catalog.listings.length, marlowBody.listings.length + haleFullBody.listings.length);
+  assert.ok(updated.catalog.listings.some((l) => l.seller === "Hale Paper"));
+  assert.ok(updated.images.some((entry) => entry.url === haleOnion));
 });

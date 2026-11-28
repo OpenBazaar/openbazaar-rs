@@ -13,6 +13,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::Read;
 use std::path::PathBuf;
+use std::sync::Mutex;
 
 use bitcoin::hashes::{sha256, Hash};
 use openbazaar_protocol::fixture_media;
@@ -23,10 +24,14 @@ use crate::{Error, Node};
 
 /// Largest image the node serves.
 pub const MAX_MEDIA: usize = 2 * 1024 * 1024;
+const MAX_VERIFIED_CACHE: usize = 4096;
 
 pub(crate) struct Media {
     dir: PathBuf,
     builtin: HashMap<[u8; 32], &'static [u8]>,
+    /// Hashes whose exact SHA-256 bytes have already passed full pixel decode
+    /// and metadata checks in this process, mapped to their verified MIME type.
+    verified: Mutex<HashMap<[u8; 32], &'static str>>,
 }
 
 /// The content type of an image, from its first bytes.
@@ -54,7 +59,11 @@ impl Media {
                 .collect(),
             NetworkMode::Mainnet => HashMap::new(),
         };
-        Ok(Self { dir, builtin })
+        Ok(Self {
+            dir,
+            builtin,
+            verified: Mutex::new(HashMap::new()),
+        })
     }
 
     /// Keep an image under the SHA-256 of its cleaned bytes. Only the image
@@ -70,6 +79,7 @@ impl Media {
                 .and_then(|_| fs::rename(&tmp, self.dir.join(&name)))
                 .map_err(|err| err.to_string())?;
         }
+        self.remember_verified(hash, kind);
         Ok((hash, kind))
     }
 
@@ -88,7 +98,32 @@ impl Media {
         if bytes.len() > MAX_MEDIA || sha256::Hash::hash(&bytes).to_byte_array() != *hash {
             return None;
         }
-        crate::image_sanitize::serve_stored(&bytes)
+        if let Some(kind) = self.cached_verified(hash) {
+            return Some((kind, bytes));
+        }
+        let (kind, served) = crate::image_sanitize::serve_stored(&bytes)?;
+        // Only cache when the stored bytes themselves are already clean and
+        // unchanged; legacy files with stripped metadata must keep being cleaned.
+        if served == bytes {
+            self.remember_verified(*hash, kind);
+        }
+        Some((kind, served))
+    }
+
+    fn cached_verified(&self, hash: &[u8; 32]) -> Option<&'static str> {
+        self.verified
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .get(hash)
+            .copied()
+    }
+
+    fn remember_verified(&self, hash: [u8; 32], kind: &'static str) {
+        let mut cache = self.verified.lock().unwrap_or_else(|err| err.into_inner());
+        if cache.len() >= MAX_VERIFIED_CACHE {
+            cache.clear();
+        }
+        cache.insert(hash, kind);
     }
 
     /// The stored bytes for `hash`, before they are cleaned for a response.
@@ -151,6 +186,30 @@ mod tests {
         assert!(mainnet.put(&jpeg).is_err(), "an image that does not decode is not kept");
         assert!(mainnet.put(script).is_err(), "only images are kept");
         assert!(mainnet.put(&big).is_err(), "nothing above the cap is kept");
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn verified_hash_cache_records_clean_images_and_still_checks_hash() {
+        let dir = std::env::temp_dir().join(format!("ob-media-cache-{}-{}", std::process::id(), line!()));
+        let media = Media::open(dir.clone(), NetworkMode::Testnet4).unwrap();
+        let demo = fixture_media()[0];
+        let hash = sha256::Hash::hash(demo).to_byte_array();
+        assert!(media.cached_verified(&hash).is_none());
+        assert_eq!(media.get(&hash).unwrap(), ("image/png", demo.to_vec()));
+        assert_eq!(media.cached_verified(&hash), Some("image/png"));
+        // Second call serves from verified fast path and matches identically.
+        assert_eq!(media.get(&hash).unwrap(), ("image/png", demo.to_vec()));
+
+        // A file on disk that gets corrupted after being cached is still refused by SHA-256 check.
+        let mainnet = Media::open(dir.clone(), NetworkMode::Mainnet).unwrap();
+        let (stored_hash, kind) = mainnet.put(demo).unwrap();
+        assert_eq!(kind, "image/png");
+        assert_eq!(mainnet.cached_verified(&stored_hash), Some("image/png"));
+        assert_eq!(mainnet.get(&stored_hash).unwrap(), ("image/png", demo.to_vec()));
+        let name: String = stored_hash.iter().map(|b| format!("{b:02x}")).collect();
+        fs::write(dir.join(name), b"corrupted").unwrap();
+        assert!(mainnet.get(&stored_hash).is_none(), "corrupted file must never be served even if hash was cached");
         let _ = fs::remove_dir_all(dir);
     }
 }

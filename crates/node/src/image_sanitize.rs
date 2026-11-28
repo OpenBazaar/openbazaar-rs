@@ -140,7 +140,7 @@ fn encode_still(image: &DynamicImage, kind: &str) -> Result<(Vec<u8>, &'static s
     let mut out = Vec::new();
     match kind {
         "image/jpeg" => {
-            let mut encoder = JpegEncoder::new_with_quality(&mut out, 95);
+            let mut encoder = JpegEncoder::new_with_quality(&mut out, 82);
             encoder.encode_image(image).map_err(|err| err.to_string())?;
             Ok((out, "image/jpeg"))
         }
