@@ -125,11 +125,11 @@ export function TorOrderDetail({
   const receiptLink = useMemo(() => {
     if (!phrase || typeof window === "undefined") return "";
     try {
-      return buildReceiptRestoreUrl(window.location.origin, phrase, [order.sellerUrl]);
+      return buildReceiptRestoreUrl(window.location.origin, phrase, [order.sellerUrl], [order.checkoutId]);
     } catch {
       return "";
     }
-  }, [phrase, order.sellerUrl]);
+  }, [phrase, order.sellerUrl, order.checkoutId]);
 
   const pullStatus = async () => {
     setBusy(true);

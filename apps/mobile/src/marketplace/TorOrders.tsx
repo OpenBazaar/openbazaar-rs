@@ -81,6 +81,16 @@ export function TorOrders({
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
   const handledRestoreRef = useRef<ParsedReceiptHash | null>(null);
+  const mountedRef = useRef(true);
+  const knownStoresRef = useRef(knownStores);
+  knownStoresRef.current = knownStores;
+  const onConsumeRef = useRef(onConsumePendingRestore);
+  onConsumeRef.current = onConsumePendingRestore;
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -95,29 +105,32 @@ export function TorOrders({
 
   useEffect(() => {
     if (!pendingRestore) return;
+    if (handledRestoreRef.current === pendingRestore) return;
     setPhrase(pendingRestore.phrase);
     void store.savePhrase(pendingRestore.phrase);
     setError("");
     setNotice("Restoring orders from your receipt link…");
-    if (catalogLoading) return;
-    if (handledRestoreRef.current === pendingRestore) return;
+    // If the link already carries explicit store URL(s), probe them immediately
+    // without waiting for the public catalog to finish loading.
+    if (pendingRestore.stores.length === 0 && catalogLoading) return;
     handledRestoreRef.current = pendingRestore;
 
-    let active = true;
     const urls: string[] = [];
     const seen = new Set<string>();
-    for (const raw of [...pendingRestore.stores, ...knownStores.map((s) => s.url)]) {
+    for (const raw of [...pendingRestore.stores, ...knownStoresRef.current.map((s) => s.url)]) {
       const clean = raw.trim().replace(/\/+$/, "");
       if (!clean || seen.has(clean)) continue;
       seen.add(clean);
       urls.push(clean);
     }
 
+    const isStillCurrent = () => mountedRef.current && handledRestoreRef.current === pendingRestore;
+
     void (async () => {
       if (urls.length === 0) {
-        if (!active) return;
+        if (!isStillCurrent()) return;
         setNotice("Receipt code restored from link. Choose a store below to pull your orders.");
-        onConsumePendingRestore?.();
+        onConsumeRef.current?.();
         return;
       }
       try {
@@ -126,14 +139,19 @@ export function TorOrders({
         let lastErr: string | null = null;
         for (const url of urls) {
           try {
-            const found = await recoverLightOrdersFromStore({ seed: restoreSeed, vendorUrl: url });
+            const found = await recoverLightOrdersFromStore({
+              seed: restoreSeed,
+              vendorUrl: url,
+              extraCheckoutIds: pendingRestore.cids,
+            });
             allRecovered.push(...found);
           } catch (err) {
             lastErr = err instanceof Error ? err.message : `Could not reach ${url}.`;
           }
         }
-        if (!active) return;
+        if (!isStillCurrent()) return;
         const existing = await store.loadOrders();
+        if (!isStillCurrent()) return;
         const merged = mergeOrders(existing, allRecovered);
         setOrders(merged);
         void store.saveOrders(merged);
@@ -151,16 +169,14 @@ export function TorOrders({
           setNotice("Receipt code restored from link. No matching orders were found at the checked stores.");
         }
       } catch (err) {
-        if (!active) return;
+        if (!isStillCurrent()) return;
         setNotice("");
         setError(err instanceof Error ? err.message : "Could not restore orders from receipt link.");
       } finally {
-        if (active) onConsumePendingRestore?.();
+        if (isStillCurrent()) onConsumeRef.current?.();
       }
     })();
-
-    return () => { active = false; };
-  }, [pendingRestore, catalogLoading, knownStores, onConsumePendingRestore]);
+  }, [pendingRestore, catalogLoading]);
 
   const seed = useMemo<BuyerSeed | null>(() => {
     if (!phrase) return null;
@@ -177,8 +193,9 @@ export function TorOrders({
       ...orders.map((o) => o.sellerUrl),
       ...knownStores.map((s) => s.url),
     ];
+    const checkoutIds = orders.map((o) => o.checkoutId);
     try {
-      return buildReceiptRestoreUrl(window.location.origin, phrase, storeUrls);
+      return buildReceiptRestoreUrl(window.location.origin, phrase, storeUrls, checkoutIds);
     } catch {
       return "";
     }

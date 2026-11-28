@@ -666,3 +666,113 @@ test("nextTorCheckoutId increments per-store sequential ids and recoverLightOrde
   assert.deepEqual(recovered, []);
   assert.equal(pullCalls, 3);
 });
+
+test("recoverLightOrdersFromStore probes extraCheckoutIds for legacy orders and deduplicates", async () => {
+  const storeSecret = hexToBytes("51".repeat(32));
+  const storeXOnly = schnorr.getPublicKey(storeSecret);
+  const storeId = bytesToHex(storeXOnly);
+  const mailboxSecret = hexToBytes("61".repeat(32));
+  const mailboxPub = x25519.getPublicKey(mailboxSecret);
+  const sellerReplySecret = hexToBytes("71".repeat(32));
+
+  const strField = (s: string) => {
+    const b = utf8ToBytes(s);
+    return concatBytes(new Uint8Array([b.length & 0xff, (b.length >>> 8) & 0xff]), b);
+  };
+  const storeBody = concatBytes(
+    utf8ToBytes("OBST"),
+    new Uint8Array([3]),
+    strField("Legacy Restore Store"),
+    strField("US"),
+    strField(""),
+    strField(""),
+    storeXOnly,
+    new Uint8Array([0]),
+    mailboxPub,
+    strField(""),
+    new Uint8Array([0]),
+    strField(""),
+    strField(""),
+    new Uint8Array([0, 0]),
+    strField(""),
+    strField(""),
+    strField(""),
+    new Uint8Array([0]),
+    u32le(20261123),
+    new Uint8Array([0]),
+  );
+  const storeSig = schnorr.sign(taggedHash("ob/store/v1", storeBody), storeSecret, new Uint8Array(32));
+  const signedStoreHex = bytesToHex(concatBytes(storeBody, storeSig));
+
+  const seed = buyerSeedFromPhrase(TEST_PHRASE, "testnet4");
+  const legacyCid = "a1b2c3d4e5f60718293a4b5c6d7e8f90";
+  const tor0Keys = deriveOrderKeys(seed, "tor-0", storeId);
+  const legacyKeys = deriveOrderKeys(seed, legacyCid, storeId);
+  const payAddr = derivePayoutAddress(seed, 9);
+  const storeUrl = "https://legacy-shop.example";
+  let pullCalls = 0;
+
+  const mockFetch = async (url: string, init?: RequestInit): Promise<Response> => {
+    if (url === `${storeUrl}/public/store`) {
+      return new Response(JSON.stringify({ store: signedStoreHex, listings: [] }), { status: 200 });
+    }
+    if (url === `${storeUrl}/mail/pull`) {
+      pullCalls += 1;
+      const reqBytes = init?.body as Uint8Array;
+      const enc = reqBytes.subarray(5, 37);
+      const ciphertext = reqBytes.subarray(41);
+      const plaintext = hpkeOpenBase(mailboxSecret, enc, utf8ToBytes("openbazaar-tormail-message-v1"), ciphertext);
+      const bodyLen =
+        plaintext[54] | (plaintext[55] << 8) | (plaintext[56] << 16) | ((plaintext[57] << 24) >>> 0);
+      const req = JSON.parse(new TextDecoder().decode(plaintext.subarray(58, 58 + bodyLen))) as {
+        sale: string;
+        nonce: string;
+      };
+
+      const respondWith = (replyPub: Uint8Array, title: string, amountSats: number) => {
+        const statusBody = {
+          v: 1,
+          kind: "status",
+          nonce: req.nonce,
+          status: "Awaiting payment",
+          title,
+          amountSats,
+          itemsSats: amountSats,
+          shippingSats: 0,
+          quantity: 1,
+          created: 1700000100,
+          address: payAddr,
+          network: "testnet4",
+        };
+        const sealed = sealReplyForTest(utf8ToBytes(JSON.stringify(statusBody)), replyPub, sellerReplySecret);
+        return new Response(JSON.stringify({ reply: bytesToHex(sealed) }), { status: 200 });
+      };
+
+      if (req.sale === tor0Keys.dropIdHex) {
+        return respondWith(tor0Keys.replyPublic, "Deterministic Order", 12_000);
+      }
+      if (req.sale === legacyKeys.dropIdHex) {
+        return respondWith(legacyKeys.replyPublic, "Legacy Random-CID Order", 25_000);
+      }
+      return new Response(JSON.stringify({ error: "unauthorized" }), { status: 403 });
+    }
+    return new Response("not found", { status: 404 });
+  };
+
+  const recovered = await recoverLightOrdersFromStore({
+    seed,
+    vendorUrl: storeUrl,
+    extraCheckoutIds: [legacyCid, legacyCid, "tor-0", "missing-cid"],
+    gapLimit: 2,
+    fetcher: mockFetch,
+  });
+
+  // tor-0 (hit) + tor-1 (miss) + tor-2 (miss, stops gap) + legacyCid (hit) + missing-cid (miss) = 5 calls
+  assert.equal(pullCalls, 5);
+  assert.equal(recovered.length, 2);
+  assert.equal(recovered[0].checkoutId, "tor-0");
+  assert.equal(recovered[0].title, "Deterministic Order");
+  assert.equal(recovered[1].checkoutId, legacyCid);
+  assert.equal(recovered[1].title, "Legacy Random-CID Order");
+  assert.equal(recovered[1].totalSats, 25_000);
+});

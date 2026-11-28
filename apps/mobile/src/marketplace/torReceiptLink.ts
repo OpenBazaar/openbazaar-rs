@@ -9,7 +9,18 @@ import { isValidBuyerPhrase, normalizeBuyerPhrase } from "../buyerLight/keys.ts"
 export type ParsedReceiptHash = {
   readonly phrase: string;
   readonly stores: readonly string[];
+  readonly cids: readonly string[];
 };
+
+const MAX_RECEIPT_CIDS = 20;
+const SAFE_CHECKOUT_ID_RE = /^[a-zA-Z0-9_-]{1,64}$/;
+const DETERMINISTIC_TOR_CID_RE = /^tor-\d+$/;
+
+export function normalizeReceiptCheckoutId(raw: string): string | null {
+  const clean = raw.trim();
+  if (!clean || !SAFE_CHECKOUT_ID_RE.test(clean)) return null;
+  return clean;
+}
 
 export const RECEIPT_LINK_HELPER_TEXT =
   "Save in Notes or Bookmarks — opens your orders in 1 tap on a fresh Tor session. The link fragment stays on your device and is never sent to the server.";
@@ -52,12 +63,14 @@ export function normalizeReceiptStoreUrl(raw: string, currentOrigin?: string): s
 
 /**
  * Build a 1-tap restore URL `${origin}/#receipt=...` with the normalized
- * 12-word phrase and optional store `.onion` URL(s) strictly in the hash.
+ * 12-word phrase, optional store `.onion` URL(s), and optional legacy
+ * non-deterministic checkout IDs strictly in the hash.
  */
 export function buildReceiptRestoreUrl(
   origin: string,
   phrase: string,
   vendorUrls?: readonly string[],
+  extraCheckoutIds?: readonly string[],
 ): string {
   const baseOrigin = normalizeOrigin(origin);
   if (!baseOrigin) {
@@ -81,11 +94,22 @@ export function buildReceiptRestoreUrl(
     }
   }
 
+  if (extraCheckoutIds && extraCheckoutIds.length > 0) {
+    const seenCids = new Set<string>();
+    for (const candidate of extraCheckoutIds) {
+      if (seenCids.size >= MAX_RECEIPT_CIDS) break;
+      const normalized = normalizeReceiptCheckoutId(candidate);
+      if (!normalized || DETERMINISTIC_TOR_CID_RE.test(normalized) || seenCids.has(normalized)) continue;
+      seenCids.add(normalized);
+      params.append("cid", normalized);
+    }
+  }
+
   return `${baseOrigin}/#${params.toString()}`;
 }
 
 /**
- * Parse a URL `#fragment` carrying `#receipt=...` (and optional `&store=...`).
+ * Parse a URL `#fragment` carrying `#receipt=...` (and optional `&store=...` / `&cid=...`).
  * Returns `null` for missing, non-receipt, or invalid BIP-39 hashes.
  */
 export function parseReceiptHash(hash: string, currentOrigin?: string): ParsedReceiptHash | null {
@@ -110,5 +134,15 @@ export function parseReceiptHash(hash: string, currentOrigin?: string): ParsedRe
     stores.push(normalized);
   }
 
-  return { phrase: cleanPhrase, stores };
+  const cids: string[] = [];
+  const seenCids = new Set<string>();
+  for (const rawCid of params.getAll("cid")) {
+    if (seenCids.size >= MAX_RECEIPT_CIDS) break;
+    const normalized = normalizeReceiptCheckoutId(rawCid);
+    if (!normalized || DETERMINISTIC_TOR_CID_RE.test(normalized) || seenCids.has(normalized)) continue;
+    seenCids.add(normalized);
+    cids.push(normalized);
+  }
+
+  return { phrase: cleanPhrase, stores, cids };
 }

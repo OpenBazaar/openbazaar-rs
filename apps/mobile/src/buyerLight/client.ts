@@ -343,14 +343,16 @@ export function nextTorCheckoutId(
 }
 
 /**
- * Recover deterministic Tor Browser orders (`tor-0`, `tor-1`, …) from a
- * seller's `POST /mail/pull` endpoint using only the buyer's 12-word seed and
- * the seller's store URL. Stops after `gapLimit` consecutive unauthorized/not-
- * found indices (similar to BIP-44 address gap scanning).
+ * Recover deterministic Tor Browser orders (`tor-0`, `tor-1`, …) and optional
+ * explicit legacy checkout IDs from a seller's `POST /mail/pull` endpoint
+ * using only the buyer's 12-word seed and the seller's store URL. Stops the
+ * sequential scan after `gapLimit` consecutive unauthorized/not-found indices
+ * (similar to BIP-44 address gap scanning).
  */
 export async function recoverLightOrdersFromStore(params: {
   seed: BuyerSeed;
   vendorUrl: string;
+  extraCheckoutIds?: readonly string[];
   gapLimit?: number;
   maxIndex?: number;
   fetcher?: LightFetcher;
@@ -362,10 +364,11 @@ export async function recoverLightOrdersFromStore(params: {
   const storeId = verifiedStore.catalog.store.id;
   const sellerName = verifiedStore.catalog.store.name;
   const recovered: LightOrderRecord[] = [];
+  const seenDropIds = new Set<string>();
+  const probedCheckoutIds = new Set<string>();
 
-  let consecutiveMisses = 0;
-  for (let index = 0; index < maxIndex && consecutiveMisses < gapLimit; index++) {
-    const checkoutId = `tor-${index}`;
+  const probeCheckoutId = async (checkoutId: string): Promise<LightOrderRecord | null> => {
+    probedCheckoutIds.add(checkoutId);
     const keys = deriveOrderKeys(params.seed, checkoutId, storeId);
     const nonceHex = bytesToHex(randomBytes(16));
     const payload = utf8ToBytes(
@@ -387,16 +390,14 @@ export async function recoverLightOrdersFromStore(params: {
       body: sealed as unknown as BodyInit,
     });
     if (response.status === 403 || response.status === 404) {
-      consecutiveMisses += 1;
-      continue;
+      return null;
     }
     if (!response.ok) {
       throw new Error(`Could not reach ${sellerName} while restoring orders (HTTP ${response.status}).`);
     }
     const answer = (await response.json().catch(() => ({}))) as { reply?: unknown };
     if (typeof answer.reply !== "string" || !/^[0-9a-f]+$/i.test(answer.reply)) {
-      consecutiveMisses += 1;
-      continue;
+      return null;
     }
     const opened = openSealedReply(hexToBytes(answer.reply.toLowerCase()), keys.replySecret);
     const body = JSON.parse(new TextDecoder().decode(opened.body)) as Record<string, unknown>;
@@ -404,7 +405,6 @@ export async function recoverLightOrdersFromStore(params: {
       throw new Error("The seller's restore answer failed its freshness check.");
     }
 
-    consecutiveMisses = 0;
     const nowSecs = Math.floor(Date.now() / 1000);
     const amountSats =
       typeof body.amountSats === "number" && Number.isSafeInteger(body.amountSats) && body.amountSats > 0
@@ -482,7 +482,31 @@ export async function recoverLightOrdersFromStore(params: {
       escrow: null,
     };
 
-    recovered.push(applySellerUpdate(base, body, opened.senderHex, nowSecs));
+    return applySellerUpdate(base, body, opened.senderHex, nowSecs);
+  };
+
+  let consecutiveMisses = 0;
+  for (let index = 0; index < maxIndex && consecutiveMisses < gapLimit; index++) {
+    const record = await probeCheckoutId(`tor-${index}`);
+    if (!record) {
+      consecutiveMisses += 1;
+      continue;
+    }
+    consecutiveMisses = 0;
+    if (!seenDropIds.has(record.dropIdHex)) {
+      seenDropIds.add(record.dropIdHex);
+      recovered.push(record);
+    }
+  }
+
+  for (const rawCid of params.extraCheckoutIds ?? []) {
+    const checkoutId = rawCid.trim();
+    if (!checkoutId || probedCheckoutIds.has(checkoutId)) continue;
+    const record = await probeCheckoutId(checkoutId);
+    if (record && !seenDropIds.has(record.dropIdHex)) {
+      seenDropIds.add(record.dropIdHex);
+      recovered.push(record);
+    }
   }
 
   return recovered;

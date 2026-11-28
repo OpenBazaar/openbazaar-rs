@@ -26,6 +26,7 @@ test("buildReceiptRestoreUrl and parseReceiptHash roundtrip with store URLs", ()
   assert.deepEqual(parsed, {
     phrase: VALID_PHRASE,
     stores: [VENDOR_ONION, VENDOR_ONION_2],
+    cids: [],
   });
 });
 
@@ -39,6 +40,7 @@ test("buildReceiptRestoreUrl works without vendorUrls and never uses query param
   assert.deepEqual(parsed, {
     phrase: VALID_PHRASE,
     stores: [],
+    cids: [],
   });
 });
 
@@ -65,12 +67,58 @@ test("parseReceiptHash filters untrusted store URLs and allows same-origin", () 
   assert.deepEqual(parseReceiptHash(hash), {
     phrase: VALID_PHRASE,
     stores: [VENDOR_ONION],
+    cids: [],
   });
 
   assert.deepEqual(parseReceiptHash(hash, "http://127.0.0.1:8080"), {
     phrase: VALID_PHRASE,
     stores: [VENDOR_ONION, "http://127.0.0.1:8080"],
+    cids: [],
   });
+});
+
+test("buildReceiptRestoreUrl and parseReceiptHash roundtrip legacy cids, skip tor-N, and validate", () => {
+  const legacyHex = "a1b2c3d4e5f60718293a4b5c6d7e8f90";
+  const legacyCustom = "chk_legacy-01";
+  const url = buildReceiptRestoreUrl(
+    MODERATOR_ONION,
+    VALID_PHRASE,
+    [VENDOR_ONION],
+    [
+      "tor-0",
+      "tor-1",
+      "tor-42",
+      legacyHex,
+      legacyHex, // duplicate
+      ` ${legacyCustom} `,
+      "bad cid with spaces",
+      "../evil",
+      "x".repeat(65), // too long
+    ],
+  );
+
+  const parsedUrl = new URL(url);
+  assert.equal(parsedUrl.search, "");
+  assert.ok(parsedUrl.hash.includes(`cid=${legacyHex}`));
+  assert.ok(!parsedUrl.hash.includes("tor-0"));
+  assert.ok(!parsedUrl.hash.includes("tor-1"));
+
+  assert.deepEqual(parseReceiptHash(parsedUrl.hash, MODERATOR_ONION), {
+    phrase: VALID_PHRASE,
+    stores: [VENDOR_ONION],
+    cids: [legacyHex, legacyCustom],
+  });
+
+  // Direct hash parsing also rejects invalid cids, skips tor-N, dedupes, and caps at 20.
+  const manyCids = Array.from({ length: 25 }, (_, i) => `legacy_${i}`);
+  const rawHash =
+    `#receipt=${encodeURIComponent(VALID_PHRASE)}` +
+    `&cid=tor-0&cid=bad%20id&cid=${encodeURIComponent("a/b")}` +
+    manyCids.map((id) => `&cid=${encodeURIComponent(id)}`).join("");
+  const parsedMany = parseReceiptHash(rawHash);
+  assert.ok(parsedMany);
+  assert.equal(parsedMany.cids.length, 20);
+  assert.deepEqual(parsedMany.cids, manyCids.slice(0, 20));
 });
 
 test("buildReceiptRestoreUrl throws on invalid phrase or origin", () => {
