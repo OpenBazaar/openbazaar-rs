@@ -60,6 +60,15 @@ fn cors_mail(method: &str, path: &str) -> bool {
     matches!((method, path), ("POST" | "OPTIONS", "/mail" | "/mail/pull"))
 }
 
+/// Read-only signed catalog endpoints the moderator shop may fetch cross-origin.
+fn cors_public_read(method: &str, path: &str) -> bool {
+    method == "GET" && (path == "/public/store" || media(path))
+}
+
+fn cors_cross_origin(method: &str, path: &str) -> bool {
+    cors_mail(method, path) || cors_public_read(method, path)
+}
+
 const CORS_HEADERS: &str = "Access-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type\r\nAccess-Control-Max-Age: 86400\r\n";
 
 fn media(path: &str) -> bool {
@@ -104,10 +113,9 @@ pub(crate) fn handle(mut client: TcpStream, main_port: u16, web_dir: Option<&Pat
         );
         return;
     }
-    // Refuse browser-originated requests on all routes EXCEPT the mail
-    // endpoints. The moderator shop page needs cross-origin POST to the
-    // vendor's /mail and /mail/pull. Other routes stay locked (#247).
-    if http_parse::header(request.head, "origin").is_some() && !cors_mail(request.method, request.path) {
+    // Refuse browser-originated requests on all routes EXCEPT mail and the
+    // read-only public store/media catalog. Other routes stay locked (#247).
+    if http_parse::header(request.head, "origin").is_some() && !cors_cross_origin(request.method, request.path) {
         let _ = client.write_all(&plain("403 Forbidden", "pages may not use this endpoint"));
         return;
     }
@@ -115,8 +123,8 @@ pub(crate) fn handle(mut client: TcpStream, main_port: u16, web_dir: Option<&Pat
     let outbound = rebuild(request.method, request.path, content_type.as_deref(), request.body, main_port);
     match forward(&outbound, main_port) {
         Ok(mut bytes) => {
-            // Append CORS header for cross-origin mail responses.
-            if cors_mail(request.method, request.path) {
+            // Append CORS header for cross-origin mail and public read responses.
+            if cors_cross_origin(request.method, request.path) {
                 bytes = append_cors_header(bytes);
             }
             let _ = client.write_all(&bytes);
@@ -291,13 +299,29 @@ mod tests {
         assert!(catalog.starts_with("HTTP/1.1 404"), "{catalog}");
         assert_eq!(opened.load(Ordering::SeqCst), 0, "a closed path was forwarded");
 
-        // A request with an Origin header (browser-like) is refused at the gate.
+        // GET /public/catalog with Origin is still refused at the gate (not store/media).
+        let catalog_origin = talk(
+            gate_addr,
+            "GET /public/catalog HTTP/1.1\r\nHost: example.onion\r\nOrigin: http://evil.example\r\nConnection: close\r\n\r\n",
+        );
+        assert!(
+            catalog_origin.starts_with("HTTP/1.1 403"),
+            "Origin on non-store catalog should be refused: {catalog_origin}"
+        );
+        assert_eq!(opened.load(Ordering::SeqCst), 0, "catalog Origin request was forwarded");
+
+        // GET /public/store with Origin is forwarded like a normal catalog read.
         let with_origin = talk(
             gate_addr,
             "GET /public/store HTTP/1.1\r\nHost: example.onion\r\nOrigin: http://evil.example\r\nConnection: close\r\n\r\n",
         );
-        assert!(with_origin.starts_with("HTTP/1.1 403"), "Origin should be refused at the gate: {with_origin}");
-        assert_eq!(opened.load(Ordering::SeqCst), 0, "an Origin request was forwarded");
+        thread::sleep(Duration::from_millis(150));
+        assert!(with_origin.starts_with("HTTP/1.1 302"), "store with Origin should forward: {with_origin}");
+        assert!(
+            with_origin.contains("Access-Control-Allow-Origin: *"),
+            "store with Origin should include CORS: {with_origin}"
+        );
+        assert_eq!(opened.load(Ordering::SeqCst), 1, "store with Origin should be forwarded");
 
         // Without Origin, the request is forwarded normally.
         let store = talk(
@@ -306,7 +330,7 @@ mod tests {
         );
         thread::sleep(Duration::from_millis(150));
         assert!(store.starts_with("HTTP/1.1 302"), "{store}");
-        assert_eq!(opened.load(Ordering::SeqCst), 1);
+        assert_eq!(opened.load(Ordering::SeqCst), 2);
         assert_eq!(trap_hits.load(Ordering::SeqCst), 0, "the gate followed Location");
         let forwarded = seen.lock().unwrap()[0].clone();
         assert!(forwarded.contains(&format!("Host: 127.0.0.1:{port}")), "{forwarded}");
@@ -414,13 +438,41 @@ mod tests {
         assert!(wallet_origin.starts_with("HTTP/1.1 404"), "{wallet_origin}");
         assert_eq!(opened.load(Ordering::SeqCst), 2, "/wallet must not be forwarded");
 
-        // GET /public/store with Origin still blocked.
+        // GET /public/store with Origin succeeds with CORS header.
         let store_origin = talk(
             gate_addr,
-            "GET /public/store HTTP/1.1\r\nHost: vendor.onion\r\nOrigin: http://evil.example\r\nConnection: close\r\n\r\n",
+            "GET /public/store HTTP/1.1\r\nHost: vendor.onion\r\nOrigin: http://moderator.onion\r\nConnection: close\r\n\r\n",
         );
-        assert!(store_origin.starts_with("HTTP/1.1 403"), "{store_origin}");
-        assert_eq!(opened.load(Ordering::SeqCst), 2, "/public/store with Origin must not be forwarded");
+        assert!(store_origin.starts_with("HTTP/1.1 202"), "{store_origin}");
+        assert!(store_origin.contains("Access-Control-Allow-Origin: *"), "{store_origin}");
+        assert_eq!(opened.load(Ordering::SeqCst), 3, "/public/store with Origin should be forwarded");
+
+        let media_hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let media_origin = talk(
+            gate_addr,
+            &format!(
+                "GET /public/media/{media_hash} HTTP/1.1\r\nHost: vendor.onion\r\nOrigin: http://moderator.onion\r\nConnection: close\r\n\r\n"
+            ),
+        );
+        assert!(media_origin.starts_with("HTTP/1.1 202"), "{media_origin}");
+        assert!(media_origin.contains("Access-Control-Allow-Origin: *"), "{media_origin}");
+        assert_eq!(opened.load(Ordering::SeqCst), 4, "/public/media with Origin should be forwarded");
+
+        // GET /wallet with Origin still blocked at the gate (not on allowlist).
+        let wallet_get_origin = talk(
+            gate_addr,
+            "GET /wallet HTTP/1.1\r\nHost: vendor.onion\r\nOrigin: http://evil.example\r\nConnection: close\r\n\r\n",
+        );
+        assert!(wallet_get_origin.starts_with("HTTP/1.1 404"), "{wallet_get_origin}");
+        assert_eq!(opened.load(Ordering::SeqCst), 4, "/wallet must not be forwarded");
+
+        // GET /public/catalog with Origin blocked (allowed route, no CORS).
+        let catalog_origin = talk(
+            gate_addr,
+            "GET /public/catalog HTTP/1.1\r\nHost: vendor.onion\r\nOrigin: http://evil.example\r\nConnection: close\r\n\r\n",
+        );
+        assert!(catalog_origin.starts_with("HTTP/1.1 403"), "{catalog_origin}");
+        assert_eq!(opened.load(Ordering::SeqCst), 4, "/public/catalog with Origin must not be forwarded");
 
         stop.store(true, Ordering::SeqCst);
     }
